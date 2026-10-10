@@ -8,4 +8,11 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
-ops_blas_add_tests(${OPS_BLAS})
+# arch35 uses CSV-driven GTest cases and needs GTest linkage plus test/frame/test_main.cpp.
+# arch22 keeps its legacy standalone test entry point and does not use GTest.
+# Select the matching registration helper to preserve both test frameworks.
+if(SOC_VERSION STREQUAL "ascend950")
+    ops_blas_add_gtest_tests(${OPS_BLAS} caxpy_test)
+else()
+    ops_blas_add_tests(${OPS_BLAS})
+endif()

@@ -201,14 +201,16 @@ int main()
 
 #### 产品支持情况
 
-- Ascend 950PR / Ascend 950DT：不支持
+- Ascend 950PR / Ascend 950DT：支持
 - Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
 - Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
 #### 函数原型
 
 ```cpp
-aclblasStatus_t aclblasCaxpy(aclblasHandle_t handle, const int64_t n, const aclblasComplex alpha, aclblasComplex* x, int64_t incx, aclblasComplex* y, int64_t incy)
+aclblasStatus_t aclblasCaxpy(
+    aclblasHandle_t handle, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,
+    aclblasComplex* y, int incy)
 ```
 
 #### 参数说明
@@ -216,16 +218,17 @@ aclblasStatus_t aclblasCaxpy(aclblasHandle_t handle, const int64_t n, const aclb
 | 参数名 | 输入/输出 | 参数类型 | 说明 |
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
-| n | 输入 | const int64_t | 向量元素个数，Host 内存 |
-| alpha | 输入 | const aclblasComplex | 复数标量系数，Host 内存 |
-| x | 输入 | aclblasComplex* | 输入复向量，Device 内存 |
-| incx | 输入 | int64_t | x 的步长，Host 内存 |
+| n | 输入 | int | 向量元素个数，Host 内存 |
+| alpha | 输入 | const aclblasComplex* | 指向复数标量系数的 Host 指针 |
+| x | 输入 | const aclblasComplex* | 输入复向量，Device 内存 |
+| incx | 输入 | int | x 的步长，Host 内存 |
 | y | 输入/输出 | aclblasComplex* | 输入/输出复向量，Device 内存 |
-| incy | 输入 | int64_t | y 的步长，Host 内存 |
+| incy | 输入 | int | y 的步长，Host 内存 |
 
 #### 约束说明
 
-- n >= 0
+- n >= 0；n == 0 时不访问 alpha、x、y
+- n > 0 时 alpha、x、y 均不能为空，incx 和 incy 均不能为 0
 
 #### 调用示例
 
@@ -309,9 +312,9 @@ struct AclblasHandleDeleter {
 
 int aclblasCaxpyTest(AclContext& ctx)
 {
-    constexpr int64_t n = 4;
-    constexpr int64_t incx = 1;
-    constexpr int64_t incy = 1;
+    constexpr int n = 4;
+    constexpr int incx = 1;
+    constexpr int incy = 1;
     constexpr size_t bytes = static_cast<size_t>(n) * sizeof(aclblasComplex);
     aclblasComplex alpha{2.0f, 1.0f};
 
@@ -342,8 +345,8 @@ int aclblasCaxpyTest(AclContext& ctx)
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, return blasRet);
 
     blasRet = aclblasCaxpy(
-        static_cast<aclblasHandle_t>(handle.get()), n, alpha,
-        static_cast<aclblasComplex*>(dX.get()), incx,
+        static_cast<aclblasHandle_t>(handle.get()), n, &alpha,
+        static_cast<const aclblasComplex*>(dX.get()), incx,
         static_cast<aclblasComplex*>(dY.get()), incy);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, return blasRet);
 
@@ -354,8 +357,8 @@ int aclblasCaxpyTest(AclContext& ctx)
     CHECK_RET(aclRet == ACL_SUCCESS, return aclRet);
 
     // 预期结果：y = alpha*x + y
-    for (int64_t i = 0; i < n; i++) {
-        printf("y[%lld] = (%f, %f)\n", static_cast<long long>(i), hY[i].real, hY[i].imag);
+    for (int i = 0; i < n; i++) {
+        printf("y[%d] = (%f, %f)\n", i, hY[i].real, hY[i].imag);
     }
 
     return 0;
