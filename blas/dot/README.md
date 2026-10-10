@@ -401,8 +401,8 @@ int main()
 
 #### 产品支持情况
 
-- Ascend 950PR / Ascend 950DT：不支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
+- Ascend 950PR / Ascend 950DT：支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
 - Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
 #### 函数原型
@@ -418,17 +418,23 @@ aclblasStatus_t aclblasCdotc(aclblasHandle_t handle, int n, const aclblasComplex
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，内部携带 stream 和 workspace，Host 内存 |
 | n | 输入 | int | 复数向量元素个数，n >= 0，Host 内存 |
 | x | 输入 | const aclblasComplex*（复数 FP32） | 复数向量，包含 n 个 aclblasComplex 元素，Device 内存 |
-| incx | 输入 | int | 向量 x 的步长（复数元素单位），当前仅支持 incx = 1，Host 内存 |
+| incx | 输入 | int | 向量 x 的步长（复数元素单位），支持任意非 0 正负步长，Host 内存 |
 | y | 输入 | const aclblasComplex*（复数 FP32） | 复数向量，包含 n 个 aclblasComplex 元素，Device 内存 |
-| incy | 输入 | int | 向量 y 的步长（复数元素单位），当前仅支持 incy = 1，Host 内存 |
+| incy | 输入 | int | 向量 y 的步长（复数元素单位），支持任意非 0 正负步长，Host 内存 |
 | result | 输出 | aclblasComplex*（复数 FP32） | 复数点积结果，包含 1 个 aclblasComplex 元素，Device 内存 |
 
 #### 约束说明
 
 - n >= 0；n == 0 时直接返回成功，result 置 0
 - incx != 0，incy != 0
-- 当前实现仅支持 incx = 1 且 incy = 1，非单位步长尚未支持
+- Ascend 950 实现支持任意非 0 的 incx/incy（含负步长）
 - n > 0 时，x、y、result 不能为 nullptr
+
+#### Ascend 950 实现说明
+
+- 正向单位步长输入采用多核 RegBase 计算，最多使用 48 个 AIV，先计算各核部分和，再完成最终归约。
+- 其他支持的步长组合由一个 AIV 分块搬运，并使用 RegBase 向量指令完成复数乘加，支持正、负及混合步长。
+- 分块搬运使用双缓冲，并为 RegBase 计算预留必要的 LocalMemory 安全空间。
 
 
 #### 调用示例
