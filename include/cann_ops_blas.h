@@ -380,6 +380,11 @@ aclblasStatus_t aclblasSgbmv(
     aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, int kl, int ku, const float* alpha, const float* A,
     int lda, const float* x, int incx, const float* beta, float* y, int incy);
 
+aclblasStatus_t aclblasCgbmv(
+    aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, int kl, int ku, const aclblasComplex* alpha,
+    const aclblasComplex* A, int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y,
+    int incy);
+
 aclblasStatus_t aclblasStpttr(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* AP, float* A, int lda);
 

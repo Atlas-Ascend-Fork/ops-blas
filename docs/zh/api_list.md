@@ -842,6 +842,7 @@ Level 2 接口在矩阵与向量之间进行运算，典型操作包括通用矩
 | 接口名 | 说明 |
 |---|---|
 | [aclblasSgbmv](../../blas/gbmv/README.md) | 单精度浮点带状矩阵-向量乘法 |
+| [aclblasCgbmv](../../blas/gbmv/README.md) | 单精度复数带状矩阵-向量乘法 |
 | [aclblasSgemv](../../blas/gemv/README.md) | 单精度浮点矩阵-向量乘法 |
 | [aclblasCgemv](../../blas/gemv/README.md) | 复数矩阵-向量乘法 |
 | [aclblasSgemvBatched](../../blas/gemv_batched/README.md) | 单精度批量矩阵-向量乘法 |
