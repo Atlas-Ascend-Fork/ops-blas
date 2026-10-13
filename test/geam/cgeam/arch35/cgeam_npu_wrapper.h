@@ -52,7 +52,7 @@ inline aclblasComplex* CgeamGetCPtr(bool inplaceAC, bool inplaceBC, DeviceBuffer
     if (inplaceBC) {
         return static_cast<aclblasComplex*>(dB->ptr());
     }
-    return static_cast<aclblasComplex*>(dC->ptr());
+    return dC ? static_cast<aclblasComplex*>(dC->ptr()) : nullptr;
 }
 
 inline void CgeamCopyBack(bool inplaceAC, bool inplaceBC, DeviceBuffer* dA, DeviceBuffer* dB, DeviceBuffer* dC,
@@ -94,7 +94,7 @@ inline aclblasStatus_t aclblasCgeam_npu(
     auto dB = CgeamAllocAndCopy(B, bBytes);
 
     std::unique_ptr<DeviceBuffer> dC;
-    if (!inplaceAC && !inplaceBC) {
+    if (!inplaceAC && !inplaceBC && C != nullptr) {
         dC = CgeamAllocOutput(cBytes);
     }
 

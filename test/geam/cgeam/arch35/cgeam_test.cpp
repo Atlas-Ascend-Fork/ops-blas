@@ -183,6 +183,16 @@ TEST_F(CgeamArch35Test, NNegative)
         ACLBLAS_STATUS_INVALID_VALUE);
 }
 
+// -- TEST_F: zero-size operation succeeds without dereferencing data pointers -
+TEST_F(CgeamArch35Test, ZeroDimNullDataPointers)
+{
+    EXPECT_EQ(
+        aclblasCgeam(
+            CgeamArch35Test::handle_, ACLBLAS_OP_N, ACLBLAS_OP_N, 0, 4, nullptr, nullptr, 1, nullptr, nullptr, 1,
+            nullptr, 1),
+        ACLBLAS_STATUS_SUCCESS);
+}
+
 // -- TEST_F: lda too small when transa=N (host validates) --------------------
 TEST_F(CgeamArch35Test, LdaTooSmallN)
 {
@@ -290,7 +300,8 @@ static std::vector<float> CgeamGenerateInput(const CgeamParam& p, bool isA, int 
     const BlasFillMode& fill = isA ? p.aFill : p.bFill;
     int rows = (trans == ACLBLAS_OP_N) ? p.m : p.n;
     int cols = (trans == ACLBLAS_OP_N) ? p.n : p.m;
-    return makeComplexMatrixCM(rows, cols, ld, fill, p.randomSeed + extraSeed);
+    const int storageLd = std::max(ld, rows);
+    return makeComplexMatrixCM(rows, cols, storageLd, fill, p.randomSeed + extraSeed);
 }
 
 // -- Helper: prepare C buffer (in-place aware, complex) -----------------------
@@ -337,25 +348,41 @@ static void CgeamVerifyOutput(
     const CgeamParam& p, const std::vector<float>& goldenC,
     const std::vector<float>& aHost, const std::vector<float>& bHost, const std::vector<float>& cHost)
 {
-    VerifyConfig cfg;
-    cfg.mode = PrecisionMode::MERE_MARE;
-    cfg.mereThreshold = p.mereThreshold;
-    cfg.mareMultiplier = p.mareMultiplier;
     const float* outPtr = nullptr;
-    size_t outSize = 0;
     if (p.inplace == 1) {
         outPtr = aHost.data();
-        outSize = aHost.size();
     } else if (p.inplace == 2) {
         outPtr = bHost.data();
-        outSize = bHost.size();
     } else {
         outPtr = cHost.data();
-        outSize = cHost.size();
     }
-    if (outSize > 0) {
-        EXPECT_TRUE(Verifier::verifyVector(outPtr, goldenC.data(), outSize, 1, cfg, p.caseName));
+
+    if (outPtr == nullptr || goldenC.empty()) {
+        return;
     }
+
+    const size_t logicalCount = static_cast<size_t>(p.m) * p.n;
+    std::vector<float> outReal(logicalCount);
+    std::vector<float> outImag(logicalCount);
+    std::vector<float> goldReal(logicalCount);
+    std::vector<float> goldImag(logicalCount);
+    for (int col = 0; col < p.n; ++col) {
+        for (int row = 0; row < p.m; ++row) {
+            const size_t logicalIndex = static_cast<size_t>(col) * p.m + row;
+            const size_t storageIndex = (static_cast<size_t>(col) * p.ldc + row) * 2;
+            outReal[logicalIndex] = outPtr[storageIndex];
+            outImag[logicalIndex] = outPtr[storageIndex + 1];
+            goldReal[logicalIndex] = goldenC[storageIndex];
+            goldImag[logicalIndex] = goldenC[storageIndex + 1];
+        }
+    }
+
+    VerifyConfig cfg;
+    applyMixedTolerance(cfg, ACL_FLOAT, goldReal.data(), logicalCount);
+    EXPECT_TRUE(Verifier::verifyVector(
+        outReal.data(), goldReal.data(), logicalCount, 1, cfg, p.caseName + "_real"));
+    EXPECT_TRUE(Verifier::verifyVector(
+        outImag.data(), goldImag.data(), logicalCount, 1, cfg, p.caseName + "_imag"));
 }
 
 // -- TEST_P: 5-step CSV-driven flow -----------------------------------------
@@ -377,7 +404,10 @@ TEST_P(CgeamArch35Test, CsvDriven)
 
     aclblasStatus_t ret = aclblasCgeam_npu(
         CgeamArch35Test::handle_, p.transa, p.transb, p.m, p.n, &alpha, aPtr, p.lda, &beta, bPtr, p.ldb, cPtr, p.ldc);
-    EXPECT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(ret, p.expectResult);
+    if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
+        return;
+    }
 
     CgeamVerifyOutput(p, goldenC, aHost, bHost, cHost);
 }

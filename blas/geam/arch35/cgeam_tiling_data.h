@@ -19,6 +19,17 @@
 #include <cstdint>
 #include "cann_ops_blas_common.h"
 
+namespace CgeamConstants {
+constexpr uint32_t BLOCK_BYTES = 32U;
+// Cache policy counts two input matrices (A, B) and the full working set (A, B, C).
+constexpr uint64_t INPUT_MATRIX_COUNT = 2ULL;
+constexpr uint64_t WORKSET_MATRIX_COUNT = 3ULL;
+// Ascend 950PR L2 capacity, shared by host tiling and device traversal decisions.
+constexpr uint64_t L2_CAPACITY_BYTES = 128ULL * 1024ULL * 1024ULL;
+} // namespace CgeamConstants
+
+enum class CgeamTransposePath : uint32_t { NONE, STANDARD, MERGED };
+
 struct CgeamTilingData {
     uint32_t m;             // Number of rows in output matrix C
     uint32_t n;             // Number of columns in output matrix C
@@ -33,12 +44,20 @@ struct CgeamTilingData {
     aclblasOperation_t opB; // Transpose type for matrix B
     uint32_t ldb;           // Leading dimension of matrix B
     uint32_t ldc;           // Leading dimension of matrix C
-    // 2D multi-core tiling: colBlocks x mBlocks
-    uint32_t colBlocks;      // Number of column blocks
-    uint32_t perCoreN;       // Number of columns processed per core
-    uint32_t remainder;      // Column remainder
-    uint32_t mBlocks;        // Number of row blocks
-    uint32_t perCoreMTile;   // Number of tiles processed per core in m dimension
-    uint32_t mTileRemainder; // Tile count remainder in m dimension
-    uint32_t tileM;          // Tile size in m dimension (number of elements)
+    // Common one-dimensional launch grid.
+    uint32_t blockCount;      // Launched AIV blocks
+    // Contiguous fast path: alpha=1, beta=0/1, compact active inputs and C.
+    uint32_t fastPath;             // Whether the packed-complex flat path is enabled
+    uint32_t fastTileComplex;      // Complex elements processed per UB tile
+    uint64_t fastPerCoreComplex;   // 32-byte-aligned base workload per core
+    uint32_t fastExtraBlockCores;  // Cores receiving one extra 32-byte block
+    uint32_t fastTailComplex;      // Final unaligned complex elements
+    // Tiled transpose path: alpha=1, beta=0/1, compact active inputs and C.
+    CgeamTransposePath transposeTilePath; // Explicit transpose strategy selected by the host
+    uint32_t transposeTileRows;    // Output rows processed by one tile
+    uint32_t transposeTileCols;    // Output columns processed by one tile
+    uint32_t transposeRowTiles;    // Number of tiles along the output-row dimension
+    uint32_t transposeTotalTiles;  // Total number of transpose tiles
+    // Elementwise fallback for arbitrary scalars, leading dimensions, and transpose modes.
+    uint32_t simtThreads;          // Threads launched on each AIV core
 };
