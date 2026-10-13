@@ -8,4 +8,8 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
-ops_blas_add_tests(${OPS_BLAS})
+if("arch35" IN_LIST SOC_ARCH_DIRS)
+    ops_blas_add_gtest_tests(${OPS_BLAS})
+else()
+    ops_blas_add_tests(${OPS_BLAS})
+endif()
