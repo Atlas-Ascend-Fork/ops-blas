@@ -12,15 +12,7 @@
 
 #include <cstdint>
 
-enum class PrecisionMode {
-    ABS,
-    REL,
-    COMBINED,
-    MERE_MARE,
-    EXACT,
-    INTEGER,
-    MIXED_TOLERANCE
-};
+enum class PrecisionMode { ABS, REL, COMBINED, MERE_MARE, EXACT, INTEGER, MIXED_TOLERANCE };
 
 struct VerifyConfig {
     PrecisionMode mode = PrecisionMode::ABS;
@@ -36,4 +28,3 @@ struct VerifyConfig {
     int mixedMantissaBits = 23;
     int mixedEmin = -126;
 };
-

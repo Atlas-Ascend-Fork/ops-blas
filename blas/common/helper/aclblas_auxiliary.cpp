@@ -61,6 +61,10 @@ aclblasStatus_t aclblasDestroy(aclblasHandle_t handle)
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
 
+    if (h->cherk_arch22_metadata != nullptr) {
+        aclrtFree(h->cherk_arch22_metadata);
+        h->cherk_arch22_metadata = nullptr;
+    }
     if (h->cher2k_interleave_offsets != nullptr) {
         aclrtFree(h->cher2k_interleave_offsets);
         h->cher2k_interleave_offsets = nullptr;

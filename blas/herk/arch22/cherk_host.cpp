@@ -8,316 +8,376 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-/*!
- * \file cherk_host.cpp
- * \brief CHERK host implementation for Atlas A2 training series (arch22).
- *
- *        C = alpha * A * A^H + beta * C   (trans = 'N')
- *        C = alpha * A^H * A + beta * C   (trans = 'C')
- *        alpha and beta are real; C is Hermitian and only the uplo triangle is
- *        referenced and updated. All matrices are column-major complex64.
- *
- *        Three-stage pipeline:
- *          Phase 0 (AIV) split   : complex A -> packed real Ar, Ai
- *          Phase 1 (AIC) gemm    : four real GEMMs (t1..t4)
- *          Phase 2 (AIV) combine : Cr = t1 + t2, Ci = t3 - t4, scale, write triangle
- */
-
 #include <algorithm>
 #include <cstdint>
+#include <limits>
+#include <vector>
 
-#include "log/log.h"
 #include "cann_ops_blas.h"
-#include "common/helper/complex_blas3_host_utils.h"
+#include "log/log.h"
 #include "cherk_kernel.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
-#include "common/helper/syrk_host_utils.h"
 
 namespace {
 constexpr const char* OP_TAG = "aclblasCherk";
-constexpr uint32_t CHERK_TEMP_COUNT = 4;             // t1, t2, t3, t4 (trans='C' path)
-constexpr uint32_t CHERK_INTERLEAVED_TEMP_COUNT = 2; // Pr, Pi (trans='N' path)
-constexpr uint32_t CHERK_PACKED_COUNT = 2;           // Ar, Ai
+constexpr uint32_t CUBE_M = CHERK_ARCH22_CUBE_M_ALIGN;
+constexpr uint32_t CUBE_N = 128U;
+constexpr uint32_t DIRECT_TILE = 128U;
+constexpr uint32_t COMPACT_TILE = 128U;
 
-} // namespace
-
-// ============================================================================
-//  Parameter validation
-// ============================================================================
-// Enum legality and leading dimensions. Must run *before* the n == 0 quick
-// return: an illegal uplo/trans is an error regardless of the problem size, which
-// is how reference BLAS, the shared CPU golden and the arch35 implementation all
-// behave. Checking it after the quick return would make aclblasCherk report
-// success for an invalid enum whenever n happens to be 0.
-static aclblasStatus_t ValidateCherkEnumsAndDims(
-    aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, int lda, int ldc)
+void FillInterleaveMetadata(std::vector<uint32_t>& metadata, uint32_t offset, uint32_t count, uint32_t planeElements)
 {
-    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-              OP_LOGE(OP_TAG, "uplo must be ACLBLAS_UPPER(121) or ACLBLAS_LOWER(122), got %d", static_cast<int>(uplo));
-              return ACLBLAS_STATUS_INVALID_ENUM);
-    CHECK_RET(trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_C,
-              OP_LOGE(OP_TAG, "trans must be ACLBLAS_OP_N(111) or ACLBLAS_OP_C(113), got %d", static_cast<int>(trans));
-              return ACLBLAS_STATUS_INVALID_ENUM);
-
-    const int ldaMin = (trans == ACLBLAS_OP_N) ? std::max(1, n) : std::max(1, k);
-    CHECK_RET(lda >= ldaMin,
-              OP_LOGE(OP_TAG, "lda must be >= %d for trans=%d, got %d", ldaMin, static_cast<int>(trans), lda);
-              return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(ldc >= std::max(1, n), OP_LOGE(OP_TAG, "ldc must be >= max(1,n)=%d, got %d", std::max(1, n), ldc);
-              return ACLBLAS_STATUS_INVALID_VALUE);
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-// Pointer checks, run only after the quick return: with n == 0 nothing is read or
-// written, so null pointers are legal there.
-static aclblasStatus_t ValidateCherkPointers(
-    int n, int k, const float* alpha, const aclblasComplex* A, const float* beta, const aclblasComplex* C)
-{
-    CHECK_RET(alpha != nullptr, OP_LOGE(OP_TAG, "alpha must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(beta != nullptr, OP_LOGE(OP_TAG, "beta must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(!(A == nullptr && n > 0 && k > 0), OP_LOGE(OP_TAG, "A must not be nullptr when n>0 and k>0");
-              return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(!(C == nullptr && n > 0), OP_LOGE(OP_TAG, "C must not be nullptr when n>0");
-              return ACLBLAS_STATUS_INVALID_VALUE);
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-// ============================================================================
-//  Launch
-// ============================================================================
-// Phase 0 (split A into Ar / Ai) followed by Phase 1 (the four real GEMMs).
-// Only reached when alpha and k are both non-zero, so the temps are live.
-// trans='N' path: Phase 0 emits two K-interleaved operands, Phase 1 gets both
-// parts of the product out of two GEMMs over the doubled K extent.
-//
-//   P = [ Ai_j , Ar_j ]  interleaved      Q = [ Ar_j , -Ai_j ]  interleaved
-//   Pr = P*P^T = sum_j (Ai_j*Ai_j^T + Ar_j*Ar_j^T)
-//   Pi = P*Q^T = sum_j (Ai_j*Ar_j^T - Ar_j*Ai_j^T)
-//
-// Same MAC count as the four separate GEMMs it replaces (two launches at 2k
-// instead of four at k) and the same workspace (two packed operands of 2k columns
-// plus two temps, against two of k columns plus four temps). What it buys is the
-// accumulation order of Pi: the two signs alternate per input column, so a term
-// and its counterpart cancel while the running sum is still small. Summing them
-// as separate blocks lets each reach the fp32 range limit on its own, and
-// Inf - Inf is NaN — which is what the RANDOM_EXTREME shapes hit.
-static aclblasStatus_t RunCherkInterleavedGemms(
-    void* stream, aclblasFillMode_t uplo, const CBlas3RankKShape& shape, uint32_t lda, const aclblasComplex* A,
-    const CBlas3Workspace& ws, uint32_t aivCoreNum, uint32_t aicCoreNum)
-{
-    CBlas3SplitConcatTilingData split{};
-    split.rows = shape.aRows;
-    split.cols = shape.aCols;
-    split.lda = lda;
-    split.packedLd = shape.aRows;
-    split.blockStride = shape.aRows;    // pair partner is the next column
-    split.colStride = shape.aRows * 2U; // input column j -> destination 2j, 2j+1
-    const uint32_t splitBlocks = GetUsedAivCoreNum(shape.aCols, aivCoreNum);
-    OP_LOGI(
-        OP_TAG, "phase0 split-interleave: rows=%u cols=%u packedLd=%u aivBlocks=%u", split.rows, split.cols,
-        split.packedLd, splitBlocks);
-    cherk_split_interleave_kernel_do(
-        splitBlocks, stream, reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(A)), ws.packed[0], ws.packed[1],
-        split);
-
-    CBlas3GemmTilingData gemm = CBlas3MakeRankKGemmTiling(shape, ws.tempLdc, static_cast<uint32_t>(uplo));
-    gemm.k = shape.k * 2U;          // interleaved K extent
-    gemm.packedLd = split.packedLd; // unchanged: still n-long columns
-    const uint32_t gemmBlocks = std::min(gemm.mBlocks * gemm.nBlocks, aicCoreNum);
-    const uint32_t kChunk = cherk_gemm_single_k();
-    OP_LOGI(
-        OP_TAG, "phase1 gemm(interleaved): n=%u k=%u aicBlocks=%u transMode=%u kChunk=%u", gemm.m, gemm.k, gemmBlocks,
-        shape.transMode, kChunk);
-
-    uint8_t* p = ws.packed[0];
-    uint8_t* q = ws.packed[1];
-    CBlas3LaunchGemmChunked(cherk_gemm_kernel_do, gemmBlocks, stream, p, p, ws.temp[0], gemm, kChunk);
-    CBlas3LaunchGemmChunked(cherk_gemm_kernel_do, gemmBlocks, stream, p, q, ws.temp[1], gemm, kChunk);
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-static aclblasStatus_t RunCherkSplitAndGemms(
-    void* stream, aclblasFillMode_t uplo, aclblasOperation_t trans, const CBlas3RankKShape& shape, uint32_t lda,
-    const aclblasComplex* A, const CBlas3Workspace& ws, uint32_t aivCoreNum)
-{
-    const uint32_t aicCoreNum = GetAicCoreCount();
-    if (aicCoreNum == 0U) {
-        OP_LOGE(OP_TAG, "GetAicCoreCount returned 0");
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    for (uint32_t index = 0U; index < count; ++index) {
+        const uint32_t planar = index >> 1U;
+        const uint32_t plane = (index & 1U) == 0U ? 0U : planeElements;
+        metadata[offset + index] = (plane + planar) * sizeof(float);
     }
-
-    if (trans == ACLBLAS_OP_N) {
-        return RunCherkInterleavedGemms(stream, uplo, shape, lda, A, ws, aivCoreNum, aicCoreNum);
-    }
-
-    CBlas3SplitTilingData split{};
-    split.rows = shape.aRows;
-    split.cols = shape.aCols;
-    split.lda = lda;
-    split.packedLd = shape.aRows;
-    const uint32_t splitBlocks = GetUsedAivCoreNum(shape.aCols, aivCoreNum);
-    OP_LOGI(OP_TAG, "phase0 split: rows=%u cols=%u aivBlocks=%u", split.rows, split.cols, splitBlocks);
-    cherk_split_kernel_do(
-        splitBlocks, stream, reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(A)), ws.packed[0], ws.packed[1],
-        split);
-
-    // Phase 1: four real GEMMs.
-    //   t1 = Ar x Ar^T, t2 = Ai x Ai^T, t3 = Ai x Ar^T, t4 = Ar x Ai^T  (trans='N')
-    //   t1 = Ar^T x Ar, t2 = Ai^T x Ai, t3 = Ar^T x Ai, t4 = Ai^T x Ar  (trans='C')
-    //
-    // t4 equals t3^T, so it could be dropped in favour of reading t3 twice, but
-    // Phase 2 streams C column by column and a transposed read of t3 would
-    // degenerate into per-element gathers. Recomputing t4 on the Cube is cheaper:
-    // each GEMM skips the tiles outside the triangle, so the four launches
-    // together cost 2*n^2*k MACs, which is exactly the arithmetic a triangular
-    // complex rank-k update needs.
-    const CBlas3GemmTilingData gemm = CBlas3MakeRankKGemmTiling(shape, ws.tempLdc, static_cast<uint32_t>(uplo));
-    const uint32_t gemmBlocks = std::min(gemm.mBlocks * gemm.nBlocks, aicCoreNum);
-    const uint32_t kChunk = cherk_gemm_single_k();
-    OP_LOGI(
-        OP_TAG, "phase1 gemm: n=%u k=%u aicBlocks=%u transMode=%u kChunk=%u", shape.n, shape.k, gemmBlocks,
-        shape.transMode, kChunk);
-
-    uint8_t* ar = ws.packed[0];
-    uint8_t* ai = ws.packed[1];
-    auto gemmInto = [&](uint8_t* l, uint8_t* r, uint8_t* out) {
-        CBlas3LaunchGemmChunked(cherk_gemm_kernel_do, gemmBlocks, stream, l, r, out, gemm, kChunk);
-    };
-    gemmInto(ar, ar, ws.temp[0]);
-    gemmInto(ai, ai, ws.temp[1]);
-    if (trans == ACLBLAS_OP_N) {
-        gemmInto(ai, ar, ws.temp[2]);
-        gemmInto(ar, ai, ws.temp[3]);
-    } else {
-        gemmInto(ar, ai, ws.temp[2]);
-        gemmInto(ai, ar, ws.temp[3]);
-    }
-    return ACLBLAS_STATUS_SUCCESS;
 }
 
-// Phase 2: combine the temps, apply alpha / beta and write the uplo triangle of C.
-static void RunCherkCombine(
-    void* stream, aclblasFillMode_t uplo, uint32_t n, uint32_t ldc, aclblasComplex* C, const CBlas3Workspace& ws,
-    bool skipTemp, bool isBetaZero, bool fusedTemps, float alphaVal, float betaVal, uint32_t aivCoreNum)
+void FillTransposeMetadata(
+    std::vector<uint32_t>& metadata, uint32_t offset, uint32_t count, uint32_t rows, uint32_t columnStride)
 {
-    CherkCombineTilingData combine{};
-    combine.n = n;
-    combine.ldc = ldc;
-    combine.tempLdc = ws.tempLdc;
-    combine.uploMode = static_cast<uint32_t>(uplo);
-    combine.skipAlphaTerm = static_cast<uint32_t>(skipTemp ? 1 : 0);
-    combine.isBetaZero = static_cast<uint32_t>(isBetaZero ? 1 : 0);
-    combine.fusedTemps = static_cast<uint32_t>(fusedTemps ? 1 : 0);
-    combine.alphaVal = alphaVal;
-    combine.betaVal = betaVal;
-    const uint32_t combineBlocks = GetUsedAivCoreNum(n, aivCoreNum);
-    OP_LOGI(OP_TAG, "phase2 combine: n=%u aivBlocks=%u fused=%u", n, combineBlocks, combine.fusedTemps);
-    if (fusedTemps) {
-        // temp[0] is the whole real part and temp[1] the whole imaginary part; the
-        // t2 / t4 slots are unused and get the same pointers to keep the launch
-        // signature single-shaped.
-        cherk_combine_kernel_do(
-            combineBlocks, stream, ws.temp[0], ws.temp[0], ws.temp[1], ws.temp[1], reinterpret_cast<uint8_t*>(C),
-            combine);
+    if (rows == 0U) {
         return;
     }
-    // t3 and t4 are deliberately swapped: Phase 2 addresses the temps with a
-    // column-major stride, which transposes them, and t3^T == t4.
-    cherk_combine_kernel_do(
-        combineBlocks, stream, ws.temp[0], ws.temp[1], ws.temp[3], ws.temp[2], reinterpret_cast<uint8_t*>(C), combine);
+    for (uint32_t index = 0U; index < count; ++index) {
+        const uint32_t row = index / rows;
+        const uint32_t column = index % rows;
+        metadata[offset + index] = (column * columnStride + row) * sizeof(float);
+    }
 }
 
-static aclblasStatus_t LaunchCherkKernel(
-    _aclblas_handle* h, aclblasFillMode_t uplo, aclblasOperation_t trans, uint32_t n, uint32_t k, const float* alpha,
-    const aclblasComplex* A, uint32_t lda, const float* beta, aclblasComplex* C, uint32_t ldc)
+void FillTriangleMetadata(std::vector<uint32_t>& metadata)
 {
-    void* stream = h->stream;
-
-    float alphaVal = 0.0F;
-    float betaVal = 0.0F;
-    const aclblasStatus_t readRet = CBlas3ReadScalarsFromDevice(alpha, beta, alphaVal, betaVal, stream, OP_TAG);
-    if (readRet != ACLBLAS_STATUS_SUCCESS) {
-        return readRet;
-    }
-
-    const bool isBetaZero = (betaVal == 0.0F);
-    const bool skipTemp = (alphaVal == 0.0F) || (k == 0U);
-    OP_LOGD(
-        OP_TAG, "alpha=%f beta=%f skipTemp=%d isBetaZero=%d", static_cast<double>(alphaVal),
-        static_cast<double>(betaVal), static_cast<int>(skipTemp), static_cast<int>(isBetaZero));
-
-    // Reference CHERK returns immediately in this case, leaving C - including the
-    // imaginary part of its diagonal - exactly as it was.
-    if (skipTemp && betaVal == 1.0F) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-
-    const CBlas3RankKShape shape = CBlas3ResolveRankKShape(trans != ACLBLAS_OP_N, n, k);
-    // The trans='N' path interleaves along K: two packed operands of twice the
-    // column count, and two temps instead of four. Same total as the four-GEMM
-    // form it replaces, so the workspace ceiling is unchanged.
-    const bool interleaved = (trans == ACLBLAS_OP_N);
-    CBlas3RankKShape packedShape = shape;
-    if (interleaved) {
-        packedShape.aCols = shape.aCols * 2U;
-    }
-    const uint32_t tempCount = interleaved ? CHERK_INTERLEAVED_TEMP_COUNT : CHERK_TEMP_COUNT;
-    CBlas3Workspace ws{};
-    const aclblasStatus_t wsRet =
-        CBlas3PrepareWorkspace(h, packedShape, tempCount, CHERK_PACKED_COUNT, skipTemp, ws, OP_TAG);
-    if (wsRet != ACLBLAS_STATUS_SUCCESS) {
-        return wsRet;
-    }
-
-    const uint32_t aivCoreNum = GetAivCoreCount();
-    if (aivCoreNum == 0U) {
-        OP_LOGE(OP_TAG, "GetAivCoreCount returned 0");
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-
-    if (!skipTemp) {
-        const aclblasStatus_t gemmRet = RunCherkSplitAndGemms(stream, uplo, trans, shape, lda, A, ws, aivCoreNum);
-        if (gemmRet != ACLBLAS_STATUS_SUCCESS) {
-            return gemmRet;
+    auto* diagonal = reinterpret_cast<uint8_t*>(metadata.data() + CHERK_ARCH22_META_DIAGONAL_OFFSET);
+    auto* upperTriangle = reinterpret_cast<uint8_t*>(metadata.data() + CHERK_ARCH22_META_UPPER_OFFSET);
+    auto* lowerTriangle = reinterpret_cast<uint8_t*>(metadata.data() + CHERK_ARCH22_META_LOWER_OFFSET);
+    for (uint32_t row = 0U; row < 64U; ++row) {
+        for (uint32_t column = 0U; column < 64U; ++column) {
+            const uint32_t index = row * 64U + column;
+            const uint8_t bit = static_cast<uint8_t>(1U << (index & 7U));
+            if (row == column) {
+                diagonal[index >> 3U] |= bit;
+            }
+            if (row <= column) {
+                upperTriangle[index >> 3U] |= bit;
+            }
+            if (row >= column) {
+                lowerTriangle[index >> 3U] |= bit;
+            }
         }
     }
+}
 
-    RunCherkCombine(stream, uplo, n, ldc, C, ws, skipTemp, isBetaZero, interleaved, alphaVal, betaVal, aivCoreNum);
+GM_ADDR UploadCherkMetadata(_aclblas_handle* handle, const std::vector<uint32_t>& metadata)
+{
+    void* deviceMetadata = nullptr;
+    const size_t bytes = metadata.size() * sizeof(uint32_t);
+    aclError ret = aclrtMalloc(&deviceMetadata, bytes, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (ret != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "failed to allocate persistent arch22 metadata");
+        return nullptr;
+    }
+    ret = aclrtMemcpy(deviceMetadata, bytes, metadata.data(), bytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (ret != ACL_SUCCESS) {
+        aclrtFree(deviceMetadata);
+        OP_LOGE(OP_TAG, "failed to upload persistent arch22 metadata");
+        return nullptr;
+    }
+    handle->cherk_arch22_metadata = deviceMetadata;
+    return reinterpret_cast<GM_ADDR>(deviceMetadata);
+}
+
+GM_ADDR GetCherkArch22Metadata(_aclblas_handle* handle)
+{
+    if (handle->cherk_arch22_metadata != nullptr) {
+        return reinterpret_cast<GM_ADDR>(handle->cherk_arch22_metadata);
+    }
+    std::vector<uint32_t> metadata(CHERK_ARCH22_META_WORDS, 0U);
+    FillInterleaveMetadata(
+        metadata, CHERK_ARCH22_META_INTERLEAVE_OFFSET, CHERK_ARCH22_META_INTERLEAVE_COUNT, 64U * 64U);
+    FillTransposeMetadata(metadata, CHERK_ARCH22_META_TRANSPOSE_OFFSET, CHERK_ARCH22_META_TRANSPOSE_COUNT, 64U, 64U);
+    FillTransposeMetadata(metadata, CHERK_ARCH22_META_PACK_C_OFFSET, CHERK_ARCH22_META_PACK_C_COUNT, 64U, 32U);
+    FillTransposeMetadata(metadata, CHERK_ARCH22_META_PACK_C128_OFFSET, CHERK_ARCH22_META_PACK_C128_COUNT, 128U, 32U);
+    FillTransposeMetadata(metadata, CHERK_ARCH22_META_TINY8_TRANSPOSE_OFFSET, 8U * 8U, 8U, 8U);
+    FillTransposeMetadata(metadata, CHERK_ARCH22_META_TINY16_TRANSPOSE_OFFSET, 16U * 16U, 16U, 16U);
+    FillTransposeMetadata(metadata, CHERK_ARCH22_META_TINY_TRANSPOSE_OFFSET, 32U * 32U, 32U, 32U);
+    FillInterleaveMetadata(
+        metadata, CHERK_ARCH22_META_TINY_INTERLEAVE_OFFSET, CHERK_ARCH22_META_TINY_INTERLEAVE_COUNT, 32U);
+    FillInterleaveMetadata(
+        metadata, CHERK_ARCH22_META_TINY64_INTERLEAVE_OFFSET, CHERK_ARCH22_META_TINY64_INTERLEAVE_COUNT, 64U);
+    FillInterleaveMetadata(
+        metadata, CHERK_ARCH22_META_OUTER_K2_INTERLEAVE_OFFSET, CHERK_ARCH22_META_OUTER_K2_INTERLEAVE_COUNT, 128U * 8U);
+    FillTriangleMetadata(metadata);
+    return UploadCherkMetadata(handle, metadata);
+}
+
+aclblasStatus_t ValidateEnums(aclblasFillMode_t uplo, aclblasOperation_t trans)
+{
+    if (uplo != ACLBLAS_UPPER && uplo != ACLBLAS_LOWER) {
+        OP_LOGE(OP_TAG, "ValidateEnums: invalid uplo enum: %d", static_cast<int>(uplo));
+        return ACLBLAS_STATUS_INVALID_ENUM;
+    }
+    if (trans == ACLBLAS_OP_T) {
+        OP_LOGE(OP_TAG, "ValidateEnums: OP_T is valid but unsupported by CHERK");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (trans != ACLBLAS_OP_N && trans != ACLBLAS_OP_C) {
+        OP_LOGE(OP_TAG, "ValidateEnums: invalid trans enum: %d", static_cast<int>(trans));
+        return ACLBLAS_STATUS_INVALID_ENUM;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-// ============================================================================
-//  Public API entry
-// ============================================================================
+aclblasStatus_t ValidateValues(
+    aclblasOperation_t trans, int n, int k, const float* alpha, const aclblasComplex* a, int lda, const float* beta,
+    const aclblasComplex* c, int ldc)
+{
+    if (n < 0 || k < 0) {
+        OP_LOGE(OP_TAG, "ValidateValues: invalid n=%d or k=%d", n, k);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (alpha == nullptr || beta == nullptr) {
+        OP_LOGE(OP_TAG, "ValidateValues: alpha and beta must not be nullptr");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    const int minLda = trans == ACLBLAS_OP_N ? std::max(1, n) : std::max(1, k);
+    if (lda < minLda) {
+        OP_LOGE(OP_TAG, "ValidateValues: invalid lda=%d, expected >= %d", lda, minLda);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    const int minLdc = std::max(1, n);
+    if (ldc < minLdc) {
+        OP_LOGE(OP_TAG, "ValidateValues: invalid ldc=%d, expected >= %d", ldc, minLdc);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (a == nullptr && n > 0 && k > 0) {
+        OP_LOGE(OP_TAG, "ValidateValues: A must not be nullptr when n=%d and k=%d", n, k);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (c == nullptr && n > 0) {
+        OP_LOGE(OP_TAG, "ValidateValues: C must not be nullptr when n=%d", n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+bool WorkspaceSizeIsSafe(uint32_t n, uint32_t k, bool directPath, bool compactPath)
+{
+    const uint64_t nAlign = directPath || compactPath ? DIRECT_TILE : CHERK_ARCH22_CUBE_M_ALIGN;
+    const uint64_t cubeN = (static_cast<uint64_t>(n) + nAlign - 1U) / nAlign * nAlign;
+    const uint64_t cubeK = (static_cast<uint64_t>(k) + CHERK_ARCH22_CUBE_K_ALIGN - 1U) / CHERK_ARCH22_CUBE_K_ALIGN *
+                           CHERK_ARCH22_CUBE_K_ALIGN;
+    const uint64_t nk = cubeN * cubeK;
+    const uint64_t nn = cubeN * cubeN;
+    constexpr uint64_t maxFloats = static_cast<uint64_t>(std::numeric_limits<size_t>::max()) / sizeof(float);
+    const uint64_t inputPlanes = directPath ? 3U : 2U;
+    return nk <= maxFloats / inputPlanes && nn <= (maxFloats - inputPlanes * nk) / 2U;
+}
+
+struct CherkPathSelection {
+    bool directPath;
+    bool compactPath;
+    bool tinyVector;
+    bool tinyTranspose;
+    bool tiny1Direct;
+    bool square64Mix;
+    bool square128Mix;
+    bool outerK2;
+};
+
+void ConfigureCherkCoreCounts(CherkArch22TilingData& tiling, uint32_t n, uint32_t aivCores, uint32_t aicCores)
+{
+    tiling.aivCoreNum = std::max<uint32_t>(1U, std::min<uint32_t>(aivCores, n));
+    if (tiling.smallPath == 2U || tiling.outerPath != 0U) {
+        tiling.aivCoreNum = std::max<uint32_t>(1U, std::min<uint32_t>(aivCores, (n + 7U) / 8U));
+    }
+    const bool fusedLowKMix = tiling.directPath != 0U && tiling.cubeK == 64U && (n < 512U || n >= 2048U);
+    const bool stridedLowKPostPackMix = tiling.directPath != 0U && tiling.cubeK == 64U && n > 1024U && n < 2048U;
+    const bool stridedPostPackMix =
+        stridedLowKPostPackMix || (tiling.directPath != 0U && tiling.cubeK > 64U && tiling.cubeK <= 192U && n >= 2048U);
+    tiling.directMixMode = fusedLowKMix ? 1U : (stridedPostPackMix ? 3U : 0U);
+    const uint64_t tileAxis = static_cast<uint64_t>(tiling.cubeN) / DIRECT_TILE;
+    const uint64_t tileCount =
+        tiling.directPath != 0U ?
+            tileAxis * (tileAxis + 1ULL) / 2ULL :
+            static_cast<uint64_t>(tiling.cubeN / (tiling.compactPath != 0U ? COMPACT_TILE : CUBE_M)) *
+                (tiling.cubeN / CUBE_N);
+    const uint64_t compactAxis = tiling.compactPath != 0U ? static_cast<uint64_t>(tiling.cubeN / COMPACT_TILE) : 0ULL;
+    const uint64_t compactRealJobs = compactAxis * (compactAxis + 1ULL) / 2ULL;
+    const uint64_t schedulerJobs = tiling.compactPath != 0U ? tileCount + compactRealJobs : tileCount;
+    tiling.aicCoreNum = std::max<uint32_t>(
+        1U, static_cast<uint32_t>(std::min<uint64_t>(aicCores, std::max<uint64_t>(schedulerJobs, 1U))));
+    if (tiling.directMixMode == 1U) {
+        const uint64_t workUnits = 2ULL * tileCount;
+        while (tiling.aicCoreNum > 1U && workUnits % (2ULL * tiling.aicCoreNum) != 0ULL) {
+            --tiling.aicCoreNum;
+        }
+    }
+}
+
+uint8_t SelectCherkSmallPath(const CherkPathSelection& paths, uint32_t n, uint32_t k)
+{
+    if (paths.tiny1Direct) {
+        return 6U;
+    }
+    if (n <= 4U && k <= 4U) {
+        return 1U;
+    }
+    if (paths.tinyVector) {
+        return 2U;
+    }
+    if (paths.tinyTranspose) {
+        return 7U;
+    }
+    if (paths.square64Mix) {
+        return 3U;
+    }
+    return paths.square128Mix ? 5U : 0U;
+}
+
+bool CherkNeedsNoWorkspace(const CherkArch22TilingData& tiling)
+{
+    return tiling.skipProduct != 0U || tiling.smallPath == 1U || tiling.smallPath == 2U || tiling.smallPath == 4U ||
+           tiling.smallPath == 6U || tiling.smallPath == 7U || tiling.outerPath != 0U;
+}
+
+aclblasStatus_t InitializeCherkTiling(
+    CherkArch22TilingData& tiling, aclblasFillMode_t uplo, aclblasOperation_t trans, uint32_t n, uint32_t k,
+    uint32_t lda, uint32_t ldc, const CherkPathSelection& paths)
+{
+    tiling = {};
+    tiling.n = n;
+    tiling.k = k;
+    tiling.lda = lda;
+    tiling.ldc = ldc;
+    tiling.directPath = static_cast<uint8_t>(paths.directPath);
+    tiling.compactPath = static_cast<uint8_t>(paths.compactPath);
+    const uint32_t nAlign =
+        tiling.directPath != 0U || tiling.compactPath != 0U ? COMPACT_TILE : CHERK_ARCH22_CUBE_M_ALIGN;
+    tiling.cubeN = (n + nAlign - 1U) / nAlign * nAlign;
+    tiling.cubeK = (k + CHERK_ARCH22_CUBE_K_ALIGN - 1U) / CHERK_ARCH22_CUBE_K_ALIGN * CHERK_ARCH22_CUBE_K_ALIGN;
+    tiling.trans = static_cast<uint32_t>(trans);
+    tiling.uplo = static_cast<uint32_t>(uplo);
+    tiling.skipProduct = static_cast<uint8_t>(k == 0U);
+    tiling.outerPath = static_cast<uint8_t>(paths.outerK2);
+    tiling.smallPath = SelectCherkSmallPath(paths, n, k);
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+void ConfigureCherkPackRows(CherkArch22TilingData& tiling)
+{
+    uint64_t ubBytes = 192ULL * 1024ULL;
+    auto* platform = platform_ascendc::PlatformAscendCManager::GetInstance();
+    if (platform != nullptr) {
+        platform->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubBytes);
+    }
+    constexpr uint64_t packUbSafetyBytes = 256ULL;
+    const uint64_t packBytesPerRow = static_cast<uint64_t>(tiling.cubeN) * 5ULL * sizeof(float);
+    const uint64_t packRowsByUb =
+        ubBytes > packUbSafetyBytes && packBytesPerRow != 0ULL ? (ubBytes - packUbSafetyBytes) / packBytesPerRow : 1ULL;
+    tiling.directPackBatchRows = static_cast<uint8_t>(
+        packRowsByUb >= 8ULL ? 8U : (packRowsByUb >= 4ULL ? 4U : (packRowsByUb >= 2ULL ? 2U : 1U)));
+}
+
+aclblasStatus_t FinalizeCherkTiling(
+    _aclblas_handle* handle, uint32_t n, uint32_t k, CherkArch22TilingData& tiling, uint32_t aivCores,
+    uint32_t aicCores)
+{
+    ConfigureCherkPackRows(tiling);
+    ConfigureCherkCoreCounts(tiling, n, aivCores, aicCores);
+    if (CherkNeedsNoWorkspace(tiling)) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (!WorkspaceSizeIsSafe(n, k, tiling.directPath != 0U, tiling.compactPath != 0U)) {
+        OP_LOGE(OP_TAG, "FinalizeCherkTiling: workspace size overflow for n=%u, k=%u", n, k);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    const size_t workspaceBytes = tiling.directPath != 0U ?
+                                      CherkArch22DirectWorkspaceBytes(tiling.cubeN, tiling.cubeK) :
+                                      CherkArch22WorkspaceBytes(tiling.cubeN, tiling.cubeK);
+    return EnsureDefaultWorkspace(handle, workspaceBytes);
+}
+
+CherkPathSelection SelectCherkPaths(aclblasFillMode_t uplo, aclblasOperation_t trans, uint32_t n, uint32_t k)
+{
+    const bool compactFamily = n >= 128U && n < 768U && k > 64U;
+    const bool directFamily = !compactFamily && n >= 64U && (n <= 512U || k <= 300U);
+    const bool directN = trans == ACLBLAS_OP_N && k != 0U && directFamily;
+    const bool directC = trans == ACLBLAS_OP_C && k != 0U && directFamily && !(n < 300U && k > 3500U);
+    return {
+        directN || directC,
+        compactFamily && !(directN || directC),
+        // Fixed-size-only kernels do not define a general tail contract.
+        // Use the generic small/direct/compact paths for these inputs.
+        false,
+        false,
+        false,
+        false,
+        false,
+        uplo == ACLBLAS_UPPER && trans == ACLBLAS_OP_N && CherkArch22OuterGeometry(n, k),
+    };
+}
+
+aclblasStatus_t PrepareTiling(
+    _aclblas_handle* handle, aclblasFillMode_t uplo, aclblasOperation_t trans, uint32_t n, uint32_t k, uint32_t lda,
+    uint32_t ldc, CherkArch22TilingData& tiling)
+{
+    const uint32_t aivCores = GetAivCoreCount();
+    const uint32_t aicCores = GetAicCoreCount();
+    if (aivCores == 0U || aicCores == 0U) {
+        OP_LOGE(OP_TAG, "PrepareTiling: failed to query AIV/AIC core count");
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+
+    const CherkPathSelection paths = SelectCherkPaths(uplo, trans, n, k);
+    InitializeCherkTiling(tiling, uplo, trans, n, k, lda, ldc, paths);
+    return FinalizeCherkTiling(handle, n, k, tiling, aivCores, aicCores);
+}
+} // namespace
+
 extern "C" aclblasStatus_t aclblasCherk(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const float* alpha,
-    const aclblasComplex* A, int lda, const float* beta, aclblasComplex* C, int ldc)
+    const aclblasComplex* a, int lda, const float* beta, aclblasComplex* c, int ldc)
 {
     if (handle == nullptr) {
-        OP_LOGE(OP_TAG, "handle is nullptr");
+        OP_LOGE(OP_TAG, "aclblasCherk: handle must not be nullptr");
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
-    CHECK_RET(n >= 0, OP_LOGE(OP_TAG, "n must be >= 0, got %d", n); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(k >= 0, OP_LOGE(OP_TAG, "k must be >= 0, got %d", k); return ACLBLAS_STATUS_INVALID_VALUE);
-
-    const aclblasStatus_t enumSt = ValidateCherkEnumsAndDims(uplo, trans, n, k, lda, ldc);
-    if (enumSt != ACLBLAS_STATUS_SUCCESS) {
-        return enumSt;
+    aclblasStatus_t status = ValidateEnums(uplo, trans);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
     }
-
-    // Quick return only after the enum/dimension checks; see the comment on
-    // ValidateCherkEnumsAndDims.
+    status = ValidateValues(trans, n, k, alpha, a, lda, beta, c, ldc);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
     if (n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }
 
-    const aclblasStatus_t ptrSt = ValidateCherkPointers(n, k, alpha, A, beta, C);
-    if (ptrSt != ACLBLAS_STATUS_SUCCESS) {
-        return ptrSt;
+    auto* internalHandle = static_cast<_aclblas_handle*>(handle);
+    CherkArch22TilingData tiling{};
+    status = PrepareTiling(
+        internalHandle, uplo, trans, static_cast<uint32_t>(n), static_cast<uint32_t>(k), static_cast<uint32_t>(lda),
+        static_cast<uint32_t>(ldc), tiling);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
     }
 
-    return LaunchCherkKernel(
-        static_cast<_aclblas_handle*>(handle), uplo, trans, static_cast<uint32_t>(n), static_cast<uint32_t>(k), alpha,
-        A, static_cast<uint32_t>(lda), beta, C, static_cast<uint32_t>(ldc));
+    void* workspace = GetEffectiveWorkspace(internalHandle);
+    GM_ADDR metadata = nullptr;
+    if (tiling.smallPath != 1U) {
+        metadata = GetCherkArch22Metadata(internalHandle);
+        if (metadata == nullptr) {
+            OP_LOGE(OP_TAG, "aclblasCherk: failed to prepare persistent arch22 metadata");
+            return ACLBLAS_STATUS_ALLOC_FAILED;
+        }
+    }
+    cherk_arch22_kernel_do(
+        reinterpret_cast<GM_ADDR>(const_cast<float*>(alpha)), reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(a)),
+        reinterpret_cast<GM_ADDR>(const_cast<float*>(beta)), reinterpret_cast<GM_ADDR>(c),
+        reinterpret_cast<GM_ADDR>(workspace), metadata, tiling, internalHandle->stream);
+    return ACLBLAS_STATUS_SUCCESS;
 }

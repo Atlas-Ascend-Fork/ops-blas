@@ -8,16 +8,14 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef CHERK_NPU_WRAPPER_H
-#define CHERK_NPU_WRAPPER_H
+#pragma once
 
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <thread>
 
-#include "acl/acl.h"
-#include "cann_ops_blas.h"
+#include "../cherk_npu_common.h"
 
 // Repeat-window target for performance measurement. Sizing the window by a
 // probe keeps short shapes from being dominated by launch jitter while long
@@ -27,75 +25,6 @@ constexpr int kCherkPerfMaxIters = 2000;
 // The Cube clock drops under sustained load, so an idle gap precedes the timed
 // window to keep back-to-back cases from measuring a throttled frequency.
 constexpr int kCherkPerfCooldownMs = 300;
-
-struct CherkDeviceBuffers {
-    void* dAlpha = nullptr;
-    void* dA = nullptr;
-    void* dBeta = nullptr;
-    void* dC = nullptr;
-
-    ~CherkDeviceBuffers()
-    {
-        if (dAlpha != nullptr) {
-            aclrtFree(dAlpha);
-        }
-        if (dA != nullptr) {
-            aclrtFree(dA);
-        }
-        if (dBeta != nullptr) {
-            aclrtFree(dBeta);
-        }
-        if (dC != nullptr) {
-            aclrtFree(dC);
-        }
-    }
-};
-
-static aclblasStatus_t CherkAllocAndCopy(void*& devPtr, const void* hostPtr, size_t bytes)
-{
-    aclError aclRet = aclrtMalloc(&devPtr, bytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        devPtr = nullptr;
-        return ACLBLAS_STATUS_ALLOC_FAILED;
-    }
-    aclRet = aclrtMemcpy(devPtr, bytes, hostPtr, bytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-// Allocate+copy only when hostPtr is non-null and bytes > 0; leaves devPtr
-// null otherwise so the caller can pass nullptr straight through to the API
-// (this is how the null_alpha / nullA / nullC cases reach the operator).
-static aclblasStatus_t CherkTryAllocAndCopy(const void* hostPtr, size_t bytes, void*& devPtr)
-{
-    if (hostPtr == nullptr || bytes == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-    return CherkAllocAndCopy(devPtr, hostPtr, bytes);
-}
-
-// Stages alpha / A / beta / C onto the device. A null host pointer leaves the
-// matching device pointer null, which the caller forwards as-is.
-static aclblasStatus_t CherkUploadInputs(
-    const float* effAlpha, const aclblasComplex* A, const float* beta, const aclblasComplex* C, size_t scalarBytes,
-    size_t aBytes, size_t cBytes, CherkDeviceBuffers& bufs)
-{
-    aclblasStatus_t st = CherkTryAllocAndCopy(effAlpha, scalarBytes, bufs.dAlpha);
-    if (st != ACLBLAS_STATUS_SUCCESS) {
-        return st;
-    }
-    st = CherkTryAllocAndCopy(A, aBytes, bufs.dA);
-    if (st != ACLBLAS_STATUS_SUCCESS) {
-        return st;
-    }
-    st = CherkTryAllocAndCopy(beta, scalarBytes, bufs.dBeta);
-    if (st != ACLBLAS_STATUS_SUCCESS) {
-        return st;
-    }
-    return CherkTryAllocAndCopy(C, cBytes, bufs.dC);
-}
 
 // Times a repeat window: one probe call sizes the window, then the average over
 // `iters` back-to-back calls is reported. A cooldown precedes both so a throttled
@@ -169,17 +98,6 @@ static aclblasStatus_t CherkRunAndTime(RunFn&& runOnce, bool perfMode, double& m
     return ret;
 }
 
-// Copies C back to the host. A null host or device pointer means the case never
-// staged C, so there is nothing to retrieve.
-static aclblasStatus_t CherkDownloadResult(aclblasComplex* C, const void* dC, size_t cBytes)
-{
-    if (C == nullptr || dC == nullptr) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-    const aclError aclRet = aclrtMemcpy(C, cBytes, dC, cBytes, ACL_MEMCPY_DEVICE_TO_HOST);
-    return (aclRet == ACL_SUCCESS) ? ACLBLAS_STATUS_SUCCESS : ACLBLAS_STATUS_INTERNAL_ERROR;
-}
-
 // NPU wrapper for aclblasCherk. Mirrors aclblasSsyrk_npu with complex-specific
 // element sizes (aclblasComplex = 8 bytes). When handle is null or n<=0 it
 // forwards directly so the operator's own validation paths are exercised.
@@ -210,23 +128,16 @@ inline aclblasStatus_t aclblasCherk_npu(
         return aclblasCherk(handle, uplo, trans, n, k, (nullAlpha ? nullptr : alpha), A, lda, beta, C, ldc);
     }
 
-    const int aCols = (trans == ACLBLAS_OP_N) ? k : n;
-    const size_t aBytes = static_cast<size_t>(lda) * static_cast<size_t>(aCols) * sizeof(aclblasComplex);
-    const size_t cBytes = static_cast<size_t>(ldc) * static_cast<size_t>(n) * sizeof(aclblasComplex);
-    constexpr size_t scalarBytes = sizeof(float);
-
-    // When nullAlpha is set, force the alpha pointer seen by the API to null.
-    const float* effAlpha = nullAlpha ? nullptr : alpha;
-
+    const CherkInputLayout inputs = CherkDescribeInputs(trans, n, k, lda, ldc, alpha, nullAlpha);
     CherkDeviceBuffers bufs;
-    const aclblasStatus_t upRet = CherkUploadInputs(effAlpha, A, beta, C, scalarBytes, aBytes, cBytes, bufs);
+    const aclblasStatus_t upRet = CherkUploadInputs(inputs, A, beta, C, bufs);
     if (upRet != ACLBLAS_STATUS_SUCCESS) {
         return upRet;
     }
 
     const auto runOnce = [&]() {
         return aclblasCherk(
-            handle, uplo, trans, n, k, bufs.dAlpha ? static_cast<const float*>(bufs.dAlpha) : effAlpha,
+            handle, uplo, trans, n, k, bufs.dAlpha ? static_cast<const float*>(bufs.dAlpha) : inputs.alpha,
             bufs.dA ? static_cast<const aclblasComplex*>(bufs.dA) : A, lda,
             bufs.dBeta ? static_cast<const float*>(bufs.dBeta) : beta,
             bufs.dC ? static_cast<aclblasComplex*>(bufs.dC) : C, ldc);
@@ -245,11 +156,9 @@ inline aclblasStatus_t aclblasCherk_npu(
         *perfIters = iters;
     }
 
-    const aclblasStatus_t downRet = CherkDownloadResult(C, bufs.dC, cBytes);
+    const aclblasStatus_t downRet = CherkDownloadResult(C, bufs.dC, inputs.cBytes);
     if (downRet != ACLBLAS_STATUS_SUCCESS) {
         return downRet;
     }
     return ret;
 }
-
-#endif // CHERK_NPU_WRAPPER_H

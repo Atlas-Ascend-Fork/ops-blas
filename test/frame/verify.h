@@ -11,6 +11,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
@@ -42,6 +43,41 @@ public:
             processElement(outVal, goldVal);
         }
 
+        return reportResult(count, skippedCount, caseId);
+    }
+
+    // Verify values supplied by a caller-owned traversal without materializing
+    // a second output/golden array. The visitor receives a consumer callback
+    // and must invoke it once for each element represented by `count`.
+    template <typename Visit>
+    bool verifyEach(Visit visit, size_t count, const std::string& caseId)
+    {
+        constexpr size_t kMaxPrint = 10;
+        std::array<float, kMaxPrint> outputPreview{};
+        std::array<float, kMaxPrint> goldenPreview{};
+        size_t visited = 0;
+        size_t skippedCount = 0;
+        auto consume = [&](float outVal, float goldVal) {
+            if (visited < kMaxPrint) {
+                outputPreview[visited] = outVal;
+                goldenPreview[visited] = goldVal;
+            }
+            ++visited;
+            if (shouldSkip(outVal, goldVal)) {
+                ++skippedCount;
+                return;
+            }
+            processElement(outVal, goldVal);
+        };
+        visit(consume);
+
+        printHead(outputPreview.data(), visited, 1, "Output", caseId);
+        printHead(goldenPreview.data(), visited, 1, "Golden", caseId);
+        if (visited != count) {
+            std::cout << "[" << caseId << "] FAILED (visitor produced " << visited << "/" << count << " elements)"
+                      << std::endl;
+            return false;
+        }
         return reportResult(count, skippedCount, caseId);
     }
 
@@ -177,8 +213,7 @@ protected:
             skippedNearZero_++;
             return;
         }
-        double relErr = std::abs(static_cast<double>(outVal) - static_cast<double>(goldVal)) /
-                        (absGold + kEpsilon);
+        double relErr = std::abs(static_cast<double>(outVal) - static_cast<double>(goldVal)) / (absGold + kEpsilon);
         sumRelErr_ += relErr;
         if (relErr > maxRelErr_)
             maxRelErr_ = relErr;
@@ -216,9 +251,9 @@ private:
     double sumRelErr_ = 0.0;
     double maxRelErr_ = 0.0;
     size_t outlierCount_ = 0;
-    size_t mismatchCount_ = 0; // INF/NaN-related special-value mismatches
+    size_t mismatchCount_ = 0;   // INF/NaN-related special-value mismatches
     size_t skippedNearZero_ = 0; // elements skipped because |golden| < threshold
-    size_t validCount_ = 0;    // elements contributing to MERE/MARE statistics
+    size_t validCount_ = 0;      // elements contributing to MERE/MARE statistics
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -248,12 +283,18 @@ struct MixedToleranceDefaults {
 inline MixedToleranceDefaults getMixedToleranceDefaults(aclDataType dtype)
 {
     switch (dtype) {
-        case ACL_FLOAT16:       return {0.001953125, 0.001953125, 1e-1, 10, -14};
-        case ACL_BF16:          return {0.015625, 0.015625, 1.0, 7, -126};
-        case ACL_FLOAT:         return {0.0009765625, 1.52587890625e-5, 1e-2, 23, -126};
-        case ACL_FLOAT8_E4M3FN: return {0.25, 0.0625, 1.0, 3, -6};
-        case ACL_FLOAT8_E5M2:   return {0.5, 0.125, 1e-1, 2, -14};
-        default:                return {0.001953125, 0.001953125, 1e-1, 10, -14};
+        case ACL_FLOAT16:
+            return {0.001953125, 0.001953125, 1e-1, 10, -14};
+        case ACL_BF16:
+            return {0.015625, 0.015625, 1.0, 7, -126};
+        case ACL_FLOAT:
+            return {0.0009765625, 1.52587890625e-5, 1e-2, 23, -126};
+        case ACL_FLOAT8_E4M3FN:
+            return {0.25, 0.0625, 1.0, 3, -6};
+        case ACL_FLOAT8_E5M2:
+            return {0.5, 0.125, 1e-1, 2, -14};
+        default:
+            return {0.001953125, 0.001953125, 1e-1, 10, -14};
     }
 }
 
@@ -268,8 +309,7 @@ inline void applyMixedToleranceInternal(VerifyConfig& cfg, const MixedToleranceD
 }
 
 // Vector 场景：raw fixed 存入 cfg，per-element ulpLimit = max(fixed, 32*ULP_at_|gold|) 在 processElement 内逐元素算
-inline void applyMixedTolerance(VerifyConfig& cfg, aclDataType dtype,
-                                const float* goldenData, size_t count)
+inline void applyMixedTolerance(VerifyConfig& cfg, aclDataType dtype, const float* goldenData, size_t count)
 {
     auto d = getMixedToleranceDefaults(dtype);
     applyMixedToleranceInternal(cfg, d);
@@ -289,13 +329,24 @@ inline void applyMixedTolerance(VerifyConfig& cfg, aclDataType dtype, float gold
 
 class MixedToleranceStrategy : public PrecisionStrategy {
 public:
-    MixedToleranceStrategy(double absTol, double relTol, double requiredMatchedRatio,
-                           double fixedLimit, int mantissaBits, int emin)
-        : absTol_(absTol), relTol_(relTol), requiredMatchedRatio_(requiredMatchedRatio),
-          fixedLimit_(fixedLimit), mantissaBits_(mantissaBits), emin_(emin)
+    MixedToleranceStrategy(
+        double absTol, double relTol, double requiredMatchedRatio, double fixedLimit, int mantissaBits, int emin)
+        : absTol_(absTol),
+          relTol_(relTol),
+          requiredMatchedRatio_(requiredMatchedRatio),
+          fixedLimit_(fixedLimit),
+          mantissaBits_(mantissaBits),
+          emin_(emin)
     {}
 
 protected:
+    // Mixed tolerance accepts matching NaNs and equal infinities, but must
+    // reject opposite-sign infinities rather than skip them as a pair.
+    bool shouldSkip(float outVal, float goldVal) override
+    {
+        return outVal == goldVal || (std::isnan(outVal) && std::isnan(goldVal));
+    }
+
     void processElement(float outVal, float goldVal) override
     {
         if (std::isnan(outVal) || std::isnan(goldVal) || std::isinf(outVal) || std::isinf(goldVal)) {
@@ -324,10 +375,10 @@ protected:
         bool pass = ratioOk && errorLimitOk;
 
         std::cout << std::scientific << std::setprecision(4);
-        std::cout << "[" << caseId << "] " << (pass ? "PASSED" : "FAILED")
-                  << " (matchedRatio=" << matchedRatio << " (req=" << requiredMatchedRatio_ << ")"
-                  << ", maxAbsErr=" << maxAbsError_
-                  << ", per-element-limit=max(" << fixedLimit_ << ", 32*ULP_at_each_element)"
+        std::cout << "[" << caseId << "] " << (pass ? "PASSED" : "FAILED") << " (matchedRatio=" << matchedRatio
+                  << " (req=" << requiredMatchedRatio_ << ")"
+                  << ", maxAbsErr=" << maxAbsError_ << ", per-element-limit=max(" << fixedLimit_
+                  << ", 32*ULP_at_each_element)"
                   << ", " << failCount_ << "/" << count << " failures"
                   << ", atol=" << absTol_ << ", rtol=" << relTol_ << ")" << std::endl;
         std::cout << std::fixed << std::setprecision(6);
@@ -394,6 +445,13 @@ public:
         return strategy->verify(output, golden, count, stride, caseId);
     }
 
+    template <typename Visit>
+    static bool verifyEach(Visit visit, size_t count, const VerifyConfig& cfg, const std::string& caseId)
+    {
+        auto strategy = createStrategy(cfg);
+        return strategy->verifyEach(visit, count, caseId);
+    }
+
     static bool verifyScalar(float output, float golden, const VerifyConfig& cfg, const std::string& caseId)
     {
         std::cout << "[" << caseId << "] Output: " << output << std::endl;
@@ -421,9 +479,9 @@ public:
                     pass = false;
                 } else {
                     double tolLimit = cfg.mixedAtol + cfg.mixedRtol * std::abs(static_cast<double>(golden));
-                    double ulpLimit = std::max(cfg.mixedMaxAbsErrorLimit,
-                                               32.0 * getUlpsAt(std::abs(static_cast<double>(golden)),
-                                                                cfg.mixedMantissaBits, cfg.mixedEmin));
+                    double ulpLimit = std::max(
+                        cfg.mixedMaxAbsErrorLimit,
+                        32.0 * getUlpsAt(std::abs(static_cast<double>(golden)), cfg.mixedMantissaBits, cfg.mixedEmin));
                     pass = (diff <= tolLimit) && (diff <= ulpLimit);
                 }
                 break;
@@ -432,8 +490,7 @@ public:
                 break;
         }
 
-        std::cout << "[" << caseId << "] " << (pass ? "PASSED" : "FAILED") << " (diff=" << diff
-                  << ")" << std::endl;
+        std::cout << "[" << caseId << "] " << (pass ? "PASSED" : "FAILED") << " (diff=" << diff << ")" << std::endl;
         return pass;
     }
 
@@ -448,8 +505,8 @@ public:
 
     // ── Complex Float MERE/MARE verification (real/imag separately) ──
     static bool verifyMereMareComplexFloat(
-        const aclblasComplex* output, const aclblasComplex* golden, size_t count, double threshold,
-        double multiplier, double epsilon, const std::string& caseId)
+        const aclblasComplex* output, const aclblasComplex* golden, size_t count, double threshold, double multiplier,
+        double epsilon, const std::string& caseId)
     {
         // Split into real and imaginary parts
         std::vector<float> outReal(count), outImag(count);
@@ -486,8 +543,8 @@ private:
                 return std::make_unique<IntegerStrategy>();
             case PrecisionMode::MIXED_TOLERANCE:
                 return std::make_unique<MixedToleranceStrategy>(
-                    cfg.mixedAtol, cfg.mixedRtol, cfg.mixedRequiredMatchedRatio,
-                    cfg.mixedMaxAbsErrorLimit, cfg.mixedMantissaBits, cfg.mixedEmin);
+                    cfg.mixedAtol, cfg.mixedRtol, cfg.mixedRequiredMatchedRatio, cfg.mixedMaxAbsErrorLimit,
+                    cfg.mixedMantissaBits, cfg.mixedEmin);
             default:
                 return std::make_unique<AbsStrategy>(cfg.absTol);
         }

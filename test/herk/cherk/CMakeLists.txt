@@ -8,5 +8,6 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
-# GTest CSV-driven precision ST target (always built when the operator is enabled).
-ops_blas_add_gtest_tests(${OPS_BLAS} cherk_test)
+# Correctness smoke and performance benchmark are separate executables. The
+# default build runner invokes cherk_test only; cherk_benchmark is opt-in.
+ops_blas_add_gtest_tests(${OPS_BLAS} cherk_test cherk_benchmark)

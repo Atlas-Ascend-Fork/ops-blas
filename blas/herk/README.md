@@ -25,11 +25,15 @@ trans='C': C = alpha * A^H * A + beta * C
 
 #### 产品支持情况
 
-- Ascend 950PR / Ascend 950DT：支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
+| 产品 | 是否支持 |
+|------|----------|
+| Ascend 950PR / Ascend 950DT | 是 |
+| Atlas A3 训练系列产品 / Atlas A3 推理系列产品 | 是 |
+| Atlas A2 训练系列产品 / Atlas A2 推理系列产品 | 是 |
 
-> Ascend 950PR/Ascend 950DT 上的 cherk 依赖 CANN asc-devkit >= 9.1（`ASC_DEVKIT_MAJOR >= 9 && ASC_DEVKIT_MINOR >= 1`），低于该版本时编译与运行将跳过此算子。
+Ascend 950PR/Ascend 950DT 使用 `arch35` 实现；Atlas A2（Ascend 910B）与
+Atlas A3（Ascend 910_93）使用 `arch22` 实现。arch35 依赖 CANN asc-devkit >= 9.1
+（`ASC_DEVKIT_MAJOR >= 9 && ASC_DEVKIT_MINOR >= 1`）。
 
 #### 函数原型
 
@@ -65,9 +69,9 @@ aclblasStatus_t aclblasCherk(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 - A 不可为 nullptr（当 n > 0 且 k > 0 时）
 - C 不可为 nullptr（当 n > 0 时）
 - alpha、beta 为实数（float），分别缩放复数 C 的实部与虚部
-- 输出 C 满足 Hermitian 性质：C[i][j] = conj(C[j][i])，对角线元素虚部为零
-- 当 alpha 为 0（或 k 为 0）且 beta 为 1 时按 BLAS 语义直接返回，C 保持原值不变——**包含其对角线虚部**
-- Atlas A2 上本算子内部会申请库工作区暂存拆分后的实数矩阵与 GEMM 中间结果，容量约为 `24·n²` 字节；当超出 `ACLBLAS_MAX_WORKSPACE_SIZE`（2 GiB，对应 n 约 9205）时返回 `ACLBLAS_STATUS_ALLOC_FAILED` 并在日志中给出所需字节数
+- 仅更新指定三角，对角线虚部置零。另一三角和 leading-dimension padding 保持原值
+- 当 alpha=0 或 k=0，且 beta=1 时直接返回，C 全部保持原值
+- 接口在 handle 绑定的 stream 上异步执行；库接口自身不执行 Device 或 stream 同步
 
 #### 调用示例
 
@@ -251,79 +255,3 @@ int main()
     return 0;
 }
 ```
-
-### aclblasCher2k
-
-#### 产品支持情况
-
-- Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
-
-> Ascend 950PR/Ascend 950DT 上的 cher2k 依赖 CANN asc-devkit >= 9.1（`ASC_DEVKIT_MAJOR >= 9 && ASC_DEVKIT_MINOR >= 1`），低于该版本时编译与运行将跳过此算子。
-
-#### 函数原型
-
-```cpp
-aclblasStatus_t aclblasCher2k(aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const aclblasComplex* alpha, const aclblasComplex* A, int lda, const aclblasComplex* B, int ldb, const float* beta, aclblasComplex* C, int ldc)
-```
-
-#### 参数说明
-
-| 参数名 | 输入/输出 | 参数类型 | 说明 |
-|--------|----------|---------|------|
-| handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
-| uplo | 输入 | aclblasFillMode_t | C 矩阵存储模式：ACLBLAS_UPPER(121) 仅更新上三角或 ACLBLAS_LOWER(122) 仅更新下三角，Host 内存 |
-| trans | 输入 | aclblasOperation_t | 矩阵转置模式：ACLBLAS_OP_N(111) 不转置或 ACLBLAS_OP_C(113) 共轭转置；ACLBLAS_OP_T(112) 为合法枚举但不支持，Host 内存 |
-| n | 输入 | int | C 矩阵的阶数，n >= 0，Host 内存 |
-| k | 输入 | int | op(A)/op(B) 的第二维度，k >= 0，Host 内存 |
-| alpha | 输入 | const aclblasComplex*（复数 FP32 标量） | 复数标量乘数，不可为 nullptr，Device 内存 |
-| A | 输入 | const aclblasComplex*（复数 FP32） | 输入复矩阵，trans='N' 时维度为 N×K，trans='C' 时为 K×N，Device 内存 |
-| lda | 输入 | int | A 矩阵的主维，trans='N' 时 lda >= max(1, n)，trans='C' 时 lda >= max(1, k)，Host 内存 |
-| B | 输入 | const aclblasComplex*（复数 FP32） | 输入复矩阵，与 A 同形且独立装载（无广播），Device 内存 |
-| ldb | 输入 | int | B 矩阵的主维，规则同 lda，Host 内存 |
-| beta | 输入 | const float*（FP32） | 实数标量乘数，不可为 nullptr，Device 内存 |
-| C | 输入/输出 | aclblasComplex*（复数 FP32） | N×N Hermitian 复矩阵，输入旧值，输出新值，仅 uplo 指定三角区域被更新，Device 内存 |
-| ldc | 输入 | int | C 矩阵的主维，ldc >= max(1, n)，Host 内存 |
-
-#### 约束说明
-
-- 仅 Ascend 950PR / 950DT（arch35）支持；依赖 CANN asc-devkit >= 9.1，低于该版本编译与运行跳过此算子
-- n >= 0, k >= 0
-- uplo 为 ACLBLAS_UPPER 或 ACLBLAS_LOWER；越界枚举值返回 ACLBLAS_STATUS_INVALID_ENUM
-- trans 为 ACLBLAS_OP_N 或 ACLBLAS_OP_C；ACLBLAS_OP_T 为合法枚举但不支持，返回 ACLBLAS_STATUS_INVALID_VALUE；其他越界值返回 ACLBLAS_STATUS_INVALID_ENUM
-- trans='N' 时：lda >= max(1, n)、ldb >= max(1, n)
-- trans='C' 时：lda >= max(1, k)、ldb >= max(1, k)
-- ldc >= max(1, n)
-- alpha、beta 不可为 nullptr；alpha 为复数标量（Device 指针），beta 为实数标量（Device 指针）
-- A、B 不可为 nullptr（当 n > 0 且 k > 0 时）
-- C 指针口径：当 n > 0 且 beta != 0 时 C 不可为 nullptr；当 n > 0 且 beta = 0 时 C 允许为 nullptr（返回 SUCCESS 且不发生任何写出）；n = 0 时 C 可为 nullptr
-- n <= 8 走 K4 SIMT 融合直算路径（无 workspace）；n > 8 走 Cube+AIV 三阶段通用管线
-- 输出 C 满足 Hermitian 性质：C[i][j] = conj(C[j][i])，对角线元素虚部精确为零（代数相消），非 uplo 三角与 ldc padding 字节保持不变
-- 异步执行：多个 kernel 全部下发至 handle 绑定的同一 stream，按流语义自动排序，算子内部无需显式同步；调用方读回结果前须自行同步所绑定的 stream（如 `aclrtSynchronizeStream(stream)`，见上方调用示例第 5 步）
-
-#### 返回码
-
-| 返回值 | 含义 |
-|--------|------|
-| ACLBLAS_STATUS_SUCCESS（0） | 成功（含 n=0、(alpha=(0,0) 或 k=0) 且 beta=1、C=nullptr 且 beta=0 的 quick return） |
-| ACLBLAS_STATUS_HANDLE_IS_NULLPTR（9） | handle 为 nullptr |
-| ACLBLAS_STATUS_INVALID_ENUM（10） | uplo 或 trans 为越界枚举值 |
-| ACLBLAS_STATUS_INVALID_VALUE（3） | trans=OP_T；n<0 或 k<0；lda/ldb/ldc 违反前导维规则；alpha 或 beta 为 nullptr；n>0 且 k>0 时 A 或 B 为 nullptr；n>0 且 beta!=0 时 C 为 nullptr |
-| ACLBLAS_STATUS_INTERNAL_ERROR（6） | 核数查询、alpha/beta 读取、workspace 申请等内部错误 |
-
-#### 与 aclblasCherk 的差异
-
-| 差异点 | aclblasCherk | aclblasCher2k |
-|--------|--------------|---------------|
-| 输入矩阵 | 单矩阵 A（C = alpha·op(A)·op(A)^H + beta·C） | 双矩阵 A、B（独立装载、同形、无广播） |
-| alpha 类型 | 实数（float），同时缩放 C 实部与虚部 | 复数（aclblasComplex），第二项使用 conj(alpha) |
-| 数学结构 | A·A^H 天然 Hermitian | M + M^H 对称化构造（M = alpha·A·B^H 或 alpha·A^H·B） |
-| 对角虚部 | t3−t4 对角来自两次独立 GEMM，需 epilogue 强制置零 | M[i][i] + conj(M[i][i]) 代数相消，精确为零 |
-| 计算量 | 4 次实数 GEMM | 4 次实数 GEMM（4M 分解，第二项按转置读合成） |
-| C 指针口径 | n > 0 时一律非空 | 仅 beta != 0 且 n > 0 时非空（beta=0 时可为 nullptr，SUCCESS 无写出） |
-| 非法 uplo/trans 返回码 | INVALID_VALUE | 越界枚举返回 INVALID_ENUM；OP_T 返回 INVALID_VALUE |
-
-#### 调用示例
-
-调用流程与 aclblasCherk 一致（创建句柄并绑定 stream → 准备 Host 数据 → 上传 A/B/C 与 alpha/beta（Device 标量须先上传）→ 调用 aclblasCher2k → 同步 stream → 拷回结果），完整可运行示例参考[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。

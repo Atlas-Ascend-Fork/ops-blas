@@ -9,6 +9,9 @@
  */
 
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <limits>
 #include <vector>
 
 #include "verify.h"
@@ -23,75 +26,6 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // Complex uplo-triangle verification helpers (测试方案 §7.3 / §7.4)
 // ═══════════════════════════════════════════════════════════════════════════════
-
-// Collect uplo / non-uplo element pairs from the NPU output and golden buffers.
-// `isUplo` follows the BLAS uplo convention: UPPER ⇒ i <= j, LOWER ⇒ i >= j.
-// `goldPtr` doubles as the "input old" reference for the non-uplo triangle
-// because cblas_cherk only writes the uplo triangle.
-template <typename Param>
-static inline void CollectUploNonUploElements(
-    const Param& p, const aclblasComplex* cPtr, const aclblasComplex* goldPtr,
-    std::vector<float>& npuUploRe, std::vector<float>& npuUploIm,
-    std::vector<float>& goldUploRe, std::vector<float>& goldUploIm,
-    std::vector<float>& npuNonRe, std::vector<float>& npuNonIm,
-    std::vector<float>& oldNonRe, std::vector<float>& oldNonIm)
-{
-    for (int j = 0; j < p.n; j++) {
-        for (int i = 0; i < p.n; i++) {
-            size_t idx = static_cast<size_t>(i) + static_cast<size_t>(j) * p.ldc;
-            bool isUplo = (p.uplo == ACLBLAS_UPPER) ? (i <= j) : (i >= j);
-            if (isUplo) {
-                npuUploRe.push_back(cPtr[idx].real);
-                npuUploIm.push_back(cPtr[idx].imag);
-                goldUploRe.push_back(goldPtr[idx].real);
-                goldUploIm.push_back(goldPtr[idx].imag);
-            } else {
-                npuNonRe.push_back(cPtr[idx].real);
-                npuNonIm.push_back(cPtr[idx].imag);
-                oldNonRe.push_back(goldPtr[idx].real);
-                oldNonIm.push_back(goldPtr[idx].imag);
-            }
-        }
-    }
-}
-
-// Verify uplo triangle precision — real and imag parts use ACL_FLOAT mixed tolerance.
-static inline void VerifyUploPrecision(
-    const std::string& caseName,
-    const float* npuUploRe, const float* goldUploRe, size_t uploCount,
-    const float* npuUploIm, const float* goldUploIm)
-{
-    // uplo triangle — real part, ACL_FLOAT mixed tolerance
-    VerifyConfig cfgRe;
-    applyMixedTolerance(cfgRe, ACL_FLOAT, goldUploRe, uploCount);
-    EXPECT_TRUE(Verifier::verifyVector(npuUploRe, goldUploRe, uploCount, 1, cfgRe,
-        caseName + "_uplo_real"));
-
-    // uplo triangle — imag part, ACL_FLOAT mixed tolerance
-    VerifyConfig cfgIm;
-    applyMixedTolerance(cfgIm, ACL_FLOAT, goldUploIm, uploCount);
-    EXPECT_TRUE(Verifier::verifyVector(npuUploIm, goldUploIm, uploCount, 1, cfgIm,
-        caseName + "_uplo_imag"));
-}
-
-// Verify non-uplo triangle — must equal input old (EXACT, verifies no pollution).
-static inline void VerifyNonUploExact(
-    const std::string& caseName,
-    const float* npuNonRe, const float* oldNonRe, size_t nonCount,
-    const float* npuNonIm, const float* oldNonIm)
-{
-    if (nonCount == 0) {
-        return;
-    }
-    VerifyConfig cfgNonRe;
-    cfgNonRe.mode = PrecisionMode::EXACT;
-    EXPECT_TRUE(Verifier::verifyVector(npuNonRe, oldNonRe, nonCount, 1, cfgNonRe,
-        caseName + "_nonuplo_real"));
-    VerifyConfig cfgNonIm;
-    cfgNonIm.mode = PrecisionMode::EXACT;
-    EXPECT_TRUE(Verifier::verifyVector(npuNonIm, oldNonIm, nonCount, 1, cfgNonIm,
-        caseName + "_nonuplo_imag"));
-}
 
 // Verify Hermitian diagonal: when beta==0 output is pure A·A^H, diagonal must be real.
 template <typename Param>
@@ -123,6 +57,54 @@ static inline void VerifyDiagonalHermitian(const Param& p, const aclblasComplex*
 // "input old" reference for the non-uplo check.
 // ═══════════════════════════════════════════════════════════════════════════════
 template <typename Param>
+static VerifyConfig MakeTriangleVerifyConfig(const Param& p, bool mixed, size_t uploCount)
+{
+    VerifyConfig cfg;
+    if (!mixed) {
+        cfg.mode = PrecisionMode::EXACT;
+        return cfg;
+    }
+
+    applyMixedTolerance(cfg, ACL_FLOAT, nullptr, uploCount);
+    // Cube/vector reduction order differs from Netlib's scalar accumulation;
+    // retain the existing k-dependent bound.
+    cfg.mixedMaxAbsErrorLimit = std::max(cfg.mixedMaxAbsErrorLimit, 1.0e-4 * static_cast<double>(p.k));
+    return cfg;
+}
+
+template <typename Param, typename Component, typename Consume>
+static void VisitTriangleElements(
+    const Param& p, const aclblasComplex* cPtr, const aclblasComplex* goldPtr, bool uplo, Component component,
+    Consume consume)
+{
+    for (int j = 0; j < p.n; ++j) {
+        for (int i = 0; i < p.n; ++i) {
+            const bool isUplo = (p.uplo == ACLBLAS_UPPER) ? (i <= j) : (i >= j);
+            if (isUplo != uplo) {
+                continue;
+            }
+            const size_t idx = static_cast<size_t>(i) + static_cast<size_t>(j) * p.ldc;
+            consume(component(cPtr[idx]), component(goldPtr[idx]));
+        }
+    }
+}
+
+template <typename Param, typename Component>
+static void VerifyTrianglePart(
+    const Param& p, const aclblasComplex* cPtr, const aclblasComplex* goldPtr, const char* suffix, bool uplo,
+    Component component, bool mixed, size_t uploCount, size_t nonUploCount)
+{
+    const size_t count = uplo ? uploCount : nonUploCount;
+    if (count == 0U) {
+        return;
+    }
+    const VerifyConfig cfg = MakeTriangleVerifyConfig(p, mixed, uploCount);
+    EXPECT_TRUE(Verifier::verifyEach(
+        [&](auto consume) { VisitTriangleElements(p, cPtr, goldPtr, uplo, component, consume); }, count, cfg,
+        p.caseName + suffix));
+}
+
+template <typename Param>
 static inline void VerifyUploTriangleComplex(
     const Param& p, const aclblasComplex* cPtr, const aclblasComplex* goldPtr, size_t /*cCount*/)
 {
@@ -130,19 +112,21 @@ static inline void VerifyUploTriangleComplex(
         return;
     }
 
-    std::vector<float> npuUploRe, npuUploIm, goldUploRe, goldUploIm;
-    std::vector<float> npuNonRe, npuNonIm, oldNonRe, oldNonIm;
-    CollectUploNonUploElements(p, cPtr, goldPtr,
-        npuUploRe, npuUploIm, goldUploRe, goldUploIm,
-        npuNonRe, npuNonIm, oldNonRe, oldNonIm);
+    const size_t uploCount = static_cast<size_t>(p.n) * static_cast<size_t>(p.n + 1) / 2U;
+    const size_t nonUploCount = static_cast<size_t>(p.n) * static_cast<size_t>(p.n - 1) / 2U;
 
-    VerifyUploPrecision(p.caseName,
-        npuUploRe.data(), goldUploRe.data(), npuUploRe.size(),
-        npuUploIm.data(), goldUploIm.data());
-
-    VerifyNonUploExact(p.caseName,
-        npuNonRe.data(), oldNonRe.data(), npuNonRe.size(),
-        npuNonIm.data(), oldNonIm.data());
+    VerifyTrianglePart(
+        p, cPtr, goldPtr, "_uplo_real", true, [](const aclblasComplex& value) { return value.real; }, true, uploCount,
+        nonUploCount);
+    VerifyTrianglePart(
+        p, cPtr, goldPtr, "_uplo_imag", true, [](const aclblasComplex& value) { return value.imag; }, true, uploCount,
+        nonUploCount);
+    VerifyTrianglePart(
+        p, cPtr, goldPtr, "_nonuplo_real", false, [](const aclblasComplex& value) { return value.real; }, false,
+        uploCount, nonUploCount);
+    VerifyTrianglePart(
+        p, cPtr, goldPtr, "_nonuplo_imag", false, [](const aclblasComplex& value) { return value.imag; }, false,
+        uploCount, nonUploCount);
 
     VerifyDiagonalHermitian(p, cPtr);
 }
@@ -151,24 +135,41 @@ static inline void VerifyUploTriangleComplex(
 // Test fixture
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class CherkArch35Test : public BlasTest<CherkParam> {
-};
+class CherkArch35Test : public BlasTest<CherkParam> {};
+
+static bool HasCasePrefix(const CherkParam& p, const char* prefix) { return p.caseName.rfind(prefix, 0U) == 0U; }
+
+static std::vector<CherkParam> LoadCherkCorrectnessCases()
+{
+    const bool fullRegression = std::getenv("CHERK_FULL_REGRESSION") != nullptr;
+    std::string csvPath = ReplaceFileExtension2Csv(__BASE_FILE__);
+    // Only arch22 has a separate smoke/full CSV pair.
+    if (fullRegression && csvPath.find("arch22") != std::string::npos) {
+        csvPath.insert(csvPath.size() - 4U, "_full");
+    }
+    std::vector<CherkParam> selectedCases;
+    for (const CherkParam& p : GetCasesFromCsv<CherkParam>(csvPath)) {
+        if (!fullRegression && HasCasePrefix(p, "TC_PF_")) {
+            continue;
+        }
+
+        selectedCases.push_back(p);
+    }
+    return selectedCases;
+}
 
 // ── TEST_F: null handle (not CSV-driven) ──
 TEST_F(CherkArch35Test, NullHandle)
 {
     float alpha = 1.0f;
     float beta = 0.0f;
-    aclblasStatus_t ret = aclblasCherk_npu(
-        nullptr, ACLBLAS_UPPER, ACLBLAS_OP_N, 4, 4,
-        &alpha, nullptr, 4, &beta, nullptr, 4);
+    aclblasStatus_t ret =
+        aclblasCherk_npu(nullptr, ACLBLAS_UPPER, ACLBLAS_OP_N, 4, 4, &alpha, nullptr, 4, &beta, nullptr, 4);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_HANDLE_IS_NULLPTR));
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    Cherk, CherkArch35Test,
-    ::testing::ValuesIn(GetCasesFromCsv<CherkParam>(ReplaceFileExtension2Csv(__FILE__))),
-    PrintCaseInfoString<CherkParam>);
+    Cherk, CherkArch35Test, ::testing::ValuesIn(LoadCherkCorrectnessCases()), PrintCaseInfoString<CherkParam>);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CSV-driven parameterised test (5-step flow)
@@ -186,17 +187,17 @@ struct CherkHostData {
     size_t cCount = 0;
 };
 
-static bool PrepareHostData(const CherkParam& p, CherkHostData& d)
+static bool PrepareHostData(const CherkParam& p, CherkHostData& d, bool prepareGolden)
 {
     const int aRows = p.lda;
     const int aCols = (p.trans == ACLBLAS_OP_N) ? p.k : p.n;
 
     const size_t cBytes = static_cast<size_t>(p.ldc) * static_cast<size_t>(p.n) * sizeof(aclblasComplex);
     const size_t aBytes = static_cast<size_t>(p.lda) * static_cast<size_t>(aCols) * sizeof(aclblasComplex);
-    // 3 copies of C (npu output + golden + input-old reference) + A.
+    const size_t cCopies = prepareGolden ? 2U : 1U;
     constexpr size_t kHostMemLimit = 8ULL * 1024ULL * 1024ULL * 1024ULL; // §8 遗留问题 4
-    if (3 * cBytes + aBytes > kHostMemLimit) {
-        std::cout << "[SKIP] host memory estimate (" << (3 * cBytes + aBytes) / (1024 * 1024)
+    if (cCopies * cBytes + aBytes > kHostMemLimit) {
+        std::cout << "[SKIP] host memory estimate (" << (cCopies * cBytes + aBytes) / (1024 * 1024)
                   << " MB) exceeds limit for n=" << p.n << ", ldc=" << p.ldc << std::endl;
         return false;
     }
@@ -213,7 +214,7 @@ static bool PrepareHostData(const CherkParam& p, CherkHostData& d)
     d.cPtr = (d.cHost.empty() || p.nullC) ? nullptr : d.cHost.data();
     d.cCount = static_cast<size_t>(p.ldc) * static_cast<size_t>(p.n);
 
-    if (d.cPtr != nullptr) {
+    if (prepareGolden && d.cPtr != nullptr) {
         try {
             d.cGolden = d.cHost; // golden starts from input-old C; non-uplo triangle stays untouched
         } catch (const std::bad_alloc&) {
@@ -229,15 +230,15 @@ TEST_P(CherkArch35Test, CsvDriven)
 {
     const auto& p = GetParam();
     CherkHostData d;
-    if (!PrepareHostData(p, d)) {
+    if (!PrepareHostData(p, d, true)) {
         GTEST_SKIP() << "Skipped: host memory limit";
     }
 
     // nullAlpha: wrapper forwards nullptr for alpha so the API's INVALID_VALUE
     // path is exercised. The alpha value in p.alpha is irrelevant in that case.
     aclblasStatus_t ret = aclblasCherk_npu(
-        CherkArch35Test::handle_, p.uplo, p.trans, p.n, p.k,
-        &p.alpha, d.aPtr, p.lda, &p.beta, d.cPtr, p.ldc, p.nullAlpha);
+        CherkArch35Test::handle_, p.uplo, p.trans, p.n, p.k, &p.alpha, d.aPtr, p.lda, p.nullBeta ? nullptr : &p.beta,
+        d.cPtr, p.ldc, p.nullAlpha);
 
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS || p.n == 0 || d.cPtr == nullptr) {
@@ -245,8 +246,7 @@ TEST_P(CherkArch35Test, CsvDriven)
     }
 
     aclblasStatus_t goldenRet = aclblasCherk_cpu(
-        CherkArch35Test::handle_, p.uplo, p.trans, p.n, p.k,
-        &p.alpha, d.aPtr, p.lda, &p.beta, d.cGoldenPtr, p.ldc);
+        CherkArch35Test::handle_, p.uplo, p.trans, p.n, p.k, &p.alpha, d.aPtr, p.lda, &p.beta, d.cGoldenPtr, p.ldc);
     if (goldenRet != ACLBLAS_STATUS_SUCCESS) {
         EXPECT_EQ(goldenRet, ACLBLAS_STATUS_SUCCESS) << "golden computation failed";
         return;

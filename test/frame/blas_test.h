@@ -91,6 +91,7 @@ protected:
             ASSERT_EQ(aclblasCreate(&guard.handle), ACLBLAS_STATUS_SUCCESS);
             ASSERT_EQ(aclrtCreateStream(&guard.stream), ACL_SUCCESS);
             ASSERT_EQ(aclblasSetStream(guard.handle, guard.stream), ACLBLAS_STATUS_SUCCESS);
+            guard.cleaned = false;
         }
         guard.refs++;
         handle_ = guard.handle;

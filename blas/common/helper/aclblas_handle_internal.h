@@ -56,6 +56,10 @@ struct _aclblas_handle {
     /** Size of the last library-managed workspace buffer (preserved across user switches). */
     size_t library_workspace_size = 0;
 
+    // Immutable CHERK transpose/interleave/mask metadata. It is initialized
+    // lazily and shared by every AIV block instead of being rebuilt per launch.
+    void* cherk_arch22_metadata = nullptr;
+
     // Pointer-location metadata only; scalar values are never cached.  Tiny
     // Cher2k kernels read device alpha/beta on every launch so in-place scalar
     // updates retain BLAS semantics without repeated pointer queries.

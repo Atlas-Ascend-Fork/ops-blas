@@ -8,8 +8,7 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef CHERK_PARAM_H
-#define CHERK_PARAM_H
+#pragma once
 
 #include <string>
 #include <algorithm>
@@ -31,6 +30,7 @@ struct CherkParam : public BlasTestParamBase {
     BlasFillMode aFill = BlasFillMode("RANDOM_NORM_1");
     int lda = 0;
     float beta = 0.0f;
+    bool nullBeta = false;
     BlasFillMode cFill = BlasFillMode("VALUE_NORM_0");
     int ldc = 0;
     bool nullA = false;
@@ -39,29 +39,27 @@ struct CherkParam : public BlasTestParamBase {
 
     explicit CherkParam(const csv_map& map) : BlasTestParamBase(map)
     {
-        uplo  = parseFillMode(ReadMap(map, "uplo", "UPPER"));
+        uplo = parseFillMode(ReadMap(map, "uplo", "UPPER"));
         trans = parseOpTrans(ReadMap(map, "trans", "N"));
-        n     = parseInt(ReadMap(map, "n", "0"));
-        k     = parseInt(ReadMap(map, "k", "0"));
+        n = parseInt(ReadMap(map, "n", "0"));
+        k = parseInt(ReadMap(map, "k", "0"));
         alpha = parseFloat(ReadMap(map, "alpha", "1.0"));
         aFill = BlasFillMode(ReadMap(map, "a_fill", "RANDOM_NORM_1"));
 
         // Default lda (column-major):
         //   trans=N -> A is (n x k), lda >= max(1, n)
         //   trans=T/C -> A is (k x n), lda >= max(1, k)
-        int defaultLda = (trans == ACLBLAS_OP_N)
-            ? std::max(1, n)
-            : std::max(1, k);
+        int defaultLda = (trans == ACLBLAS_OP_N) ? std::max(1, n) : std::max(1, k);
         lda = parseInt(ReadMap(map, "lda", std::to_string(defaultLda)));
 
-        beta  = parseFloat(ReadMap(map, "beta", "0.0"));
+        const std::string betaStr = ReadMap(map, "beta", "0.0");
+        nullBeta = (betaStr == "null" || betaStr == "nullptr");
+        beta = nullBeta ? 0.0f : parseFloat(betaStr);
         cFill = BlasFillMode(ReadMap(map, "c_fill", "VALUE_NORM_0"));
-        ldc   = parseInt(ReadMap(map, "ldc", std::to_string(std::max(1, n))));
+        ldc = parseInt(ReadMap(map, "ldc", std::to_string(std::max(1, n))));
 
-        nullA     = (ReadMap(map, "nullA", "0") == "1");
-        nullC     = (ReadMap(map, "nullC", "0") == "1");
+        nullA = (ReadMap(map, "nullA", "0") == "1");
+        nullC = (ReadMap(map, "nullC", "0") == "1");
         nullAlpha = (ReadMap(map, "nullAlpha", "0") == "1");
     }
 };
-
-#endif // CHERK_PARAM_H
