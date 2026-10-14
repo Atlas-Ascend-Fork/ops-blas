@@ -491,9 +491,9 @@ install_googletest() {
 
     case "$OS" in
         debian|rhel|euler)
-            run_command wget -q "https://github.com/google/googletest/archive/refs/tags/release-${req_ver}.tar.gz" -O "${gtest_tmp_dir}/googletest.tar.gz"
-            run_command tar -xzf "${gtest_tmp_dir}/googletest.tar.gz" -C "${gtest_tmp_dir}"
-            run_command cmake -S "${gtest_tmp_dir}/googletest-release-${req_ver}" -B "${gtest_tmp_dir}/build" -DCMAKE_INSTALL_PREFIX=/usr/local
+            run_command git clone --depth 1 --branch "release-${req_ver}" \
+                "https://gitcode.com/google/googletest.git" "${gtest_tmp_dir}/googletest"
+            run_command cmake -S "${gtest_tmp_dir}/googletest" -B "${gtest_tmp_dir}/build" -DCMAKE_INSTALL_PREFIX=/usr/local
             run_command cmake --build "${gtest_tmp_dir}/build" -j$(nproc 2>/dev/null || echo 4)
             run_command sudo cmake --install "${gtest_tmp_dir}/build"
             run_command sudo ldconfig

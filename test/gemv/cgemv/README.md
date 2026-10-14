@@ -33,9 +33,8 @@ Netlib CBLAS**。
 若系统没有 Netlib CBLAS，可从 Reference-LAPACK 源码构建：
 
 ```bash
-curl -sSL -o lapack.tar.gz \
-  https://github.com/Reference-LAPACK/lapack/archive/refs/tags/v3.12.0.tar.gz
-tar xzf lapack.tar.gz
+git clone --depth 1 --branch v3.12.0 \
+  https://gitcode.com/Reference-LAPACK/lapack.git lapack-3.12.0
 cmake -S lapack-3.12.0 -B lapack-build -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_SHARED_LIBS=ON -DCBLAS=ON -DLAPACKE=OFF -DBUILD_TESTING=OFF \
   -DCMAKE_INSTALL_PREFIX="$PWD/netlib"

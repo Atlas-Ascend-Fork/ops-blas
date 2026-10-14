@@ -138,7 +138,7 @@ docker run --name cann_container --device /dev/davinci0 --device /dev/davinci_ma
 - dos2unix
 - make
 - patch
-- googletest（仅执行ST时依赖，建议版本 [release-1.11.0](https://github.com/google/googletest/releases/tag/release-1.11.0)）
+- googletest（仅执行ST时依赖，建议版本 [release-1.11.0](https://gitcode.com/google/googletest)）
 - libblas-dev、liblapack-dev（仅执行ST时依赖，用于golden参考计算）
 
 上述依赖可通过项目脚本一键安装，操作步骤如下：
