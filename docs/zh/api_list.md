@@ -890,6 +890,7 @@ Level 3 接口在矩阵之间进行运算，典型操作包括对称矩阵乘法
 | [aclblasSgetrsBatched](../../blas/getrs_batched/README.md) | 单精度批量线性方程组求解 |
 | [aclblasSmatinvBatched](../../blas/matinv_batched/README.md) | 单精度批量矩阵求逆 |
 | [aclblasSsymm](../../blas/symm/README.md) | 单精度浮点对称矩阵乘法 |
+| [aclblasCtrsm](../../blas/trsm/README.md#aclblasctrsm) | 单精度复数三角矩阵线性方程组求解（Ascend 950PR） |
 
 ## BLAS-like Extension
 
