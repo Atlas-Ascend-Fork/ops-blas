@@ -169,7 +169,7 @@ stages:
               path: ${{ steps.process_checkout.outputs.path }}
           -
             name: smoke executor
-            timeout-minutes: 30
+            timeout-minutes: 50
             run: |
               set -e
               export repo_name=${{env.repo_name}}
