@@ -8,1099 +8,659 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#include <cstdint>
-#include "kernel_operator.h"
-#include "cann_ops_blas_common.h"
-#include "chemm_tiling_data.h"
 #include "chemm_kernel.h"
 
-using namespace AscendC;
+namespace {
 
-__aicore__ inline float ChemmAbs(float value)
-{
-    return value < 0.0f ? -value : value;
-}
+constexpr uint32_t kInputBankElements = CHEMM_MAX_P_ELEMENTS / 2U + CHEMM_L0_ELEMENTS / 2U;
+constexpr uint32_t kBulkElements = 2U * CHEMM_K_FEED * CHEMM_MAX_ROWS / 2U;
+constexpr uint32_t kPlaneElements = CHEMM_MAX_ROWS / 2U * kMicro;
+constexpr uint32_t kScratchElements =
+    2U * kInputBankElements + kBulkElements + 2U * kPlaneElements + 4U * kMicroElements + 24U;
+static_assert(kScratchElements * sizeof(float) <= 196352U, "MIX vector scratch exceeds usable UB");
 
-struct ChemmDoubleFloat {
-    float high;
-    float low;
+struct PackBuffers {
+    __ubuf__ float* input;
+    __ubuf__ float* bulk;
+    __ubuf__ float* raw;
+    __ubuf__ float* real;
+    __ubuf__ float* imag;
+    __ubuf__ float* transReal;
+    __ubuf__ float* transImag;
+    __ubuf__ uint8_t* masks;
 };
 
-__aicore__ inline ChemmDoubleFloat ChemmTwoSum(float left, float right)
+struct TileWork {
+    uint32_t row;
+    uint32_t col;
+    uint32_t pFirst;
+    uint32_t pRows;
+    uint32_t qRows;
+};
+
+struct FeedWork {
+    uint32_t row;
+    uint32_t col;
+    uint32_t rows;
+    uint32_t job;
+    uint32_t totalJobs;
+    uint32_t feed;
+    bool newColumn;
+    bool releaseP;
+};
+
+// Immutable indices describe the eight-element-aligned UB pitches, not input shapes.
+struct HermitianGather {
+    uint32_t index[CHEMM_K_FEED / 8U][2][2U * CHEMM_K_FEED * CHEMM_K_FEED];
+    uint64_t conjugate[CHEMM_K_FEED / 8U][2][2U * CHEMM_K_FEED * CHEMM_K_FEED / 64U];
+};
+
+constexpr HermitianGather MakeHermitianGather()
 {
-    float high = left + right;
-    float rightVirtual = high - left;
-    float low = (left - (high - rightVirtual)) + (right - rightVirtual);
-    return {high, low};
-}
-
-__aicore__ inline ChemmDoubleFloat ChemmTwoProduct(float left, float right)
-{
-    constexpr float splitter = 4097.0f;
-    float high = left * right;
-    float leftSplit = splitter * left;
-    float leftHigh = leftSplit - (leftSplit - left);
-    float leftLow = left - leftHigh;
-    float rightSplit = splitter * right;
-    float rightHigh = rightSplit - (rightSplit - right);
-    float rightLow = right - rightHigh;
-    float low = ((leftHigh * rightHigh - high) + leftHigh * rightLow + leftLow * rightHigh) +
-        leftLow * rightLow;
-    return {high, low};
-}
-
-__aicore__ inline ChemmDoubleFloat ChemmDfAdd(ChemmDoubleFloat left, ChemmDoubleFloat right)
-{
-    ChemmDoubleFloat highSum = ChemmTwoSum(left.high, right.high);
-    ChemmDoubleFloat lowSum = ChemmTwoSum(left.low, right.low);
-    ChemmDoubleFloat middle = ChemmTwoSum(highSum.low, lowSum.high);
-    ChemmDoubleFloat result = ChemmTwoSum(highSum.high, middle.high);
-    result.low += middle.low + lowSum.low;
-    return ChemmTwoSum(result.high, result.low);
-}
-
-__aicore__ inline ChemmDoubleFloat ChemmDfNegate(ChemmDoubleFloat value)
-{
-    return {-value.high, -value.low};
-}
-
-__aicore__ inline ChemmDoubleFloat ChemmDfMulFloat(ChemmDoubleFloat value, float scalar)
-{
-    return ChemmDfAdd(ChemmTwoProduct(value.high, scalar), ChemmTwoProduct(value.low, scalar));
-}
-
-__aicore__ inline ChemmDoubleFloat ChemmDfLinearCombination(
-    float left0, float right0, float left1, float right1)
-{
-    return ChemmDfAdd(ChemmTwoProduct(left0, right0), ChemmTwoProduct(left1, right1));
-}
-
-// ============================================================
-// Workspace layout (all float, row-major ND):
-//   A_r  [0,       m*k)       M×K
-//   A_i  [m*k,     2*m*k)     M×K
-//   B_r  [2*m*k,   2*m*k+k*n) K×N
-//   B_i  [2*m*k+k*n, 2*m*k+2*k*n) K×N
-//   RR   [2*m*k+2*k*n,                   ...+m*n)  M×N
-//   II   [2*m*k+2*k*n+m*n,               ...+m*n)  M×N
-//   RI   [2*m*k+2*k*n+2*m*n,             ...+m*n)  M×N
-//   IR   [2*m*k+2*k*n+3*m*n,             ...+m*n)  M×N
-// ============================================================
-
-__aicore__ inline uint64_t WsOffsetAr(uint32_t m, uint32_t k) { return 0; }
-__aicore__ inline uint64_t WsOffsetAi(uint32_t m, uint32_t k) { return static_cast<uint64_t>(m) * k; }
-__aicore__ inline uint64_t WsOffsetBr(uint32_t m, uint32_t k, uint32_t n) { return 2ULL * m * k; }
-__aicore__ inline uint64_t WsOffsetBi(uint32_t m, uint32_t k, uint32_t n) { return 2ULL * m * k + static_cast<uint64_t>(k) * n; }
-__aicore__ inline uint64_t WsOffsetRR(uint32_t m, uint32_t k, uint32_t n) { return 2ULL * m * k + 2ULL * k * n; }
-__aicore__ inline uint64_t WsOffsetII(uint32_t m, uint32_t k, uint32_t n) { return WsOffsetRR(m, k, n) + static_cast<uint64_t>(m) * n; }
-__aicore__ inline uint64_t WsOffsetRI(uint32_t m, uint32_t k, uint32_t n) { return WsOffsetII(m, k, n) + static_cast<uint64_t>(m) * n; }
-__aicore__ inline uint64_t WsOffsetIR(uint32_t m, uint32_t k, uint32_t n) { return WsOffsetRI(m, k, n) + static_cast<uint64_t>(m) * n; }
-
-// ============================================================
-// Phase 0: Preprocess (AIV, multi-core)
-// Extract real/imag from complex interleaved A (Hermitian) and B.
-// Expands Hermitian triangle to full matrix.
-// Output: A_r, A_i (M×K), B_r, B_i (K×N) in workspace.
-// ============================================================
-
-__aicore__ inline void ChemmGetHermVal(
-    GlobalTensor<float>& gm, uint32_t ld, bool isLower, uint32_t row, uint32_t col,
-    float& outR, float& outI)
-{
-    if (row == col) {
-        uint64_t idx = (static_cast<uint64_t>(row) * ld + col) * 2;
-        outR = gm.GetValue(idx);
-        outI = 0.0f;
-    } else if ((isLower && row > col) || (!isLower && row < col)) {
-        uint64_t idx = (static_cast<uint64_t>(row) * ld + col) * 2;
-        outR = gm.GetValue(idx);
-        outI = gm.GetValue(idx + 1);
-    } else {
-        uint64_t idx = (static_cast<uint64_t>(col) * ld + row) * 2;
-        outR = gm.GetValue(idx);
-        outI = -gm.GetValue(idx + 1);
+    HermitianGather indices{};
+    for (uint32_t pitch = 8U; pitch <= CHEMM_K_FEED; pitch += 8U) {
+        for (uint32_t lower = 0U; lower < 2U; ++lower) {
+            for (uint32_t element = 0U; element < 2U * pitch * CHEMM_K_FEED; ++element) {
+                const uint32_t col = element / (2U * pitch);
+                const uint32_t row = element % pitch;
+                const bool imag = element % (2U * pitch) >= pitch;
+                const bool reflected = lower != 0U ? row < col : row > col;
+                const uint32_t source = reflected ? row * pitch + col : col * pitch + row;
+                indices.index[pitch / 8U - 1U][lower][element] =
+                    (imag && row == col ? 2U * CHEMM_K_FEED * CHEMM_K_FEED : 2U * source + (imag ? 1U : 0U)) *
+                    sizeof(float);
+                indices.conjugate[pitch / 8U - 1U][lower][element / 64U] |= uint64_t(imag && reflected)
+                                                                            << (element % 64U);
+            }
+        }
     }
+    return indices;
 }
 
-__aicore__ inline void ChemmStoreDoubleFloatResultWithOriginalC(
-    GlobalTensor<float>& aG, GlobalTensor<float>& bG, GlobalTensor<float>& cG,
-    const ChemmMmadTiling& tiling, bool isLeft, bool isLower, float cReal, float cImag,
-    uint32_t row, uint32_t column)
+static __gm__ HermitianGather g_hermitianGather __attribute__((aligned(32))) = MakeHermitianGather();
+
+template <bool kWait = true, event_t kEvent = EVENT_ID3>
+__aicore__ inline void LoadDenseRaw(
+    __gm__ float* source, uint32_t ld, uint32_t rows, uint32_t cols, uint32_t stride, uint32_t elements, bool clear,
+    __ubuf__ float* raw)
 {
-    bool betaIsZero = (tiling.betaReal == 0.0f && tiling.betaImag == 0.0f);
-    uint64_t cIdx = (static_cast<uint64_t>(row) * tiling.ldc + column) * 2U;
-    ChemmDoubleFloat resultReal{0.0f, 0.0f};
-    ChemmDoubleFloat resultImag{0.0f, 0.0f};
-    if (!betaIsZero) {
-        resultReal = ChemmDfLinearCombination(tiling.betaReal, cReal, -tiling.betaImag, cImag);
-        resultImag = ChemmDfLinearCombination(tiling.betaReal, cImag, tiling.betaImag, cReal);
+    if (clear) {
+        vector_dup(raw, 0.0f, static_cast<uint8_t>(elements / 64U), 1U, 1U, 8U, 0U);
     }
-    for (uint32_t kk = 0U; kk < tiling.k; ++kk) {
-        float leftReal;
-        float leftImag;
-        float rightReal;
-        float rightImag;
-        if (isLeft) {
-            ChemmGetHermVal(aG, tiling.lda, isLower, row, kk, leftReal, leftImag);
-            uint64_t bIdx = (static_cast<uint64_t>(kk) * tiling.ldb + column) * 2U;
-            rightReal = bG.GetValue(bIdx);
-            rightImag = bG.GetValue(bIdx + 1U);
+    set_flag(PIPE_V, PIPE_MTE2, kEvent);
+    wait_flag(PIPE_V, PIPE_MTE2, kEvent);
+    if (rows != 0U && cols != 0U) {
+        const uint32_t floats = 2U * rows;
+        const uint32_t aligned = (floats + 7U) & ~7U;
+        if (ld == rows && stride == floats && aligned == floats) {
+            copy_gm_to_ubuf(raw, source, 0U, 1U, rows * cols / 4U, 0U, 0U);
         } else {
-            uint64_t bIdx = (static_cast<uint64_t>(row) * tiling.ldb + kk) * 2U;
-            leftReal = bG.GetValue(bIdx);
-            leftImag = bG.GetValue(bIdx + 1U);
-            ChemmGetHermVal(aG, tiling.lda, isLower, kk, column, rightReal, rightImag);
+            copy_gm_to_ubuf_align_b32(
+                raw, source, 0U, cols, floats * sizeof(float), 0U, aligned - floats, (2U * ld - floats) * sizeof(float),
+                (stride - aligned) / 8U);
         }
-        ChemmDoubleFloat alphaLeftReal = ChemmDfLinearCombination(
-            tiling.alphaReal, leftReal, -tiling.alphaImag, leftImag);
-        ChemmDoubleFloat alphaLeftImag = ChemmDfLinearCombination(
-            tiling.alphaReal, leftImag, tiling.alphaImag, leftReal);
-        ChemmDoubleFloat realTerm = ChemmDfAdd(
-            ChemmDfMulFloat(alphaLeftReal, rightReal),
-            ChemmDfNegate(ChemmDfMulFloat(alphaLeftImag, rightImag)));
-        ChemmDoubleFloat imagTerm = ChemmDfAdd(
-            ChemmDfMulFloat(alphaLeftReal, rightImag),
-            ChemmDfMulFloat(alphaLeftImag, rightReal));
-        resultReal = ChemmDfAdd(resultReal, realTerm);
-        resultImag = ChemmDfAdd(resultImag, imagTerm);
     }
-    cG.SetValue(cIdx, resultReal.high + resultReal.low);
-    cG.SetValue(cIdx + 1U, resultImag.high + resultImag.low);
-}
-
-__aicore__ inline void ChemmStoreDoubleFloatResult(
-    GlobalTensor<float>& aG, GlobalTensor<float>& bG, GlobalTensor<float>& cG,
-    const ChemmMmadTiling& tiling, bool isLeft, bool isLower, uint32_t row, uint32_t column)
-{
-    bool betaIsZero = (tiling.betaReal == 0.0f && tiling.betaImag == 0.0f);
-    uint64_t cIdx = (static_cast<uint64_t>(row) * tiling.ldc + column) * 2U;
-    float cReal = betaIsZero ? 0.0f : cG.GetValue(cIdx);
-    float cImag = betaIsZero ? 0.0f : cG.GetValue(cIdx + 1U);
-    ChemmStoreDoubleFloatResultWithOriginalC(
-        aG, bG, cG, tiling, isLeft, isLower, cReal, cImag, row, column);
-}
-
-// Deinterleave aligned AoS B rows into the row-major fallback operands.
-// Scalar handling preserves unaligned ldb prefixes and short tails.
-__aicore__ inline void ChemmPackBRowToFallbackWorkspace(
-    GlobalTensor<float>& bG, GlobalTensor<float>& ws, uint32_t ldb, uint32_t row, uint32_t columns,
-    uint32_t stride, uint64_t realBase, uint64_t imagBase, LocalTensor<float>& aosLocal,
-    LocalTensor<float>& realLocal, LocalTensor<float>& imagLocal)
-{
-    constexpr uint32_t complexAlignment = 8U;
-    constexpr uint32_t complexPerVector = 128U;
-    event_t eventMte2ToV = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
-    event_t eventVToMte3 = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE3));
-    uint32_t column = 0U;
-    while (column < columns) {
-        uint64_t complexOffset = static_cast<uint64_t>(row) * ldb + column;
-        uint32_t remaining = columns - column;
-        uint64_t outputOffset = static_cast<uint64_t>(row) * stride + column;
-        bool inputAligned = (complexOffset % complexAlignment) == 0U;
-        bool realOutputAligned = ((realBase + outputOffset) % complexAlignment) == 0U;
-        bool imagOutputAligned = ((imagBase + outputOffset) % complexAlignment) == 0U;
-        if (!inputAligned || !realOutputAligned || !imagOutputAligned || remaining < complexAlignment) {
-            uint64_t inputOffset = complexOffset * 2U;
-            ws.SetValue(realBase + outputOffset, bG.GetValue(inputOffset));
-            ws.SetValue(imagBase + outputOffset, bG.GetValue(inputOffset + 1U));
-            ++column;
-            continue;
-        }
-        uint32_t vectorCount = (remaining / complexAlignment) * complexAlignment;
-        for (uint32_t offset = 0U; offset < vectorCount; offset += complexPerVector) {
-            uint32_t currentCount = (vectorCount - offset) < complexPerVector ?
-                (vectorCount - offset) : complexPerVector;
-            DataCopy(aosLocal, bG[(complexOffset + offset) * 2U], currentCount * 2U);
-            SetFlag<HardEvent::MTE2_V>(eventMte2ToV);
-            WaitFlag<HardEvent::MTE2_V>(eventMte2ToV);
-            uint16_t repeatTimes = static_cast<uint16_t>((currentCount * 2U + 63U) / 64U);
-            uint64_t reservedCount = 0U;
-            GatherMask<float>(realLocal, aosLocal, 1U, false, 0U, {1U, repeatTimes, 8U, 8U}, reservedCount);
-            GatherMask<float>(imagLocal, aosLocal, 2U, false, 0U, {1U, repeatTimes, 8U, 8U}, reservedCount);
-            SetFlag<HardEvent::V_MTE3>(eventVToMte3);
-            WaitFlag<HardEvent::V_MTE3>(eventVToMte3);
-            uint64_t vectorOutputOffset = outputOffset + offset;
-            DataCopy(ws[realBase + vectorOutputOffset], realLocal, currentCount);
-            DataCopy(ws[imagBase + vectorOutputOffset], imagLocal, currentCount);
-            PipeBarrier<PIPE_ALL>();
-        }
-        column += vectorCount;
+    set_flag(PIPE_MTE2, PIPE_V, kEvent);
+    if constexpr (kWait) {
+        wait_flag(PIPE_MTE2, PIPE_V, kEvent);
     }
 }
 
-__aicore__ inline void ChemmPackPreprocessRows(GlobalTensor<float>& bG, GlobalTensor<float>& ws,
-    const ChemmMmadTiling& tiling, bool isLeft, uint32_t begin, uint32_t end, uint64_t arBase,
-    uint64_t aiBase, uint64_t brBase, uint64_t biBase, LocalTensor<float>& aosLocal,
-    LocalTensor<float>& realLocal, LocalTensor<float>& imagLocal)
+__aicore__ inline void CopyPlaneRows(
+    __ubuf__ float* dst, __ubuf__ float* src, uint32_t rows, uint32_t cols, uint32_t srcStride, uint32_t dstStride)
 {
-    uint32_t columns = isLeft ? tiling.n : tiling.k;
-    uint32_t stride = columns;
-    uint64_t realBase = isLeft ? brBase : arBase;
-    uint64_t imagBase = isLeft ? biBase : aiBase;
-    for (uint32_t row = begin; row < end; ++row) {
-        ChemmPackBRowToFallbackWorkspace(bG, ws, tiling.ldb, row, columns, stride,
-            realBase, imagBase, aosLocal, realLocal, imagLocal);
+    copy_ubuf_to_ubuf(dst, src, 0U, rows, cols / 8U, (srcStride - cols) / 8U, (dstStride - cols) / 8U);
+}
+
+template <bool kLower, bool kConjugate = false>
+__aicore__ inline void ReadHermitian(
+    __gm__ float* a, const ChemmMixedTilingData& t, uint32_t row, uint32_t col, PackBuffers& ub)
+{
+    const bool reflected = kLower ? row < col : row > col;
+    const uint32_t srcRow = reflected ? col : row;
+    const uint32_t srcCol = reflected ? row : col;
+    const uint32_t rows = static_cast<uint32_t>(t.dimA);
+    const uint32_t cols = rows;
+    const uint32_t ld = static_cast<uint32_t>(t.lda);
+    const uint32_t validRows = srcRow < rows ? (rows - srcRow < kMicro ? rows - srcRow : kMicro) : 0U;
+    const uint32_t validCols = srcCol < cols ? (cols - srcCol < kMicro ? cols - srcCol : kMicro) : 0U;
+    LoadDenseRaw(
+        a + 2U * ElementIndex(srcRow, srcCol, ld), ld, validRows, validCols, 2U * kMicro, kComplexTileFloats,
+        validRows != kMicro || validCols != kMicro, ub.raw);
+    DecodeHermitianPlanes16<kLower>(
+        row, col, ub.raw, ub.real, ub.imag, ub.transReal, ub.transImag, ub.masks + (kLower ? 32U : 0U), ub.masks + 64U);
+    pipe_barrier(PIPE_V);
+    if constexpr (kConjugate) {
+        vmuls(ub.imag, ub.imag, -1.0f, 4U, 1U, 1U, 8U, 8U);
+        pipe_barrier(PIPE_V);
     }
 }
 
-__aicore__ inline void ChemmExpandPreprocessRows(GlobalTensor<float>& aG, GlobalTensor<float>& ws,
-    const ChemmMmadTiling& tiling, bool isLeft, bool isLower, uint64_t begin, uint64_t end,
-    uint64_t realBase, uint64_t imagBase)
+template <bool kLower, bool kPrepare>
+__aicore__ inline void PackResidentP(
+    __gm__ float* a, const ChemmMixedTilingData& t, const TileWork& work, __ubuf__ float* p, __ubuf__ float* q,
+    PackBuffers& ub)
 {
-    uint32_t columns = isLeft ? tiling.k : tiling.n;
-    for (uint64_t index = begin; index < end; ++index) {
-        uint32_t row = static_cast<uint32_t>(index / columns);
-        uint32_t column = static_cast<uint32_t>(index % columns);
-        float real;
-        float imag;
-        ChemmGetHermVal(aG, tiling.lda, isLower, row, column, real, imag);
-        ws.SetValue(realBase + index, real);
-        ws.SetValue(imagBase + index, imag);
-    }
-}
-
-__aicore__ inline void ChemmInitPreprocessTensors(GM_ADDR aGm, GM_ADDR bGm, GM_ADDR workspace,
-    const ChemmMmadTiling& tiling, GlobalTensor<float>& aG, GlobalTensor<float>& bG,
-    GlobalTensor<float>& ws)
-{
-    aG.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(aGm),
-        static_cast<uint64_t>(tiling.k) * tiling.lda * 2);
-    bG.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(bGm),
-        static_cast<uint64_t>(tiling.m) * tiling.ldb * 2);
-    ws.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(workspace),
-        WsOffsetIR(tiling.m, tiling.k, tiling.n) + static_cast<uint64_t>(tiling.m) * tiling.n);
-    DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(ws);
-}
-
-__aicore__ inline void ChemmRunPreprocessRows(GlobalTensor<float>& aG, GlobalTensor<float>& bG,
-    GlobalTensor<float>& ws, const ChemmMmadTiling& tiling, bool isLeft, bool isLower,
-    uint32_t blockIdx, uint32_t blockNum, uint64_t arBase, uint64_t aiBase, uint64_t brBase,
-    uint64_t biBase, LocalTensor<float>& aosLocal, LocalTensor<float>& realLocal,
-    LocalTensor<float>& imagLocal)
-{
-    if (blockNum == 0U) {
-        blockNum = 1U;
-    }
-    uint32_t bRows = isLeft ? tiling.k : tiling.m;
-    uint32_t bBegin = static_cast<uint32_t>((static_cast<uint64_t>(blockIdx) * bRows) / blockNum);
-    uint32_t bEnd = static_cast<uint32_t>((static_cast<uint64_t>(blockIdx + 1U) * bRows) / blockNum);
-    ChemmPackPreprocessRows(bG, ws, tiling, isLeft, bBegin, bEnd, arBase, aiBase, brBase, biBase,
-        aosLocal, realLocal, imagLocal);
-
-    constexpr uint64_t alignment = 16U;
-    uint64_t totalLeft = static_cast<uint64_t>(tiling.m) * tiling.k;
-    uint64_t leftBegin = ((static_cast<uint64_t>(blockIdx) * totalLeft / blockNum + alignment - 1U) /
-        alignment) * alignment;
-    uint64_t leftEnd = ((static_cast<uint64_t>(blockIdx + 1U) * totalLeft / blockNum + alignment - 1U) /
-        alignment) * alignment;
-    if (leftEnd > totalLeft) leftEnd = totalLeft;
-    if (isLeft) ChemmExpandPreprocessRows(aG, ws, tiling, true, isLower, leftBegin, leftEnd, arBase, aiBase);
-
-    uint64_t totalRight = static_cast<uint64_t>(tiling.k) * tiling.n;
-    uint64_t rightBegin = ((static_cast<uint64_t>(blockIdx) * totalRight / blockNum + alignment - 1U) /
-        alignment) * alignment;
-    uint64_t rightEnd = ((static_cast<uint64_t>(blockIdx + 1U) * totalRight / blockNum + alignment - 1U) /
-        alignment) * alignment;
-    if (rightEnd > totalRight) rightEnd = totalRight;
-    if (!isLeft) ChemmExpandPreprocessRows(aG, ws, tiling, false, isLower, rightBegin, rightEnd, brBase, biBase);
-}
-
-extern "C" __global__ __aicore__ void chemm_preprocess_kernel(
-    GM_ADDR aGm, GM_ADDR bGm, GM_ADDR workspace, const ChemmMmadTiling tiling)
-{
-    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
-
-    bool isLeft = (tiling.sideMode == ACLBLAS_SIDE_LEFT);
-    bool isLower = (tiling.uploMode == ACLBLAS_LOWER);
-
-    GlobalTensor<float> aG;
-    GlobalTensor<float> bG;
-    GlobalTensor<float> ws;
-    ChemmInitPreprocessTensors(aGm, bGm, workspace, tiling, aG, bG, ws);
-
-    uint32_t bidx = static_cast<uint32_t>(GetBlockIdx());
-    uint32_t bnum = static_cast<uint32_t>(GetBlockNum());
-    if (bnum == 0) { bnum = 1; }
-
-    uint64_t arBase = WsOffsetAr(tiling.m, tiling.k);
-    uint64_t aiBase = WsOffsetAi(tiling.m, tiling.k);
-    uint64_t brBase = WsOffsetBr(tiling.m, tiling.k, tiling.n);
-    uint64_t biBase = WsOffsetBi(tiling.m, tiling.k, tiling.n);
-
-    constexpr uint32_t fallbackChunkComplex = 128U;
-    TPipe fallbackPipe;
-    TBuf<TPosition::VECCALC> fallbackAosBuffer;
-    TBuf<TPosition::VECCALC> fallbackRealBuffer;
-    TBuf<TPosition::VECCALC> fallbackImagBuffer;
-    fallbackPipe.InitBuffer(fallbackAosBuffer, fallbackChunkComplex * 2U * sizeof(float));
-    fallbackPipe.InitBuffer(fallbackRealBuffer, fallbackChunkComplex * sizeof(float));
-    fallbackPipe.InitBuffer(fallbackImagBuffer, fallbackChunkComplex * sizeof(float));
-    LocalTensor<float> fallbackAosLocal = fallbackAosBuffer.Get<float>();
-    LocalTensor<float> fallbackRealLocal = fallbackRealBuffer.Get<float>();
-    LocalTensor<float> fallbackImagLocal = fallbackImagBuffer.Get<float>();
-    ChemmRunPreprocessRows(aG, bG, ws, tiling, isLeft, isLower, bidx, bnum, arBase, aiBase, brBase, biBase,
-        fallbackAosLocal, fallbackRealLocal, fallbackImagLocal);
-
-    DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(ws);
-    PipeBarrier<PIPE_ALL>();
-}
-
-// ============================================================
-// Phase 1: GEMM
-// Computes 4 real matrix multiplies:
-//   RR = A_r * B_r,  II = A_i * B_i,  RI = A_r * B_i,  IR = A_i * B_r
-// Each: C(i,j) = sum_k A(i,k) * B(k,j)
-// ============================================================
-
-constexpr uint32_t kChemmCubeBaseM = 64U;
-constexpr uint32_t kChemmCubeBaseN = 64U;
-constexpr uint32_t kChemmCubeBaseK = 32U;
-
-// The Cube path consumes the row-major SoA matrices produced by preprocess.
-// A single CO1 tile is reused only after its complete M -> Fixpipe lifecycle.
-class ChemmBasicMmad {
-public:
-    __aicore__ inline void Init(
-        __gm__ float* ar, __gm__ float* ai, __gm__ float* br, __gm__ float* bi,
-        __gm__ float* rr, __gm__ float* ii, __gm__ float* ri, __gm__ float* ir,
-        uint32_t m, uint32_t n, uint32_t k)
-    {
-        ar_.SetGlobalBuffer(ar, static_cast<uint64_t>(m) * k);
-        ai_.SetGlobalBuffer(ai, static_cast<uint64_t>(m) * k);
-        br_.SetGlobalBuffer(br, static_cast<uint64_t>(k) * n);
-        bi_.SetGlobalBuffer(bi, static_cast<uint64_t>(k) * n);
-        rr_.SetGlobalBuffer(rr, static_cast<uint64_t>(m) * n);
-        ii_.SetGlobalBuffer(ii, static_cast<uint64_t>(m) * n);
-        ri_.SetGlobalBuffer(ri, static_cast<uint64_t>(m) * n);
-        ir_.SetGlobalBuffer(ir, static_cast<uint64_t>(m) * n);
-        m_ = m;
-        n_ = n;
-        k_ = k;
-    }
-
-    __aicore__ inline void PrepareCo1()
-    {
-        SetFlag<HardEvent::FIX_M>(EVENT_ID0);
-    }
-
-    __aicore__ inline void Process(uint32_t tileIndex, uint32_t tileStride)
-    {
-        // FP32 Cube format: c0=8, fractalNum=2, fractalSize=16*8.
-        // For a 64x64x32 tile all A/B L1 and L0 allocations are 2048
-        // floats, while the L0C allocation is 4096 floats.
-        constexpr uint32_t aSizeAlignL1 = kChemmCubeBaseM * kChemmCubeBaseK;
-        constexpr uint32_t bSizeAlignL1 = kChemmCubeBaseK * kChemmCubeBaseN;
-        constexpr uint32_t aSizeAlignL0 = aSizeAlignL1;
-        constexpr uint32_t bSizeAlignL0 = bSizeAlignL1;
-        constexpr uint32_t cSizeAlignL0 = kChemmCubeBaseM * kChemmCubeBaseN;
-        const uint32_t mTiles = m_ / kChemmCubeBaseM;
-        const uint32_t nTiles = n_ / kChemmCubeBaseN;
-        const uint64_t tileCount = static_cast<uint64_t>(mTiles) * nTiles;
-
-        LocalTensor<float> a1(TPosition::A1, 0U, aSizeAlignL1);
-        LocalTensor<float> b1(TPosition::B1, aSizeAlignL1 * sizeof(float), bSizeAlignL1);
-        LocalTensor<float> a2(TPosition::A2, 0U, aSizeAlignL0);
-        LocalTensor<float> b2(TPosition::B2, 0U, bSizeAlignL0);
-        LocalTensor<float> c1(TPosition::CO1, 0U, cSizeAlignL0);
-
-        for (uint64_t tile = tileIndex; tile < tileCount; tile += tileStride) {
-            const uint32_t mBase = static_cast<uint32_t>((tile / nTiles) * kChemmCubeBaseM);
-            const uint32_t nBase = static_cast<uint32_t>((tile % nTiles) * kChemmCubeBaseN);
-            ProcessProduct(a1, b1, a2, b2, c1, ar_, br_, rr_, mBase, nBase);
-            ProcessProduct(a1, b1, a2, b2, c1, ai_, bi_, ii_, mBase, nBase);
-            ProcessProduct(a1, b1, a2, b2, c1, ar_, bi_, ri_, mBase, nBase);
-            ProcessProduct(a1, b1, a2, b2, c1, ai_, br_, ir_, mBase, nBase);
-        }
-        // Drain the final Fixpipe completion token. Without this wait, a
-        // later kernel invocation can block while reinitializing FIX_M.
-        WaitFlag<HardEvent::FIX_M>(EVENT_ID0);
-    }
-
-private:
-    __aicore__ inline void CopyToL1(
-        LocalTensor<float>& a1, LocalTensor<float>& b1, GlobalTensor<float>& left, GlobalTensor<float>& right,
-        uint32_t mBase, uint32_t nBase, uint32_t kBase)
-    {
-        Nd2NzParams aParams;
-        aParams.ndNum = 1;
-        aParams.nValue = kChemmCubeBaseM;
-        aParams.dValue = kChemmCubeBaseK;
-        aParams.srcNdMatrixStride = 0;
-        aParams.srcDValue = k_;
-        aParams.dstNzC0Stride = kChemmCubeBaseM;
-        aParams.dstNzNStride = 1;
-        aParams.dstNzMatrixStride = 0;
-        DataCopy(a1, left[static_cast<uint64_t>(mBase) * k_ + kBase], aParams);
-        SetFlag<HardEvent::MTE2_MTE1>(EVENT_ID0);
-
-        Nd2NzParams bParams;
-        bParams.ndNum = 1;
-        bParams.nValue = kChemmCubeBaseK;
-        bParams.dValue = kChemmCubeBaseN;
-        bParams.srcNdMatrixStride = 0;
-        bParams.srcDValue = n_;
-        bParams.dstNzC0Stride = kChemmCubeBaseK;
-        bParams.dstNzNStride = 1;
-        bParams.dstNzMatrixStride = 0;
-        DataCopy(b1, right[static_cast<uint64_t>(kBase) * n_ + nBase], bParams);
-        SetFlag<HardEvent::MTE2_MTE1>(EVENT_ID1);
-    }
-
-    __aicore__ inline void LoadToL0(
-        LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2)
-    {
-        WaitFlag<HardEvent::MTE2_MTE1>(EVENT_ID0);
-        // FP32 NZ -> ZZ, equivalent to the official LoadData3DV2
-        // false/false KernelMmad path. For 64x32: L1/L0=2048 floats.
-        LoadData3DParamsV2<float> aParams;
-        aParams.l1H = 1U;
-        aParams.l1W = kChemmCubeBaseM;
-        aParams.channelSize = kChemmCubeBaseK;
-        aParams.kExtension = kChemmCubeBaseK;
-        aParams.mExtension = kChemmCubeBaseM;
-        aParams.strideW = 1U;
-        aParams.strideH = 1U;
-        aParams.filterW = 1U;
-        aParams.filterH = 1U;
-        aParams.dilationFilterW = 1U;
-        aParams.dilationFilterH = 1U;
-        aParams.filterSizeW = false;
-        aParams.filterSizeH = false;
-        aParams.enTranspose = false;
-        aParams.fMatrixCtrl = false;
-        LoadData(a2, a1, aParams);
-
-        WaitFlag<HardEvent::MTE2_MTE1>(EVENT_ID1);
-        // FP32 NZ -> ZN. For K=32/N=64 this uses two K fractals and
-        // eight N c0 repeats; the hardware transpose supplies ZN layout.
-        LoadData3DParamsV2<float> bParams;
-        bParams.l1H = 1U;
-        bParams.l1W = kChemmCubeBaseK;
-        bParams.channelSize = kChemmCubeBaseN;
-        bParams.kExtension = kChemmCubeBaseN;
-        bParams.mExtension = kChemmCubeBaseK;
-        bParams.strideW = 1U;
-        bParams.strideH = 1U;
-        bParams.filterW = 1U;
-        bParams.filterH = 1U;
-        bParams.dilationFilterW = 1U;
-        bParams.dilationFilterH = 1U;
-        bParams.filterSizeW = false;
-        bParams.filterSizeH = false;
-        bParams.enTranspose = true;
-        bParams.fMatrixCtrl = false;
-        LoadData(b2, b1, bParams);
-        SetFlag<HardEvent::MTE1_M>(EVENT_ID0);
-    }
-
-    __aicore__ inline void Compute(
-        LocalTensor<float>& c1, LocalTensor<float>& a2, LocalTensor<float>& b2, bool initialize)
-    {
-        WaitFlag<HardEvent::MTE1_M>(EVENT_ID0);
-        MmadParams params = {};
-        params.m = kChemmCubeBaseM;
-        params.n = kChemmCubeBaseN;
-        params.k = kChemmCubeBaseK;
-        params.cmatrixInitVal = initialize;
-        params.cmatrixSource = false;
-        params.kDirectionAlign = false;
-        SetHF32Mode(HF32Mode::DISABLE);
-        Mmad(c1, a2, b2, params);
-        PipeBarrier<PIPE_ALL>();
-    }
-
-    __aicore__ inline void ProcessProduct(
-        LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
-        LocalTensor<float>& c1, GlobalTensor<float>& left, GlobalTensor<float>& right,
-        GlobalTensor<float>& output, uint32_t mBase, uint32_t nBase)
-    {
-        WaitFlag<HardEvent::FIX_M>(EVENT_ID0);
-        for (uint32_t kBase = 0U; kBase < k_; kBase += kChemmCubeBaseK) {
-            CopyToL1(a1, b1, left, right, mBase, nBase, kBase);
-            LoadToL0(a1, b1, a2, b2);
-            Compute(c1, a2, b2, kBase == 0U);
-        }
-        SetFlag<HardEvent::M_FIX>(EVENT_ID0);
-        StoreToGm(c1, output, mBase, nBase);
-    }
-
-    __aicore__ inline void StoreToGm(
-        LocalTensor<float>& c1, GlobalTensor<float>& output, uint32_t mBase, uint32_t nBase)
-    {
-        WaitFlag<HardEvent::M_FIX>(EVENT_ID0);
-        FixpipeParamsV220 params = {};
-        params.mSize = kChemmCubeBaseM;
-        params.nSize = kChemmCubeBaseN;
-        params.srcStride = kChemmCubeBaseM;
-        params.dstStride = n_;
-        params.ndNum = 1;
-        params.srcNdStride = 0;
-        params.dstNdStride = 0;
-        Fixpipe(output[static_cast<uint64_t>(mBase) * n_ + nBase], c1, params);
-        SetFlag<HardEvent::FIX_M>(EVENT_ID0);
-    }
-
-    GlobalTensor<float> ar_;
-    GlobalTensor<float> ai_;
-    GlobalTensor<float> br_;
-    GlobalTensor<float> bi_;
-    GlobalTensor<float> rr_;
-    GlobalTensor<float> ii_;
-    GlobalTensor<float> ri_;
-    GlobalTensor<float> ir_;
-    uint32_t m_;
-    uint32_t n_;
-    uint32_t k_;
-};
-
-extern "C" __global__ __aicore__ void chemm_gemm_cube_kernel(
-    GM_ADDR workspace, const ChemmMmadTiling tiling)
-{
-    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIC_ONLY);
-    AscendC::InitSocState();
-
-    const uint32_t blockIdx = static_cast<uint32_t>(GetBlockIdx());
-    uint32_t blockNum = static_cast<uint32_t>(GetBlockNum());
-    if (blockNum == 0U) {
-        blockNum = 1U;
-    }
-    __gm__ float* workspaceBase = reinterpret_cast<__gm__ float*>(workspace);
-    ChemmBasicMmad mmad;
-    mmad.PrepareCo1();
-    uint64_t arOffset = WsOffsetAr(tiling.m, tiling.k);
-    uint64_t aiOffset = WsOffsetAi(tiling.m, tiling.k);
-    uint64_t brOffset = WsOffsetBr(tiling.m, tiling.k, tiling.n);
-    uint64_t biOffset = WsOffsetBi(tiling.m, tiling.k, tiling.n);
-    uint64_t rrOffset = WsOffsetRR(tiling.m, tiling.k, tiling.n);
-    uint64_t iiOffset = WsOffsetII(tiling.m, tiling.k, tiling.n);
-    uint64_t riOffset = WsOffsetRI(tiling.m, tiling.k, tiling.n);
-    uint64_t irOffset = WsOffsetIR(tiling.m, tiling.k, tiling.n);
-    mmad.Init(workspaceBase + arOffset, workspaceBase + aiOffset, workspaceBase + brOffset,
-        workspaceBase + biOffset, workspaceBase + rrOffset, workspaceBase + iiOffset,
-        workspaceBase + riOffset, workspaceBase + irOffset, tiling.m, tiling.n, tiling.k);
-    mmad.Process(blockIdx, blockNum);
-
-    GlobalTensor<float> workspaceTensor;
-    workspaceTensor.SetGlobalBuffer(workspaceBase, WsOffsetIR(tiling.m, tiling.k, tiling.n) +
-        static_cast<uint64_t>(tiling.m) * tiling.n);
-    DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(workspaceTensor);
-    PipeBarrier<PIPE_ALL>();
-}
-
-struct ChemmFallbackAccumulator {
-    float value;
-    float correction;
-};
-
-__aicore__ inline void ChemmAccumulateFallback(float product, ChemmFallbackAccumulator& accumulator)
-{
-    float y = product - accumulator.correction;
-    float t = accumulator.value + y;
-    accumulator.correction = (t - accumulator.value) - y;
-    accumulator.value = t;
-}
-
-__aicore__ inline void ChemmComputeFallbackElement(GlobalTensor<float>& ws, uint64_t arBase, uint64_t aiBase,
-    uint64_t brBase, uint64_t biBase, uint64_t rrBase, uint64_t iiBase, uint64_t riBase, uint64_t irBase,
-    uint32_t n, uint32_t k, uint64_t index)
-{
-    if (n == 0U) {
+    if (work.pRows == 0U) {
         return;
     }
-    uint32_t row = static_cast<uint32_t>(index / n);
-    uint32_t column = static_cast<uint32_t>(index % n);
-    ChemmFallbackAccumulator rr{0.0f, 0.0f};
-    ChemmFallbackAccumulator ii{0.0f, 0.0f};
-    ChemmFallbackAccumulator ri{0.0f, 0.0f};
-    ChemmFallbackAccumulator ir{0.0f, 0.0f};
-    for (uint32_t kk = 0; kk < k; ++kk) {
-        uint64_t aIndex = static_cast<uint64_t>(row) * k + kk;
-        uint64_t bIndex = static_cast<uint64_t>(kk) * n + column;
-        float ar = ws.GetValue(arBase + aIndex);
-        float ai = ws.GetValue(aiBase + aIndex);
-        float br = ws.GetValue(brBase + bIndex);
-        float bi = ws.GetValue(biBase + bIndex);
-        ChemmAccumulateFallback(ar * br, rr);
-        ChemmAccumulateFallback(ai * bi, ii);
-        ChemmAccumulateFallback(ar * bi, ri);
-        ChemmAccumulateFallback(ai * br, ir);
-    }
-    ws.SetValue(rrBase + index, rr.value);
-    ws.SetValue(iiBase + index, ii.value);
-    ws.SetValue(riBase + index, ri.value);
-    ws.SetValue(irBase + index, ir.value);
-}
-
-extern "C" __global__ __aicore__ void chemm_gemm_aiv_fallback_kernel(
-    GM_ADDR workspace, const ChemmMmadTiling tiling)
-{
-    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
-
-    uint32_t m = tiling.m;
-    uint32_t n = tiling.n;
-    uint32_t k = tiling.k;
-
-    GlobalTensor<float> ws;
-    ws.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(workspace),
-                       WsOffsetIR(m, k, n) + static_cast<uint64_t>(m) * n);
-    DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(ws);
-
-    uint64_t arBase = WsOffsetAr(m, k);
-    uint64_t aiBase = WsOffsetAi(m, k);
-    uint64_t brBase = WsOffsetBr(m, k, n);
-    uint64_t biBase = WsOffsetBi(m, k, n);
-    uint64_t rrBase = WsOffsetRR(m, k, n);
-    uint64_t iiBase = WsOffsetII(m, k, n);
-    uint64_t riBase = WsOffsetRI(m, k, n);
-    uint64_t irBase = WsOffsetIR(m, k, n);
-
-    uint32_t bidx = static_cast<uint32_t>(GetBlockIdx());
-    uint32_t bnum = static_cast<uint32_t>(GetBlockNum());
-    if (bnum == 0U) {
-        bnum = 1U;
-    }
-
-    uint64_t totalElems = static_cast<uint64_t>(m) * n;
-    uint64_t elemsPerBlock = (totalElems + static_cast<uint64_t>(bnum) * 15U) /
-        (static_cast<uint64_t>(bnum) * 16U) * 16U;
-    uint64_t begin = static_cast<uint64_t>(bidx) * elemsPerBlock;
-    uint64_t end = begin + elemsPerBlock;
-    if (end > totalElems) {
-        end = totalElems;
-    }
-    for (uint64_t idx = begin; idx < end; ++idx) {
-        ChemmComputeFallbackElement(ws, arBase, aiBase, brBase, biBase, rrBase, iiBase, riBase, irBase, n, k, idx);
-    }
-
-    DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(ws);
-    PipeBarrier<PIPE_ALL>();
-}
-
-// ============================================================
-// Phase 2: Postprocess (AIV, multi-core)
-// C = alpha * (RR-II, RI+IR) + beta * C
-// ============================================================
-
-__aicore__ inline void ChemmStoreFallbackEpilogueScalar(
-    GlobalTensor<float>& aG, GlobalTensor<float>& bG, GlobalTensor<float>& cG, GlobalTensor<float>& ws,
-    const ChemmMmadTiling& tiling, bool isLeft, bool isLower, bool betaIsZero, uint64_t rrBase,
-    uint64_t iiBase, uint64_t riBase, uint64_t irBase, uint64_t idx, uint32_t row, uint32_t column)
-{
-    constexpr float cancellationRatio = 0.0014f;
-    float rr = ws.GetValue(rrBase + idx);
-    float ii = ws.GetValue(iiBase + idx);
-    float ri = ws.GetValue(riBase + idx);
-    float ir = ws.GetValue(irBase + idx);
-    float tmpReal = rr - ii;
-    float tmpImag = ri + ir;
-    uint64_t cIdx = (static_cast<uint64_t>(row) * tiling.ldc + column) * 2U;
-    float cOrigR = betaIsZero ? 0.0f : cG.GetValue(cIdx);
-    float cOrigI = betaIsZero ? 0.0f : cG.GetValue(cIdx + 1U);
-    float termR0 = tiling.alphaReal * tmpReal;
-    float termR1 = -tiling.alphaImag * tmpImag;
-    float termR2 = tiling.betaReal * cOrigR;
-    float termR3 = -tiling.betaImag * cOrigI;
-    float termI0 = tiling.alphaReal * tmpImag;
-    float termI1 = tiling.alphaImag * tmpReal;
-    float termI2 = tiling.betaReal * cOrigI;
-    float termI3 = tiling.betaImag * cOrigR;
-    float outR = termR0 + termR1 + termR2 + termR3;
-    float outI = termI0 + termI1 + termI2 + termI3;
-    float scaleR = ChemmAbs(termR0) + ChemmAbs(termR1) + ChemmAbs(termR2) + ChemmAbs(termR3);
-    float scaleI = ChemmAbs(termI0) + ChemmAbs(termI1) + ChemmAbs(termI2) + ChemmAbs(termI3);
-    bool needsCorrection = (static_cast<uint64_t>(tiling.m) * tiling.n <= 64U) ||
-        ChemmAbs(outR) <= cancellationRatio * scaleR || ChemmAbs(outI) <= cancellationRatio * scaleI;
-    if (needsCorrection) {
-        ChemmStoreDoubleFloatResult(aG, bG, cG, tiling, isLeft, isLower, row, column);
-    } else {
-        cG.SetValue(cIdx, outR);
-        cG.SetValue(cIdx + 1U, outI);
-    }
-}
-
-// The fast path retains original C in UB so correction can run after the
-// vector result has been written to C.
-__aicore__ inline void ChemmLoadVectorChunk(GlobalTensor<float>& cG, GlobalTensor<float>& ws,
-    const ChemmMmadTiling& tiling, bool betaIsZero, uint64_t rrBase, uint64_t iiBase, uint64_t riBase,
-    uint64_t irBase, uint32_t row, uint32_t column, uint32_t count, LocalTensor<float>& rrLocal,
-    LocalTensor<float>& iiLocal, LocalTensor<float>& riLocal, LocalTensor<float>& irLocal,
-    LocalTensor<float>& cAosLocal, LocalTensor<float>& cRealLocal, LocalTensor<float>& cImagLocal)
-{
-    event_t eventMte2ToV = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
-    uint64_t wsOffset = static_cast<uint64_t>(row) * tiling.n + column;
-    uint64_t cOffset = (static_cast<uint64_t>(row) * tiling.ldc + column) * 2U;
-    DataCopy(rrLocal, ws[rrBase + wsOffset], count);
-    DataCopy(iiLocal, ws[iiBase + wsOffset], count);
-    DataCopy(riLocal, ws[riBase + wsOffset], count);
-    DataCopy(irLocal, ws[irBase + wsOffset], count);
-    if (!betaIsZero) DataCopy(cAosLocal, cG[cOffset], count * 2U);
-    SetFlag<HardEvent::MTE2_V>(eventMte2ToV);
-    WaitFlag<HardEvent::MTE2_V>(eventMte2ToV);
-    if (betaIsZero) {
-        Duplicate(cRealLocal, 0.0f, count);
-        Duplicate(cImagLocal, 0.0f, count);
-    } else {
-        uint16_t repeatTimes = static_cast<uint16_t>((count * 2U + 63U) / 64U);
-        uint64_t reservedCount = 0U;
-        GatherMask<float>(cRealLocal, cAosLocal, 1U, false, 0U, {1U, repeatTimes, 8U, 8U}, reservedCount);
-        GatherMask<float>(cImagLocal, cAosLocal, 2U, false, 0U, {1U, repeatTimes, 8U, 8U}, reservedCount);
-    }
-}
-
-__aicore__ inline void ChemmComputeVectorChunk(const ChemmMmadTiling& tiling, uint32_t count,
-    LocalTensor<float>& rrLocal, LocalTensor<float>& iiLocal, LocalTensor<float>& riLocal,
-    LocalTensor<float>& irLocal, LocalTensor<float>& cRealLocal, LocalTensor<float>& cImagLocal,
-    LocalTensor<float>& tmpRealLocal, LocalTensor<float>& tmpImagLocal, LocalTensor<float>& outRealLocal,
-    LocalTensor<float>& outImagLocal, LocalTensor<float>& tempLocal)
-{
-    Sub(tmpRealLocal, rrLocal, iiLocal, count);
-    Add(tmpImagLocal, riLocal, irLocal, count);
-    Muls(outRealLocal, tmpRealLocal, tiling.alphaReal, count);
-    Muls(tempLocal, tmpImagLocal, -tiling.alphaImag, count);
-    Add(outRealLocal, outRealLocal, tempLocal, count);
-    Muls(outImagLocal, tmpImagLocal, tiling.alphaReal, count);
-    Muls(tempLocal, tmpRealLocal, tiling.alphaImag, count);
-    Add(outImagLocal, outImagLocal, tempLocal, count);
-    Muls(tempLocal, cRealLocal, tiling.betaReal, count);
-    Add(outRealLocal, outRealLocal, tempLocal, count);
-    Muls(tempLocal, cImagLocal, -tiling.betaImag, count);
-    Add(outRealLocal, outRealLocal, tempLocal, count);
-    Muls(tempLocal, cImagLocal, tiling.betaReal, count);
-    Add(outImagLocal, outImagLocal, tempLocal, count);
-    Muls(tempLocal, cRealLocal, tiling.betaImag, count);
-    Add(outImagLocal, outImagLocal, tempLocal, count);
-}
-
-__aicore__ inline void ChemmStoreVectorChunk(GlobalTensor<float>& aG, GlobalTensor<float>& bG,
-    GlobalTensor<float>& cG, const ChemmMmadTiling& tiling, bool isLeft, bool isLower, uint64_t cOffset,
-    uint32_t row, uint32_t column, uint32_t count, LocalTensor<float>& cRealLocal, LocalTensor<float>& cImagLocal,
-    LocalTensor<float>& tmpRealLocal, LocalTensor<float>& tmpImagLocal, LocalTensor<float>& outRealLocal,
-    LocalTensor<float>& outImagLocal, LocalTensor<float>& outAosLocal)
-{
-    event_t eventVToMte3 = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE3));
-    event_t eventMte3ToV = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_V));
-    for (uint32_t offset = 0U; offset < count; ++offset) {
-        outAosLocal.SetValue(offset * 2U, outRealLocal.GetValue(offset));
-        outAosLocal.SetValue(offset * 2U + 1U, outImagLocal.GetValue(offset));
-    }
-    SetFlag<HardEvent::V_MTE3>(eventVToMte3);
-    WaitFlag<HardEvent::V_MTE3>(eventVToMte3);
-    DataCopy(cG[cOffset], outAosLocal, count * 2U);
-    SetFlag<HardEvent::MTE3_V>(eventMte3ToV);
-    WaitFlag<HardEvent::MTE3_V>(eventMte3ToV);
-    for (uint32_t offset = 0U; offset < count; ++offset) {
-        float tmpReal = tmpRealLocal.GetValue(offset);
-        float tmpImag = tmpImagLocal.GetValue(offset);
-        float cReal = cRealLocal.GetValue(offset);
-        float cImag = cImagLocal.GetValue(offset);
-        float scaleR = ChemmAbs(tiling.alphaReal * tmpReal) + ChemmAbs(tiling.alphaImag * tmpImag) +
-            ChemmAbs(tiling.betaReal * cReal) + ChemmAbs(tiling.betaImag * cImag);
-        float scaleI = ChemmAbs(tiling.alphaReal * tmpImag) + ChemmAbs(tiling.alphaImag * tmpReal) +
-            ChemmAbs(tiling.betaReal * cImag) + ChemmAbs(tiling.betaImag * cReal);
-        if (ChemmAbs(outRealLocal.GetValue(offset)) <= 0.0014f * scaleR ||
-            ChemmAbs(outImagLocal.GetValue(offset)) <= 0.0014f * scaleI) {
-            ChemmStoreDoubleFloatResultWithOriginalC(aG, bG, cG, tiling, isLeft, isLower,
-                cReal, cImag, row, column + offset);
-        }
-    }
-}
-
-__aicore__ inline void ChemmProcessVectorChunk(
-    GlobalTensor<float>& aG, GlobalTensor<float>& bG, GlobalTensor<float>& cG, GlobalTensor<float>& ws,
-    const ChemmMmadTiling& tiling, bool isLeft, bool isLower, bool betaIsZero, uint64_t rrBase,
-    uint64_t iiBase, uint64_t riBase, uint64_t irBase, uint32_t row, uint32_t column, uint32_t count,
-    LocalTensor<float>& rrLocal, LocalTensor<float>& iiLocal, LocalTensor<float>& riLocal,
-    LocalTensor<float>& irLocal, LocalTensor<float>& cAosLocal, LocalTensor<float>& cRealLocal,
-    LocalTensor<float>& cImagLocal, LocalTensor<float>& tmpRealLocal, LocalTensor<float>& tmpImagLocal,
-    LocalTensor<float>& outRealLocal, LocalTensor<float>& outImagLocal, LocalTensor<float>& tempLocal,
-    LocalTensor<float>& outAosLocal)
-{
-    uint64_t cOffset = (static_cast<uint64_t>(row) * tiling.ldc + column) * 2U;
-    ChemmLoadVectorChunk(cG, ws, tiling, betaIsZero, rrBase, iiBase, riBase, irBase, row, column, count,
-        rrLocal, iiLocal, riLocal, irLocal, cAosLocal, cRealLocal, cImagLocal);
-    ChemmComputeVectorChunk(tiling, count, rrLocal, iiLocal, riLocal, irLocal, cRealLocal, cImagLocal,
-        tmpRealLocal, tmpImagLocal, outRealLocal, outImagLocal, tempLocal);
-    ChemmStoreVectorChunk(aG, bG, cG, tiling, isLeft, isLower, cOffset, row, column, count,
-        cRealLocal, cImagLocal, tmpRealLocal, tmpImagLocal, outRealLocal, outImagLocal, outAosLocal);
-}
-
-__aicore__ inline void ChemmProcessVectorRows(
-    GlobalTensor<float>& aG, GlobalTensor<float>& bG, GlobalTensor<float>& cG, GlobalTensor<float>& ws,
-    const ChemmMmadTiling& tiling, bool isLeft, bool isLower, bool betaIsZero, uint64_t rrBase,
-    uint64_t iiBase, uint64_t riBase, uint64_t irBase, uint32_t rowBegin, uint32_t rowEnd,
-    LocalTensor<float>& rrLocal, LocalTensor<float>& iiLocal, LocalTensor<float>& riLocal,
-    LocalTensor<float>& irLocal, LocalTensor<float>& cAosLocal, LocalTensor<float>& cRealLocal,
-    LocalTensor<float>& cImagLocal, LocalTensor<float>& tmpRealLocal, LocalTensor<float>& tmpImagLocal,
-    LocalTensor<float>& outRealLocal, LocalTensor<float>& outImagLocal, LocalTensor<float>& tempLocal,
-    LocalTensor<float>& outAosLocal)
-{
-    constexpr uint32_t chunkComplex = 128U;
-    for (uint32_t row = rowBegin; row < rowEnd; ++row) {
-        for (uint32_t column = 0U; column < tiling.n; column += chunkComplex) {
-            uint32_t count = (tiling.n - column) < chunkComplex ? (tiling.n - column) : chunkComplex;
-            ChemmProcessVectorChunk(aG, bG, cG, ws, tiling, isLeft, isLower, betaIsZero, rrBase, iiBase,
-                riBase, irBase, row, column, count, rrLocal, iiLocal, riLocal, irLocal, cAosLocal,
-                cRealLocal, cImagLocal, tmpRealLocal, tmpImagLocal, outRealLocal, outImagLocal,
-                tempLocal, outAosLocal);
-        }
-    }
-}
-
-__aicore__ inline void ChemmInitVectorEpilogueBuffers(
-    TPipe& pipe, TBuf<TPosition::VECCALC>& rrBuffer, TBuf<TPosition::VECCALC>& iiBuffer,
-    TBuf<TPosition::VECCALC>& riBuffer, TBuf<TPosition::VECCALC>& irBuffer,
-    TBuf<TPosition::VECCALC>& cAosBuffer, TBuf<TPosition::VECCALC>& cRealBuffer,
-    TBuf<TPosition::VECCALC>& cImagBuffer, TBuf<TPosition::VECCALC>& tmpRealBuffer,
-    TBuf<TPosition::VECCALC>& tmpImagBuffer, TBuf<TPosition::VECCALC>& outRealBuffer,
-    TBuf<TPosition::VECCALC>& outImagBuffer, TBuf<TPosition::VECCALC>& tempBuffer,
-    TBuf<TPosition::VECCALC>& outAosBuffer, LocalTensor<float>& rrLocal, LocalTensor<float>& iiLocal,
-    LocalTensor<float>& riLocal, LocalTensor<float>& irLocal, LocalTensor<float>& cAosLocal,
-    LocalTensor<float>& cRealLocal, LocalTensor<float>& cImagLocal, LocalTensor<float>& tmpRealLocal,
-    LocalTensor<float>& tmpImagLocal, LocalTensor<float>& outRealLocal, LocalTensor<float>& outImagLocal,
-    LocalTensor<float>& tempLocal, LocalTensor<float>& outAosLocal)
-{
-    constexpr uint32_t chunkComplex = 128U;
-    pipe.InitBuffer(rrBuffer, chunkComplex * sizeof(float));
-    pipe.InitBuffer(iiBuffer, chunkComplex * sizeof(float));
-    pipe.InitBuffer(riBuffer, chunkComplex * sizeof(float));
-    pipe.InitBuffer(irBuffer, chunkComplex * sizeof(float));
-    pipe.InitBuffer(cAosBuffer, chunkComplex * 2U * sizeof(float));
-    pipe.InitBuffer(cRealBuffer, chunkComplex * sizeof(float));
-    pipe.InitBuffer(cImagBuffer, chunkComplex * sizeof(float));
-    pipe.InitBuffer(tmpRealBuffer, chunkComplex * sizeof(float));
-    pipe.InitBuffer(tmpImagBuffer, chunkComplex * sizeof(float));
-    pipe.InitBuffer(outRealBuffer, chunkComplex * sizeof(float));
-    pipe.InitBuffer(outImagBuffer, chunkComplex * sizeof(float));
-    pipe.InitBuffer(tempBuffer, chunkComplex * sizeof(float));
-    pipe.InitBuffer(outAosBuffer, chunkComplex * 2U * sizeof(float));
-    rrLocal = rrBuffer.Get<float>();
-    iiLocal = iiBuffer.Get<float>();
-    riLocal = riBuffer.Get<float>();
-    irLocal = irBuffer.Get<float>();
-    cAosLocal = cAosBuffer.Get<float>();
-    cRealLocal = cRealBuffer.Get<float>();
-    cImagLocal = cImagBuffer.Get<float>();
-    tmpRealLocal = tmpRealBuffer.Get<float>();
-    tmpImagLocal = tmpImagBuffer.Get<float>();
-    outRealLocal = outRealBuffer.Get<float>();
-    outImagLocal = outImagBuffer.Get<float>();
-    tempLocal = tempBuffer.Get<float>();
-    outAosLocal = outAosBuffer.Get<float>();
-}
-
-__aicore__ inline bool ChemmTryVectorEpilogueRows(
-    GlobalTensor<float>& aG, GlobalTensor<float>& bG, GlobalTensor<float>& cG, GlobalTensor<float>& ws,
-    const ChemmMmadTiling& tiling, bool isLeft, bool isLower, bool betaIsZero, uint64_t rrBase,
-    uint64_t iiBase, uint64_t riBase, uint64_t irBase, uint32_t rowBegin, uint32_t rowEnd)
-{
-    constexpr uint32_t complexAlignment = 8U;
-    if ((tiling.n % complexAlignment) != 0U || (tiling.ldc % complexAlignment) != 0U ||
-        static_cast<uint64_t>(tiling.m) * tiling.n <= 64U) {
-        return false;
-    }
-
-    TPipe pipe;
-    TBuf<TPosition::VECCALC> rrBuffer;
-    TBuf<TPosition::VECCALC> iiBuffer;
-    TBuf<TPosition::VECCALC> riBuffer;
-    TBuf<TPosition::VECCALC> irBuffer;
-    TBuf<TPosition::VECCALC> cAosBuffer;
-    TBuf<TPosition::VECCALC> cRealBuffer;
-    TBuf<TPosition::VECCALC> cImagBuffer;
-    TBuf<TPosition::VECCALC> tmpRealBuffer;
-    TBuf<TPosition::VECCALC> tmpImagBuffer;
-    TBuf<TPosition::VECCALC> outRealBuffer;
-    TBuf<TPosition::VECCALC> outImagBuffer;
-    TBuf<TPosition::VECCALC> tempBuffer;
-    TBuf<TPosition::VECCALC> outAosBuffer;
-    LocalTensor<float> rrLocal;
-    LocalTensor<float> iiLocal;
-    LocalTensor<float> riLocal;
-    LocalTensor<float> irLocal;
-    LocalTensor<float> cAosLocal;
-    LocalTensor<float> cRealLocal;
-    LocalTensor<float> cImagLocal;
-    LocalTensor<float> tmpRealLocal;
-    LocalTensor<float> tmpImagLocal;
-    LocalTensor<float> outRealLocal;
-    LocalTensor<float> outImagLocal;
-    LocalTensor<float> tempLocal;
-    LocalTensor<float> outAosLocal;
-    ChemmInitVectorEpilogueBuffers(pipe, rrBuffer, iiBuffer, riBuffer, irBuffer, cAosBuffer, cRealBuffer,
-        cImagBuffer, tmpRealBuffer, tmpImagBuffer, outRealBuffer, outImagBuffer, tempBuffer, outAosBuffer,
-        rrLocal, iiLocal, riLocal, irLocal, cAosLocal, cRealLocal, cImagLocal, tmpRealLocal, tmpImagLocal,
-        outRealLocal, outImagLocal, tempLocal, outAosLocal);
-
-    ChemmProcessVectorRows(aG, bG, cG, ws, tiling, isLeft, isLower, betaIsZero, rrBase, iiBase,
-        riBase, irBase, rowBegin, rowEnd, rrLocal, iiLocal, riLocal, irLocal, cAosLocal, cRealLocal,
-        cImagLocal, tmpRealLocal, tmpImagLocal, outRealLocal, outImagLocal, tempLocal, outAosLocal);
-    return true;
-}
-
-__aicore__ inline void ChemmInitEpilogueTensors(GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR workspace,
-    const ChemmMmadTiling& tiling, GlobalTensor<float>& aG, GlobalTensor<float>& bG,
-    GlobalTensor<float>& cG, GlobalTensor<float>& ws)
-{
-    aG.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(aGm),
-        static_cast<uint64_t>(tiling.k) * tiling.lda * 2U);
-    bG.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(bGm),
-        static_cast<uint64_t>(tiling.m) * tiling.ldb * 2U);
-    ws.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(workspace),
-        WsOffsetIR(tiling.m, tiling.k, tiling.n) + static_cast<uint64_t>(tiling.m) * tiling.n);
-    cG.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(cGm),
-        static_cast<uint64_t>(tiling.m) * tiling.ldc * 2U);
-    DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(ws);
-}
-
-__aicore__ inline void ChemmRunScalarEpilogue(GlobalTensor<float>& aG, GlobalTensor<float>& bG,
-    GlobalTensor<float>& cG, GlobalTensor<float>& ws, const ChemmMmadTiling& tiling, bool isLeft,
-    bool isLower, bool betaIsZero, uint64_t rrBase, uint64_t iiBase, uint64_t riBase, uint64_t irBase,
-    uint32_t blockIdx, uint32_t blockNum)
-{
-    if (blockNum == 0U) {
-        blockNum = 1U;
-    }
-    if (tiling.n == 0U) return;
-    constexpr uint64_t alignment = 8U;
-    uint64_t totalElems = static_cast<uint64_t>(tiling.m) * tiling.n;
-    uint64_t elemsPerBlock = (totalElems + static_cast<uint64_t>(blockNum) * alignment - 1U) /
-        (static_cast<uint64_t>(blockNum) * alignment) * alignment;
-    uint64_t begin = static_cast<uint64_t>(blockIdx) * elemsPerBlock;
-    uint64_t end = begin + elemsPerBlock;
-    if (end > totalElems) end = totalElems;
-    for (uint64_t index = begin; index < end; ++index) {
-        uint32_t row = static_cast<uint32_t>(index / tiling.n);
-        uint32_t column = static_cast<uint32_t>(index % tiling.n);
-        ChemmStoreFallbackEpilogueScalar(aG, bG, cG, ws, tiling, isLeft, isLower, betaIsZero,
-            rrBase, iiBase, riBase, irBase, index, row, column);
-    }
-}
-
-extern "C" __global__ __aicore__ void chemm_fallback_correction_epilogue_kernel(
-    GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR workspace, const ChemmMmadTiling tiling)
-{
-    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
-    GlobalTensor<float> aG;
-    GlobalTensor<float> bG;
-    GlobalTensor<float> ws;
-    GlobalTensor<float> cG;
-    ChemmInitEpilogueTensors(aGm, bGm, cGm, workspace, tiling, aG, bG, cG, ws);
-
-    bool isLeft = (tiling.sideMode == ACLBLAS_SIDE_LEFT);
-    bool isLower = (tiling.uploMode == ACLBLAS_LOWER);
-    bool betaIsZero = (tiling.betaReal == 0.0f && tiling.betaImag == 0.0f);
-    uint64_t rrBase = WsOffsetRR(tiling.m, tiling.k, tiling.n);
-    uint64_t iiBase = WsOffsetII(tiling.m, tiling.k, tiling.n);
-    uint64_t riBase = WsOffsetRI(tiling.m, tiling.k, tiling.n);
-    uint64_t irBase = WsOffsetIR(tiling.m, tiling.k, tiling.n);
-
-    uint32_t bidx = static_cast<uint32_t>(GetBlockIdx());
-    uint32_t bnum = static_cast<uint32_t>(GetBlockNum());
-    if (bnum == 0) { bnum = 1; }
-
-    uint32_t rowBegin = static_cast<uint32_t>((static_cast<uint64_t>(bidx) * tiling.m) / bnum);
-    uint32_t rowEnd = static_cast<uint32_t>((static_cast<uint64_t>(bidx + 1U) * tiling.m) / bnum);
-    if (ChemmTryVectorEpilogueRows(aG, bG, cG, ws, tiling, isLeft, isLower, betaIsZero, rrBase, iiBase,
-        riBase, irBase, rowBegin, rowEnd)) {
-        DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(cG);
-        PipeBarrier<PIPE_ALL>();
+    constexpr uint32_t indexElements = 2U * kMicro * CHEMM_K_FEED;
+    constexpr uint32_t sourceElements = 2U * CHEMM_K_FEED * CHEMM_K_FEED;
+    const uint32_t first = (work.col + work.pFirst) * t.expandedK;
+    const uint32_t k = t.expandedK / 2U;
+    const uint32_t pitch = k / 8U - 1U;
+    const uint32_t elements = work.pRows * t.expandedK;
+    const uint32_t repeats = elements / 64U;
+    __ubuf__ uint32_t* index = reinterpret_cast<__ubuf__ uint32_t*>(q);
+    __ubuf__ uint8_t* mask = reinterpret_cast<__ubuf__ uint8_t*>(q + indexElements);
+    __ubuf__ uint32_t* addresses = reinterpret_cast<__ubuf__ uint32_t*>(q + indexElements + 32U);
+    __ubuf__ float* source = q + indexElements + 64U;
+    if constexpr (kPrepare) {
+        copy_gm_to_ubuf(
+            reinterpret_cast<__ubuf__ float*>(index),
+            reinterpret_cast<__gm__ float*>(g_hermitianGather.index[pitch][kLower] + first), 0U, 1U, elements / 8U, 0U,
+            0U);
+        copy_gm_to_ubuf_align_b8(
+            mask, reinterpret_cast<__gm__ uint8_t*>(g_hermitianGather.conjugate[pitch][kLower] + first / 64U), 0U, 1U,
+            repeats * sizeof(uint64_t), 0U, 0U, 0U, 0U);
+        // Gather the imaginary diagonal from zero, never from the ignored input diagonal.
+        vector_dup(source + sourceElements, 0.0f, 1U, 1U, 1U, 8U, 0U);
+        LoadDenseRaw<false>(a, t.lda, t.dimA, t.dimA, 2U * k, 2U * k * k, k != static_cast<uint32_t>(t.dimA), source);
         return;
     }
-
-    ChemmRunScalarEpilogue(aG, bG, cG, ws, tiling, isLeft, isLower, betaIsZero,
-        rrBase, iiBase, riBase, irBase, bidx, bnum);
-
-    DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(cG);
-    PipeBarrier<PIPE_ALL>();
+    wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID3);
+    vgather(reinterpret_cast<__ubuf__ uint32_t*>(p), index, reinterpret_cast<uint64_t>(source), 8U, repeats);
+    pipe_barrier(PIPE_V);
+    vmuls(ub.real, p, -1.0f, repeats, 1U, 1U, 8U, 8U);
+    set_vector_mask(0ULL, kMaskAddressVectorMask);
+    vector_dup(addresses, static_cast<uint32_t>(reinterpret_cast<uint64_t>(mask)), 1U, 1U, 1U, 8U, 0U);
+    pipe_barrier(PIPE_V);
+    set_cmpmask(addresses);
+    pipe_barrier(PIPE_V);
+    set_vector_mask(0ULL, kFullFp32Mask);
+    vsel(p, ub.real, p, repeats, 1U, 1U, 1U, 8U, 8U, 8U, 2U);
 }
 
-extern "C" __global__ __aicore__ void chemm_beta_scale_kernel(
-    GM_ADDR cGm, const ChemmMmadTiling tiling)
+template <bool kPlanes>
+__aicore__ inline void PrepareDenseOperand(
+    __gm__ float* b, const ChemmMixedTilingData& t, const TileWork& work, uint32_t kBase, __ubuf__ float* target,
+    PackBuffers& ub)
 {
-    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
-    GlobalTensor<float> cG;
-    cG.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(cGm),
-        static_cast<uint64_t>(tiling.m) * tiling.ldc * 2U);
-    bool betaIsZero = (tiling.betaReal == 0.0f && tiling.betaImag == 0.0f);
-    uint32_t blockIdx = static_cast<uint32_t>(GetBlockIdx());
-    uint32_t blockNum = static_cast<uint32_t>(GetBlockNum());
-    if (blockNum == 0U) {
-        blockNum = 1U;
+    const uint32_t k = t.expandedK / 2U;
+    const uint32_t validK = static_cast<uint32_t>(t.dimA) - kBase < k ? static_cast<uint32_t>(t.dimA) - kBase : k;
+    const uint32_t first = kPlanes ? work.col + work.pFirst : work.row;
+    const uint32_t extent = kPlanes ? t.n : t.m;
+    const uint32_t span = kPlanes ? work.pRows : work.qRows;
+    const uint32_t validSpan = first < extent ? (extent - first < span ? extent - first : span) : 0U;
+    LoadDenseRaw<kPlanes, kPlanes ? EVENT_ID3 : EVENT_ID4>(
+        b + 2U * ElementIndex(kPlanes ? kBase : first, kPlanes ? first : kBase, t.ldb), t.ldb,
+        kPlanes ? validK : validSpan, kPlanes ? validSpan : validK, 2U * (kPlanes ? k : span), 2U * span * k,
+        validK != k, kPlanes ? ub.bulk : target);
+    if constexpr (kPlanes) {
+        const uint8_t repeats = static_cast<uint8_t>(work.pRows * k / 32U);
+        vreducev2(
+            reinterpret_cast<__ubuf__ uint32_t*>(ub.real), reinterpret_cast<__ubuf__ uint32_t*>(ub.bulk), nullptr,
+            repeats, 1U, 1U, 8U, 8U);
+        vreducev2(
+            reinterpret_cast<__ubuf__ uint32_t*>(ub.imag), reinterpret_cast<__ubuf__ uint32_t*>(ub.bulk), nullptr,
+            repeats, 1U, 2U, 8U, 8U);
+        pipe_barrier(PIPE_V);
+        CopyPlaneRows(target, ub.real, work.pRows, k, k, t.expandedK);
+        CopyPlaneRows(target + k, ub.imag, work.pRows, k, k, t.expandedK);
     }
-    constexpr uint64_t elementsPerCacheLine = 8U;
-    uint64_t totalElems = static_cast<uint64_t>(tiling.m) * tiling.n;
-    uint64_t elemsPerBlock = (totalElems + static_cast<uint64_t>(blockNum) * elementsPerCacheLine - 1U) /
-        (static_cast<uint64_t>(blockNum) * elementsPerCacheLine) * elementsPerCacheLine;
-    uint64_t begin = static_cast<uint64_t>(blockIdx) * elemsPerBlock;
-    uint64_t end = begin + elemsPerBlock;
-    if (end > totalElems) {
-        end = totalElems;
+}
+
+template <bool kRight, bool kLower>
+__aicore__ inline void PackP(
+    __gm__ float* a, __gm__ float* b, const ChemmMixedTilingData& t, const TileWork& work, uint32_t kBase,
+    __ubuf__ float* p, __ubuf__ float* q, PackBuffers& ub)
+{
+    if constexpr (!kRight) {
+        if (work.pRows != 0U) {
+            PrepareDenseOperand<true>(b, t, work, kBase, p, ub);
+        }
+        return;
     }
-    for (uint64_t idx = begin; idx < end; ++idx) {
-        uint32_t i = static_cast<uint32_t>(idx / tiling.n);
-        uint32_t j = static_cast<uint32_t>(idx % tiling.n);
-        uint64_t cIdx = (static_cast<uint64_t>(i) * tiling.ldc + j) * 2U;
-        if (betaIsZero) {
-            cG.SetValue(cIdx, 0.0f);
-            cG.SetValue(cIdx + 1U, 0.0f);
+    const uint32_t k = t.expandedK / 2U;
+    if (t.dimA <= static_cast<int32_t>(CHEMM_K_FEED)) {
+        PackResidentP<kLower, true>(a, t, work, p, q, ub);
+        PrepareDenseOperand<false>(b, t, work, kBase, ub.bulk, ub);
+        PackResidentP<kLower, false>(a, t, work, p, q, ub);
+        return;
+    }
+    PrepareDenseOperand<false>(b, t, work, kBase, ub.bulk, ub);
+    for (uint32_t col = 0U; col < work.pRows; col += kMicro) {
+        for (uint32_t localK = 0U; localK < k; localK += kMicro) {
+            // A(k,j)=conj(A(j,k)); decoding in destination order avoids a second transpose.
+            ReadHermitian<kLower, true>(a, t, work.col + work.pFirst + col, kBase + localK, ub);
+            const uint32_t span = k - localK < kMicro ? k - localK : kMicro;
+            CopyPlaneRows(p + col * t.expandedK + localK, ub.real, kMicro, span, kMicro, t.expandedK);
+            CopyPlaneRows(p + col * t.expandedK + k + localK, ub.imag, kMicro, span, kMicro, t.expandedK);
+        }
+    }
+}
+
+__aicore__ inline void ExpandQ(
+    __ubuf__ float* real, __ubuf__ float* imag, __ubuf__ float* q, uint32_t rows, uint32_t span, uint32_t k)
+{
+    const uint32_t stride = 4U * k;
+    CopyPlaneRows(q, real, rows, span, kMicro, stride);
+    CopyPlaneRows(q + 2U * k, imag, rows, span, kMicro, stride);
+    CopyPlaneRows(q + 3U * k, real, rows, span, kMicro, stride);
+    pipe_barrier(PIPE_V);
+    vmuls(imag, imag, -1.0f, static_cast<uint8_t>(rows / 4U), 1U, 1U, 8U, 8U);
+    pipe_barrier(PIPE_V);
+    CopyPlaneRows(q + k, imag, rows, span, kMicro, stride);
+}
+
+__aicore__ inline void PackDenseQ(
+    __gm__ float* b, const ChemmMixedTilingData& t, const TileWork& work, uint32_t kBase, bool preloaded,
+    __ubuf__ float* q, PackBuffers& ub)
+{
+    const uint32_t k = t.expandedK / 2U;
+    const uint32_t rawStride = 2U * work.qRows;
+    if (!preloaded) {
+        PrepareDenseOperand<false>(b, t, work, kBase, ub.bulk, ub);
+    }
+    wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID4);
+    for (uint32_t offset = t.rawK; offset < t.expandedK; offset += kMicro) {
+        const uint32_t first = offset < k ? offset : offset - k;
+        const uint32_t second = offset + 8U < k ? offset + 8U : offset + 8U - k;
+        __ubuf__ float* packed = q + (offset - t.rawK) * rawStride;
+        uint64_t src[16];
+        uint64_t dst[16];
+#pragma unroll
+        for (uint32_t lane = 0U; lane < 8U; ++lane) {
+            src[lane] = reinterpret_cast<uint64_t>(ub.bulk + (first + lane) * rawStride);
+            src[8U + lane] = reinterpret_cast<uint64_t>(ub.bulk + (second + lane) * rawStride);
+            dst[2U * lane] = reinterpret_cast<uint64_t>(packed + (offset < k ? lane : (lane ^ 1U)) * 8U);
+            dst[2U * lane + 1U] =
+                reinterpret_cast<uint64_t>(packed + 8U * rawStride + (offset + 8U < k ? lane : (lane ^ 1U)) * 8U);
+        }
+        set_va_reg_sb(VA0, dst);
+        set_va_reg_sb(VA1, dst + 8U);
+        set_va_reg_sb(VA2, src);
+        set_va_reg_sb(VA3, src + 8U);
+        scatter_vnchwconv_b32(VA0, VA2, work.qRows / 4U, 8U, 1U);
+    }
+    pipe_barrier(PIPE_V);
+    set_vector_mask(0ULL, 0x00ff00ff00ff00ffULL);
+    vmuls(q + (k - t.rawK) * rawStride, q + (k - t.rawK) * rawStride, -1.0f, k * rawStride / 64U, 1U, 1U, 8U, 8U);
+    set_vector_mask(0ULL, kFullFp32Mask);
+}
+
+template <bool kRight, bool kLower>
+__aicore__ inline void PackQ(
+    __gm__ float* a, __gm__ float* b, const ChemmMixedTilingData& t, const TileWork& work, uint32_t kBase,
+    bool preloaded, __ubuf__ float* q, PackBuffers& ub)
+{
+    if constexpr (kRight) {
+        PackDenseQ(b, t, work, kBase, preloaded, q, ub);
+        return;
+    }
+    const uint32_t k = t.expandedK / 2U;
+    for (uint32_t row = 0U; row < work.qRows; row += kMicro) {
+        for (uint32_t localK = 0U; localK < k; localK += kMicro) {
+            ReadHermitian<kLower>(a, t, work.row + row, kBase + localK, ub);
+            const uint32_t span = k - localK < kMicro ? k - localK : kMicro;
+            ExpandQ(ub.real, ub.imag, q + 2U * row * t.expandedK + localK, kMicro, span, k);
+        }
+    }
+}
+
+template <bool kSingleColumn = false>
+__aicore__ inline TileWork WorkForTile(const ChemmMixedTilingData& t, uint32_t tile, uint32_t half)
+{
+    const uint32_t col = kSingleColumn ? 0U : tile / t.tileRows;
+    const uint32_t first = t.panelM / (2U * kMicro) * kMicro;
+    const uint32_t local = tile - col * t.tileRows;
+    return {
+        local * t.rowTile + half * (t.rowTile / 2U), col * t.panelM, half * first,
+        half == 0U ? first : t.panelM - first, t.rowTile / 2U};
+}
+
+template <bool kRight, bool kStationary = false>
+__aicore__ inline void PublishInput(
+    __gm__ float* base, const ChemmMixedTilingData& t, const TileWork& work, uint32_t job, uint32_t feed, uint32_t half,
+    __ubuf__ float* p, __ubuf__ float* q)
+{
+    const uint32_t slot = job % CHEMM_INPUT_RING;
+    __gm__ float* input = base + slot * t.inputSlotStride;
+    __gm__ float* pDst = base + t.pCacheOffset + feed * t.pElements;
+    set_flag(PIPE_V, PIPE_MTE3, EVENT_ID2);
+    wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID2);
+    if constexpr (kStationary) {
+        if (work.pRows != 0U) {
+            copy_ubuf_to_gm(pDst + work.pFirst * t.expandedK, p, 0U, 1U, work.pRows * t.expandedK / 8U, 0U, 0U);
+        }
+        if (t.rowOwned == 0U) {
+            ffts_cross_core_sync(PIPE_MTE3, 1U | (2U << 4U) | (7U << 8U));
+        }
+        return;
+    }
+    if constexpr (kRight) {
+        copy_ubuf_to_gm(
+            input + half * work.qRows * 16U, q, 0U, (t.expandedK - t.rawK) / 8U, 2U * work.qRows, 0U, 2U * work.qRows);
+    } else {
+        copy_ubuf_to_gm(input + half * t.qElements / 2U, q, 0U, 1U, t.qElements / 16U, 0U, 0U);
+    }
+    set_flag(PIPE_MTE3, PIPE_V, static_cast<event_t>(job & 1U));
+    ffts_cross_core_sync(PIPE_MTE3, 1U | (2U << 4U) | (slot << 8U));
+}
+
+template <bool kRight, bool kLower>
+__aicore__ inline void ProduceTiles(
+    __gm__ float* a, __gm__ float* b, __gm__ float* base, const ChemmMixedTilingData& t, uint32_t begin, uint32_t end,
+    uint32_t half, PackBuffers& ub)
+{
+    if (t.rowOwned == 0U) {
+        copy_gm_to_ubuf_align_b8(ub.masks, reinterpret_cast<__gm__ uint8_t*>(g_packMasks), 0U, 1U, 96U, 0U, 0U, 0U, 0U);
+    }
+    uint32_t job = 0U;
+    for (uint32_t tile = begin; tile < end; ++tile) {
+        TileWork work = t.rowOwned != 0U ? WorkForTile<true>(t, tile, half) : WorkForTile(t, tile, half);
+        const bool newColumn = tile == begin || tile % t.tileRows == 0U;
+        if (newColumn && tile != begin && t.rowOwned == 0U) {
+            wait_flag_dev(6U);
+        }
+        const bool packP = t.rowOwned != 0U ? tile == begin : newColumn;
+        if (packP && t.rowOwned != 0U) {
+            work.col = 0U;
+            work.pFirst = half * kMicro;
+            work.pRows = kMicro;
+        }
+        for (uint32_t feed = 0U; feed < t.kFeeds; ++feed, ++job) {
+            if (job >= CHEMM_INPUT_RING) {
+                wait_flag_dev(3U + job % CHEMM_INPUT_RING);
+            }
+            if (job >= 2U) {
+                wait_flag(PIPE_MTE3, PIPE_V, static_cast<event_t>(job & 1U));
+            }
+            __ubuf__ float* p = ub.input + (job & 1U) * kInputBankElements;
+            __ubuf__ float* q = p + CHEMM_MAX_P_ELEMENTS / 2U;
+            if (packP) {
+                PackP<kRight, kLower>(a, b, t, work, feed * CHEMM_K_FEED, p, q, ub);
+                PublishInput<kRight, true>(base, t, work, job, feed, half, p, q);
+            }
+            PackQ<kRight, kLower>(a, b, t, work, feed * CHEMM_K_FEED, packP, q, ub);
+            PublishInput<kRight>(base, t, work, job, feed, half, p, q);
+        }
+    }
+    wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID0);
+    if (job > 1U) {
+        wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID1);
+    }
+}
+
+__aicore__ inline void RunProducers(
+    __gm__ float* a, __gm__ float* b, __gm__ float* base, const ChemmMixedTilingData& t, uint32_t begin, uint32_t end,
+    uint32_t half, __ubuf__ float* scratch)
+{
+    PackBuffers ub{
+        scratch,
+        scratch + 2U * kInputBankElements,
+        scratch + 2U * kInputBankElements + kBulkElements,
+        scratch + 2U * kInputBankElements + kBulkElements + kComplexTileFloats,
+        scratch + 2U * kInputBankElements + kBulkElements + kComplexTileFloats + kPlaneElements,
+        scratch + 2U * kInputBankElements + kBulkElements + kComplexTileFloats + 2U * kPlaneElements,
+        scratch + 2U * kInputBankElements + kBulkElements + kComplexTileFloats + 2U * kPlaneElements + kMicroElements,
+        reinterpret_cast<__ubuf__ uint8_t*>(scratch + kScratchElements - 24U)};
+    set_atomic_none();
+    set_mask_norm();
+    set_vector_mask(0ULL, kFullFp32Mask);
+    const bool right = (t.kernelFlags & CHEMM_FLAG_RIGHT) != 0U;
+    const bool lower = (t.kernelFlags & CHEMM_FLAG_LOWER) != 0U;
+    if (right && lower) {
+        ProduceTiles<true, true>(a, b, base, t, begin, end, half, ub);
+    } else if (right) {
+        ProduceTiles<true, false>(a, b, base, t, begin, end, half, ub);
+    } else if (lower) {
+        ProduceTiles<false, true>(a, b, base, t, begin, end, half, ub);
+    } else {
+        ProduceTiles<false, false>(a, b, base, t, begin, end, half, ub);
+    }
+}
+
+template <bool kResident>
+__aicore__ inline void PrepareStationaryFeed(
+    __gm__ float* b, __gm__ float* base, const ChemmMixedTilingData& t, const FeedWork& work, __cbuf__ float* pL1,
+    __cbuf__ float* qL1, __cb__ float* qL0)
+{
+    if (!kResident && t.rawK != 0U) {
+        __cbuf__ float* raw = qL1 + 2U * work.rows * (t.expandedK - t.rawK);
+        const uint32_t rows = static_cast<uint32_t>(t.m) - work.row < work.rows ? t.m - work.row : work.rows;
+        copy_gm_to_cbuf_multi_nd2nz_b32s(
+            raw, b + 2U * ElementIndex(work.row, work.feed * CHEMM_K_FEED, static_cast<uint32_t>(t.ldb)), 0U, 1U,
+            t.rawK, 2U * rows, 0U, 2U * static_cast<uint32_t>(t.ldb), t.rawK, 1U, 0U);
+        set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID2);
+        wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID2);
+        load_cbuf_to_cb_transpose(qL0, raw, 0U, work.rows / 8U, 1U, 0U, false, work.rows / 8U - 1U);
+    }
+    if (!kResident && work.newColumn) {
+        wait_flag_dev(7U);
+    }
+    if ((!kResident && t.residentP == 0U) || work.newColumn) {
+        __gm__ float* source = base + t.pCacheOffset + work.feed * t.pElements;
+        const uint32_t columns = kResident ? 2U * kMicro : t.panelM;
+        copy_gm_to_cbuf_multi_nd2nz_b32s(pL1, source, 0U, 1U, columns, t.expandedK, 0U, t.expandedK, columns, 1U, 0U);
+    }
+}
+
+template <bool kTail, bool kResident = false>
+__aicore__ inline void LoadMatrixFeed(
+    __gm__ float* b, __gm__ float* base, const ChemmMixedTilingData& t, const FeedWork& work, __cbuf__ float* pL1,
+    __cbuf__ float* qL1, __cb__ float* qL0)
+{
+    const event_t event = static_cast<event_t>(work.job & 1U);
+    if constexpr (!kTail) {
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event);
+        wait_flag(PIPE_M, PIPE_MTE1, static_cast<event_t>(kResident ? 0U : work.job & t.l0BankMask));
+        if constexpr (kResident) {
+            // Q-ready also covers the earlier P store on the same MTE3 pipe.
+            wait_flag_dev(work.job % CHEMM_INPUT_RING);
+        }
+        PrepareStationaryFeed<kResident>(b, base, t, work, pL1, qL1, qL0);
+        if constexpr (kResident) {
+            copy_gm_to_cbuf(
+                qL1, base + (work.job % CHEMM_INPUT_RING) * t.inputSlotStride, 0U, 1U, work.rows * t.expandedK / 4U, 0U,
+                0U, PAD_NONE);
+            if (work.job + CHEMM_INPUT_RING < work.totalJobs) {
+                ffts_cross_core_sync(PIPE_MTE2, 1U | (2U << 4U) | ((3U + work.job % CHEMM_INPUT_RING) << 8U));
+            }
+        }
+    } else {
+        const uint32_t slot = work.job % CHEMM_INPUT_RING;
+        wait_flag_dev(slot);
+        __gm__ float* input = base + slot * t.inputSlotStride;
+        if (kResident || (t.kernelFlags & CHEMM_FLAG_RIGHT) != 0U) {
+            const uint32_t k = kResident ? t.expandedK : t.expandedK - t.rawK;
+            copy_gm_to_cbuf(qL1, input, 0U, 1U, work.rows * k / 4U, 0U, 0U, PAD_NONE);
         } else {
-            float cReal = cG.GetValue(cIdx);
-            float cImag = cG.GetValue(cIdx + 1U);
-            cG.SetValue(cIdx, tiling.betaReal * cReal - tiling.betaImag * cImag);
-            cG.SetValue(cIdx + 1U, tiling.betaReal * cImag + tiling.betaImag * cReal);
+            copy_gm_to_cbuf_multi_nd2nz_b32s(
+                qL1, input, 0U, 1U, 2U * t.rowTile, t.expandedK, 0U, t.expandedK, 2U * t.rowTile, 1U, 0U);
+        }
+        if (work.job + CHEMM_INPUT_RING < work.totalJobs) {
+            ffts_cross_core_sync(PIPE_MTE2, 1U | (2U << 4U) | ((3U + slot) << 8U));
+        }
+        if (work.releaseP && work.feed + 1U == t.kFeeds) {
+            ffts_cross_core_sync(PIPE_MTE2, 1U | (2U << 4U) | (6U << 8U));
         }
     }
-    DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(cG);
-    PipeBarrier<PIPE_ALL>();
+    set_flag(PIPE_MTE2, PIPE_MTE1, event);
 }
 
-// ============================================================
-// Host launcher
-// ============================================================
-
-void chemm_kernel_do(
-    GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR workspace,
-    const ChemmMmadTiling& tiling, uint32_t aivCoreNum, void* stream)
+template <bool kRaw>
+__aicore__ inline void ComputeMatrixFeed(
+    __gm__ float* b, __gm__ float* base, const ChemmMixedTilingData& t, const FeedWork& work, __cbuf__ float* pL1,
+    __cbuf__ float* qL1, __ca__ float* pL0, __cb__ float* qL0, __cc__ float* cL0)
 {
-    ChemmMmadTiling tilingCopy = tiling;
-    tilingCopy.aivCoreNum = aivCoreNum;
-    uint64_t outputElems = static_cast<uint64_t>(tilingCopy.m) * tilingCopy.n;
-    uint32_t outputBlocks = static_cast<uint32_t>(outputElems < aivCoreNum ? outputElems : aivCoreNum);
-    if (outputBlocks == 0U) {
-        outputBlocks = 1U;
-    }
-    uint64_t preprocessElems = static_cast<uint64_t>(tilingCopy.m) * tilingCopy.k;
-    uint64_t rightElems = static_cast<uint64_t>(tilingCopy.k) * tilingCopy.n;
-    if (rightElems > preprocessElems) {
-        preprocessElems = rightElems;
-    }
-    uint32_t preprocessBlocks = static_cast<uint32_t>(
-        preprocessElems < aivCoreNum ? preprocessElems : aivCoreNum);
-    if (tilingCopy.k < 16U || tilingCopy.n < 16U) {
-        preprocessBlocks = 1U;
-    }
-    if (preprocessBlocks == 0U) {
-        preprocessBlocks = 1U;
-    }
-    if (tilingCopy.alphaReal == 0.0f && tilingCopy.alphaImag == 0.0f) {
-        if (tilingCopy.betaReal == 1.0f && tilingCopy.betaImag == 0.0f) {
-            return;
+    const event_t bank = static_cast<event_t>(work.job & t.l0BankMask);
+    const event_t inputBank = static_cast<event_t>(work.job & 1U);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, inputBank);
+    const uint32_t fractals = t.panelM / kMicro;
+    constexpr uint32_t kPrefix = kRaw ? kMicro : 0U;
+    const uint32_t tailK = t.expandedK - kPrefix;
+    for (uint32_t row = 0U; row < fractals; ++row) {
+        if constexpr (kRaw) {
+            load_cbuf_to_ca(
+                pL0 + row * kPrefix * kMicro, pL1 + row * 128U, 0U, kPrefix / 8U, fractals, 0U, 0U, false, inc);
         }
-        chemm_beta_scale_kernel<<<outputBlocks, nullptr, stream>>>(cGm, tilingCopy);
-        return;
+        load_cbuf_to_ca(
+            pL0 + t.panelM * kPrefix + row * tailK * kMicro, pL1 + t.panelM * kPrefix + row * 128U, 0U, tailK / 8U,
+            fractals, 0U, 0U, false, inc);
     }
-    chemm_preprocess_kernel<<<preprocessBlocks, nullptr, stream>>>(aGm, bGm, workspace, tilingCopy);
-    // Each AIC owns a strided set of output tiles and serializes the four
-    // complex-product components through one CO1 tile in a single launch.
-    bool useCube = (tilingCopy.m % kChemmCubeBaseM) == 0U &&
-        (tilingCopy.n % kChemmCubeBaseN) == 0U &&
-        tilingCopy.k >= kChemmCubeBaseK && (tilingCopy.k % kChemmCubeBaseK) == 0U;
-    if (useCube) {
-        uint32_t cubeBlocks = tilingCopy.aicCoreNum;
-        chemm_gemm_cube_kernel<<<cubeBlocks, nullptr, stream>>>(workspace, tilingCopy);
-    } else {
-        chemm_gemm_aiv_fallback_kernel<<<outputBlocks, nullptr, stream>>>(workspace, tilingCopy);
+    if constexpr (kRaw) {
+        set_flag(PIPE_MTE1, PIPE_M, bank);
+        wait_flag(PIPE_MTE1, PIPE_M, bank);
+        mad(cL0, pL0, qL0, t.panelM, kPrefix, 2U * work.rows, 0U, false, false, work.feed == 0U);
+        set_flag(PIPE_M, PIPE_MTE1, bank);
     }
-    chemm_fallback_correction_epilogue_kernel<<<outputBlocks, nullptr, stream>>>(
-        aGm, bGm, cGm, workspace, tilingCopy);
+    // The prefix is already running when Scalar waits for Q's producer.
+    LoadMatrixFeed<true>(b, base, t, work, pL1, qL1, qL0);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, inputBank);
+    if constexpr (kRaw) {
+        wait_flag(PIPE_M, PIPE_MTE1, bank);
+    }
+    // Prefix MMAD has released L0B; the tail reuses the same bank.
+    load_cbuf_to_cb(qL0, qL1, 0U, work.rows * tailK / 64U, 1U, 0U, 0U, false, inc);
+    set_flag(PIPE_MTE1, PIPE_MTE2, inputBank);
+    set_flag(PIPE_MTE1, PIPE_M, bank);
+    wait_flag(PIPE_MTE1, PIPE_M, bank);
+    mad(cL0, pL0 + t.panelM * kPrefix, qL0, t.panelM, tailK, 2U * work.rows, 0U, false, false,
+        !kRaw && work.feed == 0U);
+    set_flag(PIPE_M, PIPE_MTE1, bank);
+}
+
+__aicore__ inline void StoreMatrixTile(
+    __gm__ float* c, const ChemmMixedTilingData& t, uint32_t row, uint32_t col, uint32_t span, uint32_t bank,
+    __cc__ float* result)
+{
+    const uint32_t rows = static_cast<uint32_t>(t.m) - row < span ? t.m - row : span;
+    const uint32_t cols = static_cast<uint32_t>(t.n) - col < t.panelM ? static_cast<uint32_t>(t.n) - col : t.panelM;
+    set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+    copy_matrix_cc_to_gm(
+        c + 2U * ElementIndex(row, col, static_cast<uint32_t>(t.ldc)), result, 0U, 2U * rows, cols,
+        2U * static_cast<uint32_t>(t.ldc), t.panelM, 0U, QuantMode_t::NoQuant, 0U, false, true);
+    set_flag(PIPE_FIX, PIPE_M, static_cast<event_t>(bank));
+}
+
+__aicore__ inline void ComputeResidentTile(
+    __gm__ float* b, __gm__ float* base, const ChemmMixedTilingData& t, const FeedWork& work, __cbuf__ float* pL1,
+    __cbuf__ float* qL1, __ca__ float* pL0, __cb__ float* qL0, __cc__ float* result)
+{
+    const event_t inputBank = static_cast<event_t>(work.job & 1U);
+    wait_flag(PIPE_MTE2, PIPE_MTE1, inputBank);
+    load_cbuf_to_cb(qL0, qL1, 0U, work.rows * t.expandedK / 64U, 1U, 0U, 0U, false, inc);
+    set_flag(PIPE_MTE1, PIPE_MTE2, inputBank);
+    if (work.newColumn) {
+        for (uint32_t row = 0U; row < t.panelM / kMicro; ++row) {
+            load_cbuf_to_ca(
+                pL0 + row * t.expandedK * kMicro, pL1 + row * 128U, 0U, t.expandedK / 8U, 2U, 0U, 0U, false, inc);
+        }
+    }
+    set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+    wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+    mad(result, pL0, qL0, t.panelM, t.expandedK, 2U * work.rows, 0U, false, false, true);
+    set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+}
+
+template <bool kRaw, bool kResident = false>
+__aicore__ inline void RunConsumer(
+    __gm__ float* b, __gm__ float* c, __gm__ float* base, const ChemmMixedTilingData& t, uint32_t begin, uint32_t end,
+    __cbuf__ float* l1, __ca__ float* p, __cb__ float* q, __cc__ float* result)
+{
+    const uint32_t feeds = kResident ? 1U : t.kFeeds;
+    const uint32_t pSpan = kResident ? 2U * kMicro * t.expandedK : (t.residentP != 0U ? t.kFeeds : 2U) * t.pElements;
+    const uint32_t totalJobs = (end - begin) * feeds;
+    const uint32_t lastColumn = kResident ? 0U : (end - 1U) / t.tileRows;
+    uint32_t job = 0U;
+    for (uint32_t tile = begin, ordinal = 0U; tile < end; ++tile, ++ordinal) {
+        const uint32_t cBank = ordinal & 1U;
+        __cc__ float* output = result + cBank * t.panelM * 2U * t.rowTile;
+        if (ordinal >= 2U) {
+            wait_flag(PIPE_FIX, PIPE_M, static_cast<event_t>(cBank));
+        }
+        const bool newColumn = tile == begin || (!kResident && tile % t.tileRows == 0U);
+        if (!kResident && t.residentP != 0U && newColumn && tile != begin) {
+            // The stationary L1 panel has readers in both supply banks.
+            set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID2);
+            wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID2);
+        }
+        const bool releaseP = !kResident && t.rowOwned == 0U && tile / t.tileRows != lastColumn &&
+                              (t.residentP != 0U ? newColumn : (tile + 1U) % t.tileRows == 0U);
+        const TileWork tileWork = WorkForTile<kResident>(t, tile, 0U);
+        for (uint32_t feed = 0U; feed < feeds; ++feed, ++job) {
+            const FeedWork work{tileWork.row, tileWork.col, 2U * tileWork.qRows, job,
+                                totalJobs,    feed,         newColumn,           releaseP};
+            __cbuf__ float* pL1 = l1 + (kResident ? 0U : t.residentP != 0U ? feed : (job & 1U)) * t.pElements;
+            __cbuf__ float* qL1 = l1 + pSpan + (job & 1U) * t.qElements;
+            const uint32_t bank = kResident ? 0U : job & t.l0BankMask;
+            LoadMatrixFeed<false, kResident>(b, base, t, work, pL1, qL1, q + bank * t.qElements);
+            if constexpr (kResident) {
+                ComputeResidentTile(b, base, t, work, pL1, qL1, p, q, output);
+            } else {
+                ComputeMatrixFeed<kRaw>(
+                    b, base, t, work, pL1, qL1, p + bank * t.pElements, q + bank * t.qElements, output);
+            }
+        }
+        StoreMatrixTile(c, t, tileWork.row, tileWork.col, 2U * tileWork.qRows, cBank, output);
+    }
+    wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
+    wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
+    wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+    wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
+    wait_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
+    if (end - begin > 1U) {
+        wait_flag(PIPE_FIX, PIPE_M, EVENT_ID1);
+    }
+}
+
+} // namespace
+
+__schedmode__(1) __global__ __mix__(1, 2) void chemm_mixed_kernel(
+    __gm__ uint8_t* gmA, __gm__ uint8_t* gmB, __gm__ uint8_t* gmC, __gm__ uint8_t* gmWorkspace,
+    ChemmMixedTilingData tiling)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
+    __gm__ float* a = reinterpret_cast<__gm__ float*>(gmA);
+    __gm__ float* b = reinterpret_cast<__gm__ float*>(gmB);
+    __gm__ float* c = reinterpret_cast<__gm__ float*>(gmC);
+    // Raw block_idx is the MIX group; the C++ wrapper expands AIV indices.
+    const uint32_t core = static_cast<uint32_t>(get_block_idx());
+    const uint32_t extra = core < tiling.extraTiles ? core : tiling.extraTiles;
+    const uint32_t begin = core * tiling.tilesPerCore + extra;
+    const uint32_t limit = begin + tiling.tilesPerCore + (core < tiling.extraTiles ? 1U : 0U);
+    const uint32_t end = limit < tiling.workTiles ? limit : tiling.workTiles;
+    __gm__ float* base =
+        reinterpret_cast<__gm__ float*>(gmWorkspace) + static_cast<uint64_t>(core) * tiling.inputCoreStride;
+    if ASCEND_IS_AIC {
+        set_ctrl(sbitset1(sbitset0(get_ctrl(), 46U), 51U));
+        set_nd_para(1ULL);
+        set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
+        set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
+        set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+        set_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
+        __cbuf__ float l1[CHEMM_L1_ELEMENTS] __attribute__((aligned(512)));
+        __ca__ float p[CHEMM_L0_ELEMENTS] __attribute__((aligned(512)));
+        __cb__ float q[CHEMM_L0_ELEMENTS] __attribute__((aligned(512)));
+        __cc__ float result[2U * CHEMM_L0_ELEMENTS] __attribute__((aligned(512)));
+        if (tiling.rowOwned != 0U) {
+            RunConsumer<false, true>(b, c, base, tiling, begin, end, l1, p, q, result);
+        } else if (tiling.rawK != 0U) {
+            RunConsumer<true>(b, c, base, tiling, begin, end, l1, p, q, result);
+        } else {
+            RunConsumer<false>(b, c, base, tiling, begin, end, l1, p, q, result);
+        }
+    }
+    if ASCEND_IS_AIV {
+        __ubuf__ float scratch[kScratchElements] __attribute__((aligned(32)));
+        RunProducers(a, b, base, tiling, begin, end, static_cast<uint32_t>(get_subblockid()), scratch);
+    }
+}
+
+void chemm_mixed_kernel_do(
+    uint8_t* a, uint8_t* b, uint8_t* c, uint8_t* workspace, const ChemmMixedTilingData& tiling, void* stream)
+{
+    chemm_mixed_kernel<<<tiling.blockDim, nullptr, stream>>>(a, b, c, workspace, tiling);
 }

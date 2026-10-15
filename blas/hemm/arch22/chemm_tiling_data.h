@@ -8,38 +8,77 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef CHEMM_TILING_DATA_H
-#define CHEMM_TILING_DATA_H
+#pragma once
 
 #include <cstdint>
-#include "cann_ops_blas_common.h"
 
-struct ChemmMmadTiling {
-    uint32_t m;
-    uint32_t n;
-    uint32_t k;
-    uint32_t sideMode;
-    uint32_t uploMode;
-    uint32_t lda;
-    uint32_t ldb;
-    uint32_t ldc;
+constexpr uint32_t CHEMM_MICRO_TILE = 16U;
+constexpr uint32_t CHEMM_AIV_CACHE_FEEDS = 32U;
+constexpr uint32_t CHEMM_AIV_LEFT_MAX_FEEDS = 8U;
+constexpr uint32_t CHEMM_FLAG_RIGHT = 1U;
+constexpr uint32_t CHEMM_FLAG_LOWER = 2U;
+constexpr uint32_t CHEMM_FLAG_FULL = 4U;
+constexpr uint32_t CHEMM_K_FEED = 32U;
+constexpr uint32_t CHEMM_INPUT_RING = 3U;
+constexpr uint32_t CHEMM_MAX_PANEL = 128U;
+constexpr uint32_t CHEMM_MAX_ROWS = 256U;
+constexpr uint32_t CHEMM_MAX_P_ELEMENTS = CHEMM_MAX_PANEL * 2U * CHEMM_K_FEED;
+constexpr uint32_t CHEMM_L0_ELEMENTS = 65536U / sizeof(float);
+constexpr uint32_t CHEMM_L1_ELEMENTS = (524288U - 256U) / sizeof(float);
+
+enum class ChemmVectorMode : uint32_t { LOCAL, CACHED, ORDERED };
+
+struct ChemmAivTilingData {
+    ChemmVectorMode mode;
+    uint32_t kernelFlags;
+    int32_t m;
+    int32_t n;
+    int32_t dimA;
+    int32_t lda;
+    int32_t ldb;
+    int32_t ldc;
+    uint32_t tileRows;
+    uint32_t tileCols;
+    uint32_t blockDim;
+    uint32_t rowTile;
+    uint32_t reductionBanks;
     float alphaReal;
     float alphaImag;
     float betaReal;
     float betaImag;
-    uint32_t aivCoreNum;
-    uint32_t aicCoreNum;
 };
 
-// Workspace: A_r(M*K) + A_i(M*K) + B_r(K*N) + B_i(K*N) + RR(M*N) + II(M*N) + RI(M*N) + IR(M*N)
-static inline size_t CalcChemmWorkspaceBytes(uint32_t m, uint32_t n, uint32_t k)
-{
-    uint64_t mk = static_cast<uint64_t>(m) * k;
-    uint64_t kn = static_cast<uint64_t>(k) * n;
-    uint64_t mn = static_cast<uint64_t>(m) * n;
-    uint64_t total = 2ULL * mk + 2ULL * kn + 4ULL * mn;
-    size_t bytes = static_cast<size_t>(total) * sizeof(float);
-    return (bytes + 31U) & ~static_cast<size_t>(31);
-}
+// P=[output columns,Re(K)|Im(K)], Q=[Re/Im output rows,expanded K].
+// Workspace offsets and local spans are FP32 elements, not bytes.
+struct ChemmMixedTilingData {
+    uint32_t kernelFlags;
+    int32_t m;
+    int32_t n;
+    int32_t dimA;
+    int32_t lda;
+    int32_t ldb;
+    int32_t ldc;
+    uint32_t panelM;
+    uint32_t rowTile;
+    uint32_t expandedK;
+    uint32_t workTiles;
+    uint32_t rawK;
+    uint32_t rowOwned;
+    uint32_t tileRows;
+    uint32_t tileCols;
+    uint32_t blockDim;
+    uint32_t kFeeds;
+    uint32_t tilesPerCore;
+    uint32_t extraTiles;
+    uint32_t pElements;
+    uint32_t qElements;
+    uint32_t inputSlotStride;
+    uint32_t pCacheOffset;
+    uint32_t inputCoreStride;
+    uint32_t residentP;
+    uint32_t l0BankMask;
+};
 
-#endif // CHEMM_TILING_DATA_H
+void chemm_mixed_kernel_do(
+    uint8_t* a, uint8_t* b, uint8_t* c, uint8_t* workspace, const ChemmMixedTilingData& tiling, void* stream);
+void chemm_aiv_kernel_do(uint8_t* a, uint8_t* b, uint8_t* c, const ChemmAivTilingData& tiling, void* stream);
