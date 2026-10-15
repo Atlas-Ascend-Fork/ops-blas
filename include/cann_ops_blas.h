@@ -181,6 +181,10 @@ aclblasStatus_t aclblasStpmv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
     const float* AP, float* x, int incx);
 
+aclblasStatus_t aclblasCtpmv(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
+    const aclblasComplex* AP, aclblasComplex* x, int incx);
+
 // Early arch22 implementation. Prefer aclblasStpmv for new code; this interface may evolve or be removed in future
 // releases.
 aclblasStatus_t aclblasStpmv_legacy(
