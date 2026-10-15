@@ -36,7 +36,7 @@ function(ops_blas_detect_asc_devkit_version)
       "CSYR2K|/syr2k/arch35/csyr2k|csyr2k"
       "SSYRKX|/syrkx/arch35/ssyrkx|ssyrkx"
       "CHERK|/herk/arch35/cherk|cherk"
-      "CHER2K|/herk/arch35/cher2k|cher2k"
+      "CHER2K|/her2k/arch35/cher2k|cher2k"
       "STRSMBATCHED|/trsmbatched/arch35/strsmbatched|strsmbatched"
       "GEMM_STRIDED_BATCHED|/gemm_strided_batched/arch35/gemm_strided_batched_|gemm_strided_batched"
       "GEMM|/gemm/arch35/gemm_|gemm"

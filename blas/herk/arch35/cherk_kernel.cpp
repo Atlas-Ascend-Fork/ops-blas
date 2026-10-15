@@ -132,6 +132,15 @@ __aicore__ inline void ProcessDeinterleaveTile(DeintCtx& ctx,
     uint32_t ubCplxStride = 2 * ubTempStride;
     uint32_t cplxCnt = ubCplxStride * blockCols;
 
+    // aInBuf is shared by every tile of this core. The previous tile's V-stage
+    // DeinterleaveBlock still reads aInBuf when this tile's MTE2 load is issued:
+    // MTE2 and V are independent pipes with no implicit ordering, so without
+    // this V-to-MTE2 handshake the load can overwrite aInBuf first and the
+    // previous tile then deinterleaves THIS tile's data (mirrors the cher2k
+    // arch35 K1 guard, whose comment records the same hazard).
+    SetFlag<HardEvent::V_MTE2>(0);
+    WaitFlag<HardEvent::V_MTE2>(0);
+
     LoadComplexABlock(ctx, iBase, jBase, blockRows, blockCols, ubCplxStride);
     SetFlag<HardEvent::MTE2_V>(0);
     WaitFlag<HardEvent::MTE2_V>(0);
@@ -141,6 +150,16 @@ __aicore__ inline void ProcessDeinterleaveTile(DeintCtx& ctx,
     SetFlag<HardEvent::V_MTE3>(0);
     WaitFlag<HardEvent::V_MTE3>(0);
     StoreRealBlocks(ctx, iBase, jBase, blockRows, blockCols, ubTempStride);
+
+    // WAR hazard on arOutBuf/aiOutBuf: StoreRealBlocks issues MTE3 reads of the
+    // deinterleaved blocks, while the NEXT tile's DeinterleaveBlock (V pipe)
+    // writes the same buffers; V and MTE3 have no implicit ordering. Without
+    // this MTE3-to-V handshake the next tile's compute can retire first and
+    // clobber lanes the store burst has not read yet, leaving whole row bands
+    // of Ar/Ai stale -- the downstream GEMMs then spread them into error
+    // stripes of t1..t4 (mirrors the cher2k arch35 K1 store-side guard).
+    SetFlag<HardEvent::MTE3_V>(0);
+    WaitFlag<HardEvent::MTE3_V>(0);
 }
 
 // Loop over 2D tiles within core's row range
@@ -356,37 +375,42 @@ __aicore__ inline void StoreUploColumn(
     te::Copy(copyUB2GM, gmCol, ubCol);
 }
 
+// LOWER diagonal column, step 1: copy the non-uplo (strictly-upper) segment of
+// C_old from cInUb into cOutDst0 (UB-side, no GM traffic) so the final column
+// image is built entirely in UB and the store below is single-shot. The
+// previous shape stored the whole column and then re-stored the non-uplo
+// segment -- two MTE3 bursts targeting the same GM range whose completion
+// order is not guaranteed: the full-column burst can land after the restore
+// and overwrite non-uplo elements with computed values (the nonuplo exact
+// canary failures; mirrors the cher2k arch35 K3 fix).
+__aicore__ inline void RestoreLowerDiagSegment(
+    LocalTensor<float>& cOutUb, LocalTensor<float>& cInUb, uint64_t ubOff, uint32_t nonUploCnt)
+{
+    if (nonUploCnt == 0) {
+        return;
+    }
+    const uint32_t restoreCount = nonUploCnt * 2;
+    Copy(cOutUb[static_cast<uint32_t>(ubOff)], cInUb[static_cast<uint32_t>(ubOff)], restoreCount);
+}
+
+// LOWER diagonal column, step 2: emit the ONE full-column MTE3 store. The
+// caller must have run RestoreLowerDiagSegment for this column and crossed a
+// barrier, so the UB image is complete and settled.
 template <typename CopyOp>
 __aicore__ inline void StoreLowerDiagColumn(
-    LocalTensor<float>& cOutDst0, LocalTensor<float>& cInUb,
-    CopyOp& copyUB2GM, __gm__ float* cGmBase,
-    uint64_t gmOff, uint64_t ubOff, uint32_t rows, uint32_t nonUploCnt)
+    LocalTensor<float>& cOutUb, CopyOp& copyUB2GM, __gm__ float* cGmBase,
+    uint64_t gmOff, uint64_t ubOff, uint32_t rows)
 {
-    // Store full column, then restore non-uplo
-    uint32_t fullCount = rows * 2;
+    const uint32_t fullCount = rows * 2;
     auto gmFull = te::MakeTensor(
         te::MakeMemPtr<te::Location::GM>(cGmBase + gmOff),
         te::MakeFrameLayout<te::NDExtLayoutPtn>(
             static_cast<uint64_t>(1), static_cast<uint64_t>(fullCount)));
     auto ubFull = te::MakeTensor(
-        te::MakeMemPtr<te::Location::UB, float>(cOutDst0.GetPhyAddr() + ubOff * sizeof(float)),
+        te::MakeMemPtr<te::Location::UB, float>(cOutUb.GetPhyAddr() + ubOff * sizeof(float)),
         te::MakeFrameLayout<te::NDExtLayoutPtn>(
             static_cast<uint64_t>(1), static_cast<uint64_t>(fullCount)));
     te::Copy(copyUB2GM, gmFull, ubFull);
-
-    // Restore non-uplo from C_old
-    if (nonUploCnt > 0) {
-        uint32_t restoreCount = nonUploCnt * 2;
-        auto gmRestore = te::MakeTensor(
-            te::MakeMemPtr<te::Location::GM>(cGmBase + gmOff),
-            te::MakeFrameLayout<te::NDExtLayoutPtn>(
-                static_cast<uint64_t>(1), static_cast<uint64_t>(restoreCount)));
-        auto ubRestore = te::MakeTensor(
-            te::MakeMemPtr<te::Location::UB, float>(cInUb.GetPhyAddr() + ubOff * sizeof(float)),
-            te::MakeFrameLayout<te::NDExtLayoutPtn>(
-                static_cast<uint64_t>(1), static_cast<uint64_t>(restoreCount)));
-        te::Copy(copyUB2GM, gmRestore, ubRestore);
-    }
 }
 
 // UB→GM: store non-diagonal block (fully in uplo triangle) via single 2D te::Copy.
@@ -446,7 +470,23 @@ __aicore__ inline void InterleaveAndStore(CherkCtx& ctx,
         StoreNonDiagBlock(cOutDst0, copyUB2GM, cGmBase,
             ctx.tiling.n, ldc, iBase, jBase, rows, cols, ubCplxStride);
     } else {
-        // Diagonal block: per-column store (uploCnt varies per column)
+        // Diagonal block: per-column store (uploCnt varies per column).
+        // Two passes instead of one. The LOWER diagonal columns need a UB-side
+        // restore of their strictly-upper segment before the store, and that
+        // restore is a V-pipe op whose result the MTE3 store must observe.
+        // Every column's restore targets a disjoint UB span, so all of them can
+        // be issued first and observed with a SINGLE barrier, then all the
+        // stores go out -- each column's UB image and GM write are identical to
+        // the inline shape (mirrors the cher2k arch35 K3 two-pass fix).
+        for (uint32_t c = 0; c < cols; c++) {
+            uint32_t absJ = jBase + c;
+            uint64_t ubOff = static_cast<uint64_t>(c) * ubCplxStride;
+            bool isDiagonal = (absJ >= iBase && absJ < iBase + rows);
+            if (isDiagonal && !uploUpper) {
+                RestoreLowerDiagSegment(cOutDst0, cInUb, ubOff, absJ - iBase);
+            }
+        }
+        PipeBarrier<PIPE_ALL>();
         for (uint32_t c = 0; c < cols; c++) {
             uint32_t absJ = jBase + c;
             uint64_t gmOff = static_cast<uint64_t>(absJ) * ldc * 2 + iBase * 2;
@@ -457,9 +497,8 @@ __aicore__ inline void InterleaveAndStore(CherkCtx& ctx,
                 uint32_t uploCnt = UploCount(uploUpper, iBase, absJ, rows);
                 StoreUploColumn(cOutDst0, copyUB2GM, cGmBase, gmOff, ubOff, uploCnt);
             } else {
-                uint32_t nonUploCnt = absJ - iBase;
-                StoreLowerDiagColumn(cOutDst0, cInUb, copyUB2GM, cGmBase,
-                    gmOff, ubOff, rows, nonUploCnt);
+                StoreLowerDiagColumn(cOutDst0, copyUB2GM, cGmBase,
+                    gmOff, ubOff, rows);
             }
         }
     }

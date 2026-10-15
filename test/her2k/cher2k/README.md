@@ -11,21 +11,29 @@
 ## 2. 文件结构
 
 ```
-test/herk/cher2k/
-├── README.md                     # 本文档
-├── CMakeLists.txt                # ops_blas_add_gtest_tests(${OPS_BLAS} cher2k_test) 挂载
-├── cher2k_golden.h               # CPU golden：cblas_cher2k（Netlib）+ 参数镜像校验
-├── cher2k_param.h                # CSV 列解析（alpha_real/alpha_imag/beta/nullA/B/C 等）
-└── arch35/
+test/her2k/cher2k/
+├── README.md                     # 本文档（arch35 侧测试说明）
+├── CMakeLists.txt                # ops_blas_add_gtest_tests(${OPS_BLAS} cher2k_test) 挂载（arch22/arch35 双 SOC）
+├── cher2k_golden.h               # CPU golden：double 主判据（升精度 cblas_zher2k）+ float 交叉校验 + 参数镜像校验（arch22/arch35 共用）
+├── cher2k_param.h                # CSV 列解析（alpha_real/alpha_imag/beta/nullA/B/C 等，arch22/arch35 共用）
+├── arch22/                       # arch22（Atlas A2）侧测试，验证流程见 arch22/VALIDATION.md
+│   ├── cher2k_npu_wrapper.h
+│   ├── cher2k_scalar_regression.h
+│   ├── cher2k_test.cpp           # CSV 驱动 GTest（精度 + 标量回归）
+│   ├── cher2k_test.csv           # 默认 50 条
+│   ├── cher2k_test_full.csv      # 全量 1214 条（CHER2K_FULL_REGRESSION=1）
+│   ├── run_validation.sh
+│   └── VALIDATION.md
+└── arch35/                       # arch35（Ascend 950PR）侧测试（本文档所述）
     ├── cher2k_npu_wrapper.h      # Device 装载/同步/回读 wrapper
     ├── cher2k_perf.h             # TC_PF 性能分支（aclrtEvent 计时）
     ├── cher2k_test.cpp           # CSV 驱动 GTest（精度 + 性能 + Host 单测）
-    ├── cher2k_test.csv           # 随任务 1200 条主用例（1000 精度 + 200 性能）
+    └── cher2k_test.csv           # 随任务 1200 条主用例（1000 精度 + 200 性能）
 ```
 
 ## 3. 编译
 
-> 注意：本机/目标为 Ascend 950PR（arch35）时**必须显式指定 `--soc=ascend950`**（build.sh 默认 SOC 为 ascend910b3，会按 arch22 找不到 cher2k 实现）；`--ops` 名为算子名 `cher2k`（不带 `_test` 后缀，CMake 按 `test/<name>/` 定位目录）。
+> 注意：本机/目标为 Ascend 950PR（arch35）时**必须显式指定 `--soc=ascend950`**（build.sh 默认 SOC 为 ascend910b3，会构建 arch22 侧测试而非本文档所述的 arch35 用例）；`--ops` 名为算子名 `cher2k`（不带 `_test` 后缀，CMake 经家族嵌套目录 `test/her2k/cher2k/` 定位）。
 
 ```bash
 # 全仓编译（库 + 全部测试）
@@ -35,7 +43,7 @@ bash build.sh --soc=ascend950
 bash build.sh --ops=cher2k --soc=ascend950
 ```
 
-编译产物：`build/test/herk/cher2k/cher2k_test`（GTest 二进制）；库安装于 `out/lib64/libops_blas.so`。
+编译产物：`build/test/her2k/cher2k/cher2k_test`（GTest 二进制）；库安装于 `out/lib64/libops_blas.so`。
 
 ## 4. 运行测试
 

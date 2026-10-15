@@ -251,9 +251,9 @@ TEST_P(Cher2kArch22Test, CsvDriven)
     const size_t cCount = p.ldc > 0 && p.n > 0 ? static_cast<size_t>(p.ldc) * p.n : 0U;
     const char* perfIterations = std::getenv("CHER2K_PERF_ITERATIONS");
     const bool performanceCase = perfIterations != nullptr && p.caseName.rfind("TC_PF_", 0U) == 0U;
-    std::vector<aclblasComplex> a = MakeComplexArray(aCount, p.fillA, p.randomSeed);
-    std::vector<aclblasComplex> b = MakeComplexArray(bCount, p.fillB, p.randomSeed + 1U);
-    std::vector<aclblasComplex> c = MakeComplexArray(cCount, p.fillC, p.randomSeed + 2U);
+    std::vector<aclblasComplex> a = MakeComplexArray(aCount, p.aFill, p.randomSeed);
+    std::vector<aclblasComplex> b = MakeComplexArray(bCount, p.bFill, p.randomSeed + 1U);
+    std::vector<aclblasComplex> c = MakeComplexArray(cCount, p.cFill, p.randomSeed + 2U);
     std::vector<aclblasComplex> golden;
     if (!performanceCase && p.expectResult == ACLBLAS_STATUS_SUCCESS && !p.nullC) {
         golden = c;

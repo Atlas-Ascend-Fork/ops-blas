@@ -27,9 +27,11 @@ beta 之所以限定为实数，是因为复数 beta 会破坏 C 的 Hermitian �
 
 #### 产品支持情况
 
+- Ascend 950PR / Ascend 950DT：支持
 - Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
-- Ascend 950PR / Ascend 950DT：使用 [arch35 实现](../herk/README.md#aclblascher2k)，本页描述 arch22
 - Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
+
+> Ascend 950PR/Ascend 950DT 上的 cher2k 依赖 CANN asc-devkit >= 9.1（`ASC_DEVKIT_MAJOR >= 9 && ASC_DEVKIT_MINOR >= 1`），低于该版本时编译与运行将跳过此算子。
 
 #### 函数原型
 
@@ -55,24 +57,67 @@ aclblasStatus_t aclblasCher2k(aclblasHandle_t handle, aclblasFillMode_t uplo, ac
 | C | 输入/输出 | aclblasComplex*（复数 FP32） | N×N Hermitian 复矩阵，输入旧值，输出新值，仅 uplo 指定三角区域被更新，Device 内存 |
 | ldc | 输入 | int | C 矩阵的主维，ldc >= max(1, n)，Host 内存 |
 
+> 注：上表 alpha/beta 的「Host 或 Device 内存」为 arch22（Atlas A2）实现口径；arch35（Ascend 950）实现要求 alpha/beta 为 Device 指针（Device 标量）。
+
 #### 约束说明
 
+以下约束对 arch22（Atlas A2）与 arch35（Ascend 950）两代实现均适用：
+
 - n >= 0, k >= 0
-- uplo 为 ACLBLAS_UPPER 或 ACLBLAS_LOWER
-- trans 为 ACLBLAS_OP_N 或 ACLBLAS_OP_C
+- uplo 为 ACLBLAS_UPPER 或 ACLBLAS_LOWER；越界枚举值返回 ACLBLAS_STATUS_INVALID_ENUM
+- trans 为 ACLBLAS_OP_N 或 ACLBLAS_OP_C；ACLBLAS_OP_T 为合法枚举但不支持，返回 ACLBLAS_STATUS_INVALID_VALUE；其他越界值返回 ACLBLAS_STATUS_INVALID_ENUM
 - trans='N' 时：lda >= max(1, n)、ldb >= max(1, n)
 - trans='C' 时：lda >= max(1, k)、ldb >= max(1, k)
 - ldc >= max(1, n)
 - alpha、beta 不可为 nullptr
 - A、B 不可为 nullptr（当 n > 0 且 k > 0 时）
-- n>0 时，C 必须非空；唯一例外是零乘积且 beta=0 的无写出 quick return
 - alpha 为复数、beta 为**实数**：复数 beta 会破坏 C 的 Hermitian 性质，故按 BLAS 标准限定为实数
 - 仅更新指定三角，对角线虚部置零。另一三角和 leading-dimension padding 保持原值
 - 当 alpha 为 0（或 k 为 0）且 beta 为 1 时按 BLAS 语义直接返回，C 保持原值不变——**包含其对角线虚部**
 - A、B、C 为列主序 complex64（`aclblasComplex`，即 fp32 实部 + fp32 虚部）存储的 Device 内存
 - 工作区大小由对齐后的 n、k 和 kernel 路径共同决定。申请失败或超过 `ACLBLAS_MAX_WORKSPACE_SIZE` 时返回错误，停止 launch
+
+arch22（Atlas A2）实现：
+
+- C 指针口径：n>0 时 C 必须非空；唯一例外是零乘积（alpha=0 或 k=0）且 beta=0 的无写出 quick return
 - kernel 每次调用读取 Device 标量的真实值；同一标量地址更新数值后可复用
-- 默认测试 CSV 含前 50 条用例。`CHER2K_FULL_REGRESSION=1` 读取完整 CSV，性能模式单独读取完整 CSV 中的性能用例
+
+arch35（Ascend 950）实现：
+
+- 依赖 CANN asc-devkit >= 9.1，低于该版本编译与运行跳过此算子
+- alpha、beta 须为 Device 指针（Device 标量）
+- C 指针口径：当 n > 0 且 beta != 0 时 C 不可为 nullptr；当 n > 0 且 beta = 0 时 C 允许为 nullptr（返回 SUCCESS 且不发生任何写出）；n = 0 时 C 可为 nullptr
+- n <= 8 走 K4 SIMT 融合直算路径（无 workspace）；n > 8 走 Cube+AIV 三阶段通用管线
+- 输出 C 满足 Hermitian 性质：C[i][j] = conj(C[j][i])，对角线元素虚部精确为零（代数相消），非 uplo 三角与 ldc padding 字节保持不变
+- 异步执行：多个 kernel 全部下发至 handle 绑定的同一 stream，按流语义自动排序，算子内部无需显式同步；调用方读回结果前须自行同步所绑定的 stream（如 `aclrtSynchronizeStream(stream)`，见下方调用示例第 5 步）
+
+测试 CSV 口径：arch22 侧默认 CSV 含前 50 条用例，`CHER2K_FULL_REGRESSION=1` 读取全量 1214 条；arch35 侧为单文件 1200 条（含 200 条 TC_PF 性能用例），性能模式单独读取其中的性能用例。
+
+#### 返回码
+
+| 返回值 | 含义 |
+|--------|------|
+| ACLBLAS_STATUS_SUCCESS（0） | 成功（含 n=0、(alpha=(0,0) 或 k=0) 且 beta=1 的 quick return，以及 C=nullptr 的无写出 quick return——arch35 为 beta=0，arch22 为零乘积且 beta=0） |
+| ACLBLAS_STATUS_HANDLE_IS_NULLPTR（9） | handle 为 nullptr |
+| ACLBLAS_STATUS_INVALID_ENUM（10） | uplo 或 trans 为越界枚举值 |
+| ACLBLAS_STATUS_INVALID_VALUE（3） | trans=OP_T；n<0 或 k<0；lda/ldb/ldc 违反前导维规则；alpha 或 beta 为 nullptr；n>0 且 k>0 时 A 或 B 为 nullptr；n>0 且 beta!=0 时 C 为 nullptr |
+| ACLBLAS_STATUS_INTERNAL_ERROR（6） | 核数查询、alpha/beta 读取、workspace 申请等内部错误 |
+
+> 注：C 指针允许为 nullptr 的条件两代实现不同（见上方约束说明 arch22/arch35 分组），其余返回码口径一致。
+
+#### 与 aclblasCherk 的差异
+
+| 差异点 | aclblasCherk | aclblasCher2k |
+|--------|--------------|---------------|
+| 输入矩阵 | 单矩阵 A（C = alpha·op(A)·op(A)^H + beta·C） | 双矩阵 A、B（独立装载、同形、无广播） |
+| alpha 类型 | 实数（float），同时缩放 C 实部与虚部 | 复数（aclblasComplex），第二项使用 conj(alpha) |
+| 数学结构 | A·A^H 天然 Hermitian | M + M^H 对称化构造（M = alpha·A·B^H 或 alpha·A^H·B） |
+| 对角虚部 | t3−t4 对角来自两次独立 GEMM，需 epilogue 强制置零 | M[i][i] + conj(M[i][i]) 代数相消，精确为零 |
+| 计算量 | 4 次实数 GEMM | 4 次实数 GEMM（4M 分解，第二项按转置读合成） |
+| C 指针口径 | n > 0 时一律非空 | 仅 beta != 0 且 n > 0 时非空（beta=0 时可为 nullptr，SUCCESS 无写出） |
+| 非法 uplo/trans 返回码 | INVALID_VALUE | 越界枚举返回 INVALID_ENUM；OP_T 返回 INVALID_VALUE |
+
+> 注：表中 cher2k 的 C 指针口径为 arch35 实现；arch22 实现更严格（仅零乘积且 beta=0 时允许 nullptr），见上方约束说明。
 
 #### 调用示例
 
