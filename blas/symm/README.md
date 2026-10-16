@@ -1,8 +1,9 @@
-# Symm算子
+# Symm/Chemm算子
 
 ## 算子概述
 
-Symm（Single-precision Symmetric Matrix Multiplication）算子实现了单精度浮点对称矩阵与普通矩阵的乘法运算。
+Symm（Single-precision Symmetric Matrix Multiplication）算子实现了单精度浮点对称矩阵与普通矩阵的乘法运算；
+Chemm（Single-precision Hermitian Matrix Multiplication）算子实现了单精度复数 Hermitian 矩阵与普通矩阵的乘法运算。
 
 数学表达式：
 
@@ -17,6 +18,7 @@ RIGHT 模式：C := alpha * B * A + beta * C
 |--------|---------|
 | aclblasSsymm | 单精度浮点对称矩阵乘法 |
 | aclblasCsymm | 单精度复数对称矩阵乘法 |
+| aclblasChemm | 单精度复数 Hermitian 矩阵乘法 |
 
 ## 算子执行接口
 
@@ -426,5 +428,107 @@ int main()
     ret = aclblasCsymmTest(ctx);
     CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclblasCsymmTest failed. ERROR: %d\n", ret); return ret);
     return 0;
+}
+```
+
+---
+
+### aclblasChemm
+
+#### 产品支持情况
+
+- Ascend 950PR / Ascend 950DT：支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
+
+> 本仓库同时维护 arch35 与 arch22 两套实现：
+> - arch35：[`blas/symm/arch35/chemm_host.cpp`](arch35/chemm_host.cpp)
+> - arch22：[`blas/hemm/arch22/chemm_host.cpp`](../hemm/arch22/chemm_host.cpp)
+>
+> 接口声明位于公共头文件 `include/cann_ops_blas.h`，两个产品线共用同一 API。
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasChemm(aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo,
+    int64_t m, int64_t n, const aclblasComplex *alpha, const aclblasComplex *A, int64_t lda,
+    const aclblasComplex *B, int64_t ldb, const aclblasComplex *beta, aclblasComplex *C, int64_t ldc)
+```
+
+#### 参数说明
+
+| 参数名 | 输入/输出 | 参数类型 | 说明 |
+|--------|----------|---------|------|
+| handle | 输入 | aclblasHandle_t | ACL-BLAS 句柄，Host 内存 |
+| side | 输入 | aclblasSideMode_t | Hermitian 矩阵 A 的位置：ACLBLAS_SIDE_LEFT（左侧）或 ACLBLAS_SIDE_RIGHT（右侧），Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | A 的存储三角：ACLBLAS_UPPER（上三角）或 ACLBLAS_LOWER（下三角），Host 内存 |
+| m | 输入 | int64_t | 矩阵 C 的行数，m >= 0，Host 内存 |
+| n | 输入 | int64_t | 矩阵 C 的列数，n >= 0，Host 内存 |
+| alpha | 输入 | const aclblasComplex*（COMPLEX64） | 复数标量 alpha，Host 内存 |
+| A | 输入 | const aclblasComplex*（COMPLEX64） | Hermitian 矩阵，side=LEFT 时 m×m，side=RIGHT 时 n×n，仅 uplo 指定三角被引用，Device 内存 |
+| lda | 输入 | int64_t | 矩阵 A 的主维，Host 内存（详见约束说明） |
+| B | 输入 | const aclblasComplex*（COMPLEX64） | m×n 普通矩阵，Device 内存 |
+| ldb | 输入 | int64_t | 矩阵 B 的主维，Host 内存（详见约束说明） |
+| beta | 输入 | const aclblasComplex*（COMPLEX64） | 复数标量 beta，Host 内存 |
+| C | 输入/输出 | aclblasComplex*（COMPLEX64） | m×n 矩阵，输入旧值并原地覆写输出新值，Device 内存 |
+| ldc | 输入 | int64_t | 矩阵 C 的主维，Host 内存（详见约束说明） |
+
+#### 约束说明
+
+- handle 不可为 nullptr，否则返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR
+- side 必须为 ACLBLAS_SIDE_LEFT 或 ACLBLAS_SIDE_RIGHT，uplo 必须为 ACLBLAS_UPPER 或 ACLBLAS_LOWER，非法值返回 ACLBLAS_STATUS_INVALID_VALUE
+- m >= 0，n >= 0，否则返回 ACLBLAS_STATUS_INVALID_VALUE
+- m==0 或 n==0 时直接返回 ACLBLAS_STATUS_SUCCESS，不访问任何指针、不校验 ld 参数（BLAS 标准）
+- side=LEFT 时：lda >= max(1, m)；side=RIGHT 时：lda >= max(1, n)
+- ldb >= max(1, m)，ldc >= max(1, m)，否则返回 ACLBLAS_STATUS_INVALID_VALUE
+- m>0 且 n>0 时，alpha、beta 不可为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE
+- m>0 且 n>0 且 alpha!=(0,0) 时，A、B 不可为 nullptr；alpha==(0,0) 时 A、B 可为 nullptr（BLAS 标准）
+- beta==(0,0) 时 C 可为 nullptr（BLAS 标准）
+- alpha==(0,0) 时跳过矩阵乘法，仅执行 C = beta * C（快速路径）
+- 矩阵 A、B、C 均按列主序（column-major）存储，复数元素 (row, col) 存储于 col*ld + row 位置，实部在前、虚部在后
+- A 的 Hermitian 性质（A = Aᴴ，对角虚部为 0）由调用方保证，实现不校验；未被引用的三角内容不参与计算，对角虚部按 0 处理
+- 不支持超出 lda/ldb/ldc 语义的非连续 Tensor
+- 计算为异步执行，依赖 handle 绑定的 stream；读回 Device 结果前需要同步 stream
+
+#### 实现说明（arch35）
+
+Host 按规模、标量、地址范围和 workspace 约束选择 SIMT 或 Cube/AIV 组合路径。Cube 输入使用实数三平面分解，AIV 按原累加顺序合并并执行数值风险检查；风险输出保留有序重算路径。对于 RIGHT/LOWER、深 M 且窄 N 的工作负载，Host 保留通用 checked combine，同时对短收缩维度省略队列初始化和 fallback launch，敏感输出直接 inline 重算，以避免近阈值 case 的额外调度开销。
+
+#### 调用示例
+
+示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。
+
+```cpp
+// arch35（列主序）调用示例：C = alpha * A * B + beta * C
+// side=LEFT, uplo=LOWER, m=2, n=2, alpha=1+0i, beta=0+0i
+
+#include "acl/acl.h"
+#include "cann_ops_blas.h"
+
+int main()
+{
+    aclblasHandle_t handle = nullptr;
+    aclblasCreate(&handle);
+
+    // A 为 2x2 Hermitian 矩阵，仅使用下三角：
+    // A = [[2+0i, 3-1i],
+    //      [3+1i, 5+0i]]
+    constexpr int64_t m = 2;
+    constexpr int64_t n = 2;
+    constexpr int64_t lda = m;
+    constexpr int64_t ldb = m;
+    constexpr int64_t ldc = m;
+
+    aclblasComplex alpha = {1.0f, 0.0f};
+    aclblasComplex beta = {0.0f, 0.0f};
+    aclblasComplex A[4] = {{2.0f, 0.0f}, {3.0f, 1.0f}, {0.0f, 0.0f}, {5.0f, 0.0f}};
+    aclblasComplex B[4] = {{1.0f, 0.0f}, {2.0f, 0.0f}, {3.0f, 0.0f}, {4.0f, 0.0f}};
+    aclblasComplex C[4] = {};
+
+    auto ret = aclblasChemm(
+        handle, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, m, n, &alpha, A, lda, B, ldb, &beta, C, ldc);
+
+    aclblasDestroy(handle);
+    return ret == ACLBLAS_STATUS_SUCCESS ? 0 : 1;
 }
 ```
