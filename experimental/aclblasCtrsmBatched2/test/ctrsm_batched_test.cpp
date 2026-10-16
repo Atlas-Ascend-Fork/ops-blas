@@ -45,6 +45,18 @@ static void ParseConfigCases(std::ifstream& cfg, std::vector<CfgCase>& cases)
 }
 
 // 运行单个配置用例：分配/加载输入 -> 调用算子 -> 成功则回写输出，返回是否成功
+// issue #479: 失败路径统一释放本用例已分配的设备/主机内存（未分配的指针保持 nullptr，跳过）
+static void FreeCtrsmCaseBuffers(std::vector<std::complex<float>*>& hA, std::vector<void*>& dA,
+                                 std::vector<std::complex<float>*>& hB, std::vector<void*>& dB)
+{
+    for (size_t b = 0; b < hA.size(); b++) {
+        if (dA[b] != nullptr) { aclrtFree(dA[b]); }
+        if (hA[b] != nullptr) { aclrtFreeHost(hA[b]); }
+        if (dB[b] != nullptr) { aclrtFree(dB[b]); }
+        if (hB[b] != nullptr) { aclrtFreeHost(hB[b]); }
+    }
+}
+
 static bool RunOneCtrsmCase(_aclblas_handle& handle, const CfgCase& c)
 {
     aclblasSideMode_t sm = c.side==0 ? ACLBLAS_SIDE_LEFT : ACLBLAS_SIDE_RIGHT;
@@ -58,12 +70,25 @@ static bool RunOneCtrsmCase(_aclblas_handle& handle, const CfgCase& c)
     std::vector<std::complex<float>*> hA(c.batch), hB(c.batch);
     std::vector<void*> dA(c.batch), dB(c.batch);
     for (int b=0;b<c.batch;b++) {
-        aclrtMallocHost((void**)&hA[b],sA); aclrtMalloc(&dA[b],sA,ACL_MEM_MALLOC_HUGE_FIRST);
+        // issue #479: 分配失败时不能继续对空指针拷贝，需报错并释放已分配内存
+        if (aclrtMallocHost((void**)&hA[b],sA) != ACL_SUCCESS || aclrtMalloc(&dA[b],sA,ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
+            aclrtMallocHost((void**)&hB[b],sB) != ACL_SUCCESS || aclrtMalloc(&dB[b],sB,ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMalloc/aclrtMallocHost failed at %s:%d\n", __FILE__, __LINE__);
+            FreeCtrsmCaseBuffers(hA,dA,hB,dB);
+            return false;
+        }
         std::string fnA = c.tag + "/input_a_" + std::to_string(b) + ".bin"; ReadFile(fnA,sA,hA[b],sA);
-        aclrtMemcpy(dA[b],sA,hA[b],sA,ACL_MEMCPY_HOST_TO_DEVICE);
-        aclrtMallocHost((void**)&hB[b],sB); aclrtMalloc(&dB[b],sB,ACL_MEM_MALLOC_HUGE_FIRST);
+        if (aclrtMemcpy(dA[b],sA,hA[b],sA,ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMemcpy failed at %s:%d\n", __FILE__, __LINE__);
+            FreeCtrsmCaseBuffers(hA,dA,hB,dB);
+            return false;
+        }
         std::string fnB = c.tag + "/input_b_" + std::to_string(b) + ".bin"; ReadFile(fnB,sB,hB[b],sB);
-        aclrtMemcpy(dB[b],sB,hB[b],sB,ACL_MEMCPY_HOST_TO_DEVICE);
+        if (aclrtMemcpy(dB[b],sB,hB[b],sB,ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMemcpy failed at %s:%d\n", __FILE__, __LINE__);
+            FreeCtrsmCaseBuffers(hA,dA,hB,dB);
+            return false;
+        }
     }
     auto ret = aclblasCtrsmBatched((aclblasHandle_t)&handle,sm,um,tm,dm,c.m,c.n,&alpha,
         (const std::complex<float>*const*)dA.data(),lda,(std::complex<float>*const*)dB.data(),ldb,c.batch);

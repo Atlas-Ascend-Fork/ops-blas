@@ -118,6 +118,18 @@ static TrsmArgs ParseTrsmArgs(int32_t argc, char* argv[])
 struct CfgCase { int32_t m, n, batch, side, uplo, transa, diag; float alpha; std::string tag; };
 
 // 运行单个配置用例：从 <tag>/input_*.bin 加载 -> 调用算子 -> 成功则写 <tag>/output_b_*.bin
+// issue #479: 失败路径统一释放本用例已分配的设备/主机内存（未分配的指针保持 nullptr，跳过）
+static void FreeTrsmCaseBuffers(std::vector<uint8_t*>& hostA, std::vector<float*>& devA,
+                                std::vector<uint8_t*>& hostB, std::vector<float*>& devB)
+{
+    for (size_t j = 0; j < hostA.size(); j++) {
+        if (devA[j] != nullptr) { aclrtFree(devA[j]); }
+        if (hostA[j] != nullptr) { aclrtFreeHost(hostA[j]); }
+        if (devB[j] != nullptr) { aclrtFree(devB[j]); }
+        if (hostB[j] != nullptr) { aclrtFreeHost(hostB[j]); }
+    }
+}
+
 static bool RunOneTrsmCase(_aclblas_handle& handle, const CfgCase& c)
 {
     aclblasSideMode_t side = (c.side == 0) ? ACLBLAS_SIDE_LEFT : ACLBLAS_SIDE_RIGHT;
@@ -132,16 +144,29 @@ static bool RunOneTrsmCase(_aclblas_handle& handle, const CfgCase& c)
     std::vector<uint8_t*> hostA(c.batch), hostB(c.batch);
     std::vector<float*> devA(c.batch), devB(c.batch);
     for (int32_t i = 0; i < c.batch; i++) {
-        aclrtMallocHost((void**)&hostA[i], sizeA);
-        aclrtMalloc((void**)&devA[i], sizeA, ACL_MEM_MALLOC_HUGE_FIRST);
+        // issue #479: 分配失败时不能继续对空指针拷贝，需报错并释放已分配内存
+        if (aclrtMallocHost((void**)&hostA[i], sizeA) != ACL_SUCCESS ||
+            aclrtMalloc((void**)&devA[i], sizeA, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
+            aclrtMallocHost((void**)&hostB[i], sizeB) != ACL_SUCCESS ||
+            aclrtMalloc((void**)&devB[i], sizeB, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMalloc/aclrtMallocHost failed at %s:%d\n", __FILE__, __LINE__);
+            FreeTrsmCaseBuffers(hostA, devA, hostB, devB);
+            return false;
+        }
         std::string fnA = c.tag + "/input_a_" + std::to_string(i) + ".bin";
         ReadFile(fnA, sizeA, hostA[i], sizeA);
-        aclrtMemcpy(devA[i], sizeA, hostA[i], sizeA, ACL_MEMCPY_HOST_TO_DEVICE);
-        aclrtMallocHost((void**)&hostB[i], sizeB);
-        aclrtMalloc((void**)&devB[i], sizeB, ACL_MEM_MALLOC_HUGE_FIRST);
+        if (aclrtMemcpy(devA[i], sizeA, hostA[i], sizeA, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMemcpy failed at %s:%d\n", __FILE__, __LINE__);
+            FreeTrsmCaseBuffers(hostA, devA, hostB, devB);
+            return false;
+        }
         std::string fnB = c.tag + "/input_b_" + std::to_string(i) + ".bin";
         ReadFile(fnB, sizeB, hostB[i], sizeB);
-        aclrtMemcpy(devB[i], sizeB, hostB[i], sizeB, ACL_MEMCPY_HOST_TO_DEVICE);
+        if (aclrtMemcpy(devB[i], sizeB, hostB[i], sizeB, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMemcpy failed at %s:%d\n", __FILE__, __LINE__);
+            FreeTrsmCaseBuffers(hostA, devA, hostB, devB);
+            return false;
+        }
     }
     std::vector<const float*> aArray(devA.begin(), devA.end());
     std::vector<float*> bArray(devB.begin(), devB.end());
