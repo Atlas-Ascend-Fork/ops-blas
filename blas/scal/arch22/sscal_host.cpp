@@ -98,6 +98,22 @@ SscalTilingData CalTilingData(uint32_t totalEleNum, uint32_t vecCoreNum, float a
 
 aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, float* x, int incx)
 {
+    if (handle == nullptr) {
+        LOG_PRINT("aclblasSscal: handle is nullptr\n");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    if (n <= 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (alpha == nullptr) {
+        LOG_PRINT("aclblasSscal: alpha must not be nullptr\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (x == nullptr) {
+        LOG_PRINT("aclblasSscal: x must not be nullptr\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+
     auto* h = handle;
     aclrtStream useStream = h->stream;
 

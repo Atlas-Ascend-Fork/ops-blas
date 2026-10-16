@@ -107,7 +107,31 @@ int32_t TestSscal(aclblasHandle handle, aclrtStream stream)
         return aclRet);
 
     std::cout << "========== Testing aclblasSscal ==========" << std::endl;
-    auto ret = aclblasSscal(handle, totalLength, &alpha, (float*)xDevice, incx);
+
+    // issue #493: 无效入参应在解引用与 tiling 转换之前拦截
+    auto ret = aclblasSscal(nullptr, totalLength, &alpha, (float*)xDevice, incx);
+    CHECK_RET(
+        ret == ACLBLAS_STATUS_HANDLE_IS_NULLPTR, LOG_PRINT("aclblasSscal null-handle check failed. ERROR: %d\n", ret);
+        aclrtFree(xDevice);
+        return 1);
+    ret = aclblasSscal(handle, -1, &alpha, (float*)xDevice, incx);
+    CHECK_RET(
+        ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSscal negative n should be a no-op. ERROR: %d\n", ret);
+        aclrtFree(xDevice);
+        return 1);
+    ret = aclblasSscal(handle, totalLength, nullptr, (float*)xDevice, incx);
+    CHECK_RET(
+        ret == ACLBLAS_STATUS_INVALID_VALUE, LOG_PRINT("aclblasSscal null-alpha check failed. ERROR: %d\n", ret);
+        aclrtFree(xDevice);
+        return 1);
+    ret = aclblasSscal(handle, totalLength, &alpha, nullptr, incx);
+    CHECK_RET(
+        ret == ACLBLAS_STATUS_INVALID_VALUE, LOG_PRINT("aclblasSscal null-x check failed. ERROR: %d\n", ret);
+        aclrtFree(xDevice);
+        return 1);
+    std::cout << "[PASS] Sscal invalid-input validation passed" << std::endl;
+
+    ret = aclblasSscal(handle, totalLength, &alpha, (float*)xDevice, incx);
     CHECK_RET(
         ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSscal failed. ERROR: %d\n", ret); aclrtFree(xDevice);
         return ret);

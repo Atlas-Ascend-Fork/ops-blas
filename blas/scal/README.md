@@ -56,7 +56,9 @@ aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, 
 **Atlas A2 / Atlas A3 系列产品（arch22）：**
 
 - incx 参数当前实现未启用（固定按连续向量 incx=1 处理，传入的 incx 取值不生效）
-- 未对 n、handle、alpha、x 做入参校验
+- n <= 0 时为 no-op（直接返回 ACLBLAS_STATUS_SUCCESS，不修改 x）
+- handle 不能为 nullptr，否则返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR
+- n > 0 时 alpha、x 不能为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 
 
 #### 调用示例
