@@ -8,4 +8,8 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
-ops_blas_add_tests(${OPS_BLAS})
+if(SOC_VERSION STREQUAL "ascend950")
+    ops_blas_add_gtest_tests(${OPS_BLAS} cswap_test cswap_benchmark)
+else()
+    ops_blas_add_tests(${OPS_BLAS})
+endif()
