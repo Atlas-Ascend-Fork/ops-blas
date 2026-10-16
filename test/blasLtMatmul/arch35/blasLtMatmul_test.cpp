@@ -381,3 +381,85 @@ TEST_P(LtMatmulArch35Test, CsvDriven) {
             static_cast<size_t>(M) * N, 1, cfg, p.caseName));
     }
 }
+
+// issue #492: DEVICE 指针模式下 alpha/beta 为设备标量地址，Host 不得直接解引用，
+// 须经 stream D2H 读回后参与计算（修复前会崩溃或读到错误标量）。
+TEST_F(LtMatmulArch35Test, DevicePointerMode) {
+    constexpr int M = 16, N = 16, K = 16;
+    constexpr int lda = 16, ldb = 16, ldd = 16;
+    constexpr float alphaHost = 2.0f;
+    constexpr float betaHost = 0.0f;
+
+    aclblasLtMatmulDesc_t computeDesc = nullptr;
+    ASSERT_EQ(aclblasLtMatmulDescCreate(&computeDesc, ACLBLAS_COMPUTE_32F, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+    int32_t transN = ACLBLAS_OP_N;
+    aclblasLtMatmulDescSetAttribute(computeDesc, ACLBLASLT_MATMUL_DESC_TRANSA, &transN, sizeof(int32_t));
+    aclblasLtMatmulDescSetAttribute(computeDesc, ACLBLASLT_MATMUL_DESC_TRANSB, &transN, sizeof(int32_t));
+    // ACLBLASLT_POINTER_MODE_DEVICE = 1 (device scalar alpha/beta)
+    int32_t pointerMode = 1;
+    ASSERT_EQ(
+        aclblasLtMatmulDescSetAttribute(computeDesc, ACLBLASLT_MATMUL_DESC_POINTER_MODE, &pointerMode, sizeof(int32_t)),
+        ACLBLAS_STATUS_SUCCESS);
+    aclblasLtEpilogue_t epilogue = ACLBLASLT_EPILOGUE_DEFAULT;
+    aclblasLtMatmulDescSetAttribute(computeDesc, ACLBLASLT_MATMUL_DESC_EPILOGUE, &epilogue, sizeof(uint32_t));
+
+    aclblasLtMatrixLayout_t Adesc = nullptr, Bdesc = nullptr, Cdesc = nullptr, Ddesc = nullptr;
+    aclblasLtOrder_t order = ACLBLASLT_ORDER_ROW;
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&Adesc, ACL_FLOAT, M, K, lda), ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&Bdesc, ACL_FLOAT, K, N, ldb), ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&Cdesc, ACL_FLOAT, M, N, ldd), ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&Ddesc, ACL_FLOAT, M, N, ldd), ACLBLAS_STATUS_SUCCESS);
+    aclblasLtMatrixLayoutSetAttribute(Adesc, ACLBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(int32_t));
+    aclblasLtMatrixLayoutSetAttribute(Bdesc, ACLBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(int32_t));
+    aclblasLtMatrixLayoutSetAttribute(Cdesc, ACLBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(int32_t));
+    aclblasLtMatrixLayoutSetAttribute(Ddesc, ACLBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(int32_t));
+
+    std::vector<float> aHost = makeBlasArray(static_cast<int64_t>(M) * lda, "RANDOM_NORM_5_5", 42);
+    std::vector<float> bHost = makeBlasArray(static_cast<int64_t>(K) * ldb, "RANDOM_NORM_5_5", 43);
+    const size_t aBytes = aHost.size() * sizeof(float);
+    const size_t bBytes = bHost.size() * sizeof(float);
+    const size_t dBytes = static_cast<size_t>(M) * ldd * sizeof(float);
+
+    void* dA = nullptr;
+    void* dB = nullptr;
+    void* dD = nullptr;
+    void* dAlpha = nullptr;
+    void* dBeta = nullptr;
+    ASSERT_EQ(aclrtMalloc(&dA, aBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dB, bBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dD, dBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dAlpha, sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dBeta, sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    aclrtMemcpy(dA, aBytes, aHost.data(), aBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    aclrtMemcpy(dB, bBytes, bHost.data(), bBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    aclrtMemcpy(dAlpha, sizeof(float), &alphaHost, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
+    aclrtMemcpy(dBeta, sizeof(float), &betaHost, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
+
+    aclblasStatus_t ret = aclblasLtMatmul(
+        ltHandle_, computeDesc, dAlpha, dA, Adesc, dB, Bdesc, dBeta, nullptr, Cdesc, dD, Ddesc, nullptr, nullptr, 0,
+        stream_);
+    EXPECT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
+
+    std::vector<float> dHost(static_cast<size_t>(M) * ldd, 0.0f);
+    aclrtMemcpy(dHost.data(), dBytes, dD, dBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+
+    std::vector<float> golden(static_cast<size_t>(M) * ldd, 0.0f);
+    aclblasLtMatmul_cpu(
+        ltHandle_, computeDesc, &alphaHost, aHost.data(), Adesc, bHost.data(), Bdesc, &betaHost, nullptr, Cdesc,
+        golden.data(), Ddesc, nullptr, nullptr);
+
+    VerifyConfig cfg;
+    applyMixedTolerance(cfg, ACL_FLOAT, golden.data(), golden.size());
+    EXPECT_TRUE(Verifier::verifyVector(dHost.data(), golden.data(), dHost.size(), 1, cfg, "DevicePointerMode"));
+
+    aclrtFree(dBeta);
+    aclrtFree(dAlpha);
+    aclrtFree(dD);
+    aclrtFree(dB);
+    aclrtFree(dA);
+    aclblasLtMatrixLayoutDestroy(Ddesc);
+    aclblasLtMatrixLayoutDestroy(Cdesc);
+    aclblasLtMatrixLayoutDestroy(Bdesc);
+    aclblasLtMatrixLayoutDestroy(Adesc);
+    aclblasLtMatmulDescDestroy(computeDesc);
+}

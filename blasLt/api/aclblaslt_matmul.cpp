@@ -25,6 +25,35 @@
 #include <acl/acl.h>
 #include <cstdint>
 
+// issue #492: alpha/beta pointer mode values (matching aclblasLtPointerMode_t).
+static constexpr int32_t ACLBLASLT_POINTER_MODE_HOST = 0;
+static constexpr int32_t ACLBLASLT_POINTER_MODE_DEVICE = 1;
+static constexpr int32_t ACLBLASLT_POINTER_MODE_DEVICE_VECTOR = 2;
+
+// issue #492: copy one float scalar from a device pointer back to host. Uses the
+// caller stream (async + sync) so ordering with preceding work is preserved;
+// falls back to the synchronous API when no stream is provided.
+static aclblasStatus_t ReadScalarFromDevice(const void* devicePtr, float& hostVal, aclrtStream stream)
+{
+    hostVal = 0.0f;
+    aclError aclRet;
+    if (stream != nullptr) {
+        aclRet = aclrtMemcpyAsync(&hostVal, sizeof(float), devicePtr, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST, stream);
+        if (aclRet == ACL_SUCCESS) {
+            aclRet = aclrtSynchronizeStream(stream);
+        }
+    } else {
+        aclRet = aclrtMemcpy(&hostVal, sizeof(float), devicePtr, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST);
+    }
+    if (aclRet != ACL_SUCCESS) {
+        AclBlasLt::LoggerManager::GetInstance().Log(
+            ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul", "alpha/beta scalar D2H copy failed, ret=%d",
+            static_cast<int>(aclRet));
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 extern "C" {
 
 aclblasStatus_t aclblasLtMatmul(
@@ -96,9 +125,40 @@ aclblasStatus_t aclblasLtMatmul(
     auto* handleImpl = lightHandle;
     const uint32_t numBlocks = QueryCubeCoreNum(handleImpl->deviceId);
 
+    // issue #492: resolve alpha/beta according to the descriptor pointer mode.
+    // HOST (default) dereferences directly; DEVICE scalars must be copied back
+    // to host through the stream — the host must never dereference a device
+    // address; DEVICE_VECTOR (one scalar per batch) is not supported here.
+    const void* alphaArg = alpha;
+    const void* betaArg = beta;
+    float alphaDeviceValue = 0.0f;
+    float betaDeviceValue = 0.0f;
+    if (desc->pointerMode == ACLBLASLT_POINTER_MODE_HOST) {
+        // pass through: alpha/beta are host pointers
+    } else if (desc->pointerMode == ACLBLASLT_POINTER_MODE_DEVICE) {
+        aclblasStatus_t readSt = ReadScalarFromDevice(alpha, alphaDeviceValue, stream);
+        if (readSt != ACLBLAS_STATUS_SUCCESS) {
+            return readSt;
+        }
+        readSt = ReadScalarFromDevice(beta, betaDeviceValue, stream);
+        if (readSt != ACLBLAS_STATUS_SUCCESS) {
+            return readSt;
+        }
+        alphaArg = &alphaDeviceValue;
+        betaArg = &betaDeviceValue;
+    } else if (desc->pointerMode == ACLBLASLT_POINTER_MODE_DEVICE_VECTOR) {
+        AclBlasLt::LoggerManager::GetInstance().Log(ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul",
+            "device vector pointer mode is not supported");
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    } else {
+        AclBlasLt::LoggerManager::GetInstance().Log(ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul",
+            "invalid pointer mode %d", static_cast<int>(desc->pointerMode));
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+
     MatmulProblem problem;
     BuildMatmulProblem(
-        desc, ALayout, BLayout, CLayout, DLayout, m, n, k, alpha, beta, A, B, C, D, algo, workspace,
+        desc, ALayout, BLayout, CLayout, DLayout, m, n, k, alphaArg, betaArg, A, B, C, D, algo, workspace,
         workspaceSizeInBytes, numBlocks, stream, problem);
 
     return MatmulLaunch(problem);
