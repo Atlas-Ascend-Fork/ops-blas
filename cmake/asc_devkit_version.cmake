@@ -39,6 +39,7 @@ function(ops_blas_detect_asc_devkit_version)
       "CHER2K|/her2k/arch35/cher2k|cher2k"
       "STRSMBATCHED|/trsmbatched/arch35/strsmbatched|strsmbatched"
       "GEMM_STRIDED_BATCHED|/gemm_strided_batched/arch35/gemm_strided_batched_|gemm_strided_batched"
+      "CGEMM_STRIDED_BATCHED|/gemm_strided_batched/arch35/cgemm_strided_batched_|cgemm_strided_batched"
       "GEMM|/gemm/arch35/gemm_|gemm"
   )
 

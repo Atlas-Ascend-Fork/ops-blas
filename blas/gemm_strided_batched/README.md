@@ -25,6 +25,7 @@ C_i = alpha * op(A_i) * op(B_i) + beta * C_i,   i = 0, 1, ..., batchCount-1
 | 接口名 | 功能简述 |
 |--------|---------|
 | [aclblasSgemmStridedBatched](#aclblassgemmstridedbatched) | 单精度浮点批量矩阵乘法（FP32） |
+| [aclblasCgemmStridedBatched](#aclblascgemmstridedbatched) | 单精度复数批量矩阵乘法（COMPLEX64），支持转置与共轭转置 |
 
 ## 算子执行接口
 
@@ -268,6 +269,94 @@ int main()
 }
 ```
 
+
+### aclblasCgemmStridedBatched
+
+#### 产品支持情况
+
+- Ascend 950PR / Ascend 950DT：支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+
+> Ascend 950PR/Ascend 950DT 上的 aclblasCgemmStridedBatched 依赖 CANN asc-devkit >= 9.1（`ASC_DEVKIT_MAJOR >= 9 && ASC_DEVKIT_MINOR >= 1`），低于该版本时编译与运行将跳过此算子。
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasCgemmStridedBatched(aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k, const aclblasComplex* alpha, const aclblasComplex* A, int lda, int64_t strideA, const aclblasComplex* B, int ldb, int64_t strideB, const aclblasComplex* beta, aclblasComplex* C, int ldc, int64_t strideC, int batchCount)
+```
+
+#### 参数说明
+
+| 参数名 | 输入/输出 | 参数类型 | 说明 |
+|--------|----------|---------|------|
+| handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
+| transA | 输入 | aclblasOperation_t | 矩阵 A 的操作类型：ACLBLAS_OP_N（不转置）、ACLBLAS_OP_T（转置）、ACLBLAS_OP_C（共轭转置），Host 内存 |
+| transB | 输入 | aclblasOperation_t | 矩阵 B 的操作类型（取值同 transA），Host 内存 |
+| m | 输入 | int | op(A_i) 与 C_i 的行数，m >= 0，Host 内存 |
+| n | 输入 | int | op(B_i) 与 C_i 的列数，n >= 0，Host 内存 |
+| k | 输入 | int | op(A_i) 的列数、op(B_i) 的行数，k >= 0，Host 内存 |
+| alpha | 输入 | const aclblasComplex* | 指向标量 alpha 的 Host 指针，全批共用，不可为 nullptr，Host 内存 |
+| A | 输入 | const aclblasComplex* | batch 0 矩阵 A 的 Device 内存首地址，Complex64，列主序存储，Device 内存 |
+| lda | 输入 | int | 矩阵 A 的主维度，transA=N 时 lda >= max(1, m)，transA=T/C 时 lda >= max(1, k)，Host 内存 |
+| strideA | 输入 | int64_t | 相邻两 batch 的 A 起始元素偏移（以复数元素个数计，非字节），允许为 0（表示 A 在所有 batch 间广播），Host 内存 |
+| B | 输入 | const aclblasComplex* | batch 0 矩阵 B 的 Device 内存首地址，Complex64，列主序存储，Device 内存 |
+| ldb | 输入 | int | 矩阵 B 的主维度，transB=N 时 ldb >= max(1, k)，transB=T/C 时 ldb >= max(1, n)，Host 内存 |
+| strideB | 输入 | int64_t | 相邻两 batch 的 B 起始元素偏移（以复数元素个数计，非字节），允许为 0（表示 B 在所有 batch 间广播），Host 内存 |
+| beta | 输入 | const aclblasComplex* | 指向标量 beta 的 Host 指针，全批共用，不可为 nullptr，Host 内存 |
+| C | 输入/输出 | aclblasComplex* | batch 0 矩阵 C 的 Device 内存首地址，Complex64，列主序存储，就地读写，Device 内存 |
+| ldc | 输入 | int | 矩阵 C 的主维度，ldc >= max(1, m)，Host 内存 |
+| strideC | 输入 | int64_t | 相邻两 batch 的 C 起始元素偏移（以复数元素个数计，非字节），Host 内存 |
+| batchCount | 输入 | int | batch 数量，batchCount >= 0，Host 内存 |
+
+#### 约束说明
+
+- handle 不可为 nullptr，否则返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`
+- transA、transB 必须属于 {ACLBLAS_OP_N, ACLBLAS_OP_T, ACLBLAS_OP_C}
+- m >= 0、n >= 0、k >= 0、batchCount >= 0
+- alpha、beta 不可为 nullptr
+- transA=N 时 lda >= max(1, m)；transA=T/C 时 lda >= max(1, k)
+- transB=N 时 ldb >= max(1, k)；transB=T/C 时 ldb >= max(1, n)
+- ldc >= max(1, m)
+- 非空计算且 k > 0 时 A、B 不可为 nullptr
+- 非空计算时 C 不可为 nullptr
+- 所有矩阵按列主序（Column-Major）存储，lda/ldb/ldc 语义遵循 NETLIB/CBLAS BLAS 标准
+- strideA、strideB 允许为 0，表示对应矩阵在所有 batch 间广播复用；调用方须保证各 batch 子矩阵在所声明的 shape、leading dimension 和 stride 下不越界访问显存
+- strideC == 0 且 batchCount > 1，或其他输出批次存储区域重叠时，执行语义未定义
+- m == 0、n == 0 或 batchCount == 0 时无计算，直接返回 `ACLBLAS_STATUS_SUCCESS`
+- k == 0 或 alpha == (0, 0) 时跳过矩阵乘，逐 batch 执行 C_i = beta * C_i
+- beta == (0, 0) 时不读取原 C，调用方无需初始化逻辑输出区域
+- kernel 在句柄 stream 上异步执行，读取结果前需同步 stream
+
+#### 精度验证
+
+实部和虚部分别采用 `MIXED_TOLERANCE` 混合容差策略：
+
+| 数据类型 | rtol | atol | required_matched_ratio | max_abs_error_limit |
+|----------|------|------|----------------------|-------------------|
+| COMPLEX64 | 2^-10 (9.77e-4) | 2^-16 (1.53e-5) | 0.99 | 1e-2 或 32·ULP |
+
+alpha == (0, 0) 时使用 `EXACT` 位精确校验。
+
+#### 调用示例
+
+示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。
+
+下面片段假设已经初始化 ACL、创建并绑定 stream，且 A、B、C 的 Device 存储已经分配：
+
+```cpp
+aclblasComplex alpha{1.0f, 0.0f};
+aclblasComplex beta{0.0f, 0.0f};
+const int m = 256;
+const int n = 256;
+const int k = 256;
+const int batchCount = 32;
+aclblasStatus_t status = aclblasCgemmStridedBatched(
+    handle, ACLBLAS_OP_N, ACLBLAS_OP_N, m, n, k,
+    &alpha, deviceA, m, static_cast<int64_t>(m) * k,
+    deviceB, k, static_cast<int64_t>(k) * n,
+    &beta, deviceC, m, static_cast<int64_t>(m) * n, batchCount);
+```
 
 ## Atlas A2/A3（arch22）实现与自测
 
