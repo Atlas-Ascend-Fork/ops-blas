@@ -16,6 +16,7 @@ x = A * x
 |--------|---------|
 | aclblasStpmv | 单精度三角压缩矩阵-向量乘法（标准接口） |
 | aclblasStpmv_legacy | 单精度三角压缩矩阵-向量乘法（早期接口） |
+| aclblasCtpmv | 单精度复数三角压缩矩阵-向量乘法 |
 
 ## 算子执行接口
 
@@ -192,6 +193,103 @@ int main()
 
     ret = aclblasStpmvTest(ctx);
     CHECK_RET(ret == ACL_SUCCESS, return ret);
+    return 0;
+}
+```
+
+### aclblasCtpmv
+
+#### 产品支持情况
+
+- Ascend 950PR / Ascend 950DT：支持（arch35）
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持（arch22）
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持（arch22）
+
+以下 workspace 分配说明针对 arch35；arch22 的范围与测试说明见 [A2/A3 测试说明](../../test/tpmv/ctpmv/README.md)。
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasCtpmv(aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n, const aclblasComplex *AP, aclblasComplex *x, int incx)
+```
+
+#### 参数说明
+
+| 参数名 | 输入/输出 | 参数类型 | 说明 |
+|--------|----------|---------|------|
+| handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | 矩阵填充类型：ACLBLAS_UPPER(上三角)、ACLBLAS_LOWER(下三角)，Host 内存 |
+| trans | 输入 | aclblasOperation_t | 矩阵操作类型：ACLBLAS_OP_N(不转置)、ACLBLAS_OP_T(转置)、ACLBLAS_OP_C(共轭转置)，Host 内存 |
+| diag | 输入 | aclblasDiagType_t | 对角线类型：ACLBLAS_NON_UNIT(非单位对角线)、ACLBLAS_UNIT(单位对角线，对角假定为 1，不读取 AP 对角位置)，Host 内存 |
+| n | 输入 | int | 三角压缩矩阵的行数和列数，Host 内存 |
+| AP | 输入 | const aclblasComplex*（COMPLEX64） | 三角压缩矩阵 packed 数组（列优先紧凑，无 lda），维度为 n*(n+1)/2，Device 内存 |
+| x | 输入/输出 | aclblasComplex*（COMPLEX64） | 输入/输出向量，原地覆写，包含 n 个元素（步长展开后 1+(n-1)*\|incx\|），Device 内存 |
+| incx | 输入 | int | x 中连续元素之间的步长（支持负步长反向遍历），Host 内存 |
+
+#### 约束说明
+
+- n >= 0（n = 0 为合法 no-op，直接返回成功）
+- incx != 0
+- diag = ACLBLAS_UNIT 时不读取 AP 的对角位置（对角元素按 1 参与计算）
+- 接口在 `handle` 绑定的 stream 上异步提交清零、拷贝和计算，返回成功不表示 Device 计算已完成。读取或释放 `AP`、`x` 前须同步该 stream，并检查同步返回值。
+- 临时存储复用 handle 的 workspace，算子内不分配、不释放，也不隐式同步。连续调用须在同一 stream 上有序提交；跨 stream 共享数据须由调用方建立依赖。
+- 令 `S = n * sizeof(aclblasComplex)`：T/C 且 `incx=1、n>=8` 需要 `3*S+32768` 字节；N 且 `n<=32` 需要 `2*S`；N 且 `32<n<=128` 需要 `33*S`；其余路径需要 `(B+9)*S`，其中 `n<=8` 时 `B=1`，否则 `B=min(n, AIV核数)`。
+- 创建 handle 时预分配 32 MiB 默认 workspace。容量不足返回 `ACLBLAS_STATUS_EXECUTION_FAILED`，可先用 `aclblasSetWorkspace` 配置足够大的设备缓冲区后重试。用户 workspace 在关联 stream 完成前必须保持有效，库不会释放它。
+
+#### 调用示例
+
+示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](https://gitcode.com/cann/ops-blas/blob/master/docs/zh/develop/compile_and_run_example.md)。
+
+```cpp
+#include <cstdio>
+#include <vector>
+
+#include "acl/acl.h"
+#include "cann_ops_blas.h"
+
+int main()
+{
+    int32_t deviceId = 0;
+    auto ret = aclInit(nullptr);
+    ret = aclrtSetDevice(deviceId);
+    aclrtStream stream = nullptr;
+    ret = aclrtCreateStream(&stream);
+    aclblasHandle_t handle = nullptr;
+    ret = aclblasCreate(&handle);
+    ret = aclblasSetStream(handle, stream);
+
+    // n=4 上三角复数 packed 矩阵，op(A)=A，非单位对角，x 原地更新
+    constexpr int n = 4;
+    std::vector<aclblasComplex> ap(n * (n + 1) / 2);
+    std::vector<aclblasComplex> x(n);
+    // ... 填充 ap（packed 列优先）与 x ...
+    aclblasComplex *apDev = nullptr;
+    aclblasComplex *xDev = nullptr;
+    aclrtMalloc(reinterpret_cast<void **>(&apDev), ap.size() * sizeof(aclblasComplex), ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc(reinterpret_cast<void **>(&xDev), x.size() * sizeof(aclblasComplex), ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMemcpy(apDev, ap.size() * sizeof(aclblasComplex), ap.data(), ap.size() * sizeof(aclblasComplex),
+                ACL_MEMCPY_HOST_TO_DEVICE);
+    aclrtMemcpy(xDev, x.size() * sizeof(aclblasComplex), x.data(), x.size() * sizeof(aclblasComplex),
+                ACL_MEMCPY_HOST_TO_DEVICE);
+
+    ret = aclblasCtpmv(handle, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, n, apDev, xDev, 1);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        printf("aclblasCtpmv failed, ret=%d\n", static_cast<int>(ret));
+    }
+
+    // AP、x 和 workspace 必须存活到该 stream 的异步任务完成。
+    ret = aclrtSynchronizeStream(stream);
+    if (ret != ACL_SUCCESS) {
+        printf("stream synchronization failed, ret=%d\n", static_cast<int>(ret));
+        return 1;
+    }
+
+    aclrtFree(apDev);
+    aclrtFree(xDev);
+    aclblasDestroy(handle);
+    aclrtDestroyStream(stream);
+    ret = aclrtResetDevice(deviceId);
+    ret = aclFinalize();
     return 0;
 }
 ```
