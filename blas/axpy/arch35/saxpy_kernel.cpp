@@ -125,17 +125,22 @@ __aicore__ inline void SaxpyAIV::Process()
 }
 
 __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void saxpy_simt_compute(
-    uint32_t calNum, uint32_t startOffset, uint32_t strideX, uint32_t strideY, float alpha, __gm__ float* xGm,
+    uint32_t calNum, uint32_t startOffset, uint32_t totalN, int32_t incx, int32_t incy, float alpha, __gm__ float* xGm,
     __gm__ float* yGm)
 {
     if (calNum == 0) {
         return;
     }
 
+    uint64_t absIncx = (incx < 0) ? static_cast<uint64_t>(-static_cast<int64_t>(incx)) : static_cast<uint64_t>(incx);
+    uint64_t absIncy = (incy < 0) ? static_cast<uint64_t>(-static_cast<int64_t>(incy)) : static_cast<uint64_t>(incy);
+
     for (uint32_t i = threadIdx.x; i < calNum; i += blockDim.x) {
-        uint32_t xIdx = (startOffset + i) * strideX;
-        uint32_t yIdx = (startOffset + i) * strideY;
-        yGm[yIdx] = alpha * xGm[xIdx] + yGm[yIdx];
+        // issue #483: 保留步长符号，负步长按 BLAS 语义从 (n-1)*|inc| 反向遍历
+        uint64_t logical = static_cast<uint64_t>(startOffset) + i;
+        uint64_t xElement = (incx < 0) ? (static_cast<uint64_t>(totalN) - 1U - logical) * absIncx : logical * absIncx;
+        uint64_t yElement = (incy < 0) ? (static_cast<uint64_t>(totalN) - 1U - logical) * absIncy : logical * absIncy;
+        yGm[yElement] = alpha * xGm[xElement] + yGm[yElement];
     }
 }
 
@@ -157,12 +162,10 @@ __global__ __aicore__ void saxpy_simt_kernel(GM_ADDR x, GM_ADDR y, SaxpyTilingDa
     uint32_t calNum = tiling.calCount[blockIdx];
 
     if (calNum > 0) {
-        int64_t absIncX = std::abs(tiling.incx);
-        int64_t absIncY = std::abs(tiling.incy);
         asc_vf_call<saxpy_simt_compute>(
-            dim3{tiling.nthreads, 1, 1}, calNum, tiling.startOffset[blockIdx], static_cast<uint32_t>(absIncX),
-            static_cast<uint32_t>(absIncY), tiling.alpha, reinterpret_cast<__gm__ float*>(x),
-            reinterpret_cast<__gm__ float*>(y));
+            dim3{tiling.nthreads, 1, 1}, calNum, tiling.startOffset[blockIdx], tiling.totalN,
+            static_cast<int32_t>(tiling.incx), static_cast<int32_t>(tiling.incy), tiling.alpha,
+            reinterpret_cast<__gm__ float*>(x), reinterpret_cast<__gm__ float*>(y));
     }
 }
 
