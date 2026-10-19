@@ -15,6 +15,12 @@
 
 #pragma once
 
-#define ASC_DEVKIT_GE_9_1 \
-    (defined(ASC_DEVKIT_MAJOR) && defined(ASC_DEVKIT_MINOR) && \
-     (ASC_DEVKIT_MAJOR > 9 || (ASC_DEVKIT_MAJOR == 9 && ASC_DEVKIT_MINOR > 0)))
+/* Evaluate the version check at preprocessing time so that the macro expands
+ * to a plain 0/1 constant; using defined() inside a macro expansion is
+ * undefined behavior and triggers -Wexpansion-to-defined warnings. */
+#if defined(ASC_DEVKIT_MAJOR) && defined(ASC_DEVKIT_MINOR) && \
+    (ASC_DEVKIT_MAJOR > 9 || (ASC_DEVKIT_MAJOR == 9 && ASC_DEVKIT_MINOR > 0))
+#define ASC_DEVKIT_GE_9_1 1
+#else
+#define ASC_DEVKIT_GE_9_1 0
+#endif
