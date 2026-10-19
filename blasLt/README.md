@@ -64,7 +64,7 @@ aclblasStatus_t aclblasLtMatmul(aclblasLtHandle_t lightHandle, aclblasLtMatmulDe
 - computeType 当前仅支持 `ACLBLAS_COMPUTE_32F`
 - transA / transB 支持 N、T，对应 `ACLBLAS_OP_N`（不转置）、`ACLBLAS_OP_T`（转置）
 - MXFP8/MXFP4 路径要求 K 为 32 的整数倍，否则返回 `ACLBLAS_STATUS_INVALID_VALUE`
-- order 当前仅支持 `ACLBLASLT_ORDER_ROW`；lda / ldb / ldc / ldd 须 >= 矩阵物理列数；MXFP4 的 ld 为逻辑元素 leading dim（2 个 FP4 元素打包为 1 字节）
+- order 必须显式设为 `ACLBLASLT_ORDER_ROW`（layout 描述符的默认值为 `ACLBLASLT_ORDER_COL`，A/B/C/D 任一未设置为 ROW 均返回 `ACLBLAS_STATUS_NOT_SUPPORTED`，不再静默按行主序解释）；lda / ldb / ldc / ldd 须 >= 矩阵物理列数；MXFP4 的 ld 为逻辑元素 leading dim（2 个 FP4 元素打包为 1 字节）
 - epilogue 当前仅支持 `ACLBLASLT_EPILOGUE_DEFAULT`
 - MXFP8/MXFP4 路径须通过 computeDesc 设置 scaleA / scaleB（`ACLBLASLT_MATMUL_DESC_A/B_SCALE_POINTER`），E8M0 格式，按 K 方向每 32 元素一组，不可为 NULL
 - algo 可为 NULL，使用默认算法

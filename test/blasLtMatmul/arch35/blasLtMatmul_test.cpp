@@ -463,3 +463,47 @@ TEST_F(LtMatmulArch35Test, DevicePointerMode) {
     aclblasLtMatrixLayoutDestroy(Adesc);
     aclblasLtMatmulDescDestroy(computeDesc);
 }
+
+// issue #491: layout 描述符默认 ORDER_COL，而 Matmul kernel 仅按行主序解释数据。
+// 未显式设置 ORDER_ROW 的布局必须显式拒绝（NOT_SUPPORTED），不得静默按行主序计算。
+TEST_F(LtMatmulArch35Test, ColOrderNotSupported) {
+    constexpr int M = 4, N = 4, K = 4;
+
+    aclblasLtMatmulDesc_t computeDesc = nullptr;
+    ASSERT_EQ(aclblasLtMatmulDescCreate(&computeDesc, ACLBLAS_COMPUTE_32F, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+    int32_t transN = ACLBLAS_OP_N;
+    aclblasLtMatmulDescSetAttribute(computeDesc, ACLBLASLT_MATMUL_DESC_TRANSA, &transN, sizeof(int32_t));
+    aclblasLtMatmulDescSetAttribute(computeDesc, ACLBLASLT_MATMUL_DESC_TRANSB, &transN, sizeof(int32_t));
+
+    aclblasLtMatrixLayout_t Adesc = nullptr, Bdesc = nullptr, Cdesc = nullptr, Ddesc = nullptr;
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&Adesc, ACL_FLOAT, M, K, K), ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&Bdesc, ACL_FLOAT, K, N, N), ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&Cdesc, ACL_FLOAT, M, N, N), ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&Ddesc, ACL_FLOAT, M, N, N), ACLBLAS_STATUS_SUCCESS);
+    // 不调用 SetAttribute，保持默认 ACLBLASLT_ORDER_COL
+
+    const size_t aBytes = static_cast<size_t>(M) * K * sizeof(float);
+    const size_t bBytes = static_cast<size_t>(K) * N * sizeof(float);
+    const size_t dBytes = static_cast<size_t>(M) * N * sizeof(float);
+    void* dA = nullptr;
+    void* dB = nullptr;
+    void* dD = nullptr;
+    ASSERT_EQ(aclrtMalloc(&dA, aBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dB, bBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dD, dBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+
+    float alpha = 1.0f, beta = 0.0f;
+    aclblasStatus_t ret = aclblasLtMatmul(
+        ltHandle_, computeDesc, &alpha, dA, Adesc, dB, Bdesc, &beta, nullptr, Cdesc, dD, Ddesc, nullptr, nullptr, 0,
+        stream_);
+    EXPECT_EQ(ret, ACLBLAS_STATUS_NOT_SUPPORTED);
+
+    aclrtFree(dD);
+    aclrtFree(dB);
+    aclrtFree(dA);
+    aclblasLtMatrixLayoutDestroy(Ddesc);
+    aclblasLtMatrixLayoutDestroy(Cdesc);
+    aclblasLtMatrixLayoutDestroy(Bdesc);
+    aclblasLtMatrixLayoutDestroy(Adesc);
+    aclblasLtMatmulDescDestroy(computeDesc);
+}

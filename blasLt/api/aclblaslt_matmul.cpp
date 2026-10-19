@@ -107,6 +107,20 @@ aclblasStatus_t aclblasLtMatmul(
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
+    // issue #491: the matmul kernels interpret matrices in row-major order only.
+    // The layout descriptor defaults to ACLBLASLT_ORDER_COL, so an unset or
+    // unsupported order must be rejected explicitly instead of being silently
+    // interpreted as row-major (which would compute on misinterpreted memory).
+    const bool rowOrder = ALayout->order == ACLBLASLT_ORDER_ROW && BLayout->order == ACLBLASLT_ORDER_ROW &&
+                          CLayout->order == ACLBLASLT_ORDER_ROW && DLayout->order == ACLBLASLT_ORDER_ROW;
+    if (!rowOrder) {
+        AclBlasLt::LoggerManager::GetInstance().Log(
+            ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul",
+            "only ACLBLASLT_ORDER_ROW layouts are supported (A=%d, B=%d, C=%d, D=%d)", static_cast<int>(ALayout->order),
+            static_cast<int>(BLayout->order), static_cast<int>(CLayout->order), static_cast<int>(DLayout->order));
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
+
     // Validate workspace alignment (must be 16B aligned)
     if (workspace != nullptr && (reinterpret_cast<uintptr_t>(workspace) & 0xF) != 0) {
         AclBlasLt::LoggerManager::GetInstance().Log(ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul",
