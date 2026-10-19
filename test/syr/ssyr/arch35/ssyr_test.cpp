@@ -85,3 +85,31 @@ TEST_P(SsyrArch35Test, CsvDriven)
     }
     EXPECT_EQ(unchErr, 0u) << "[" << p.caseName << "] Unchanged region: " << unchErr << " errors";
 }
+
+// issue #510: alpha 为 Device 指针时，Host 须先经 handle stream D2H 读回再建 tiling，
+// 不得直接解引用设备地址（修复前会崩溃/读到错误标量）。
+TEST_F(SsyrArch35Test, DeviceAlpha)
+{
+    constexpr int n = 16;
+    constexpr int lda = 16;
+    constexpr float alpha = 2.5f;
+
+    std::vector<float> xHost = makeBlasStrided(n, 1, "RANDOM_NORM_5_5", 42);
+    std::vector<float> aOrig = makeBlasArray(static_cast<int64_t>(lda) * n, "RANDOM_NORM_5_5", 43);
+    std::vector<float> aHost = aOrig;
+
+    aclblasStatus_t ret = aclblasSsyr_npu(
+        SsyrArch35Test::handle_, ACLBLAS_UPPER, n, alpha, xHost.data(), 1, aHost.data(), lda,
+        /*alphaOnDevice=*/true);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_SUCCESS));
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        return;
+    }
+
+    std::vector<float> golden = aOrig;
+    aclblasSsyr_cpu(ACLBLAS_UPPER, n, alpha, xHost.data(), 1, golden.data(), lda);
+
+    VerifyConfig cfg;
+    applyMixedTolerance(cfg, ACL_FLOAT, golden.data(), golden.size());
+    EXPECT_TRUE(Verifier::verifyVector(aHost.data(), golden.data(), aHost.size(), 1, cfg, "DeviceAlpha"));
+}

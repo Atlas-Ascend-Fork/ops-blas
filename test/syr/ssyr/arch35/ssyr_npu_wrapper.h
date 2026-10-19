@@ -51,7 +51,8 @@ inline aclError CopyToDevice(void** devPtr, const void* hostPtr, size_t bytes)
 }
 
 inline aclblasStatus_t aclblasSsyr_npu(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, float alpha, const float* x, int incx, float* A, int lda)
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, float alpha, const float* x, int incx, float* A, int lda,
+    bool alphaOnDevice = false)
 {
     if (handle == nullptr || n <= 0) {
         return aclblasSsyr(handle, uplo, n, &alpha, x, incx, A, lda);
@@ -77,13 +78,29 @@ inline aclblasStatus_t aclblasSsyr_npu(
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
 
+    // issue #510: alphaOnDevice 时按设备指针传入，覆盖 Device 标量指针路径
+    void* dAlpha = nullptr;
+    const float* alphaArg = &alpha;
+    if (alphaOnDevice) {
+        if (CopyToDevice(&dAlpha, &alpha, sizeof(float)) != ACL_SUCCESS) {
+            if (dX)
+                aclrtFree(dX);
+            if (dA)
+                aclrtFree(dA);
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+        alphaArg = static_cast<const float*>(dAlpha);
+    }
+
     aclblasStatus_t ret =
-        aclblasSsyr(handle, uplo, n, &alpha, static_cast<const float*>(dX), useIncx, static_cast<float*>(dA), lda);
+        aclblasSsyr(handle, uplo, n, alphaArg, static_cast<const float*>(dX), useIncx, static_cast<float*>(dA), lda);
 
     aclrtSynchronizeDevice();
     if (A != nullptr) {
         aclrtMemcpy(A, aBytes, dA, aBytes, ACL_MEMCPY_DEVICE_TO_HOST);
     }
+    if (dAlpha)
+        aclrtFree(dAlpha);
     if (dX)
         aclrtFree(dX);
     if (dA)

@@ -77,6 +77,23 @@ aclblasStatus_t aclblasSsyr(
 
     aclrtStream stream = h->stream;
 
+    // issue #510: alpha 允许 Host/Device 指针；Device 指针须先经 handle stream D2H 读回，
+    // 不能在 Host 直接解引用，否则会崩溃或读到错误标量。
+    bool alphaIsDevice = false;
+    aclblasStatus_t alphaLocSt = CheckPtrLocation(alpha, &alphaIsDevice);
+    if (alphaLocSt != ACLBLAS_STATUS_SUCCESS) {
+        return alphaLocSt;
+    }
+    float alphaVal = 0.0f;
+    if (alphaIsDevice) {
+        aclblasStatus_t readSt = ReadHostScalarFromDevice(alpha, alphaVal, stream, "aclblasSsyr");
+        if (readSt != ACLBLAS_STATUS_SUCCESS) {
+            return readSt;
+        }
+    } else {
+        alphaVal = *alpha;
+    }
+
     uint32_t aivCoreNum = GetAivCoreCount();
     if (aivCoreNum == 0) {
         OP_LOGE("aclblasSsyr", "GetAivCoreCount failed");
@@ -84,7 +101,7 @@ aclblasStatus_t aclblasSsyr(
     }
     uint32_t useNumBlocks = std::min(CeilDiv<uint32_t>(n, SIMT_MIN_THREAD_NUM), aivCoreNum);
 
-    SyrTilingData tiling = CalSyrTilingData(useNumBlocks, n, lda, uplo, *alpha, incx);
+    SyrTilingData tiling = CalSyrTilingData(useNumBlocks, n, lda, uplo, alphaVal, incx);
 
     OP_LOGD(
         "aclblasSsyr", "tiling: n=%u lda=%u uplo=%u incx=%ld numThreads=%u rowsPerBlock=%u numBlocks=%u", tiling.n,

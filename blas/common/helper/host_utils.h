@@ -112,3 +112,27 @@ static inline aclblasStatus_t CheckPtrLocation(const void* ptr, bool* isDevice)
     *isDevice = (ptrAttr.location.type == ACL_MEM_LOCATION_TYPE_DEVICE);
     return ACLBLAS_STATUS_SUCCESS;
 }
+
+// ==========================================================================
+//  ReadHostScalarFromDevice — copy one float scalar from a device pointer to
+//  host through the handle stream (D2H async + sync). Used by operators whose
+//  tiling carries host scalar values while accepting host-or-device alpha
+//  pointers (e.g. ssyr/sspr, issue #510).
+// ==========================================================================
+static inline aclblasStatus_t ReadHostScalarFromDevice(
+    const float* devicePtr, float& hostVal, aclrtStream stream, const char* opTag)
+{
+    hostVal = 0.0f;
+    aclError aclRet = aclrtMemcpyAsync(
+        &hostVal, sizeof(float), devicePtr, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST, stream);
+    if (aclRet != ACL_SUCCESS) {
+        OP_LOGE(opTag, "aclrtMemcpyAsync scalar D2H failed, ret=%d", static_cast<int>(aclRet));
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    aclRet = aclrtSynchronizeStream(stream);
+    if (aclRet != ACL_SUCCESS) {
+        OP_LOGE(opTag, "aclrtSynchronizeStream for scalar D2H failed, ret=%d", static_cast<int>(aclRet));
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}

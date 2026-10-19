@@ -69,12 +69,27 @@ aclblasStatus_t aclblasSspr(
         return st;
     }
 
-    float alphaVal = *alpha;
+    aclrtStream stream = h->stream;
+
+    // issue #510: alpha 允许 Host/Device 指针；Device 指针须先经 handle stream D2H 读回，
+    // 不能在 Host 直接解引用，否则会崩溃或读到错误标量。
+    bool alphaIsDevice = false;
+    aclblasStatus_t alphaLocSt = CheckPtrLocation(alpha, &alphaIsDevice);
+    if (alphaLocSt != ACLBLAS_STATUS_SUCCESS) {
+        return alphaLocSt;
+    }
+    float alphaVal = 0.0f;
+    if (alphaIsDevice) {
+        aclblasStatus_t readSt = ReadHostScalarFromDevice(alpha, alphaVal, stream, "aclblasSspr");
+        if (readSt != ACLBLAS_STATUS_SUCCESS) {
+            return readSt;
+        }
+    } else {
+        alphaVal = *alpha;
+    }
     if (alphaVal == 0.0f) {
         return ACLBLAS_STATUS_SUCCESS;
     }
-
-    aclrtStream stream = h->stream;
 
     uint32_t aivCoreNum = GetAivCoreCount();
     if (aivCoreNum == 0) {

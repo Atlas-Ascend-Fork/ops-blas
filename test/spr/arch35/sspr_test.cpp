@@ -81,3 +81,36 @@ TEST_P(SsprArch35Test, CsvDriven)
         EXPECT_TRUE(Verifier::verifyVector(apPtr, golden.data(), apLen, 1, cfg, p.caseName));
     }
 }
+
+// issue #510: alpha 为 Device 指针时，Host 须先经 handle stream D2H 读回再建 tiling，
+// 不得直接解引用设备地址（修复前会崩溃/读到错误标量）。
+TEST_F(SsprArch35Test, DeviceAlpha)
+{
+    constexpr int n = 16;
+    constexpr float alpha = 2.5f;
+
+    std::vector<float> xHost = makeBlasStrided(n, 1, "RANDOM_NORM_5_5", 42);
+    std::vector<float> apOrig = makeBlasTriangular(n, /*upper=*/true, "RANDOM_NORM_5_5", 43);
+    std::vector<float> apHost = apOrig;
+    const size_t apLen = static_cast<size_t>(n) * (n + 1) / 2;
+
+    void* dAlpha = nullptr;
+    ASSERT_EQ(aclrtMalloc(&dAlpha, sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMemcpy(dAlpha, sizeof(float), &alpha, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+
+    aclblasStatus_t ret = aclblasSspr_npu(
+        SsprArch35Test::handle_, ACLBLAS_UPPER, n, static_cast<const float*>(dAlpha), xHost.data(), 1,
+        apHost.data());
+    aclrtFree(dAlpha);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_SUCCESS));
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        return;
+    }
+
+    std::vector<float> golden = apOrig;
+    aclblasSspr_cpu(SsprArch35Test::handle_, ACLBLAS_UPPER, n, &alpha, xHost.data(), 1, golden.data());
+
+    VerifyConfig cfg;
+    applyMixedTolerance(cfg, ACL_FLOAT, golden.data(), apLen);
+    EXPECT_TRUE(Verifier::verifyVector(apHost.data(), golden.data(), apLen, 1, cfg, "DeviceAlpha"));
+}
