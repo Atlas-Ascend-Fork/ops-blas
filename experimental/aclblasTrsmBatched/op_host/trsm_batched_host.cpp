@@ -182,31 +182,41 @@ static void FillTrsmTiling(aclblasSideMode_t side, aclblasFillMode_t uplo,
 
 // 分配 device 内存、拷贝入参/cube tiling/单位矩阵，启动 kernel 并同步、释放资源
 // 构建 maxMN×maxMN 单位矩阵到 device（GEMM 尾块更新所需）
-static void BuildIdentityDevice(int32_t maxMN, uint8_t** idDevice)
+static aclblasStatus_t BuildIdentityDevice(int32_t maxMN, uint8_t** idDevice)
 {
     size_t idSize = (size_t)maxMN * maxMN * sizeof(float);
     std::vector<float> idHost((size_t)maxMN * maxMN, 0.0f);
     for (int32_t i = 0; i < maxMN; i++) {
         idHost[(size_t)i * maxMN + i] = 1.0f;
     }
-    aclrtMalloc((void**)idDevice, idSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMemcpy(*idDevice, idSize, idHost.data(), idSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclrtMalloc((void**)idDevice, idSize, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclrtMemcpy(*idDevice, idSize, idHost.data(), idSize, ACL_MEMCPY_HOST_TO_DEVICE) == ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
 // 分配并拷贝 tiling / A、B 指针数组 / cube tiling / gemm 与 sys 工作区到 device
-static void AllocTrsmDeviceInputs(const TrsmBatchedTilingData& tiling, int32_t maxMN,
+static aclblasStatus_t AllocTrsmDeviceInputs(const TrsmBatchedTilingData& tiling, int32_t maxMN,
     const float* const aArray[], float* const bArray[], int64_t batchCount,
     uint8_t** tilingDevice, uint8_t** aArrayDevice, uint8_t** bArrayDevice,
     uint8_t** cubeTilingDevice, uint8_t** gemmWsDevice, uint8_t** sysWsDevice)
 {
     size_t ptrArraySize = (size_t)batchCount * sizeof(void*);
-    aclrtMalloc((void**)tilingDevice, sizeof(TrsmBatchedTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMalloc((void**)aArrayDevice, ptrArraySize, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMalloc((void**)bArrayDevice, ptrArraySize, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMemcpy(*tilingDevice, sizeof(TrsmBatchedTilingData), &tiling,
-                sizeof(TrsmBatchedTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    aclrtMemcpy(*aArrayDevice, ptrArraySize, aArray, ptrArraySize, ACL_MEMCPY_HOST_TO_DEVICE);
-    aclrtMemcpy(*bArrayDevice, ptrArraySize, bArray, ptrArraySize, ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclrtMalloc((void**)tilingDevice, sizeof(TrsmBatchedTilingData), ACL_MEM_MALLOC_HUGE_FIRST) ==
+                  ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclrtMalloc((void**)aArrayDevice, ptrArraySize, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclrtMalloc((void**)bArrayDevice, ptrArraySize, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclrtMemcpy(*tilingDevice, sizeof(TrsmBatchedTilingData), &tiling,
+                          sizeof(TrsmBatchedTilingData), ACL_MEMCPY_HOST_TO_DEVICE) == ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclrtMemcpy(*aArrayDevice, ptrArraySize, aArray, ptrArraySize, ACL_MEMCPY_HOST_TO_DEVICE) == ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclrtMemcpy(*bArrayDevice, ptrArraySize, bArray, ptrArraySize, ACL_MEMCPY_HOST_TO_DEVICE) == ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     uint8_t cubeTilingBuf[2048];
     uint32_t cubeTilingSize = 0;
@@ -218,20 +228,26 @@ static void AllocTrsmDeviceInputs(const TrsmBatchedTilingData& tiling, int32_t m
         if (splitNcols < maxMN) cubeN = splitNcols;
     }
     GenerateCubeTiling(maxMN, cubeN, maxMN, false, cubeTilingBuf, &cubeTilingSize);
-    aclrtMalloc((void**)cubeTilingDevice, sizeof(cubeTilingBuf), ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMemcpy(*cubeTilingDevice, sizeof(cubeTilingBuf), cubeTilingBuf, sizeof(cubeTilingBuf),
-                ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclrtMalloc((void**)cubeTilingDevice, sizeof(cubeTilingBuf), ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclrtMemcpy(*cubeTilingDevice, sizeof(cubeTilingBuf), cubeTilingBuf, sizeof(cubeTilingBuf),
+                          ACL_MEMCPY_HOST_TO_DEVICE) == ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     size_t gemmWsSize = (size_t)batchCount * tiling.workspaceOffset;
-    aclrtMalloc((void**)gemmWsDevice, gemmWsSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMemset(*gemmWsDevice, gemmWsSize, 0, gemmWsSize);
+    CHECK_RET(aclrtMalloc((void**)gemmWsDevice, gemmWsSize, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclrtMemset(*gemmWsDevice, gemmWsSize, 0, gemmWsSize) == ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     auto platformInst = platform_ascendc::PlatformAscendCManager::GetInstance(GetSocVersion());
     size_t sysWsSize = static_cast<size_t>(platformInst->GetLibApiWorkSpaceSize());
     if (sysWsSize < 16 * 1024 * 1024) {
         sysWsSize = 16 * 1024 * 1024;
     }
-    aclrtMalloc((void**)sysWsDevice, sysWsSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    CHECK_RET(aclrtMalloc((void**)sysWsDevice, sysWsSize, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS,
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
 static aclblasStatus_t LaunchTrsmKernel(const TrsmBatchedTilingData& tiling, int32_t maxMN,
@@ -245,10 +261,22 @@ static aclblasStatus_t LaunchTrsmKernel(const TrsmBatchedTilingData& tiling, int
     uint8_t* gemmWsDevice = nullptr;
     uint8_t* sysWsDevice = nullptr;
     uint8_t* idDevice = nullptr;
-    AllocTrsmDeviceInputs(tiling, maxMN, aArray, bArray, batchCount,
-                          &tilingDevice, &aArrayDevice, &bArrayDevice,
-                          &cubeTilingDevice, &gemmWsDevice, &sysWsDevice);
-    BuildIdentityDevice(maxMN, &idDevice);
+    aclblasStatus_t status = AllocTrsmDeviceInputs(tiling, maxMN, aArray, bArray, batchCount,
+                                                   &tilingDevice, &aArrayDevice, &bArrayDevice,
+                                                   &cubeTilingDevice, &gemmWsDevice, &sysWsDevice);
+    if (status == ACLBLAS_STATUS_SUCCESS) {
+        status = BuildIdentityDevice(maxMN, &idDevice);
+    }
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        if (idDevice != nullptr) { aclrtFree(idDevice); }
+        if (sysWsDevice != nullptr) { aclrtFree(sysWsDevice); }
+        if (gemmWsDevice != nullptr) { aclrtFree(gemmWsDevice); }
+        if (cubeTilingDevice != nullptr) { aclrtFree(cubeTilingDevice); }
+        if (bArrayDevice != nullptr) { aclrtFree(bArrayDevice); }
+        if (aArrayDevice != nullptr) { aclrtFree(aArrayDevice); }
+        if (tilingDevice != nullptr) { aclrtFree(tilingDevice); }
+        return status;
+    }
 
     trsm_batched_mix12_kernel_do(aArrayDevice, bArrayDevice, tilingDevice, cubeTilingDevice,
                                  gemmWsDevice, sysWsDevice, idDevice,
