@@ -46,6 +46,10 @@ static constexpr GemvBufCfg kGmvCfg_HSS = {sizeof(uint16_t),   sizeof(float),   
 static constexpr GemvBufCfg kGmvCfg_TST = {sizeof(uint16_t),   sizeof(uint16_t),   2, true};
 static constexpr GemvBufCfg kGmvCfg_TSS = {sizeof(uint16_t),   sizeof(float),      2, true};
 
+// issue #495: one vector-length (64 FP32 = 256B) staging pad appended to inA for
+// the transposed RegBase path, whose per-row DataCopy reads a full VL unmasked.
+static constexpr uint32_t GEMV_INA_VL_PAD_BYTES = 256;
+
 struct GemvBufLayout { uint32_t inA, inx, inY, out, matTmp, vecTmp; uint32_t total; };
 
 static GemvBufLayout ComputeBufferLayout(GemvType type, uint32_t mRow, uint32_t nCol)
@@ -57,7 +61,10 @@ static GemvBufLayout ComputeBufferLayout(GemvType type, uint32_t mRow, uint32_t 
                  : (type == GemvType::TSS) ? kGmvCfg_TSS : kGmvCfg_F32;
     uint32_t vecE = (nCol < 64u) ? 64u : nCol;
     GemvBufLayout lay = {};
-    lay.inA    = round256(GEMV_BATCHED_BN_NORMAL * mRow * nCol * c.szIn);
+    // issue #495: 转置 RegBase 点积路径每行按整 VL（64 个 FP32 = 256B）加载且
+    // load 本身不带掩码，尾行读取会越过 inA 子缓冲区。这里为 inA 末尾预留一个
+    // VL 的 staging 余量，保证 load 范围始终落在已分配的子缓冲区内。
+    lay.inA    = round256(GEMV_BATCHED_BN_NORMAL * mRow * nCol * c.szIn + GEMV_INA_VL_PAD_BYTES);
     lay.inx    = round256(GEMV_BATCHED_BN_NORMAL * vecE * c.szIn);
     lay.inY    = round256(GEMV_BATCHED_BN_NORMAL * mRow * c.szY);
     lay.out    = lay.inY;

@@ -60,9 +60,13 @@ static GemvBufLayout ComputeBufferLayout(GemvType type, uint32_t mRow, uint32_t 
                  : (type == GemvType::TSS) ? kGmvCfg_TSS : kGmvCfg_F32;
     constexpr uint32_t BN = GEMV_STRIDED_BATCHED_BN_NORMAL;
     constexpr uint32_t MIN_VEC_ELEMENTS = 64u;
+    // issue #495: 转置 RegBase 点积路径每行按整 VL（64 个 FP32 = 256B）加载且
+    // load 本身不带掩码，尾行读取会越过 inA 子缓冲区。这里为 inA 末尾预留一个
+    // VL 的 staging 余量，保证 load 范围始终落在已分配的子缓冲区内。
+    constexpr uint32_t INA_VL_PAD_BYTES = 256u;
     uint32_t vecE = (nCol < MIN_VEC_ELEMENTS) ? MIN_VEC_ELEMENTS : nCol;
     GemvBufLayout lay = {};
-    lay.inA    = round256(static_cast<uint64_t>(BN) * mRow * nCol * c.szIn);
+    lay.inA    = round256(static_cast<uint64_t>(BN) * mRow * nCol * c.szIn + INA_VL_PAD_BYTES);
     lay.inx    = round256(static_cast<uint64_t>(BN) * vecE * c.szIn);
     lay.inY    = round256(static_cast<uint64_t>(BN) * mRow * c.szY);
     lay.matTmp = round256(static_cast<uint64_t>(c.tn) * mRow * nCol * sizeof(float));
