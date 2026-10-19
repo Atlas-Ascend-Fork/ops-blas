@@ -12,6 +12,7 @@
  * \file ctrsm_batched_kernel_aiv_canon_b_deinterleave.h
  * \brief B 矩阵解交织器：把用户 B 转成补零对齐的 SoA 工作区。
  *        列分块路径：单行超出 UB，逐行逐列块加载解交织写出
+ */
     __aicore__ inline void DeinterleaveBLeftChunked(
         AscendC::GlobalTensor<float>& gB,
         AscendC::GlobalTensor<float>& gBcR, AscendC::GlobalTensor<float>& gBcI,
