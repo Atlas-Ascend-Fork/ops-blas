@@ -370,6 +370,10 @@ aclblasStatus_t aclblasSsyr(
     aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const float* alpha, const float* x, const int incx,
     float* A, const int lda);
 
+aclblasStatus_t aclblasCsyr(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const aclblasComplex* alpha, const aclblasComplex* x,
+    const int incx, aclblasComplex* A, const int lda);
+
 aclblasStatus_t aclblasSsyr2(
     aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const float* alpha, const float* x, const int incx,
     const float* y, const int incy, float* A, const int lda);
