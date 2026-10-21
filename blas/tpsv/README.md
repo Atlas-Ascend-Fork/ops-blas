@@ -211,9 +211,11 @@ int main()
 
 #### 产品支持情况
 
-- Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Ascend 950PR / Ascend 950DT：支持（arch35）
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持（arch22）
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持（arch22）
+
+- Ascend 950PR / 950DT 由 `blas/tpsv/arch35/` 实现支持；Atlas A2/A3 系列产品由 `blas/tpsv/arch22/` 实现支持（与已合入的实数版 aclblasStpsv 同族同目录），arch22 精度/性能验收环境为 Atlas 800I A2（Ascend 910B3）+ CANN 9.1.0。
 
 #### 函数原型
 
@@ -236,15 +238,20 @@ aclblasStatus_t aclblasCtpsv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 
 #### 约束说明
 
-- n >= 0，n == 0 时为空操作直接返回成功
+- n >= 0，n == 0 时为空操作直接返回成功（n = 0 先于 AP/x 空指针校验，此时 AP、x 允许为 nullptr）
 - uplo 必须为 ACLBLAS_UPPER 或 ACLBLAS_LOWER
-- trans 必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C
+- trans 必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C（复数下 OP_T 纯转置与 OP_C 共轭转置为两个不同语义，host 侧不折叠）
 - diag 必须为 ACLBLAS_NON_UNIT 或 ACLBLAS_UNIT
 - incx != 0（可正可负）
 - AP、x 不可为 nullptr
 - packed 存储索引（0 基）：uplo = ACLBLAS_UPPER 时 A(i,j)（i <= j）存于 AP[i + j*(j+1)/2]；uplo = ACLBLAS_LOWER 时 A(i,j)（i >= j）存于 AP[i + (2*n-j-1)*j/2]
 - diag = ACLBLAS_UNIT 时不访问对角元素，假定对角恒为 (1,0)
-- 本算子不做奇异或近奇异检测，diag = ACLBLAS_NON_UNIT 时要求调用方保证对角元素非零
+- 本算子不做奇异或近奇异检测，diag = ACLBLAS_NON_UNIT 时要求调用方保证对角元素非零；Inf/NaN 输入不提前拦截，按 IEEE 浮点规则沿依赖链传播
+- 非法 uplo/trans/diag 枚举、n < 0、incx == 0、n > 0 时 AP/x 为 nullptr 返回 ACLBLAS_STATUS_INVALID_VALUE；handle 为 nullptr 返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR
+- **arch22（Atlas A2/A3）支持域双层语义**：
+  - **索引安全域 n ∈ [1, 65535]**：n(n+1)/2 < 2^31 的 uint32 索引域上限（n > 65535 返回 ACLBLAS_STATUS_INVALID_VALUE）；
+  - **UB 能力域**：超向量 Unified Buffer 常驻预算的档位（约 n > 10K，随 trans/incx 组合浮动，host 侧守卫式联合不等式为权威判定，与 kernel 侧同式）返回 ACLBLAS_STATUS_NOT_SUPPORTED；
+  - (4096, ~10K] 为功能正确、未做性能优化的窗口（x 平面分段驻留路径）；测试与精度/性能验收覆盖口径为 n ≤ 4096（精度 [0,2048] / 性能 [1,4096]）
 
 #### 调用示例
 
