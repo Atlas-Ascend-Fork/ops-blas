@@ -309,3 +309,58 @@ int main()
     return 0;
 }
 ```
+
+## aclblasCtrsmBatched（complex64）
+
+#### 产品支持情况
+
+| 产品 | 支持情况 |
+| --- | --- |
+| Atlas 950PR（Ascend 950PR） | 支持 |
+
+已在 Atlas 950PR / CANN 9.1.0 上进行实机验证。
+
+公共声明位于 `include/cann_ops_blas.h`。参数顺序与实数同族一致，alpha/A/B 类型改为
+`aclblasComplex`（float32 real、float32 imag）。N/T/C 分别表示原矩阵、转置、共轭转置。
+A/B 是设备侧指针数组，alpha 是 Host 标量；统一 m/n/lda/ldb/batchCount，列主序。
+LEFT 求解 op(A)X=alpha B；RIGHT 求解 X op(A)=alpha B，B 原地覆写。
+
+仅访问指定三角，UNIT 不读对角；alpha=0 不读 A 和 B 的旧值，只清零逻辑 B 区域。
+B 的 padding 保留，各 batch 的 B 不可重叠。无奇异性检测，不支持设备 alpha。
+非法枚举、负维度、batchCount<1、错误前导维、空 alpha/B 返回 INVALID_VALUE；
+空 handle 返回 HANDLE_IS_NULLPTR。先验证元数据和 alpha/B，再处理 m/n=0 no-op；
+空矩阵允许未使用的 lda/ldb 为 0，非空矩阵才要求满足相应尺寸下界。
+非空维度且 alpha 非零要求非空 A 指针数组。B[i] 及实际需要读取的 A 元素须位于有效设备内存；alpha=0 和 UNIT 隐含对角对应的数据不被使用。
+
+实现位于 `arch35/ctrsmbatched_*`，依赖 asc-devkit >= 9.1，与实数文件共存。
+实现按职责维护六个文件：Host（`ctrsmbatched_host.cpp`）、小矩阵与有序求解（`ctrsmbatched_kernel.cpp`）、UNIT（`ctrsmbatched_unit_kernel.cpp`）、Cube（`ctrsmbatched_cube_kernel.cpp`）、方阵流水（`ctrsmbatched_square_kernel.cpp`），以及共享参数和基础复数运算（`ctrsmbatched_kernel.h`）。
+设备入口源文件由仓库现有规则自动收集，不生成包装源码、不排除单个源文件，也不设置算子专用编译选项。UNIT 与方阵入口通过 `CTRSM_BATCHED_SHARED_ONLY` 复用主入口源文件中的私有模板，避免重复实例化主入口，并保持各入口的 UB 分配独立。源文件有效行数均低于 2000，共享头文件低于 500。
+
+小矩阵采用 SIMT 搬运、分组 SIMD 求解和 DMA 写回；8/16/32 阶方阵在
+LEFT / N / NON_UNIT / alpha=1 时使用流水搬运。较大 NON_UNIT 使用对角块预求逆与
+Cube 更新，workspace 不足时使用 AIV 原地求解。NON_UNIT 对 A/B 同时施加行缩放，
+减少极端对角引起的倒数溢出和下溢。
+
+UNIT 使用与 OpenBLAS 对齐的向量分块顺序；较大三角矩阵先求解至多 96 阶的前缀，
+仅在实部和虚部均已传播为 NaN 时填充后续结果，否则从未改写的输入执行完整有序求解。
+初始 alpha 缩放保留四次独立乘法舍入，分块更新按参考顺序使用 FMA。
+短矩阵 LEFT UNIT 的 8 行微块由相邻两行共享已求解 B 的加载，并将宽 RHS 分成
+128 列一组计算；每行保留独立累加器和原有 FMA 顺序。
+面板、微块和行调度在标量层执行，每个向量计算范围仅处理一行或一对相邻行，避免长跳转编译选项；UNIT 的一阶矩阵走不读取 A 元素的有序路径。
+UNIT 不进入 Cube 管线，不分配逆矩阵增长标志。
+
+输入和累加结果保存为 FLOAT32。k<128 的 Cube 对角求解关闭 HF32；其余 Cube
+求解和更新仅在 abs(alpha.real)+abs(alpha.imag)≤1 时启用 HF32。
+Cube workspace 为 `8*batchCount*kp*(2*kp+rp)` 字节，kp 将三角阶数补齐到 8，
+rp 将 RHS 数补齐到 16。复用 handle workspace；首次扩容可能同步 stream，足够时异步排队。
+用户 workspace 不足、超过限制或分配失败时，在修改 B 前回退到向量路径。
+用户 workspace 保持原有地址与所有权，其他运行时错误返回调用方。
+Cube 输入按矩阵存储方向选择 DMA 打包分块，转置时采用四行交错的线程排列和
+32 字节输入填充。独立输出 tile 使用两个 L1 缓冲区重叠下一 tile 的加载；
+L0 和 Fixpipe 保持串行，事件保证缓冲区读取完成后才可复用。
+
+当前参考环境为 OpenBLAS 0.3.25 / Cooperlake / SINGLE_THREADED；构建和参考库配置见下方测试说明。
+精度阈值、原始 1000 条精度与 200 条性能用例均保持不变。
+异步执行错误由调用方在 stream 同步时检查。
+
+[精度与性能测试说明](../../test/trsmbatched/ctrsmbatched/README.md)。

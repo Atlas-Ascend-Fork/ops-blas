@@ -604,6 +604,26 @@ aclblasStatus_t aclblasStrsmBatched(
     float* const B[], int ldb,
     int batchCount);
 
+/**
+ * @brief Batched complex64 triangular solve, column-major, B overwritten by X.
+ * LEFT: op(A) X = alpha B. RIGHT: X op(A) = alpha B.
+ * A/B are device pointer arrays. alpha is a host scalar copied at dispatch.
+ * Only the selected triangle is read. Unit diagonals are never read.
+ * A is not accessed for zero alpha. B batches must not overlap.
+ * Each B batch is overwritten at its input address; rows m..ldb-1 are unchanged.
+ * For nonempty matrices, lda >= max(1, LEFT ? m : n), ldb >= max(1, m).
+ * batchCount must be positive. Negative dimensions/leading dimensions are invalid.
+ * Zero m/n returns success after checking modes, nonnegative dimensions, batchCount,
+ * and non-null alpha/B. It does not access either device pointer array or matrix.
+ * For zero alpha, A may be null; logical B is cleared without reading old B.
+ * An insufficient user-owned workspace is preserved and uses the vector fallback.
+ * Ascend 950PR implementation requires asc-devkit >= 9.1.
+ */
+aclblasStatus_t aclblasCtrsmBatched(
+    aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t trans,
+    aclblasDiagType_t diag, int m, int n, const aclblasComplex* alpha, const aclblasComplex* const A[], int lda,
+    aclblasComplex* const B[], int ldb, int batchCount);
+
 aclblasStatus_t aclblasSgemmStridedBatched(
     aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k,
     const float* alpha, const float* A, int lda, int64_t strideA, const float* B, int ldb, int64_t strideB,
