@@ -1,0 +1,16 @@
+case_name,description,func,transA,transB,m,n,k,alpha_real,alpha_imag,beta_real,beta_imag,lda,ldb,ldc,a_fill,b_fill,c_fill,alpha_null,beta_null,a_null,b_null,c_null,expect_result,measure,warmup,measurements,classification,flops,profile
+S22_NN_basic,FP32_NN_basic,sgemm,N,N,128,128,128,1,0,0,0,,,,RANDOM_1,RANDOM_1,VALUE_NORM_0,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_NT_basic,FP32_NT_basic,sgemm,N,T,128,128,128,1,0,0,0,,,,RANDOM_1,RANDOM_1,VALUE_NORM_0,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_TN_basic,FP32_TN_basic,sgemm,T,N,128,128,128,1,0,0,0,,,,RANDOM_1,RANDOM_1,VALUE_NORM_0,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_TT_basic,FP32_TT_basic,sgemm,T,T,128,128,128,1,0,0,0,,,,RANDOM_1,RANDOM_1,VALUE_NORM_0,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_NN_small,FP32_NN_small,sgemm,N,N,17,19,13,1,0,0,0,,,,RANDOM_1,RANDOM_1,VALUE_NORM_0,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_NN_rectangular,FP32_NN_rectangular,sgemm,N,N,65,129,33,1,0,0,0,,,,RANDOM_1,RANDOM_1,VALUE_NORM_0,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_NN_padded,FP32_NN_padded,sgemm,N,N,67,73,41,1,0,0,0,71,45,79,RANDOM_1,RANDOM_1,VALUE_NORM_0,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_NT_padded,FP32_NT_padded,sgemm,N,T,67,73,41,0.75,0,-0.25,0,71,79,79,RANDOM_1,RANDOM_1,RANDOM_1,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_TN_padded,FP32_TN_padded,sgemm,T,N,67,73,41,-0.625,0,0.375,0,45,45,79,RANDOM_1,RANDOM_1,RANDOM_1,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_TT_padded,FP32_TT_padded,sgemm,T,T,67,73,41,0.875,0,-0.125,0,45,79,79,RANDOM_1,RANDOM_1,RANDOM_1,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_K_zero,FP32_K_zero,sgemm,N,N,17,19,0,1,0,1,0,,,,RANDOM_1,RANDOM_1,RANDOM_1,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_alpha_zero,FP32_alpha_zero,sgemm,N,N,17,19,13,0,0,1,0,,,,RANDOM_1,RANDOM_1,RANDOM_1,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_large_tail,FP32_large_tail,sgemm,N,N,257,193,129,1,0,0,0,,,,RANDOM_1,RANDOM_1,VALUE_NORM_0,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_large_transpose,FP32_large_transpose,sgemm,T,N,193,257,129,0.5,0,0.5,0,,,,RANDOM_1,RANDOM_1,RANDOM_1,,,,,,ACLBLAS_STATUS_SUCCESS,0,,,,,0
+S22_perf_2048,SGEMM performance case n=2048,sgemm,N,N,2048,2048,2048,1,0,0,0,2048,2048,2048,RANDOM_NORM_1,RANDOM_NORM_1,VALUE_NORM_0,,,,,,ACLBLAS_STATUS_SUCCESS,1,30,50,comparison,17179869184,1

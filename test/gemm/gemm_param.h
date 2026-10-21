@@ -40,6 +40,12 @@ struct GemmParam : public BlasTestParamBase {
     bool aNull = false;
     bool bNull = false;
     bool cNull = false;
+    bool measure = false;
+    int warmup = 30;
+    int measurements = 50;
+    std::string classification;
+    double flops = 0.0;
+    bool profile = false;
 
     GemmParam(const csv_map& map) : BlasTestParamBase(map)
     {
@@ -69,6 +75,12 @@ struct GemmParam : public BlasTestParamBase {
         aNull = (ReadMap(map, "a_null", "false") == "true");
         bNull = (ReadMap(map, "b_null", "false") == "true");
         cNull = (ReadMap(map, "c_null", "false") == "true");
+        measure = parseInt(ReadMap(map, "measure", "0")) != 0;
+        warmup = parseInt(ReadMap(map, "warmup", "30"));
+        measurements = parseInt(ReadMap(map, "measurements", "50"));
+        classification = ReadMap(map, "classification", "");
+        flops = parseDouble(ReadMap(map, "flops", "0"));
+        profile = parseInt(ReadMap(map, "profile", "0")) != 0;
     }
 
     bool isComplex() const { return func == "cgemm"; }
