@@ -16,6 +16,20 @@
 #include "cann_ops_blas.h"
 #include "csv_loader.h"
 
+inline bool IsNullString(const std::string& str) { return str == "null" || str == "nullptr" || str == "NULLPTR"; }
+
+inline float ParseOptionalFloat(const std::string& str, float defaultVal, bool& isNull)
+{
+    isNull = IsNullString(str);
+    return isNull ? 0.0f : parseFloat(str, defaultVal);
+}
+
+inline BlasFillMode ParseOptionalFill(const std::string& str, bool& isNull)
+{
+    isNull = IsNullString(str);
+    return isNull ? parseFill("RANDOM") : parseFill(str);
+}
+
 struct GbmvParam : public BlasTestParamBase {
     aclblasOperation_t trans = ACLBLAS_OP_N;
     int m = 0;
@@ -23,13 +37,22 @@ struct GbmvParam : public BlasTestParamBase {
     int kl = 0;
     int ku = 0;
     float alpha = 1.0f;
+    bool nullAlpha = false;
     BlasFillMode a = parseFill("RANDOM");
+    bool nullA = false;
     int lda = 0;
     BlasFillMode x = parseFill("RANDOM");
+    bool nullX = false;
     int incx = 1;
     float beta = 0.0f;
+    bool nullBeta = false;
     BlasFillMode y = parseFill("RANDOM");
+    bool nullY = false;
     int incy = 1;
+    // Extended CSV columns: handle=nullptr carrier for the null-handle group,
+    // and the alpha=0 exact-semantics switch
+    bool nullHandle = false;
+    bool expectExact = false;
 
     GbmvParam(const csv_map& map) : BlasTestParamBase(map)
     {
@@ -38,14 +61,15 @@ struct GbmvParam : public BlasTestParamBase {
         n = parseInt(ReadMap(map, "n", "0"));
         kl = parseInt(ReadMap(map, "kl", "0"));
         ku = parseInt(ReadMap(map, "ku", "0"));
-        alpha = parseFloat(ReadMap(map, "alpha", "1.0"));
-        a = parseFill(ReadMap(map, "a", "RANDOM"));
+        alpha = ParseOptionalFloat(ReadMap(map, "alpha", "1.0"), 1.0f, nullAlpha);
+        a = ParseOptionalFill(ReadMap(map, "a_fill", ReadMap(map, "a", "RANDOM")), nullA);
         lda = parseInt(ReadMap(map, "lda", std::to_string(kl + ku + 1)));
-        x = parseFill(ReadMap(map, "x", "RANDOM"));
+        x = ParseOptionalFill(ReadMap(map, "x_fill", ReadMap(map, "x", "RANDOM")), nullX);
         incx = parseInt(ReadMap(map, "incx", "1"));
-        beta = parseFloat(ReadMap(map, "beta", "0.0"));
-        y = parseFill(ReadMap(map, "y", "RANDOM"));
+        beta = ParseOptionalFloat(ReadMap(map, "beta", "0.0"), 0.0f, nullBeta);
+        y = ParseOptionalFill(ReadMap(map, "y_fill", ReadMap(map, "y", "RANDOM")), nullY);
         incy = parseInt(ReadMap(map, "incy", "1"));
+        nullHandle = IsNullString(ReadMap(map, "handle", "VALID"));
+        expectExact = (ReadMap(map, "expect_exact", "FALSE") == "TRUE");
     }
 };
-

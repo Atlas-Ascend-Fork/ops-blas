@@ -60,6 +60,10 @@ foreach(arch_dir ${SOC_ARCH_DIRS})
     list(APPEND ARCH_SRC_FILES ${arch_dir_srcs})
 endforeach()
 
+# sgbmv_kernel_vec/l1.cpp 经 sgbmv_kernel.cpp 以单 TU 方式编译（arch22 设备代码不支持跨 TU 链接），
+# 不作为独立编译单元收集。
+list(FILTER ARCH_SRC_FILES EXCLUDE REGEX "sgbmv_kernel_(l1|vec)\\.cpp$")
+
 if(DEFINED TEST_NAMES AND NOT "${TEST_NAMES}" STREQUAL "")
     set(_FILTERED_OP_SRC_FILES "")
     set(_FILTERED_ARCH_SRC_FILES "")

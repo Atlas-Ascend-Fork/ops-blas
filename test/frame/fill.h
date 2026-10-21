@@ -331,6 +331,21 @@ inline std::vector<float> makeBlasBanded(
     if (n <= 0)
         return data;
 
+    // For lda < kl+ku+1 shapes the band layout formula (bandRow = ku+i-j,
+    // which stays within [0, ku+kl]) can address beyond the lda*n logical
+    // storage (formally UB on the heap write, one element past the buffer for
+    // the negative-test shapes). Size the buffer to the band-reachable span
+    // max(lda, kl+ku+1)*n: every band write stays in-bounds for any
+    // m/n/kl/ku/lda (bandRow <= ku+kl <= bandLda-1 and
+    // (bandLda-1)+(n-1)*lda <= bandLda*n-1), and the buffer then also matches
+    // the sgbmv wrapper's H2D copy size max(lda, kl+ku+1)*n, keeping the host
+    // read side of that copy in-bounds as well. Identical to aSize for every
+    // valid shape (lda >= kl+ku+1) -- behavior unchanged for all valid rows.
+    const int64_t bandLda = std::max<int64_t>(lda, static_cast<int64_t>(kl) + static_cast<int64_t>(ku) + 1);
+    if (bandLda > lda && bandLda > 0) {
+        data.resize(static_cast<size_t>(bandLda) * static_cast<size_t>(n), 0.0f);
+    }
+
     std::mt19937 rng(seed ? seed : 42);
     auto gen = createGenerator(fill, rng);
 
