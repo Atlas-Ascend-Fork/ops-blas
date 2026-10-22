@@ -64,6 +64,8 @@ static const std::vector<TestCase> gSsymvTests = {
     {"n=129 LOWER", ACLBLAS_LOWER, 129, 129, 1.0f, 0.0f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-4f},
     {"n=255 UPPER", ACLBLAS_UPPER, 255, 255, 1.2f, 0.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-4f},
     {"n=257 LOWER", ACLBLAS_LOWER, 257, 257, 1.2f, 0.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-4f},
+    {"n=7681 UPPER full-chunk scalar writeback", ACLBLAS_UPPER, 7681, 7681, 0.5f, 0.25f, 1, 1,
+     ACLBLAS_STATUS_SUCCESS, 1e-3f},
     {"beta=0 LOWER n=32", ACLBLAS_LOWER, 32, 32, 1.5f, 0.0f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
     {"alpha=0 UPPER n=32", ACLBLAS_UPPER, 32, 32, 0.0f, 0.8f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
     {"error: invalid uplo", static_cast<aclblasFillMode_t>(0), 10, 10, 1.0f, 0.0f, 1, 1, ACLBLAS_STATUS_INVALID_VALUE,

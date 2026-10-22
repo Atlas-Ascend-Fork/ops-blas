@@ -184,7 +184,8 @@ __aicore__ inline void SymvAIV<T>::CopyOutV2(
 {
     LocalTensor<T> zLocal = zQueue.DeQue<T>();
     if (incy == 1) {
-        DataCopy(yGM[rowOffset], zLocal, 1);
+        DataCopyExtParams copyParams{1, static_cast<uint32_t>(sizeof(T)), 0, 0, 0};
+        DataCopyPad(yGM[rowOffset], zLocal, copyParams);
     } else {
         uint32_t pos = YPhysicalPos(rowOffset);
         yGM.SetValue(pos, yGM.GetValue(pos) + zLocal.GetValue(0));
