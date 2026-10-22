@@ -1122,4 +1122,4 @@ aclBLASLt 提供描述符风格的矩阵乘法与矩阵变换能力，支持多�
 | 接口名 | 说明 |
 |---|---|
 | [aclblasLtMatmul](../../blasLt/README.md) | 矩阵乘法 D = α·op(A)·op(B) + β·C，支持 FP32/MXFP8/MXFP4 等 |
-| [aclblasLtMatrixTransform](../../blasLt/matrixtransform/README.md) | 矩阵转置、缩放、加法及 layout/dtype 转换 |
+| [aclblasLtMatrixTransform](../../blasLt/matrix_transform/README.md) | 矩阵转置、缩放、加法及 layout/dtype 转换 |
