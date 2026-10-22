@@ -66,6 +66,27 @@ aclblasStatus_t aclblasSgemmBatched(aclblasHandle_t handle, aclblasOperation_t t
 - ldc >= max(1, m)
 - 各 C[i] 矩阵之间不得重叠
 
+#### 精度验证
+
+采用 `MIXED_TOLERANCE` 混合容差策略（对齐[生态算子开源精度标准](https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/experimental_standard.md) §2.1）：
+
+| 数据类型 | rtol | atol | required_matched_ratio | max_abs_error_limit |
+|----------|------|------|----------------------|-------------------|
+| FLOAT32 | 2^-10 (9.77e-4) | 2^-16 (1.53e-5) | 0.99 | 1e-2 或 32·ULP |
+
+其中，ULP（Unit in the Last Place，末位单位）表示给定浮点数与相邻可表示值之间的间距。
+`max_abs_error_limit` 按输出元素逐个计算：第`i`个元素的误差上限为
+`max(1e-2, 32 * ULP(abs(golden[i])))`。精度验证需同时满足以下条件：
+
+- 至少 99% 的输出元素满足 `abs(actual[i] - golden[i]) <= atol + rtol * abs(golden[i])`。
+- 所有输出元素均满足 `abs(actual[i] - golden[i]) <= max_abs_error_limit[i]`。
+
+因此，即使 `required_matched_ratio` 已达到 0.99 或 1.0，只要任一元素超过对应的
+`max_abs_error_limit`，用例仍会校验失败。当 `golden[i]` 接近 0 时，固定上限`1e-2`
+起主要作用；设计大倍率`alpha`或`beta`的测试用例时，需同时考虑绝对误差的放大效应。
+
+alpha == 0（且 alpha 非空）时使用 `EXACT` 位精确校验（C = beta * C 结果应位精确）。
+
 #### 调用示例
 
 示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。
@@ -217,6 +238,27 @@ aclblasStatus_t aclblasCgemmBatched(aclblasHandle_t handle, aclblasOperation_t t
 - ldc >= max(1, m)
 - 各 C[i] 矩阵之间不得重叠
 - 复数矩阵以实部/虚部交错存储（interleaved complex），即 A[i][0].real, A[i][0].imag, A[i][1].real, A[i][1].imag, ...
+
+#### 精度验证
+
+采用 `MIXED_TOLERANCE` 混合容差策略（对齐[生态算子开源精度标准](https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/experimental_standard.md) §2.1）：
+
+| 数据类型 | rtol | atol | required_matched_ratio | max_abs_error_limit |
+|----------|------|------|----------------------|-------------------|
+| FLOAT32 | 2^-10 (9.77e-4) | 2^-16 (1.53e-5) | 0.99 | 1e-2 或 32·ULP |
+
+其中，ULP（Unit in the Last Place，末位单位）表示给定浮点数与相邻可表示值之间的间距。
+`max_abs_error_limit` 按输出元素逐个计算：第`i`个元素的误差上限为
+`max(1e-2, 32 * ULP(abs(golden[i])))`。精度验证需同时满足以下条件：
+
+- 至少 99% 的输出元素满足 `abs(actual[i] - golden[i]) <= atol + rtol * abs(golden[i])`。
+- 所有输出元素均满足 `abs(actual[i] - golden[i]) <= max_abs_error_limit[i]`。
+
+因此，即使 `required_matched_ratio` 已达到 0.99 或 1.0，只要任一元素超过对应的
+`max_abs_error_limit`，用例仍会校验失败。当 `golden[i]` 接近 0 时，固定上限`1e-2`
+起主要作用；设计大倍率`alpha`或`beta`的测试用例时，需同时考虑绝对误差的放大效应。
+
+alpha == 0（即实部与虚部均为 0，且 alpha 非空）时跳过矩阵乘，逐 batch 执行 C_i = beta * C_i，结果应位精确。
 
 #### 调用示例
 

@@ -87,6 +87,27 @@ aclblasStatus_t aclblasSgemmStridedBatched(aclblasHandle_t handle, aclblasOperat
 - m == 0 或 n == 0 或 batchCount == 0 时无计算，直接返回 `ACLBLAS_STATUS_SUCCESS`
 - k == 0 或 alpha == 0（k>0）时跳过矩阵乘，逐 batch 执行 C_i = beta * C_i（beta==0 时置零，beta==1 时不变）
 
+#### 精度验证
+
+采用 `MIXED_TOLERANCE` 混合容差策略（对齐[生态算子开源精度标准](https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/experimental_standard.md) §2.1）：
+
+| 数据类型 | rtol | atol | required_matched_ratio | max_abs_error_limit |
+|----------|------|------|----------------------|-------------------|
+| FLOAT32 | 2^-10 (9.77e-4) | 2^-16 (1.53e-5) | 0.99 | 1e-2 或 32·ULP |
+
+其中，ULP（Unit in the Last Place，末位单位）表示给定浮点数与相邻可表示值之间的间距。
+`max_abs_error_limit` 按输出元素逐个计算：第`i`个元素的误差上限为
+`max(1e-2, 32 * ULP(abs(golden[i])))`。精度验证需同时满足以下条件：
+
+- 至少 99% 的输出元素满足 `abs(actual[i] - golden[i]) <= atol + rtol * abs(golden[i])`。
+- 所有输出元素均满足 `abs(actual[i] - golden[i]) <= max_abs_error_limit[i]`。
+
+因此，即使 `required_matched_ratio` 已达到 0.99 或 1.0，只要任一元素超过对应的
+`max_abs_error_limit`，用例仍会校验失败。当 `golden[i]` 接近 0 时，固定上限`1e-2`
+起主要作用；设计大倍率`alpha`或`beta`的测试用例时，需同时考虑绝对误差的放大效应。
+
+k == 0 或 alpha == 0（k>0）时跳过矩阵乘，逐 batch 执行 C_i = beta * C_i，结果应位精确。
+
 #### 调用示例
 
 示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。
