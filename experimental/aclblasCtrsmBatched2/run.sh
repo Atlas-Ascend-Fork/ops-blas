@@ -11,14 +11,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
+SKIP_BUILD=0
+POSITIONAL_ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --skip-build) SKIP_BUILD=1 ;;
+        *) POSITIONAL_ARGS+=("$arg") ;;
+    esac
+done
+
+set -- ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
+
 M=${1:-16}; N=${2:-16}; BATCH=${3:-1}
 SIDE=${4:-0}; UPLO=${5:-0}; TRANSA=${6:-0}; DIAG=${7:-0}
 ALPHA_RE=${8:-1.0}; ALPHA_IM=${9:-0.0}
-
-SKIP_BUILD=0
-for arg in "$@"; do
-    case "$arg" in --skip-build) SKIP_BUILD=1 ;; esac
-done
 
 die() { echo "[Error] $*" >&2; exit 1; }
 

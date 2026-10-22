@@ -150,6 +150,9 @@ aclblasCtrsmBatched2/
   ```bash
   # 参数: m n batch side uplo transa diag [alpha_re] [alpha_im] [--skip-build]
   bash run.sh 64 64 32 0 0 0 0 1.0 0.0
+
+  # 复用已有构建，alpha 使用默认值
+  bash run.sh 64 64 32 0 0 0 0 --skip-build
   ```
 
 ## 参数说明
