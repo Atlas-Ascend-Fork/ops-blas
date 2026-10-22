@@ -20,10 +20,12 @@ CtrsmBatched 精度验证脚本。
     - 相对容差 rtol = 1.22e-3 (2^-13 * 10)
     - 绝对容差 atol = 1e-3
     - 允许不超过 0.01% 的元素超标 (error_ratio <= 1e-4)
+    - 本样例的有限值精度校验不接受 NaN/Inf，包括 golden 和复数的任一分量
 """
-import sys
-import os
+
 import logging
+import sys
+
 import numpy as np
 
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
@@ -52,6 +54,8 @@ def verify_result(m, n, batch):
         mere_re = np.abs(output.real - golden.real) / ref_abs
         mere_im = np.abs(output.imag - golden.imag) / ref_abs
         mere_map = np.maximum(mere_re, mere_im)
+        nonfinite_mask = ~(np.isfinite(golden) & np.isfinite(output))
+        mere_map = np.where(nonfinite_mask, np.inf, mere_map)
 
         batch_mere = mere_map.max()
         if batch_mere > max_mere:
@@ -63,15 +67,17 @@ def verify_result(m, n, batch):
 
         if fail_count > 0:
             fail_ratio = fail_count / (m * n)
-            if fail_ratio > ERROR_RATIO_TOL:
+            if np.any(nonfinite_mask) or fail_ratio > ERROR_RATIO_TOL:
                 all_pass = False
                 worst_idx = np.unravel_index(np.argmax(mere_map), (m, n))
                 logging.error(
-                    f"  Batch {b}: MERE={batch_mere:.6e}, fail_elements={fail_count}/{m*n} "
-                    f"({fail_ratio:.2e}) **FAIL**")
+                    f"  Batch {b}: MERE={batch_mere:.6e}, fail_elements={fail_count}/{m * n} "
+                    f"({fail_ratio:.2e}) **FAIL**"
+                )
                 logging.error(
                     f"    Worst at [{worst_idx[0]},{worst_idx[1]}]: "
-                    f"expected={golden[worst_idx]:.6f}, actual={output[worst_idx]:.6f}")
+                    f"expected={golden[worst_idx]:.6f}, actual={output[worst_idx]:.6f}"
+                )
 
     overall_ratio = total_fail_elements / total_elements if total_elements > 0 else 0.0
     return all_pass, max_mere, overall_ratio, total_fail_elements, total_elements
@@ -86,8 +92,8 @@ if __name__ == "__main__":
         passed, max_mere, overall_ratio, fail_elems, total_elems = verify_result(m, n, batch)
         logging.info(f"Max MERE: {max_mere:.6e} (rtol={RTOL:.2e}, atol={ATOL:.1e})")
         logging.info(
-            f"Fail elements: {fail_elems}/{total_elems}"
-            f" (ratio={overall_ratio:.2e}, tol={ERROR_RATIO_TOL:.1e})")
+            f"Fail elements: {fail_elems}/{total_elems} (ratio={overall_ratio:.2e}, tol={ERROR_RATIO_TOL:.1e})"
+        )
 
         if passed:
             logging.info("[Success] Case accuracy verification passed.")
