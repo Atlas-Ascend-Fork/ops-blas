@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include "acl/acl.h"
 #include "log/log.h"
 #include "cann_ops_blas.h"
@@ -34,17 +35,21 @@ static aclblasStatus_t ValidateStbmvParams(
     CHECK_RET(
         uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
         OP_LOGE("aclblasStbmv", "invalid uplo=%d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_VALUE);
+        return ACLBLAS_STATUS_INVALID_ENUM);
     CHECK_RET(
         trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
         OP_LOGE("aclblasStbmv", "invalid trans=%d", static_cast<int>(trans));
-        return ACLBLAS_STATUS_INVALID_VALUE);
+        return ACLBLAS_STATUS_INVALID_ENUM);
     CHECK_RET(
         diag == ACLBLAS_UNIT || diag == ACLBLAS_NON_UNIT,
         OP_LOGE("aclblasStbmv", "invalid diag=%d", static_cast<int>(diag));
-        return ACLBLAS_STATUS_INVALID_VALUE);
+        return ACLBLAS_STATUS_INVALID_ENUM);
     CHECK_RET(n >= 0, OP_LOGE("aclblasStbmv", "invalid n=%d", n); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(k >= 0, OP_LOGE("aclblasStbmv", "invalid k=%d", k); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(
+        k <= std::numeric_limits<int>::max() - 1,
+        OP_LOGE("aclblasStbmv", "invalid k=%d: k + 1 is not representable", k);
+        return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(
         lda >= k + 1, OP_LOGE("aclblasStbmv", "invalid lda=%d, k=%d", lda, k); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasStbmv", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
@@ -86,7 +91,7 @@ static StbmvFastTilingData CalStbmvFastTilingData(
     uint32_t aivCoreNum, int n, int k, int lda, aclblasFillMode_t uplo, uint32_t& fastBlocks)
 {
     fastBlocks =
-        std::min<uint32_t>(std::min<uint32_t>(static_cast<uint32_t>(k + 1), aivCoreNum), static_cast<uint32_t>(n));
+        std::min<uint32_t>(std::min<uint32_t>(static_cast<uint32_t>(k) + 1U, aivCoreNum), static_cast<uint32_t>(n));
     fastBlocks = std::max<uint32_t>(fastBlocks, 1);
 
     StbmvFastTilingData tilingData{};

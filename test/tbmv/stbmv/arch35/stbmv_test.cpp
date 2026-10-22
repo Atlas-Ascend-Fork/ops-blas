@@ -9,6 +9,7 @@
  */
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <random>
 #include <vector>
@@ -23,6 +24,35 @@
 
 
 class StbmvArch35Test : public BlasTest<StbmvParam> { };
+
+TEST_F(StbmvArch35Test, RejectsMaxKBeforeKernelLaunch)
+{
+    float a = 1.0F;
+    float x = 1.0F;
+    const aclblasStatus_t ret = aclblasStbmv_npu(
+        StbmvArch35Test::handle_, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT,
+        1, INT_MAX, &a, 1, &x, 1);
+    EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+TEST_F(StbmvArch35Test, RejectsInvalidEnums)
+{
+    float a = 1.0F;
+    float x = 1.0F;
+    const auto invalidFill = static_cast<aclblasFillMode_t>(0);
+    const auto invalidTrans = static_cast<aclblasOperation_t>(0);
+    const auto invalidDiag = static_cast<aclblasDiagType_t>(0);
+
+    EXPECT_EQ(
+        aclblasStbmv(StbmvArch35Test::handle_, invalidFill, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 1, 0, &a, 1, &x, 1),
+        ACLBLAS_STATUS_INVALID_ENUM);
+    EXPECT_EQ(
+        aclblasStbmv(StbmvArch35Test::handle_, ACLBLAS_LOWER, invalidTrans, ACLBLAS_NON_UNIT, 1, 0, &a, 1, &x, 1),
+        ACLBLAS_STATUS_INVALID_ENUM);
+    EXPECT_EQ(
+        aclblasStbmv(StbmvArch35Test::handle_, ACLBLAS_LOWER, ACLBLAS_OP_N, invalidDiag, 1, 0, &a, 1, &x, 1),
+        ACLBLAS_STATUS_INVALID_ENUM);
+}
 
 INSTANTIATE_TEST_SUITE_P(
     Stbmv, StbmvArch35Test,

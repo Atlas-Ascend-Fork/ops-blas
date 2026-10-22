@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <vector>
 
 #include "acl/acl.h"
@@ -27,9 +28,12 @@ inline aclblasStatus_t aclblasStbmv_cpu(
     if (handle == nullptr) return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     if (n < 0) return ACLBLAS_STATUS_INVALID_VALUE;
     if (k < 0) return ACLBLAS_STATUS_INVALID_VALUE;
-    if (uplo != ACLBLAS_UPPER && uplo != ACLBLAS_LOWER) return ACLBLAS_STATUS_INVALID_VALUE;
-    if (trans != ACLBLAS_OP_N && trans != ACLBLAS_OP_T && trans != ACLBLAS_OP_C) return ACLBLAS_STATUS_INVALID_VALUE;
-    if (diag != ACLBLAS_UNIT && diag != ACLBLAS_NON_UNIT) return ACLBLAS_STATUS_INVALID_VALUE;
+    if (k > std::numeric_limits<int>::max() - 1) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (uplo != ACLBLAS_UPPER && uplo != ACLBLAS_LOWER) return ACLBLAS_STATUS_INVALID_ENUM;
+    if (trans != ACLBLAS_OP_N && trans != ACLBLAS_OP_T && trans != ACLBLAS_OP_C) return ACLBLAS_STATUS_INVALID_ENUM;
+    if (diag != ACLBLAS_UNIT && diag != ACLBLAS_NON_UNIT) return ACLBLAS_STATUS_INVALID_ENUM;
     if (lda < k + 1) return ACLBLAS_STATUS_INVALID_VALUE;
     if (incx == 0) return ACLBLAS_STATUS_INVALID_VALUE;
     if (a == nullptr || x == nullptr) return ACLBLAS_STATUS_INVALID_VALUE;

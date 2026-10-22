@@ -54,6 +54,7 @@ aclblasStatus_t aclblasStbmv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 
 - n >= 0
 - k >= 0
+- k <= INT_MAX - 1（保证 `k + 1` 可表示）
 - lda >= k + 1
 - incx != 0
 
