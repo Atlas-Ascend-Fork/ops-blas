@@ -37,15 +37,17 @@ constexpr uint64_t ELEMENTS_PER_BLOCK_TILING = UB_BYTENUM_PER_BLOCK_TILING / BYT
 
 struct AsumTilingData {
     uint32_t n;
+    int32_t incx;
     uint32_t useCoreNum;
     uint32_t startOffset[40];
     uint32_t calNum[40];
 };
 
-AsumTilingData CalAsumTilingData(uint32_t totalEleNum, uint32_t vecCoreNum)
+AsumTilingData CalAsumTilingData(uint32_t totalEleNum, int32_t incx, uint32_t vecCoreNum)
 {
     AsumTilingData tilingData;
     tilingData.n = totalEleNum;
+    tilingData.incx = incx;
     tilingData.useCoreNum = 0;
 
     if (vecCoreNum == 0) {
@@ -105,27 +107,24 @@ aclblasStatus_t aclblasSasum(aclblasHandle_t handle, int n, const float* x, int 
     aclrtStream useStream = h->stream;
 
     uint32_t numBlocks = 8;
-    AsumTilingData tiling = CalAsumTilingData(static_cast<uint32_t>(n), numBlocks);
+    AsumTilingData tiling = CalAsumTilingData(static_cast<uint32_t>(n), incx, numBlocks);
 
     uint8_t* tilingDevice = nullptr;
     aclError aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(AsumTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet =
         aclrtMemcpy(tilingDevice, sizeof(AsumTilingData), &tiling, sizeof(AsumTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     auto* xAddr = reinterpret_cast<uint8_t*>(const_cast<float*>(x));
     auto* resultAddr = reinterpret_cast<uint8_t*>(result);
     sasum_kernel_do(xAddr, resultAddr, nullptr, tilingDevice, numBlocks, useStream);
     aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(tilingDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclrtFree(tilingDevice);
 

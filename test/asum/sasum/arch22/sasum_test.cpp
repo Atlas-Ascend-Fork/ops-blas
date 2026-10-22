@@ -49,6 +49,30 @@ uint32_t VerifyResult(float output, float golden)
     }
 }
 
+int32_t RunStridedCase(aclblasHandle_t handle, aclrtStream stream, float* xDevice, float* resultDevice,
+                      float& stridedResult)
+{
+    constexpr size_t outputByteSize = sizeof(float);
+    const float stridedInput[] = {1.0f, 99.0f, 2.0f, 99.0f, 3.0f};
+    constexpr size_t stridedInputBytes = sizeof(stridedInput);
+    aclError aclRet = aclrtMemcpy(xDevice, stridedInputBytes, stridedInput, stridedInputBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy strided input failed. ERROR: %d\n", aclRet); return aclRet);
+
+    constexpr int stridedLength = 3;
+    constexpr int stridedIncrement = 2;
+    auto ret = aclblasSasum(handle, stridedLength, xDevice, stridedIncrement, resultDevice);
+    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSasum strided call failed. ERROR: %d\n", ret);
+              return ret);
+    aclRet = aclrtSynchronizeStream(stream);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream strided call failed. ERROR: %d\n", aclRet);
+              return aclRet);
+    aclRet = aclrtMemcpy(&stridedResult, outputByteSize, resultDevice, outputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy strided result failed. ERROR: %d\n", aclRet);
+              return aclRet);
+
+    return 0;
+}
+
 int32_t main(int32_t argc, char* argv[])
 {
     int32_t deviceId = 0;
@@ -59,6 +83,7 @@ int32_t main(int32_t argc, char* argv[])
 
     std::vector<float> x(totalLength, valueX);
     float result = 0.0f;
+    float stridedResult = 0.0f;
 
     aclInit(nullptr);
     aclrtSetDevice(deviceId);
@@ -93,6 +118,9 @@ int32_t main(int32_t argc, char* argv[])
     aclRet = aclrtMemcpy(&result, outputByteSize, resultDevice, outputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy result failed. ERROR: %d\n", aclRet); return aclRet);
 
+    int32_t stridedStatus = RunStridedCase(handle, stream, xDevice, resultDevice, stridedResult);
+    CHECK_RET(stridedStatus == 0, return stridedStatus);
+
     aclrtFree(xDevice);
     aclrtFree(resultDevice);
 
@@ -102,5 +130,7 @@ int32_t main(int32_t argc, char* argv[])
     aclFinalize();
 
     float golden = totalLength * std::abs(valueX);
-    return VerifyResult(result, golden);
+    uint32_t status = VerifyResult(result, golden);
+    status |= VerifyResult(stridedResult, 6.0f);
+    return status;
 }
