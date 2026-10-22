@@ -46,6 +46,7 @@
 
 import argparse
 import ctypes
+import math
 import os
 import sys
 
@@ -136,13 +137,21 @@ def decide(device_count, get_util, prefer, threshold):
     return EXIT_ALL_BUSY, None
 
 
+def parse_threshold(value):
+    """阈值必须是 0~100 范围内的有限百分比。"""
+    threshold = float(value)
+    if not math.isfinite(threshold) or not 0 <= threshold <= 100:
+        raise argparse.ArgumentTypeError("threshold must be finite and between 0 and 100")
+    return threshold
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Select an idle NPU device for tests (prints device id on stdout).")
     parser.add_argument("--prefer", type=int, default=0,
                         help="preferred device id (default: 0); "
                              "fall back to other idle devices if it is busy or missing")
-    parser.add_argument("--threshold", type=float, default=5.0,
+    parser.add_argument("--threshold", type=parse_threshold, default=5.0,
                         help="busy threshold in percent, 0-100 (default: 5.0)")
     parser.add_argument("--lib", default=None,
                         help="path to libascendcl.so "
