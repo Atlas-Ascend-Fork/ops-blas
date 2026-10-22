@@ -247,7 +247,7 @@ int aclblasSgetriBatchedTest(AclContext& ctx)
 
     std::vector<float> hA = {1.0f, 0.0f, 0.0f, 1.0f};
     std::vector<float> hC(n * n, 0.0f);
-    std::vector<int> hPivot = {0, 1};
+    std::vector<int> hPivot = {1, 2};
     std::vector<int> hInfo(batchSize, 0);
 
     void* rawA = nullptr;
