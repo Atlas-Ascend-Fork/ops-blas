@@ -10,13 +10,15 @@
 
 set -euo pipefail
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(dirname "$SCRIPT_DIR")
 
 FORMAT_DIR="${1:-${REPO_ROOT}}"
 if [[ ! -d ${FORMAT_DIR} ]]; then
     echo "Please specify a directory."
 fi
+# 统一为物理绝对路径，避免相对路径与排除条件使用不同基准
+FORMAT_DIR=$(cd "$FORMAT_DIR" && pwd -P)
 
 CLANG_FORMAT="${CLANG_FORMAT:-clang-format}"
 STYLE_FILE="$REPO_ROOT/.clang-format"
@@ -43,7 +45,8 @@ EXCLUDE_DIRS=(
 
 FIND_EXPR=()
 for dir in "${EXCLUDE_DIRS[@]}"; do
-    FIND_EXPR+=( -path "$REPO_ROOT/$dir" -prune -o )
+    # find 匹配目录节点时路径不含末尾斜杠，需去掉目录项的末尾斜杠
+    FIND_EXPR+=( -path "$REPO_ROOT/${dir%/}" -prune -o )
 done
 
 mapfile -d '' FILES < <(
