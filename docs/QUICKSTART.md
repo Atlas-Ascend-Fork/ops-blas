@@ -40,15 +40,15 @@ ${soc_version}设置方法如下：
 
 若提示如下信息，说明编译成功。
 ```bash
-Self-extractable archive "cann-ops-blas_${cann_version}_linux-${arch}.run" successfully created.
+Self-extractable archive "cann-<芯片名>-ops-blas_${cann_version}_linux-${arch}.run" successfully created.
 ```
-编译成功后，run包存放于项目根目录的build_out目录下。
+编译成功后，run包存放于项目根目录的build_out目录下。文件名中的 <芯片名> 随 --soc 参数变化（如 ascend910b 对应 910b、ascend950 对应 950），可直接用通配 cann-*-ops-blas_*.run 定位安装包。
 
 ### 2. 安装scopy算子包
 
 > **说明**：run包必须通过`--install`参数执行安装，不带参数仅显示帮助信息不会安装。可通过`--install-path=<路径>`指定安装目录，默认安装路径：root用户为`/usr/local/Ascend`，普通用户为`~/Ascend`。
 ```bash
-./build_out/cann-${soc_name}-ops-blas_${version}_linux-${arch}.run --install --quiet
+./build_out/cann-*-ops-blas_*.run --install --quiet
 ```
 
 ### 3. 快速验证：运行算子样例
