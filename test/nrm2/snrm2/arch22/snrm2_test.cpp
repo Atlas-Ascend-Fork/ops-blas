@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <iterator>
 #include <cmath>
+#include <limits>
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "error_check.h"
@@ -97,11 +98,110 @@ int32_t test_scnrm2()
     return VerifyResult(result, golden);
 }
 
+struct Snrm2TestContext {
+    std::vector<float>& x;
+    aclblasHandle_t handle;
+    aclrtStream stream;
+    float* xDevice;
+    float* resultDevice;
+
+    uint32_t RunCase(const char* name, float golden, bool expectInf, bool expectNan)
+    {
+        const uint32_t totalLength = static_cast<uint32_t>(x.size());
+        const size_t inputByteSize = x.size() * sizeof(float);
+        const size_t outputByteSize = sizeof(float);
+        const int64_t incx = 1;
+        float result = 0.0f;
+        std::cout << "Testing " << name << std::endl;
+        aclError copyRet = aclrtMemcpy(xDevice, inputByteSize, x.data(), inputByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
+        if (copyRet != ACL_SUCCESS) {
+            LOG_PRINT("aclrtMemcpy %s failed. ERROR: %d\n", name, copyRet);
+            return 1;
+        }
+        auto callRet = aclblasSnrm2(handle, totalLength, xDevice, incx, resultDevice);
+        if (callRet != ACLBLAS_STATUS_SUCCESS) {
+            LOG_PRINT("aclblasSnrm2 %s failed. ERROR: %d\n", name, callRet);
+            return 1;
+        }
+        aclError syncRet = aclrtSynchronizeStream(stream);
+        if (syncRet != ACL_SUCCESS) {
+            LOG_PRINT("aclrtSynchronizeStream %s failed. ERROR: %d\n", name, syncRet);
+            return 1;
+        }
+        copyRet = aclrtMemcpy(&result, outputByteSize, resultDevice, outputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
+        if (copyRet != ACL_SUCCESS) {
+            LOG_PRINT("aclrtMemcpy result for %s failed. ERROR: %d\n", name, copyRet);
+            return 1;
+        }
+        if (expectNan) {
+            bool passed = std::isnan(result);
+            std::cout << (passed ? "[Success]" : "[Failed]") << " Expected NaN, got " << result << std::endl;
+            return passed ? 0 : 1;
+        }
+        if (expectInf) {
+            bool passed = std::isinf(result) && result > 0.0f;
+            std::cout << (passed ? "[Success]" : "[Failed]") << " Expected +Inf, got " << result << std::endl;
+            return passed ? 0 : 1;
+        }
+        return VerifyResult(result, golden);
+    }
+
+    uint32_t RunEdgeCases()
+    {
+        uint32_t edgeCaseResult = 0;
+        std::fill(x.begin(), x.end(), 0.0f);
+        x[0] = 3.0f;
+        x[1] = 4.0f;
+        edgeCaseResult |= RunCase("ordinary [3,4]", 5.0f, false, false);
+
+        std::fill(x.begin(), x.end(), 0.0f);
+        x[0] = 1.0e20f;
+        edgeCaseResult |= RunCase("single 1e20 input", 1.0e20f, false, false);
+
+        std::fill(x.begin(), x.end(), 0.0f);
+        x[0] = std::numeric_limits<float>::max();
+        edgeCaseResult |= RunCase("single FLT_MAX input", std::numeric_limits<float>::max(), false, false);
+
+        // Values span multiple cores; the last value occupies the one-element tail.
+        std::fill(x.begin(), x.end(), 0.0f);
+        x[0] = 1.0e20f;
+        x[2048] = 1.0e20f;
+        x.back() = 1.0e20f;
+        float multipleLargeGolden = std::hypot(std::hypot(1.0e20f, 1.0e20f), 1.0e20f);
+        edgeCaseResult |= RunCase("multiple large inputs across cores and tail", multipleLargeGolden, false, false);
+
+        std::fill(x.begin(), x.end(), 0.0f);
+        x[0] = std::numeric_limits<float>::infinity();
+        edgeCaseResult |= RunCase("positive infinity", 0.0f, true, false);
+
+        std::fill(x.begin(), x.end(), 0.0f);
+        x[0] = std::numeric_limits<float>::quiet_NaN();
+        edgeCaseResult |= RunCase("NaN", 0.0f, false, true);
+
+        std::fill(x.begin(), x.end(), 0.0f);
+        x[0] = std::numeric_limits<float>::infinity();
+        x.back() = std::numeric_limits<float>::quiet_NaN();
+        edgeCaseResult |= RunCase("infinity and NaN", 0.0f, false, true);
+        return edgeCaseResult;
+    }
+    void Release(int32_t deviceId)
+    {
+        aclrtFree(xDevice);
+        aclrtFree(resultDevice);
+
+        aclblasDestroy(handle);
+        aclrtDestroyStream(stream);
+        aclrtResetDevice(deviceId);
+        aclFinalize();
+    }
+};
+
 int32_t main(int32_t argc, char* argv[])
 {
     int32_t deviceId = 0;
 
-    constexpr uint32_t totalLength = 8 * 2048;
+    // Leave one element beyond the 8-element tiling boundary for tail coverage.
+    constexpr uint32_t totalLength = 8 * 2048 + 1;
     constexpr float valueX = 1.2f;
     std::vector<float> x(totalLength, valueX);
     float result = 0.0f;
@@ -139,19 +239,20 @@ int32_t main(int32_t argc, char* argv[])
     aclRet = aclrtMemcpy(&result, outputByteSize, resultDevice, outputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy result failed. ERROR: %d\n", aclRet); return aclRet);
 
-    aclrtFree(xDevice);
-    aclrtFree(resultDevice);
-
-    aclblasDestroy(handle);
-    aclrtDestroyStream(stream);
-    aclrtResetDevice(deviceId);
-    aclFinalize();
-
     float golden = std::abs(valueX) * std::sqrt(static_cast<float>(totalLength));
 
     int snrm2_result = VerifyResult(result, golden);
     if (snrm2_result != 0) {
-        return snrm2_result;
+        LOG_PRINT("normal aclblasSnrm2 case failed.\n");
+    }
+
+    Snrm2TestContext context{x, handle, stream, xDevice, resultDevice};
+    uint32_t edgeCaseResult = context.RunEdgeCases();
+
+    context.Release(deviceId);
+
+    if (snrm2_result != 0 || edgeCaseResult != 0) {
+        return 1;
     }
 
     std::cout << "\n========== Testing scnrm2 ==========\n" << std::endl;
