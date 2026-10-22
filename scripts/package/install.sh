@@ -88,7 +88,8 @@ check_install_path() {
 get_opts() {
   while [ $# -gt 0 ]; do
     # 跳过 makeself 传入的路径参数（如 --./xxx.run、--/path/to/dir、./xxx.run）
-    if [[ "$1" == *".run"* ]] || [[ "$1" == ./* ]] || [[ "$1" == /* ]] || [[ "$1" == --./* ]] || [[ "$1" == --/* ]]; then
+    if [[ "$1" != --install-path=* ]] &&
+       { [[ "$1" == *".run"* ]] || [[ "$1" == ./* ]] || [[ "$1" == /* ]] || [[ "$1" == --./* ]] || [[ "$1" == --/* ]]; }; then
       shift
       continue
     fi
