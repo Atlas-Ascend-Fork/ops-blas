@@ -559,6 +559,7 @@ function(_ops_blas_register_all_runner link_lib)
         platform
         register
         c_sec
+        unified_dlog
     )
 
     # 6) suite 映射与 CSV/JSON 一起拷到可执行目录，test_main.cpp 运行时读取
