@@ -11,6 +11,7 @@
 #ifndef STRMM_PARAM_H
 #define STRMM_PARAM_H
 
+#include <algorithm>
 #include <string>
 #include "cann_ops_blas.h"
 #include "csv_loader.h"
@@ -51,9 +52,13 @@ struct StrmmParam : public BlasTestParamBase {
         nullB = (ReadMap(map, "nullB", "0") == "1");
         nullC = (ReadMap(map, "nullC", "0") == "1");
 
-        lda = std::stoi(ReadMap(map, "lda", "0"));
-        ldb = std::stoi(ReadMap(map, "ldb", "0"));
-        ldc = std::stoi(ReadMap(map, "ldc", "0"));
+        // The A2/A3 task CSV leaves leading dimensions blank for compact matrices.
+        const std::string ldaText = ReadMap(map, "lda", "");
+        const std::string ldbText = ReadMap(map, "ldb", "");
+        const std::string ldcText = ReadMap(map, "ldc", "");
+        lda = ldaText.empty() ? std::max(1, side == ACLBLAS_SIDE_LEFT ? m : n) : std::stoi(ldaText);
+        ldb = ldbText.empty() ? std::max(1, m) : std::stoi(ldbText);
+        ldc = ldcText.empty() ? std::max(1, m) : std::stoi(ldcText);
         aFill = parseFill(ReadMap(map, "a_fill", "RANDOM_NORM_5_5"));
         bFill = parseFill(ReadMap(map, "b_fill", "RANDOM_NORM_5_5"));
     }

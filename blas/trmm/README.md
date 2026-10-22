@@ -26,8 +26,8 @@ RIGHT 模式：C := alpha * B * op(A)
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
 > Ascend 950PR/Ascend 950DT 上的 strmm 依赖 CANN asc-devkit >= 9.1（`ASC_DEVKIT_MAJOR >= 9 && ASC_DEVKIT_MINOR >= 1`），低于该版本时编译与运行将跳过此算子。
 
@@ -44,7 +44,7 @@ aclblasStatus_t aclblasStrmm(aclblasHandle_t handle, aclblasSideMode_t side, acl
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
 | side | 输入 | aclblasSideMode_t | A 矩阵位置：ACLBLAS_SIDE_LEFT（左侧）或 ACLBLAS_SIDE_RIGHT（右侧），Host 内存 |
 | uplo | 输入 | aclblasFillMode_t | A 矩阵存储模式：ACLBLAS_UPPER（上三角）或 ACLBLAS_LOWER（下三角），Host 内存 |
-| trans | 输入 | aclblasOperation_t | A 矩阵操作类型：ACLBLAS_OP_N（不转置）、ACLBLAS_OP_T（转置）、ACLBLAS_OP_C（共轭转置，FP32 等同 T），Host 内存 |
+| trans | 输入 | aclblasOperation_t | A 矩阵操作类型：A2/A3 支持 ACLBLAS_OP_N（不转置）和 ACLBLAS_OP_T（转置）；Ascend 950 还支持 ACLBLAS_OP_C，Host 内存 |
 | diag | 输入 | aclblasDiagType_t | 对角线类型：ACLBLAS_UNIT（单位三角，对角线为 1）或 ACLBLAS_NON_UNIT（非单位三角），Host 内存 |
 | m | 输入 | int | 矩阵 B/C 的行数，m >= 0，Host 内存 |
 | n | 输入 | int | 矩阵 B/C 的列数，n >= 0，Host 内存 |
@@ -59,7 +59,7 @@ aclblasStatus_t aclblasStrmm(aclblasHandle_t handle, aclblasSideMode_t side, acl
 #### 约束说明
 
 - handle 不可为 nullptr，否则返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR
-- side 必须为 ACLBLAS_SIDE_LEFT 或 ACLBLAS_SIDE_RIGHT，uplo 必须为 ACLBLAS_UPPER 或 ACLBLAS_LOWER，trans 必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C，diag 必须为 ACLBLAS_UNIT 或 ACLBLAS_NON_UNIT，非法值返回 ACLBLAS_STATUS_INVALID_ENUM
+- side 必须为 ACLBLAS_SIDE_LEFT 或 ACLBLAS_SIDE_RIGHT，uplo 必须为 ACLBLAS_UPPER 或 ACLBLAS_LOWER，diag 必须为 ACLBLAS_UNIT 或 ACLBLAS_NON_UNIT。A2/A3 的 trans 仅支持 ACLBLAS_OP_N、ACLBLAS_OP_T，非法枚举（包括 ACLBLAS_OP_C）返回 ACLBLAS_STATUS_INVALID_VALUE；Ascend 950 还支持 ACLBLAS_OP_C，非法枚举返回 ACLBLAS_STATUS_INVALID_ENUM
 - m >= 0, n >= 0，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 - m==0 或 n==0 时直接返回 ACLBLAS_STATUS_SUCCESS，不访问任何指针、不校验 ld 参数（BLAS 标准）
 - 以下约束仅在 m>0 且 n>0 时生效：
@@ -78,7 +78,8 @@ aclblasStatus_t aclblasStrmm(aclblasHandle_t handle, aclblasSideMode_t side, acl
 
 | 数据类型 | rtol | atol | required_matched_ratio | max_abs_error_limit |
 |----------|------|------|----------------------|-------------------|
-| FLOAT32 | 2^-10 (9.77e-4) | 2^-16 (1.53e-5) | 0.99 | 1e-2 或 32·ULP |
+| FLOAT32（Ascend 950） | 2^-10 (9.77e-4) | 2^-16 (1.53e-5) | 0.99 | 1e-2 或 32·ULP |
+| FLOAT32（Atlas A2/A3 任务验收） | 2^-13 (1.22e-4) | 2^-13 (1.22e-4) | 0.99 | 1e-2 或 32·ULP |
 
 alpha == 0（且 alpha 非空）时使用 `EXACT` 位精确校验（结果 C 的 m×n 区域应为全零，位精确）。
 
