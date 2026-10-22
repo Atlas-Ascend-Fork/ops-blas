@@ -24,8 +24,8 @@ if(EXISTS "${CANN_3RD_LIB_PATH}/ops-tensor")
     OUTPUT_VARIABLE EXEC_INFO
     ERROR_VARIABLE EXEC_ERROR
   )
-  if(${EXEC_RESULT})
-    message(FATAL_ERROR "Git checkout failed! error: ${EXEC_ERROR}")
+  if(NOT "${EXEC_RESULT}" STREQUAL "0")
+    message(FATAL_ERROR "Git checkout failed! result: ${EXEC_RESULT}, error: ${EXEC_ERROR}")
   endif()
 
   # Submodule: try local cache first (offline-friendly), fall back to network
