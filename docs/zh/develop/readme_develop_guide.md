@@ -77,6 +77,7 @@ aclblasStatus_t aclblasS{op}(aclblasHandle_t handle, int n, const float *x, floa
 ```cpp
 #include <cstdio>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 #include "acl/acl.h"
@@ -147,7 +148,8 @@ int aclblasS{op}Test(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
               return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, decltype(&aclblasDestroy)>
+        handlePtr(rawHandle, aclblasDestroy);
 
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
@@ -223,6 +225,7 @@ aclblasStatus_t aclblasD{op}(aclblasHandle_t handle, int n, const double *x, dou
 ```cpp
 #include <cstdio>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 #include "acl/acl.h"
@@ -293,7 +296,8 @@ int aclblasD{op}Test(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
               return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, decltype(&aclblasDestroy)>
+        handlePtr(rawHandle, aclblasDestroy);
 
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
