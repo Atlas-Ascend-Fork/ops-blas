@@ -41,5 +41,41 @@ struct ChemmParam : public BlasTestParamBase {
     bool cNormal = false;
     int64_t ldc = 0;
 
-    ChemmParam(const csv_map& map);
+    ChemmParam(const csv_map& map) : BlasTestParamBase(map)
+    {
+        side = parseSideMode(ReadMap(map, "side", "LEFT"));
+        uplo = parseFillMode(ReadMap(map, "uplo", "LOWER"));
+        m = static_cast<int64_t>(parseInt64(ReadMap(map, "m", "0")));
+        n = static_cast<int64_t>(parseInt64(ReadMap(map, "n", "0")));
+
+        std::string alphaRealStr = ReadMap(map, "alpha_real", "1.0");
+        std::string alphaImagStr = ReadMap(map, "alpha_imag", "0.0");
+        nullAlpha = (alphaRealStr == "null" || alphaRealStr == "nullptr");
+        alphaReal = nullAlpha ? 0.0f : parseFloat(alphaRealStr, 1.0f);
+        alphaImag = nullAlpha ? 0.0f : parseFloat(alphaImagStr, 0.0f);
+
+        aFillSpec = ReadMap(map, "a_fill", "RANDOM_NORM_1E3_1E3");
+        aNormal = (aFillSpec == "NORMAL_NORM");
+        aFill = parseFill(aFillSpec);
+        const std::string ldaStr = ReadMap(map, "lda", "");
+        lda = ldaStr.empty() ? (side == ACLBLAS_SIDE_LEFT ? m : n) : static_cast<int64_t>(parseInt64(ldaStr));
+
+        bFillSpec = ReadMap(map, "b_fill", "RANDOM_NORM_1E3_1E3");
+        bNormal = (bFillSpec == "NORMAL_NORM");
+        bFill = parseFill(bFillSpec);
+        const std::string ldbStr = ReadMap(map, "ldb", "");
+        ldb = ldbStr.empty() ? m : static_cast<int64_t>(parseInt64(ldbStr));
+
+        std::string betaRealStr = ReadMap(map, "beta_real", "0.5");
+        std::string betaImagStr = ReadMap(map, "beta_imag", "0.0");
+        nullBeta = (betaRealStr == "null" || betaRealStr == "nullptr");
+        betaReal = nullBeta ? 0.0f : parseFloat(betaRealStr, 0.5f);
+        betaImag = nullBeta ? 0.0f : parseFloat(betaImagStr, 0.0f);
+
+        cFillSpec = ReadMap(map, "c_fill", "RANDOM_NORM_1E3_1E3");
+        cNormal = (cFillSpec == "NORMAL_NORM");
+        cFill = parseFill(cFillSpec);
+        const std::string ldcStr = ReadMap(map, "ldc", "");
+        ldc = ldcStr.empty() ? m : static_cast<int64_t>(parseInt64(ldcStr));
+    }
 };

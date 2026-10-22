@@ -1,14 +1,14 @@
-# Hemm算子
+# aclblasChemm（复数厄米特矩阵乘）
 
-## 算子概述
+## 功能简介
 
-Hemm（Single-precision Complex Hermitian Matrix Multiplication）算子实现单精度复数厄米特矩阵与普通矩阵的乘法。
+`aclblasChemm` 计算单精度复数（complex64）厄米特矩阵与普通矩阵的乘积。厄米特矩阵满足 `A = A^H`，仅需存储并引用单侧三角，对角线元素的虚部按 0 处理。
 
-数学表达式：
+按 `side` 取值，计算式为：
 
 ```
-LEFT 模式：C := alpha * A * B + beta * C
-RIGHT 模式：C := alpha * B * A + beta * C
+side = LEFT ：C := alpha * A * B + beta * C
+side = RIGHT：C := alpha * B * A + beta * C
 ```
 
 包含以下接口：
@@ -53,16 +53,16 @@ aclblasStatus_t aclblasChemm(aclblasHandle_t handle, aclblasSideMode_t side, acl
 
 #### 约束说明
 
-- A、B、C 使用列主序；`aclblasComplex` 的实部和虚部均为 FP32。
-- `side=ACLBLAS_SIDE_LEFT` 时计算 `C = alpha * A * B + beta * C`，A 为 `m×m`。
-- `side=ACLBLAS_SIDE_RIGHT` 时计算 `C = alpha * B * A + beta * C`，A 为 `n×n`。
-- 仅引用 `uplo` 指定的 A 三角区域；A 的对角元素虚部按 0 处理。
-- 非法 `side` 或 `uplo` 返回 `ACLBLAS_STATUS_INVALID_ENUM`。
-- `m<0`、`n<0`、空标量指针或不合法前导维度返回 `ACLBLAS_STATUS_INVALID_VALUE`。
-- `m==0` 或 `n==0` 为合法空操作，返回 `ACLBLAS_STATUS_SUCCESS`。
-- `lda >= max(1, side==ACLBLAS_SIDE_LEFT ? m : n)`，`ldb >= max(1,m)`，`ldc >= max(1,m)`。
-- `beta=(0,0)` 时不读取 C 的原值；C 仍用于接收输出。
-- 算子提交到 handle 绑定的 stream，读取输出前需要同步该 stream。
+- A、B、C 均为列主序存储，`aclblasComplex` 的实部与虚部都是 FP32。
+- `side=ACLBLAS_SIDE_LEFT`：A 为 `m×m` 的厄米特矩阵，结果为 `C = alpha*A*B + beta*C`。
+- `side=ACLBLAS_SIDE_RIGHT`：A 为 `n×n` 的厄米特矩阵，结果为 `C = alpha*B*A + beta*C`。
+- 仅访问 `uplo`（UPPER/LOWER）所指的 A 三角；A 对角元素的虚部一律当作 0。
+- `side`/`uplo` 取值非法时返回 `ACLBLAS_STATUS_INVALID_ENUM`。
+- 当 `m<0`、`n<0`、`alpha`/`beta` 为空指针或前导维不满足下界时，返回 `ACLBLAS_STATUS_INVALID_VALUE`。
+- `m==0` 或 `n==0` 属合法的空操作，直接返回 `ACLBLAS_STATUS_SUCCESS`（先于前导维校验）。
+- 前导维下界：`lda >= max(1, side==LEFT ? m : n)`、`ldb >= max(1, m)`、`ldc >= max(1, m)`。
+- 当 `beta=(0,0)` 时不读取 C 的旧值，但 C 仍作为输出缓冲。
+- 计算下发到 handle 所绑定的 stream，读取输出前需先同步该 stream。
 
 #### 调用示例
 
