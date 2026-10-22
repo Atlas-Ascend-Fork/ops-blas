@@ -156,6 +156,6 @@ case_name,description,uplo,trans,diag,n,incx,ap_fill,x_fill,random_seed,expect_r
 | 5 | `uplo` / `trans` / `diag` 为非法枚举 | `ACLBLAS_STATUS_INVALID_VALUE` |
 | 6 | `incx == 0` | `ACLBLAS_STATUS_INVALID_VALUE` |
 | 7 | `AP == nullptr` 或 `x == nullptr` | `ACLBLAS_STATUS_INVALID_VALUE` |
-| 8 | `(n-1)*|incx|` 超出 `uint32` 范围（x 索引跨度溢出，设备侧按 `uint32` 计算偏移） | `ACLBLAS_STATUS_NOT_SUPPORTED` |
+| 8 | `(n-1)*\|incx\|` 超出 `uint32` 范围（x 索引跨度溢出，设备侧按 `uint32` 计算偏移） | `ACLBLAS_STATUS_NOT_SUPPORTED` |
 
 **关键顺序**：`handle` 检查（优先级 1）位于 `n == 0` quick-return（优先级 2）**之前**。因此 `n == 0 且 handle == nullptr` 一律返回 `HANDLE_IS_NULLPTR`，与 arch35 路径及参考实现（cuBLAS / Netlib）行为一致；arch22 与 950（arch35）在该组合上不再出现返回值分歧。优先级 8 的跨度溢出判定在 host 侧提前拒绝，避免设备侧 `uint32` 偏移回绕导致的静默错误。
