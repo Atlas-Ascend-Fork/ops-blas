@@ -114,7 +114,7 @@ static inline void RescaleD2(float& sd2, float& dh11, float& dh12, float& dh21, 
 }
 
 /*!
- * rief netlib SCALE-CHECK entry: two combined loops; the implied h values
+ * \brief netlib SCALE-CHECK entry: two combined loops; the implied h values
  *        are reset to +-1 each round as the flag flips to -1. Each loop is
  *        guarded against non-finite leftovers only; finite inputs converge
  *        within a handful of passes, far below the cap.
@@ -127,7 +127,7 @@ static inline void Rescale(float& sd1, float& sd2, float& sx1,
 }
 
 /*!
- * rief Main branch decision of the netlib srotmg algorithm, reached only
+ * \brief Main branch decision of the netlib srotmg algorithm, reached only
  *        after the caller has screened the flag == -2 quick-return inputs
  *        (sp2 = d2*y1 == 0) and the d1 < 0 all-zero branch. Divisors below
  *        cannot be zero on the paths that reach them: a zero sx1 makes
@@ -185,7 +185,7 @@ static inline void ComputeBranch(
 }
 
 /*!
- * rief Core scalar computation. On return dflag is one of -2/-1/0/1; for
+ * \brief Core scalar computation. On return dflag is one of -2/-1/0/1; for
  *        dflag == -2 the caller returns immediately (identity transform,
  *        inputs untouched, only param[0] is meaningful).
  */
