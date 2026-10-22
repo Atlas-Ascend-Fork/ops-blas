@@ -17,7 +17,7 @@
 
 namespace {
 static AclBlas::_aclblas_logger_configure configure;
-}
+} // namespace
 
 namespace AclBlas {
 
@@ -47,4 +47,23 @@ aclblasStatus_t aclblasGetLoggerCallback(aclblasLogCallback* userCallback)
     return aclblasStatus_t::ACLBLAS_STATUS_SUCCESS;
 }
 
+} // namespace AclBlas
+
+extern "C" {
+
+aclblasStatus_t aclblasLoggerConfigure(int logIsOn, int logToStdOut, int logToStdErr, const char* logFile)
+{
+    return AclBlas::aclblasLoggerConfigure(logIsOn, logToStdOut, logToStdErr, logFile);
 }
+
+aclblasStatus_t aclblasSetLoggerCallback(aclblasLogCallback userCallback)
+{
+    return AclBlas::aclblasSetLoggerCallback(userCallback);
+}
+
+aclblasStatus_t aclblasGetLoggerCallback(aclblasLogCallback* userCallback)
+{
+    return AclBlas::aclblasGetLoggerCallback(userCallback);
+}
+
+} // extern "C"
