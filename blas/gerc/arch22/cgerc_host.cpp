@@ -23,8 +23,9 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
-void cgerc_kernel_do(uint8_t* d_x, uint8_t* d_y, uint8_t* d_offset, uint8_t* d_A, uint8_t* work_space,
-                     uint8_t* tiling_gm, uint32_t num_blocks, void *stream);
+void cgerc_kernel_do(
+    uint8_t* d_x, uint8_t* d_y, uint8_t* d_offset, uint8_t* d_A, uint8_t* work_space, uint8_t* tiling_gm,
+    uint32_t num_blocks, void* stream);
 
 constexpr uint32_t DEFAULT_VECTOR_NUM = 40;
 constexpr uint32_t DEFAULT_CUBE_NUM = 20;
@@ -86,12 +87,10 @@ CgercTilingData CalCgercTilingData(uint32_t m, uint32_t n, float alphaReal, floa
 }
 
 // Create gather offset for cgerc
-uint32_t* CreateCgercOffset()
+std::vector<uint32_t> CreateCgercOffset()
 {
     uint32_t gatherOffsetSize = MAX_DATA_COUNT;
-    uint32_t* offsetData = nullptr;
-
-    offsetData = new uint32_t[gatherOffsetSize];
+    std::vector<uint32_t> offsetData(gatherOffsetSize);
 
     for (uint32_t i = 0; i < gatherOffsetSize / NUM_FLAG; i++) {
         offsetData[NUM_FLAG * i] = NUM_INBYTES * i;
@@ -102,8 +101,8 @@ uint32_t* CreateCgercOffset()
 }
 
 aclblasStatus_t aclblasCgerc(
-    aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha, const aclblasComplex* x,
-    int incx, const aclblasComplex* y, int incy, aclblasComplex* A, int lda)
+    aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,
+    const aclblasComplex* y, int incy, aclblasComplex* A, int lda)
 {
     if (alpha == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -118,8 +117,8 @@ aclblasStatus_t aclblasCgerc(
 
     CgercTilingData tiling = CalCgercTilingData(m, n, alphaReal, alphaImag, numBlocks);
 
-    uint32_t* offset = CreateCgercOffset();
-    size_t offsetByteSize = MAX_DATA_COUNT * 2 * sizeof(uint32_t);
+    std::vector<uint32_t> offset = CreateCgercOffset();
+    size_t offsetByteSize = offset.size() * sizeof(uint32_t);
     size_t workspaceSize = 1024;
 
     uint8_t* offsetDevice = nullptr;
@@ -127,43 +126,38 @@ aclblasStatus_t aclblasCgerc(
     uint8_t* tilingDevice = nullptr;
 
     aclError aclRet = aclrtMalloc((void**)&offsetDevice, offsetByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet = aclrtMalloc((void**)&workspaceDevice, workspaceSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(offsetDevice);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(offsetDevice);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(CgercTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(workspaceDevice);
-        aclrtFree(offsetDevice); return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(workspaceDevice);
+              aclrtFree(offsetDevice); return ACLBLAS_STATUS_ALLOC_FAILED);
 
-    aclRet = aclrtMemcpy(offsetDevice, offsetByteSize, offset, offsetByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(workspaceDevice); aclrtFree(offsetDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    aclRet = aclrtMemcpy(offsetDevice, offsetByteSize, offset.data(), offsetByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
+              aclrtFree(workspaceDevice); aclrtFree(offsetDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclRet =
         aclrtMemcpy(tilingDevice, sizeof(CgercTilingData), &tiling, sizeof(CgercTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(workspaceDevice); aclrtFree(offsetDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
+              aclrtFree(workspaceDevice); aclrtFree(offsetDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
-    cgerc_kernel_do(reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)), reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(y)), offsetDevice,
-                    reinterpret_cast<uint8_t*>(A), workspaceDevice, tilingDevice, numBlocks, useStream);
+    cgerc_kernel_do(
+        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)),
+        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(y)), offsetDevice, reinterpret_cast<uint8_t*>(A),
+        workspaceDevice, tilingDevice, numBlocks, useStream);
     aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(workspaceDevice); aclrtFree(offsetDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(tilingDevice); aclrtFree(workspaceDevice); aclrtFree(offsetDevice);
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclrtFree(offsetDevice);
     aclrtFree(workspaceDevice);
     aclrtFree(tilingDevice);
-
-    delete[] offset;
 
     return ACLBLAS_STATUS_SUCCESS;
 }

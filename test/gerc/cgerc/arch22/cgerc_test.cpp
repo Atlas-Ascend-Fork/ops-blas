@@ -34,8 +34,7 @@
     } while (0)
 
 uint32_t VerifyResult(
-    const std::vector<aclblasComplex>& output, const std::vector<aclblasComplex>& golden,
-    const char* test_name)
+    const std::vector<aclblasComplex>& output, const std::vector<aclblasComplex>& golden, const char* test_name)
 {
     std::cout << "\n========== " << test_name << " ==========" << std::endl;
 
@@ -46,8 +45,8 @@ uint32_t VerifyResult(
     std::cout << "-------|---------------------------|----------------------------|--------" << std::endl;
     for (size_t i = 0; i < std::min(output.size(), maxPrintCount); i++) {
         printf(
-            "%-6zu | (%8.4f, %8.4f) | (%8.4f, %8.4f)  | %8.6f\n", i, output[i].real, output[i].imag,
-            golden[i].real, golden[i].imag, blasComplexAbs(output[i] - golden[i]));
+            "%-6zu | (%8.4f, %8.4f) | (%8.4f, %8.4f)  | %8.6f\n", i, output[i].real, output[i].imag, golden[i].real,
+            golden[i].imag, blasComplexAbs(output[i] - golden[i]));
     }
 
     const float epsilon = 1e-3;
@@ -64,8 +63,8 @@ uint32_t VerifyResult(
         if (error > epsilon) {
             if (errors < 5) { // Only print first 5 errors
                 printf(
-                    "Mismatch[%zu]: out=(%.4f,%.4f) gold=(%.4f,%.4f) diff=%.6f\n", i, output[i].real,
-                    output[i].imag, golden[i].real, golden[i].imag, error);
+                    "Mismatch[%zu]: out=(%.4f,%.4f) gold=(%.4f,%.4f) diff=%.6f\n", i, output[i].real, output[i].imag,
+                    golden[i].real, golden[i].imag, error);
             }
             errors++;
         }
@@ -87,8 +86,8 @@ uint32_t VerifyResult(
 
 // Compute golden result for cgerc: A = alpha * x * conj(y^T) + A
 void computeGolden(
-    std::vector<aclblasComplex>& A, const std::vector<aclblasComplex>& x,
-    const std::vector<aclblasComplex>& y, const aclblasComplex& alpha, int64_t m, int64_t n)
+    std::vector<aclblasComplex>& A, const std::vector<aclblasComplex>& x, const std::vector<aclblasComplex>& y,
+    const aclblasComplex& alpha, int64_t m, int64_t n)
 {
     // A = alpha * x * conj(y^T) + A
     // For each element A[i][j] = alpha * x[i] * conj(y[j]) + A[i][j]
@@ -98,6 +97,103 @@ void computeGolden(
             A[i * n + j] = alpha * x[i] * conjY + A[i * n + j];
         }
     }
+}
+
+struct MinimalCgercBuffers {
+    aclblasComplex* xDevice = nullptr;
+    aclblasComplex* yDevice = nullptr;
+    aclblasComplex* ADevice = nullptr;
+
+    void Release()
+    {
+        if (ADevice != nullptr) {
+            aclrtFree(ADevice);
+        }
+        if (yDevice != nullptr) {
+            aclrtFree(yDevice);
+        }
+        if (xDevice != nullptr) {
+            aclrtFree(xDevice);
+        }
+    }
+
+    uint32_t Fail()
+    {
+        Release();
+        return 1;
+    }
+
+    uint32_t Prepare()
+    {
+        constexpr aclblasComplex xHost{2.0f, 3.0f};
+        constexpr aclblasComplex yHost{4.0f, 5.0f};
+        constexpr aclblasComplex initialA{7.0f, 11.0f};
+        constexpr size_t bytes = sizeof(aclblasComplex);
+        aclError aclRet = aclrtMalloc(reinterpret_cast<void**>(&xDevice), bytes, ACL_MEM_MALLOC_HUGE_FIRST);
+        if (aclRet != ACL_SUCCESS) {
+            LOG_PRINT("minimal cgerc x allocation failed: %d\n", aclRet);
+            return Fail();
+        }
+        aclRet = aclrtMalloc(reinterpret_cast<void**>(&yDevice), bytes, ACL_MEM_MALLOC_HUGE_FIRST);
+        if (aclRet != ACL_SUCCESS) {
+            LOG_PRINT("minimal cgerc y allocation failed: %d\n", aclRet);
+            return Fail();
+        }
+        aclRet = aclrtMalloc(reinterpret_cast<void**>(&ADevice), bytes, ACL_MEM_MALLOC_HUGE_FIRST);
+        if (aclRet != ACL_SUCCESS) {
+            LOG_PRINT("minimal cgerc A allocation failed: %d\n", aclRet);
+            return Fail();
+        }
+        aclRet = aclrtMemcpy(xDevice, bytes, &xHost, bytes, ACL_MEMCPY_HOST_TO_DEVICE);
+        if (aclRet == ACL_SUCCESS) {
+            aclRet = aclrtMemcpy(yDevice, bytes, &yHost, bytes, ACL_MEMCPY_HOST_TO_DEVICE);
+        }
+        if (aclRet == ACL_SUCCESS) {
+            aclRet = aclrtMemcpy(ADevice, bytes, &initialA, bytes, ACL_MEMCPY_HOST_TO_DEVICE);
+        }
+        if (aclRet != ACL_SUCCESS) {
+            LOG_PRINT("minimal cgerc input copy failed: %d\n", aclRet);
+            return Fail();
+        }
+        return 0;
+    }
+};
+
+uint32_t RunMinimalValidCase(aclblasHandle handle, aclrtStream stream)
+{
+    constexpr aclblasComplex alpha{1.0f, 0.0f};
+    constexpr aclblasComplex expected{30.0f, 13.0f};
+    constexpr size_t bytes = sizeof(aclblasComplex);
+    aclblasComplex actual{};
+    MinimalCgercBuffers buffers;
+    if (buffers.Prepare() != 0) {
+        return 1;
+    }
+
+    const aclblasStatus_t status = aclblasCgerc(handle, 1, 1, &alpha, buffers.xDevice, 1, buffers.yDevice, 1, buffers.ADevice, 1);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        LOG_PRINT("minimal cgerc call failed: %d\n", status);
+        return buffers.Fail();
+    }
+    aclError aclRet = aclrtSynchronizeStream(stream);
+    if (aclRet == ACL_SUCCESS) {
+        aclRet = aclrtMemcpy(&actual, bytes, buffers.ADevice, bytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    }
+    if (aclRet != ACL_SUCCESS) {
+        LOG_PRINT("minimal cgerc output copy failed: %d\n", aclRet);
+        return buffers.Fail();
+    }
+
+    const float error = std::hypot(actual.real - expected.real, actual.imag - expected.imag);
+    buffers.Release();
+    if (error > 1e-3f) {
+        LOG_PRINT(
+            "minimal cgerc mismatch: got=(%.4f, %.4f), expected=(%.4f, %.4f)\n", actual.real, actual.imag,
+            expected.real, expected.imag);
+        return 1;
+    }
+    std::cout << "[Success] minimal valid m=n=1 cgerc verification passed." << std::endl;
+    return 0;
 }
 
 int32_t main(int32_t argc, char* argv[])
@@ -179,10 +275,12 @@ int32_t main(int32_t argc, char* argv[])
     aclrtFree(yDevice);
     aclrtFree(ADevice);
 
+    const uint32_t minimalCaseErrors = RunMinimalValidCase(handle, stream);
+
     aclblasDestroy(handle);
     aclrtDestroyStream(stream);
     aclrtResetDevice(deviceId);
     aclFinalize();
 
-    return VerifyResult(AHost, goldenHost, "cgerc_test");
+    return VerifyResult(AHost, goldenHost, "cgerc_test") + minimalCaseErrors;
 }
