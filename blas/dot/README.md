@@ -35,7 +35,7 @@ Cdotc:  result = conj(x) · y = Σ(conj(x[i]) * y[i])  for i = 0 to n-1  （共�
 #### 函数原型
 
 ```cpp
-aclblasStatus_t aclblasSdot(aclblasHandle_t handle, int64_t n, const float* x, int64_t incx, const float* y, int64_t incy, float* result);
+aclblasStatus_t aclblasSdot(aclblasHandle_t handle, int n, const float* x, int incx, const float* y, int incy, float* result);
 ```
 
 #### 参数说明
@@ -43,11 +43,11 @@ aclblasStatus_t aclblasSdot(aclblasHandle_t handle, int64_t n, const float* x, i
 | 参数名 | 输入/输出 | 参数类型 | 说明 |
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，内部携带 stream 和 workspace，Host 内存 |
-| n | 输入 | int64_t | 向量元素个数，n >= 0，Host 内存 |
+| n | 输入 | int | 向量元素个数，n >= 0，Host 内存 |
 | x | 输入 | const float*（FP32） | 实数向量，包含 n 个 float 元素，Device 内存 |
-| incx | 输入 | int64_t | 向量 x 的步长，当前仅支持 incx = 1，Host 内存 |
+| incx | 输入 | int | 向量 x 的步长，当前仅支持 incx = 1，Host 内存 |
 | y | 输入 | const float*（FP32） | 实数向量，包含 n 个 float 元素，Device 内存 |
-| incy | 输入 | int64_t | 向量 y 的步长，当前仅支持 incy = 1，Host 内存 |
+| incy | 输入 | int | 向量 y 的步长，当前仅支持 incy = 1，Host 内存 |
 | result | 输出 | float*（FP32） | 点积结果，包含 1 个 float 元素，Device 内存 |
 
 #### 约束说明
