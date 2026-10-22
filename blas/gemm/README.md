@@ -54,7 +54,7 @@ aclblasStatus_t aclblasSgemm(aclblasHandle_t handle, aclblasOperation_t transa, 
 | B | 输入 | const float*（FP32） | 矩阵 B 的设备内存指针，FP32，列主序；当 K > 0 时不可为 nullptr，Device 内存 |
 | ldb | 输入 | int | 矩阵 B 的主维度（列主序），transB=N 时 ldb >= max(1, K)，transB=T/C 时 ldb >= max(1, N)，Host 内存 |
 | beta | 输入 | const float*（FP32） | 标量 beta 指针，指向 FP32 标量，不可为 nullptr，Host 内存 |
-| C | 输入/输出 | float*（FP32） | 矩阵 C 的设备内存指针，FP32，列主序；当 K > 0 时不可为 nullptr，Device 内存 |
+| C | 输入/输出 | float*（FP32） | 矩阵 C 的设备内存指针，FP32，列主序；当 K > 0 或 beta != 0 时不可为 nullptr，Device 内存 |
 | ldc | 输入 | int | 矩阵 C 的主维度（列主序），ldc >= max(1, M)，Host 内存 |
 
 #### 约束说明
@@ -71,7 +71,7 @@ aclblasStatus_t aclblasSgemm(aclblasHandle_t handle, aclblasOperation_t transa, 
 - beta 不可为 nullptr
 - k > 0 时 A 不可为 nullptr
 - k > 0 时 B 不可为 nullptr
-- k > 0 时 C 不可为 nullptr
+- k > 0 或 beta != 0 时 C 不可为 nullptr
 
 边界情况处理：
 - m == 0 或 n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS，不执行计算
@@ -340,7 +340,7 @@ aclblasStatus_t aclblasCgemm(aclblasHandle_t handle, aclblasOperation_t transa, 
 - beta 不可为 nullptr
 - k > 0 时 A 不可为 nullptr
 - k > 0 时 B 不可为 nullptr
-- k > 0 时 C 不可为 nullptr
+- k > 0 或 beta != 0 时 C 不可为 nullptr
 
 边界情况处理：
 - m == 0 或 n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS，不执行计算
