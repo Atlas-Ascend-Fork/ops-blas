@@ -39,6 +39,12 @@ uint32_t VerifyResult(const aclblasComplex& output, const aclblasComplex& golden
     std::cout << "Output: (" << output.real << ", " << output.imag << ")" << std::endl;
     std::cout << "Golden: (" << golden.real << ", " << golden.imag << ")" << std::endl;
 
+    if (!std::isfinite(output.real) || !std::isfinite(output.imag) || !std::isfinite(golden.real) ||
+        !std::isfinite(golden.imag)) {
+        std::cout << "[Failed] Case accuracy is verification failed!" << std::endl;
+        return 1;
+    }
+
     bool pass = true;
     float diffReal = std::abs(output.real - golden.real);
     float diffImag = std::abs(output.imag - golden.imag);
@@ -60,8 +66,8 @@ uint32_t VerifyResult(const aclblasComplex& output, const aclblasComplex& golden
     }
 }
 
-void ComputeCdotuGolden(const std::vector<aclblasComplex>& x, const std::vector<aclblasComplex>& y, uint32_t n,
-                        aclblasComplex* golden)
+void ComputeCdotuGolden(
+    const std::vector<aclblasComplex>& x, const std::vector<aclblasComplex>& y, uint32_t n, aclblasComplex* golden)
 {
     float goldenReal = 0.0f;
     float goldenImag = 0.0f;
@@ -75,8 +81,8 @@ void ComputeCdotuGolden(const std::vector<aclblasComplex>& x, const std::vector<
     golden->imag = goldenImag;
 }
 
-void ComputeCdotcGolden(const std::vector<aclblasComplex>& x, const std::vector<aclblasComplex>& y, uint32_t n,
-                        aclblasComplex* golden)
+void ComputeCdotcGolden(
+    const std::vector<aclblasComplex>& x, const std::vector<aclblasComplex>& y, uint32_t n, aclblasComplex* golden)
 {
     float goldenReal = 0.0f;
     float goldenImag = 0.0f;
@@ -117,9 +123,8 @@ int32_t main(int32_t argc, char* argv[])
 
     aclrtStream stream = nullptr;
     aclError aclRet = aclrtCreateStream(&stream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtCreateStream failed. ERROR: %d\n", aclRet); aclblasDestroy(handle);
-        return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtCreateStream failed. ERROR: %d\n", aclRet); aclblasDestroy(handle);
+              return aclRet);
     ret = aclblasSetStream(handle, stream);
     CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", ret); return ret);
 
@@ -132,21 +137,17 @@ int32_t main(int32_t argc, char* argv[])
     aclRet = aclrtMalloc((void**)&xDevice, inputByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc xDevice failed. ERROR: %d\n", aclRet); return aclRet);
     aclRet = aclrtMalloc((void**)&yDevice, inputByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc yDevice failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
-        return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc yDevice failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
+              return aclRet);
     aclRet = aclrtMalloc((void**)&resultDevice, outputByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc resultDevice failed. ERROR: %d\n", aclRet); aclrtFree(yDevice);
-        aclrtFree(xDevice); return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc resultDevice failed. ERROR: %d\n", aclRet);
+              aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
     aclRet = aclrtMemcpy(xDevice, inputByteSize, x.data(), inputByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); aclrtFree(resultDevice);
-        aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet);
+              aclrtFree(resultDevice); aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
     aclRet = aclrtMemcpy(yDevice, inputByteSize, y.data(), inputByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy yDevice failed. ERROR: %d\n", aclRet); aclrtFree(resultDevice);
-        aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy yDevice failed. ERROR: %d\n", aclRet);
+              aclrtFree(resultDevice); aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
 
     std::cout << "=== Testing aclblasCdotu ===" << std::endl;
     ComputeCdotuGolden(x, y, complexNum, &golden);
@@ -155,13 +156,11 @@ int32_t main(int32_t argc, char* argv[])
     CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCdotu failed. ERROR: %d\n", ret); return ret);
 
     aclRet = aclrtSynchronizeStream(stream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(resultDevice);
-        aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(resultDevice); aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
     aclRet = aclrtMemcpy(&result, outputByteSize, resultDevice, outputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy result failed. ERROR: %d\n", aclRet); aclrtFree(resultDevice);
-        aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy result failed. ERROR: %d\n", aclRet);
+              aclrtFree(resultDevice); aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
 
     uint32_t cdotuResult = VerifyResult(result, golden);
 
@@ -172,13 +171,11 @@ int32_t main(int32_t argc, char* argv[])
     CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCdotc failed. ERROR: %d\n", ret); return ret);
 
     aclRet = aclrtSynchronizeStream(stream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(resultDevice);
-        aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(resultDevice); aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
     aclRet = aclrtMemcpy(&result, outputByteSize, resultDevice, outputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy result failed. ERROR: %d\n", aclRet); aclrtFree(resultDevice);
-        aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy result failed. ERROR: %d\n", aclRet);
+              aclrtFree(resultDevice); aclrtFree(yDevice); aclrtFree(xDevice); return aclRet);
 
     uint32_t cdotcResult = VerifyResult(result, golden);
 

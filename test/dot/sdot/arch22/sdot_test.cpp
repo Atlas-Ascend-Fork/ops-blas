@@ -37,6 +37,11 @@ inline uint32_t VerifyResult(float output, float golden)
     std::cout << "Output: " << output << std::endl;
     std::cout << "Golden: " << golden << std::endl;
 
+    if (!std::isfinite(output) || !std::isfinite(golden)) {
+        std::cout << "[Failed] Case accuracy is verification failed!" << std::endl;
+        return 1;
+    }
+
     if (golden == 0.0f && output == 0.0f) {
         std::cout << "[Success] Case accuracy is verification passed." << std::endl;
         return 0;
