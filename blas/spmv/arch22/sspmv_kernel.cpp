@@ -38,6 +38,9 @@ private:
     __aicore__ inline void ComputePad(uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount);
     __aicore__ inline void CopyOutPad(uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount);
 
+    __aicore__ inline void ProcessLower();
+    __aicore__ inline void ProcessLowerTile(uint32_t packedColumn, uint32_t rowStart, uint32_t dataCount);
+
     __aicore__ inline void CopyInVec(uint32_t curOffset, uint32_t dataCount, bool needPad);
     __aicore__ inline void ComputeVec(uint32_t curOffset, uint32_t dataCount);
     __aicore__ inline void CopyOutVec(uint32_t curOffset, uint32_t dataCount, bool needPad);
@@ -49,6 +52,16 @@ private:
     __aicore__ inline uint32_t YPhysicalPos(uint32_t logical)
     {
         return (incy >= 0) ? (logical * absIncy) : ((n - 1U - logical) * absIncy);
+    }
+    __aicore__ inline uint64_t PackedOffset(uint32_t rowOffset, uint32_t colOffset)
+    {
+        if (uplo == ACLBLAS_LOWER) {
+            // LOWER packed storage is column-major: rowOffset is the packed column.
+            uint64_t column = rowOffset;
+            uint64_t columnStart = column * (2ULL * static_cast<uint64_t>(n) - column + 1ULL) / 2ULL;
+            return columnStart + colOffset - rowOffset;
+        }
+        return static_cast<uint64_t>(rowOffset) * (rowOffset + 1ULL) / 2ULL + colOffset;
     }
 
     GlobalTensor<T> aGM;
@@ -115,8 +128,8 @@ template <typename T>
 __aicore__ inline void SpmvAIV<T>::CopyIn(uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount)
 {
     LocalTensor<T> LocalA = aQueue.AllocTensor<T>();
-    uint64_t r = static_cast<uint64_t>(rowOffset) * (rowOffset + 1ULL) / 2ULL + colOffset;
-    DataCopy(LocalA, aGM[r], dataCount);
+    uint64_t packedOffset = PackedOffset(rowOffset, colOffset);
+    DataCopy(LocalA, aGM[packedOffset], dataCount);
     aQueue.EnQue<T>(LocalA);
 
     uint8_t paddingNum2 = elementsPerBlock - 1;
@@ -144,7 +157,12 @@ __aicore__ inline void SpmvAIV<T>::Compute(uint32_t rowOffset, uint32_t colOffse
     ReduceSum(LocalZ, LocalZ, LocalZ, dataCount);
     Muls(LocalZ, LocalZ, alpha, 1);
     auto scalar = LocalX2(0) * alpha;
-    if (colOffset + dataCount <= rowOffset) {
+    if (uplo == ACLBLAS_LOWER) {
+        Muls(LocalZ2, LocalA, scalar, dataCount);
+        if (colOffset == rowOffset) {
+            LocalZ2.SetValue(0, static_cast<T>(0.0f));
+        }
+    } else if (colOffset + dataCount <= rowOffset) {
         Muls(LocalZ2, LocalA, scalar, dataCount);
     } else if (dataCount > 1) {
         Muls(LocalZ2, LocalA, scalar, dataCount - 1);
@@ -174,7 +192,10 @@ __aicore__ inline void SpmvAIV<T>::CopyOut(uint32_t rowOffset, uint32_t colOffse
 
     LocalTensor<T> z2Local = z2Queue.DeQue<T>();
     if (incy == 1) {
-        if (colOffset + dataCount <= rowOffset) {
+        if (uplo == ACLBLAS_LOWER) {
+            DataCopyExtParams copyParams2{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
+            DataCopyPad(yGM[colOffset], z2Local, copyParams2);
+        } else if (colOffset + dataCount <= rowOffset) {
             uint8_t paddingNum2 = elementsPerBlock - dataCount % elementsPerBlock;
             DataCopyExtParams copyParams2{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
             DataCopyPadExtParams<T> padParams2{true, 0, paddingNum2, 0};
@@ -186,7 +207,12 @@ __aicore__ inline void SpmvAIV<T>::CopyOut(uint32_t rowOffset, uint32_t colOffse
             DataCopyPad(yGM[colOffset], z2Local, copyParams2);
         }
     } else {
-        if (colOffset + dataCount <= rowOffset) {
+        if (uplo == ACLBLAS_LOWER) {
+            for (uint32_t i = 0; i < dataCount; i++) {
+                uint32_t pos = YPhysicalPos(colOffset + i);
+                yGM.SetValue(pos, yGM.GetValue(pos) + z2Local.GetValue(i));
+            }
+        } else if (colOffset + dataCount <= rowOffset) {
             for (uint32_t i = 0; i < dataCount; i++) {
                 uint32_t pos = YPhysicalPos(colOffset + i);
                 yGM.SetValue(pos, yGM.GetValue(pos) + z2Local.GetValue(i));
@@ -204,13 +230,13 @@ __aicore__ inline void SpmvAIV<T>::CopyOut(uint32_t rowOffset, uint32_t colOffse
 template <typename T>
 __aicore__ inline void SpmvAIV<T>::CopyInPad(uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount)
 {
-    uint8_t paddingNum = elementsPerBlock - dataCount % elementsPerBlock;
+    uint8_t paddingNum = (elementsPerBlock - dataCount % elementsPerBlock) % elementsPerBlock;
     DataCopyExtParams copyParams{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
     DataCopyPadExtParams<T> padParams{true, 0, paddingNum, 0};
 
-    uint64_t r = static_cast<uint64_t>(rowOffset) * (rowOffset + 1ULL) / 2ULL + colOffset;
+    uint64_t packedOffset = PackedOffset(rowOffset, colOffset);
     LocalTensor<T> LocalA = aQueue.AllocTensor<T>();
-    DataCopyPad(LocalA, aGM[r], copyParams, padParams);
+    DataCopyPad(LocalA, aGM[packedOffset], copyParams, padParams);
     aQueue.EnQue<T>(LocalA);
 
     uint8_t paddingNum2 = elementsPerBlock - 1;
@@ -238,7 +264,12 @@ __aicore__ inline void SpmvAIV<T>::ComputePad(uint32_t rowOffset, uint32_t colOf
     ReduceSum(LocalZ, LocalZ, LocalZ, dataCount);
     Muls(LocalZ, LocalZ, alpha, 1);
     auto scalar = LocalX2(0) * alpha;
-    if (colOffset + dataCount <= rowOffset) {
+    if (uplo == ACLBLAS_LOWER) {
+        Muls(LocalZ2, LocalA, scalar, dataCount);
+        if (colOffset == rowOffset) {
+            LocalZ2.SetValue(0, static_cast<T>(0.0f));
+        }
+    } else if (colOffset + dataCount <= rowOffset) {
         Muls(LocalZ2, LocalA, scalar, dataCount);
     } else if (dataCount > 1) {
         Muls(LocalZ2, LocalA, scalar, dataCount - 1);
@@ -268,7 +299,10 @@ __aicore__ inline void SpmvAIV<T>::CopyOutPad(uint32_t rowOffset, uint32_t colOf
 
     LocalTensor<T> z2Local = z2Queue.DeQue<T>();
     if (incy == 1) {
-        if (colOffset + dataCount <= rowOffset) {
+        if (uplo == ACLBLAS_LOWER) {
+            DataCopyExtParams copyParams2{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
+            DataCopyPad(yGM[colOffset], z2Local, copyParams2);
+        } else if (colOffset + dataCount <= rowOffset) {
             uint8_t paddingNum2 = elementsPerBlock - dataCount % elementsPerBlock;
             DataCopyExtParams copyParams2{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
             DataCopyPadExtParams<T> padParams2{true, 0, paddingNum2, 0};
@@ -280,7 +314,12 @@ __aicore__ inline void SpmvAIV<T>::CopyOutPad(uint32_t rowOffset, uint32_t colOf
             DataCopyPad(yGM[colOffset], z2Local, copyParams2);
         }
     } else {
-        if (colOffset + dataCount <= rowOffset) {
+        if (uplo == ACLBLAS_LOWER) {
+            for (uint32_t i = 0; i < dataCount; i++) {
+                uint32_t pos = YPhysicalPos(colOffset + i);
+                yGM.SetValue(pos, yGM.GetValue(pos) + z2Local.GetValue(i));
+            }
+        } else if (colOffset + dataCount <= rowOffset) {
             for (uint32_t i = 0; i < dataCount; i++) {
                 uint32_t pos = YPhysicalPos(colOffset + i);
                 yGM.SetValue(pos, yGM.GetValue(pos) + z2Local.GetValue(i));
@@ -358,14 +397,52 @@ __aicore__ inline void SpmvAIV<T>::CopyOutVec(uint32_t curOffset, uint32_t dataC
 }
 
 template <typename T>
+__aicore__ inline void SpmvAIV<T>::ProcessLowerTile(uint32_t packedColumn, uint32_t rowStart, uint32_t dataCount)
+{
+    LocalTensor<T> xLocal = xQueue.AllocTensor<T>();
+    if (incx == 1) {
+        if (dataCount == maxDataCount) {
+            DataCopy(xLocal, xGM[rowStart], dataCount);
+        } else {
+            uint8_t paddingNum = (elementsPerBlock - dataCount % elementsPerBlock) % elementsPerBlock;
+            DataCopyExtParams copyParams{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
+            DataCopyPadExtParams<T> padParams{true, 0, paddingNum, 0};
+            DataCopyPad(xLocal, xGM[rowStart], copyParams, padParams);
+        }
+    } else {
+        for (uint32_t i = 0; i < dataCount; ++i) {
+            xLocal.SetValue(i, xGM.GetValue(XPhysicalPos(rowStart + i)));
+        }
+    }
+    xQueue.EnQue<T>(xLocal);
+    if (dataCount == maxDataCount) {
+        CopyIn(packedColumn, rowStart, dataCount);
+        Compute(packedColumn, rowStart, dataCount);
+        CopyOut(packedColumn, rowStart, dataCount);
+    } else {
+        CopyInPad(packedColumn, rowStart, dataCount);
+        ComputePad(packedColumn, rowStart, dataCount);
+        CopyOutPad(packedColumn, rowStart, dataCount);
+    }
+    xQueue.FreeTensor(xLocal);
+}
+
+template <typename T>
+__aicore__ inline void SpmvAIV<T>::ProcessLower()
+{
+    for (uint32_t packedColumn = vecIdx; packedColumn < n; packedColumn += useCoreNum) {
+        for (uint32_t rowStart = packedColumn; rowStart < n; rowStart += maxDataCount) {
+            uint32_t dataCount = (rowStart + maxDataCount <= n) ? maxDataCount : n - rowStart;
+            ProcessLowerTile(packedColumn, rowStart, dataCount);
+        }
+    }
+}
+
+template <typename T>
 __aicore__ inline void SpmvAIV<T>::Process()
 {
-    SetAtomicAdd<T>();
-    if (vecIdx >= useCoreNum) {
-        SetAtomicNone();
-        return;
-    }
     if (vecIdx == 0) {
+        SetAtomicAdd<T>();
         uint32_t repeatTimes = n / maxDataCount;
         uint32_t remainNum = n % maxDataCount;
         uint32_t curOffset = 0;
@@ -382,6 +459,19 @@ __aicore__ inline void SpmvAIV<T>::Process()
             ComputeVec(curOffset, dataCount);
             CopyOutVec(curOffset, dataCount, true);
         }
+        SetAtomicNone();
+    }
+
+    SyncAll();
+    if (vecIdx >= useCoreNum) {
+        return;
+    }
+    SetAtomicAdd<T>();
+
+    if (uplo == ACLBLAS_LOWER) {
+        ProcessLower();
+        SetAtomicNone();
+        return;
     }
 
     for (uint32_t col = 0; col < n; col += maxDataCount) {

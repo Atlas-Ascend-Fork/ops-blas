@@ -32,12 +32,18 @@ struct TestCase {
 static const std::vector<TestCase> gSspmvTests = {
     {"UPPER n=32 incx=1 incy=1", ACLBLAS_UPPER, 32, 1.2f, 0.8f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
     {"LOWER n=32 incx=1 incy=1", ACLBLAS_LOWER, 32, 1.2f, 0.8f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
+    {"UPPER n=32 beta=1.5", ACLBLAS_UPPER, 32, 0.5f, 1.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
+    {"LOWER n=32 beta=1.5", ACLBLAS_LOWER, 32, 0.5f, 1.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
     {"UPPER n=64 incx=1 incy=1", ACLBLAS_UPPER, 64, 0.5f, 1.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
     {"LOWER n=64 incx=1 incy=1", ACLBLAS_LOWER, 64, 0.5f, 1.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
     {"UPPER n=128 incx=1 incy=1", ACLBLAS_UPPER, 128, 1.0f, 1.0f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
     {"LOWER n=128 incx=1 incy=1", ACLBLAS_LOWER, 128, 1.0f, 1.0f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
+    {"UPPER n=128 beta=1.5", ACLBLAS_UPPER, 128, 0.5f, 1.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
+    {"LOWER n=128 beta=1.5", ACLBLAS_LOWER, 128, 0.5f, 1.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
     {"UPPER n=256 incx=1 incy=1", ACLBLAS_UPPER, 256, 2.0f, 0.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
     {"LOWER n=256 incx=1 incy=1", ACLBLAS_LOWER, 256, 2.0f, 0.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
+    {"UPPER n=256 beta=1.5", ACLBLAS_UPPER, 256, 0.5f, 1.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
+    {"LOWER n=256 beta=1.5", ACLBLAS_LOWER, 256, 0.5f, 1.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
     {"UPPER n=512 incx=1 incy=1", ACLBLAS_UPPER, 512, 1.2f, 0.8f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-4f},
     {"LOWER n=512 incx=1 incy=1", ACLBLAS_LOWER, 512, 1.2f, 0.8f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-4f},
     {"UPPER n=1024 incx=1 incy=1", ACLBLAS_UPPER, 1024, 1.0f, 0.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-4f},
@@ -76,16 +82,19 @@ static inline uint32_t PhysicalPos(uint32_t logical, uint32_t n, int64_t inc, ui
     return (inc >= 0) ? (logical * absInc) : ((n - 1U - logical) * absInc);
 }
 
-static void GeneratePacked(std::vector<float>& ap, uint32_t n, uint32_t seed)
+static void GeneratePacked(std::vector<float>& ap, uint32_t n, aclblasFillMode_t uplo, uint32_t seed)
 {
     size_t packedSize = static_cast<size_t>(n) * (n + 1U) / 2U;
     ap.assign(packedSize, 0.0f);
     std::mt19937 rng(seed);
     std::uniform_real_distribution<float> dist(-0.5f, 0.5f);
 
-    for (uint32_t row = 0; row < n; ++row) {
-        for (uint32_t col = 0; col <= row; ++col) {
-            ap[col + row * (row + 1U) / 2U] = dist(rng);
+    size_t idx = 0;
+    for (uint32_t col = 0; col < n; ++col) {
+        uint32_t rowStart = (uplo == ACLBLAS_UPPER) ? 0 : col;
+        uint32_t rowEnd = (uplo == ACLBLAS_UPPER) ? col + 1U : n;
+        for (uint32_t row = rowStart; row < rowEnd; ++row) {
+            ap[idx++] = dist(rng);
         }
     }
 }
@@ -105,8 +114,8 @@ static void GenerateStrided(std::vector<float>& v, uint32_t n, int inc, uint32_t
 }
 
 static void ComputeSspmvGolden(
-    const std::vector<float>& ap, const std::vector<float>& x, const std::vector<float>& y, uint32_t n, int incx,
-    int incy, float alpha, float beta, std::vector<float>& out)
+    const std::vector<float>& ap, const std::vector<float>& x, const std::vector<float>& y, uint32_t n,
+    aclblasFillMode_t uplo, int incx, int incy, float alpha, float beta, std::vector<float>& out)
 {
     uint32_t absIncx = static_cast<uint32_t>(std::abs(incx));
     uint32_t absIncy = static_cast<uint32_t>(std::abs(incy));
@@ -115,9 +124,16 @@ static void ComputeSspmvGolden(
     for (uint32_t row = 0; row < n; ++row) {
         float sum = 0.0f;
         for (uint32_t col = 0; col < n; ++col) {
-            uint32_t r = std::max(row, col);
-            uint32_t c = std::min(row, col);
-            uint32_t idx = c + r * (r + 1U) / 2U;
+            uint32_t packedRow = (uplo == ACLBLAS_UPPER) ? std::min(row, col) : std::max(row, col);
+            uint32_t packedCol = (uplo == ACLBLAS_UPPER) ? std::max(row, col) : std::min(row, col);
+            uint64_t idx;
+            if (uplo == ACLBLAS_UPPER) {
+                idx = static_cast<uint64_t>(packedCol) * (packedCol + 1ULL) / 2ULL + packedRow;
+            } else {
+                uint64_t columnStart =
+                    static_cast<uint64_t>(packedCol) * (2ULL * static_cast<uint64_t>(n) - packedCol + 1ULL) / 2ULL;
+                idx = columnStart + packedRow - packedCol;
+            }
             uint32_t xPos = PhysicalPos(col, n, incx, absIncx);
             sum += ap[idx] * x[xPos];
         }
@@ -151,7 +167,7 @@ static int RunSspmvCase(const TestCase& tc, aclblasHandle_t handle, aclrtStream 
     uint32_t seed = static_cast<uint32_t>(tc.n + std::abs(tc.incx + tc.incy) * 1000);
 
     std::vector<float> apHost;
-    GeneratePacked(apHost, nU32, seed);
+    GeneratePacked(apHost, nU32, tc.uplo, seed);
     std::vector<float> xHost;
     GenerateStrided(xHost, nU32, tc.incx, seed + 1);
     std::vector<float> yHost;
@@ -190,7 +206,7 @@ static int RunSspmvCase(const TestCase& tc, aclblasHandle_t handle, aclrtStream 
     aclrtMemcpy(yNpu.data(), yBytes, dY, yBytes, ACL_MEMCPY_DEVICE_TO_HOST);
 
     std::vector<float> yGolden;
-    ComputeSspmvGolden(apHost, xHost, yHost, nU32, tc.incx, tc.incy, tc.alpha, tc.beta, yGolden);
+    ComputeSspmvGolden(apHost, xHost, yHost, nU32, tc.uplo, tc.incx, tc.incy, tc.alpha, tc.beta, yGolden);
 
     aclrtFree(dAP);
     aclrtFree(dX);
