@@ -29,19 +29,21 @@ result[i, j] = matx[i, j] * maty[i, j]
 #### 函数原型
 
 ```cpp
-int aclblasComplexMatDot(const float *matx, const float *maty, float *result, const int64_t m, const int64_t n, void *stream)
+aclblasStatus_t aclblasComplexMatDot(
+    aclblasHandle_t handle, int m, int n, const aclblasComplex* matx, const aclblasComplex* maty,
+    aclblasComplex* result);
 ```
 
 #### 参数说明
 
 | 参数名 | 输入/输出 | 参数类型 | 说明 |
 |--------|----------|---------|------|
-| matx | 输入 | const float*（FP32） | 复数矩阵，维度为 m x n，存储为 2*m*n 个 float，Device 内存 |
-| maty | 输入 | const float*（FP32） | 复数矩阵，维度为 m x n，存储为 2*m*n 个 float，Device 内存 |
-| result | 输出 | float*（FP32） | 复数矩阵，维度为 m x n，存储为 2*m*n 个 float，Device 内存 |
-| m | 输入 | int64_t | 矩阵的行数，Host 内存 |
-| n | 输入 | int64_t | 矩阵的列数，Host 内存 |
-| stream | 输入 | void* | 执行流，Host 内存 |
+| handle | 输入 | aclblasHandle_t | 执行上下文句柄，Host 内存 |
+| m | 输入 | int | 矩阵的行数，Host 内存 |
+| n | 输入 | int | 矩阵的列数，Host 内存 |
+| matx | 输入 | const aclblasComplex* | 复数矩阵，维度为 m x n，Device 内存 |
+| maty | 输入 | const aclblasComplex* | 复数矩阵，维度为 m x n，Device 内存 |
+| result | 输出 | aclblasComplex* | 复数矩阵，维度为 m x n，Device 内存 |
 
 #### 约束说明
 
