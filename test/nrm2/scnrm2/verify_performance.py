@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
-# Licensed under the CANN Open Software License Agreement.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
 """Verify scnrm2 strict event timings against the supplied GPU baseline."""
 import argparse
 import csv
 import datetime
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -67,9 +73,23 @@ def load_baseline(path):
         rows = list(csv.DictReader(stream))
     if len(rows) != EXPECTED_CASES:
         raise ValueError(f"expected {EXPECTED_CASES} baseline rows in {path}, got {len(rows)}")
-    empty = [index for index, row in enumerate(rows) if not row.get("gpu_ms", "").strip()]
+    empty = [index for index, row in enumerate(rows) if not (row.get("gpu_ms") or "").strip()]
     if empty:
         raise ValueError(f"baseline {path} has empty gpu_ms at row indexes {empty[:5]}")
+    invalid = []
+    for index, row in enumerate(rows):
+        try:
+            gpu_us = float(row["gpu_ms"]) * 1000.0
+        except ValueError:
+            invalid.append(index)
+            continue
+        if not math.isfinite(gpu_us) or gpu_us <= 0:
+            invalid.append(index)
+    if invalid:
+        raise ValueError(
+            f"baseline {path} requires finite positive gpu_ms convertible to microseconds "
+            f"at row indexes {invalid[:5]}"
+        )
     return rows
 
 
