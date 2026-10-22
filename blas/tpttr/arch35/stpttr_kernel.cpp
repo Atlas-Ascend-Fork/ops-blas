@@ -41,8 +41,8 @@ private:
     uint32_t colCount_;
 
     __aicore__ inline uint32_t CalcColLen(uint32_t col) const;
-    __aicore__ inline uint32_t CalcSrcOffset(uint32_t col) const;
-    __aicore__ inline uint32_t CalcDstOffset(uint32_t col) const;
+    __aicore__ inline uint64_t CalcSrcOffset(uint32_t col) const;
+    __aicore__ inline uint64_t CalcDstOffset(uint32_t col) const;
     __aicore__ inline void CopyColumn(uint32_t col, int32_t eventIdM2M3, int32_t eventIdM3M2);
 };
 
@@ -74,27 +74,32 @@ __aicore__ inline uint32_t TpttrAIV<T>::CalcColLen(uint32_t col) const
 }
 
 template <typename T>
-__aicore__ inline uint32_t TpttrAIV<T>::CalcSrcOffset(uint32_t col) const
+__aicore__ inline uint64_t TpttrAIV<T>::CalcSrcOffset(uint32_t col) const
 {
     if (tiling_.uplo == 0) {
-        return static_cast<uint32_t>((static_cast<uint64_t>(col) * (2ULL * tiling_.n - col + 1)) / 2);
+        const uint64_t uCol = static_cast<uint64_t>(col);
+        const uint64_t uN = static_cast<uint64_t>(tiling_.n);
+        return (uCol * (2ULL * uN - uCol + 1ULL)) / 2ULL;
     } else {
-        return static_cast<uint32_t>((static_cast<uint64_t>(col) * (col + 1)) / 2);
+        const uint64_t uCol = static_cast<uint64_t>(col);
+        return (uCol * (uCol + 1ULL)) / 2ULL;
     }
 }
 
 template <typename T>
-__aicore__ inline uint32_t TpttrAIV<T>::CalcDstOffset(uint32_t col) const
+__aicore__ inline uint64_t TpttrAIV<T>::CalcDstOffset(uint32_t col) const
 {
-    return (tiling_.uplo == 0) ? (col * tiling_.lda + col) : (col * tiling_.lda);
+    const uint64_t uCol = static_cast<uint64_t>(col);
+    const uint64_t uLda = static_cast<uint64_t>(tiling_.lda);
+    return (tiling_.uplo == 0) ? (uCol * uLda + uCol) : (uCol * uLda);
 }
 
 template <typename T>
 __aicore__ inline void TpttrAIV<T>::CopyColumn(uint32_t col, int32_t eventIdM2M3, int32_t eventIdM3M2)
 {
     uint32_t colLen = CalcColLen(col);
-    uint32_t srcOff = CalcSrcOffset(col);
-    uint32_t dstOff = CalcDstOffset(col);
+    uint64_t srcOff = CalcSrcOffset(col);
+    uint64_t dstOff = CalcDstOffset(col);
 
     uint32_t processed = 0;
     while (processed < colLen) {
