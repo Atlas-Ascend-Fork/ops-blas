@@ -18,6 +18,7 @@
 #include <vector>
 #include <algorithm>
 #include <iterator>
+#include <memory>
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "cgemv_batched_plan.h"
@@ -108,7 +109,9 @@ aclblasStatus_t aclblasCgemvBatched(
     uint32_t transUint = (trans == ACLBLAS_OP_N) ? 0 : 1;
 
     CgemvBatchedTilingData tiling = CalTilingData(batchCount, m, n, dtype, transUint, numBlocks);
-    uint32_t* mask = CreateCgemvBatchedMask(m, dtype, transUint);
+    // CreateCgemvBatchedMask 以 new uint32_t[] 分配主机侧 mask，交给 unique_ptr 管理，
+    // 保证成功与各错误返回路径都会释放（此前全函数无 delete[]）。
+    std::unique_ptr<uint32_t[]> mask(CreateCgemvBatchedMask(m, dtype, transUint));
     size_t maskSize = tiling.maxMatNum * 32 * 2 * sizeof(uint32_t);
 
     size_t workSpaceSize = WORKSPACE_SIZE;
@@ -132,7 +135,7 @@ aclblasStatus_t aclblasCgemvBatched(
         aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(workSpaceDevice);
         aclrtFree(maskDevice); return ACLBLAS_STATUS_ALLOC_FAILED);
 
-    aclRet = aclrtMemcpy(maskDevice, maskSize, mask, maskSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    aclRet = aclrtMemcpy(maskDevice, maskSize, mask.get(), maskSize, ACL_MEMCPY_HOST_TO_DEVICE);
     CHECK_RET(
         aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
         aclrtFree(workSpaceDevice); aclrtFree(maskDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
