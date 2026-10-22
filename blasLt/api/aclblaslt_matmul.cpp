@@ -24,6 +24,79 @@
 
 #include <acl/acl.h>
 #include <cstdint>
+#include <limits>
+
+namespace {
+
+bool IsRepresentableAsUint32(uint64_t value)
+{
+    return value <= std::numeric_limits<uint32_t>::max();
+}
+
+bool IsLayoutCompatible(const aclblasLtMatrixLayoutImpl* layout, uint64_t rows, uint64_t cols)
+{
+    if (layout == nullptr || layout->rows != rows || layout->cols != cols || layout->ld < 0) {
+        return false;
+    }
+    const uint64_t ld = static_cast<uint64_t>(layout->ld);
+    if (!IsRepresentableAsUint32(ld)) {
+        return false;
+    }
+    if (ld == 0) {
+        return true;
+    }
+    uint64_t minLd = (layout->order == ACLBLASLT_ORDER_ROW) ? cols : rows;
+    if (layout->type == ACL_FLOAT4_E2M1) {
+        minLd = minLd / 2U + minLd % 2U;
+    }
+    return ld >= minLd;
+}
+
+bool HasSupportedTransposeModes(const aclblasLtMatmulDescImpl* desc)
+{
+    const bool transAValid =
+        desc->transA == ACLBLAS_OP_N || desc->transA == ACLBLAS_OP_T || desc->transA == ACLBLAS_OP_C;
+    const bool transBValid =
+        desc->transB == ACLBLAS_OP_N || desc->transB == ACLBLAS_OP_T || desc->transB == ACLBLAS_OP_C;
+    return transAValid && transBValid;
+}
+
+bool HasSingleNonStridedBatch(const aclblasLtMatrixLayoutImpl* a, const aclblasLtMatrixLayoutImpl* b,
+    const aclblasLtMatrixLayoutImpl* c, const aclblasLtMatrixLayoutImpl* d)
+{
+    return a->batchCount == 1 && b->batchCount == 1 && c->batchCount == 1 && d->batchCount == 1 &&
+           a->stridedBatchOffset == 0 && b->stridedBatchOffset == 0 && c->stridedBatchOffset == 0 &&
+           d->stridedBatchOffset == 0;
+}
+
+bool AreOperandLayoutsCompatible(const aclblasLtMatmulDescImpl* desc, const aclblasLtMatrixLayoutImpl* a,
+    const aclblasLtMatrixLayoutImpl* b, uint64_t m, uint64_t n, uint64_t k)
+{
+    const uint64_t aRows = (desc->transA == ACLBLAS_OP_N) ? m : k;
+    const uint64_t aCols = (desc->transA == ACLBLAS_OP_N) ? k : m;
+    const uint64_t bRows = (desc->transB == ACLBLAS_OP_N) ? k : n;
+    const uint64_t bCols = (desc->transB == ACLBLAS_OP_N) ? n : k;
+    return IsLayoutCompatible(a, aRows, aCols) && IsLayoutCompatible(b, bRows, bCols);
+}
+
+bool AreOutputLayoutsCompatible(const aclblasLtMatrixLayoutImpl* c, const aclblasLtMatrixLayoutImpl* d,
+    uint64_t m, uint64_t n)
+{
+    return IsLayoutCompatible(c, m, n) && IsLayoutCompatible(d, m, n);
+}
+
+bool IsMatmulLayoutValid(
+    const aclblasLtMatmulDescImpl* desc, const aclblasLtMatrixLayoutImpl* a, const aclblasLtMatrixLayoutImpl* b,
+    const aclblasLtMatrixLayoutImpl* c, const aclblasLtMatrixLayoutImpl* d, uint64_t m, uint64_t n, uint64_t k)
+{
+    if (!IsRepresentableAsUint32(m) || !IsRepresentableAsUint32(n) || !IsRepresentableAsUint32(k)) {
+        return false;
+    }
+    return HasSupportedTransposeModes(desc) && HasSingleNonStridedBatch(a, b, c, d) &&
+           AreOperandLayoutsCompatible(desc, a, b, m, n, k) && AreOutputLayoutsCompatible(c, d, m, n);
+}
+
+} // namespace
 
 // issue #492: alpha/beta pointer mode values (matching aclblasLtPointerMode_t).
 static constexpr int32_t ACLBLASLT_POINTER_MODE_HOST = 0;
@@ -70,13 +143,15 @@ aclblasStatus_t aclblasLtMatmul(
 
     // Validate descriptors
     if (computeDesc == nullptr || Adesc == nullptr || Bdesc == nullptr || Cdesc == nullptr || Ddesc == nullptr) {
-        AclBlasLt::LoggerManager::GetInstance().Log(ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul", "one or more descriptors are null");
+        AclBlasLt::LoggerManager::GetInstance().Log(
+            ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul", "one or more descriptors are null");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
     // Validate pointers
     if (alpha == nullptr || beta == nullptr) {
-        AclBlasLt::LoggerManager::GetInstance().Log(ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul", "alpha or beta is null");
+        AclBlasLt::LoggerManager::GetInstance().Log(
+            ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul", "alpha or beta is null");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
@@ -99,6 +174,12 @@ aclblasStatus_t aclblasLtMatmul(
     // BLAS/cuBLAS convention: m=0 or n=0 is a no-op, succeed without touching matrices.
     if (m == 0U || n == 0U) {
         return ACLBLAS_STATUS_SUCCESS;
+    }
+
+    if (!IsMatmulLayoutValid(desc, ALayout, BLayout, CLayout, DLayout, m, n, k)) {
+        AclBlasLt::LoggerManager::GetInstance().Log(ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul",
+            "matrix dimensions, leading dimensions, batch metadata, or integer ranges are invalid");
+        return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
     if (A == nullptr || B == nullptr || D == nullptr) {

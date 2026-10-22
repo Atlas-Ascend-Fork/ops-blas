@@ -51,6 +51,63 @@ Fp32MatmulFills makeFp32MatmulFills(int kDim)
     return fills;
 }
 
+struct MatmulLayoutTestData {
+    aclblasLtMatmulDesc_t computeDesc = nullptr;
+    aclblasLtMatrixLayout_t a = nullptr;
+    aclblasLtMatrixLayout_t b = nullptr;
+    aclblasLtMatrixLayout_t c = nullptr;
+    aclblasLtMatrixLayout_t d = nullptr;
+
+    ~MatmulLayoutTestData()
+    {
+        if (a != nullptr) {
+            aclblasLtMatrixLayoutDestroy(a);
+        }
+        if (b != nullptr) {
+            aclblasLtMatrixLayoutDestroy(b);
+        }
+        if (c != nullptr) {
+            aclblasLtMatrixLayoutDestroy(c);
+        }
+        if (d != nullptr) {
+            aclblasLtMatrixLayoutDestroy(d);
+        }
+        if (computeDesc != nullptr) {
+            aclblasLtMatmulDescDestroy(computeDesc);
+        }
+    }
+
+    bool Initialize(const uint64_t rows[4], const uint64_t cols[4], const int64_t ld[4])
+    {
+        if (aclblasLtMatmulDescCreate(&computeDesc, ACLBLAS_COMPUTE_32F, ACL_FLOAT) != ACLBLAS_STATUS_SUCCESS) {
+            return false;
+        }
+        const int32_t opN = ACLBLAS_OP_N;
+        if (aclblasLtMatmulDescSetAttribute(
+                computeDesc, ACLBLASLT_MATMUL_DESC_TRANSA, &opN, sizeof(opN)) != ACLBLAS_STATUS_SUCCESS ||
+            aclblasLtMatmulDescSetAttribute(
+                computeDesc, ACLBLASLT_MATMUL_DESC_TRANSB, &opN, sizeof(opN)) != ACLBLAS_STATUS_SUCCESS) {
+            return false;
+        }
+        if (aclblasLtMatrixLayoutCreate(&a, ACL_FLOAT, rows[0], cols[0], ld[0]) != ACLBLAS_STATUS_SUCCESS ||
+            aclblasLtMatrixLayoutCreate(&b, ACL_FLOAT, rows[1], cols[1], ld[1]) != ACLBLAS_STATUS_SUCCESS ||
+            aclblasLtMatrixLayoutCreate(&c, ACL_FLOAT, rows[2], cols[2], ld[2]) != ACLBLAS_STATUS_SUCCESS ||
+            aclblasLtMatrixLayoutCreate(&d, ACL_FLOAT, rows[3], cols[3], ld[3]) != ACLBLAS_STATUS_SUCCESS) {
+            return false;
+        }
+        const aclblasLtOrder_t row = ACLBLASLT_ORDER_ROW;
+        const bool aSet = aclblasLtMatrixLayoutSetAttribute(a, ACLBLASLT_MATRIX_LAYOUT_ORDER, &row, sizeof(row)) ==
+                          ACLBLAS_STATUS_SUCCESS;
+        const bool bSet = aclblasLtMatrixLayoutSetAttribute(b, ACLBLASLT_MATRIX_LAYOUT_ORDER, &row, sizeof(row)) ==
+                          ACLBLAS_STATUS_SUCCESS;
+        const bool cSet = aclblasLtMatrixLayoutSetAttribute(c, ACLBLASLT_MATRIX_LAYOUT_ORDER, &row, sizeof(row)) ==
+                          ACLBLAS_STATUS_SUCCESS;
+        const bool dSet = aclblasLtMatrixLayoutSetAttribute(d, ACLBLASLT_MATRIX_LAYOUT_ORDER, &row, sizeof(row)) ==
+                          ACLBLAS_STATUS_SUCCESS;
+        return aSet && bSet && cSet && dSet;
+    }
+};
+
 } // namespace
 
 // ── LtMatmul test fixture using aclblasLtHandle_t ──
@@ -105,6 +162,48 @@ TEST_F(LtMatmulArch35Test, NullComputeDesc) {
         &beta, nullptr, nullptr, nullptr, nullptr,
         nullptr, nullptr, 0, LtMatmulArch35Test::stream_);
     EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+TEST_F(LtMatmulArch35Test, RejectsMismatchedContractionDimension)
+{
+    MatmulLayoutTestData layouts;
+    const uint64_t rows[] = {2, 2, 2, 2};
+    const uint64_t cols[] = {3, 2, 2, 2};
+    const int64_t ld[] = {3, 2, 2, 2};
+    ASSERT_TRUE(layouts.Initialize(rows, cols, ld));
+    float alpha = 1.0f, beta = 0.0f, data[8]{};
+    EXPECT_EQ(aclblasLtMatmul(
+        LtMatmulArch35Test::ltHandle_, layouts.computeDesc, &alpha, data, layouts.a, data, layouts.b, &beta, nullptr,
+        layouts.c, data, layouts.d, nullptr,
+        nullptr, 0, LtMatmulArch35Test::stream_), ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+TEST_F(LtMatmulArch35Test, RejectsLeadingDimensionShorterThanPhysicalRowWidth)
+{
+    MatmulLayoutTestData layouts;
+    const uint64_t rows[] = {2, 3, 2, 2};
+    const uint64_t cols[] = {3, 2, 2, 2};
+    const int64_t ld[] = {2, 2, 2, 2};
+    ASSERT_TRUE(layouts.Initialize(rows, cols, ld));
+    float alpha = 1.0f, beta = 0.0f, data[8]{};
+    EXPECT_EQ(aclblasLtMatmul(
+        LtMatmulArch35Test::ltHandle_, layouts.computeDesc, &alpha, data, layouts.a, data, layouts.b, &beta, nullptr,
+        layouts.c, data, layouts.d, nullptr,
+        nullptr, 0, LtMatmulArch35Test::stream_), ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+TEST_F(LtMatmulArch35Test, EmptyOutputReturnsSuccessWithoutMatrixPointers)
+{
+    MatmulLayoutTestData layouts;
+    const uint64_t rows[] = {0, 0, 0, 0};
+    const uint64_t cols[] = {0, 2, 2, 2};
+    const int64_t ld[] = {0, 0, 0, 0};
+    ASSERT_TRUE(layouts.Initialize(rows, cols, ld));
+    float alpha = 1.0f, beta = 0.0f;
+    EXPECT_EQ(aclblasLtMatmul(
+        LtMatmulArch35Test::ltHandle_, layouts.computeDesc, &alpha, nullptr, layouts.a, nullptr, layouts.b, &beta,
+        nullptr, layouts.c, nullptr, layouts.d, nullptr, nullptr, 0, LtMatmulArch35Test::stream_),
+        ACLBLAS_STATUS_SUCCESS);
 }
 
 // ── TEST_F: alpha=nullptr (TC_L0_27) ──
