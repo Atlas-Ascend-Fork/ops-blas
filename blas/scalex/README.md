@@ -47,7 +47,7 @@ aclblasStatus_t aclblasScalex(aclblasHandle_t handle, int n, const void *alpha, 
 
 #### 约束说明
 
-- n >= 0（n < 0 返回 ACLBLAS_STATUS_INVALID_VALUE；n == 0 为 no-op）
+- n <= 0 时为 no-op（直接返回 ACLBLAS_STATUS_SUCCESS，不修改 x）
 - incx 为整数；incx <= 0 时为 no-op（不修改 x，直接返回 ACLBLAS_STATUS_SUCCESS，对齐 aclblasSscal / 参考 BLAS cblas_sscal 的 IF (INCX.LE.0) RETURN 语义）
 - alphaType 固定为 ACL_FLOAT
 - executionType 固定为 ACL_FLOAT
