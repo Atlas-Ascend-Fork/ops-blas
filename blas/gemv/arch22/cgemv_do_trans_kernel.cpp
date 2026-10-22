@@ -52,6 +52,7 @@ extern "C" __global__ __aicore__ __vector__ void cgemv_do_trans(
 
     aclblasComplex alpha{alpha_r, alpha_i};
     aclblasComplex beta{beta_r, beta_i};
+    const bool conjugateA = (_transA == ACLBLAS_OP_C);
 
     uint64_t UB_NOW = 0;
 
@@ -149,6 +150,14 @@ extern "C" __global__ __aicore__ __vector__ void cgemv_do_trans(
             WAIT_FLAG(MTE2, V, EVENT_ID0);
 
             split_CVector(Abase_r, Abase_i, tmpbuf, szHorz_real_pad * szVert_real);
+
+            if (conjugateA) {
+                muls_v<ArchType::ASCEND_V220, float>(
+                    Abase_i, Abase_i, -1.0f,
+                    MAXALIGN_WITH(szHorz_real_pad * szVert_real, VEC_MIN_SIZE) / VEC_MIN_SIZE,
+                    1, 1, 8, 8);
+                PIPE_BARRIER(V);
+            }
 
             cvec_gm2ubuf(Xbase_r, Xbase_i, Xtemp, x_gmptr, szHorz_real, incx);
 

@@ -85,6 +85,21 @@ void ComputeGoldenCgemvT(
     }
 }
 
+void ComputeGoldenCgemvC(
+    const aclblasComplex* A, const aclblasComplex* x, aclblasComplex* y,
+    const aclblasComplex& alpha, const aclblasComplex& beta, int64_t m, int64_t n, int64_t lda, int64_t incx,
+    int64_t incy)
+{
+    for (int64_t j = 0; j < n; j++) {
+        aclblasComplex sum{0.0f, 0.0f};
+        for (int64_t i = 0; i < m; i++) {
+            const aclblasComplex aConj{A[i + j * lda].real, -A[i + j * lda].imag};
+            sum += aConj * x[i * incx];
+        }
+        y[j * incy] = alpha * sum + beta * y[j * incy];
+    }
+}
+
 int TestCgemvNoTrans()
 {
     std::cout << "Testing cgemv (trans=N):" << std::endl;
@@ -158,7 +173,7 @@ int TestCgemvNoTrans()
 
 int TestCgemvTrans()
 {
-    std::cout << "Testing cgemv (trans=T):" << std::endl;
+    std::cout << "Testing cgemv (trans=T/C):" << std::endl;
 
     int32_t deviceId = 0;
     constexpr int64_t M = 512;
@@ -172,8 +187,9 @@ int TestCgemvTrans()
 
     std::vector<aclblasComplex> A(M * N, aclblasComplex{1.0f, 0.5f});
     std::vector<aclblasComplex> x(M, aclblasComplex{2.0f, 1.0f});
-    std::vector<aclblasComplex> y(N, aclblasComplex{3.0f, 1.5f});
-    std::vector<aclblasComplex> yGolden = y;
+    std::vector<aclblasComplex> yInitial(N, aclblasComplex{3.0f, 1.5f});
+    std::vector<aclblasComplex> y = yInitial;
+    std::vector<aclblasComplex> yGolden = yInitial;
 
     ComputeGoldenCgemvT(A.data(), x.data(), yGolden.data(), alpha, beta, M, N, lda, incx, incy);
 
@@ -215,6 +231,21 @@ int TestCgemvTrans()
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); return aclRet);
     aclRet = aclrtMemcpy(y.data(), yByteSize, yDevice, yByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy y failed. ERROR: %d\n", aclRet); return aclRet);
+    const int transResult = VerifyResult(y, yGolden);
+
+    y = yInitial;
+    yGolden = yInitial;
+    ComputeGoldenCgemvC(A.data(), x.data(), yGolden.data(), alpha, beta, M, N, lda, incx, incy);
+    aclRet = aclrtMemcpy(yDevice, yByteSize, y.data(), yByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy initial y failed. ERROR: %d\n", aclRet); return aclRet);
+
+    ret = aclblasCgemv(handle, ACLBLAS_OP_C, M, N, &alpha, aDevice, lda, xDevice, incx, &beta, yDevice, incy);
+    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCgemv OP_C failed. ERROR: %d\n", ret); return ret);
+    aclRet = aclrtSynchronizeStream(stream);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream OP_C failed. ERROR: %d\n", aclRet); return aclRet);
+    aclRet = aclrtMemcpy(y.data(), yByteSize, yDevice, yByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy OP_C result failed. ERROR: %d\n", aclRet); return aclRet);
+    const int conjResult = VerifyResult(y, yGolden);
 
     aclrtFree(aDevice);
     aclrtFree(xDevice);
@@ -224,7 +255,7 @@ int TestCgemvTrans()
     aclrtResetDevice(deviceId);
     aclFinalize();
 
-    return VerifyResult(y, yGolden);
+    return (transResult == 0 && conjResult == 0) ? 0 : 1;
 }
 
 int32_t main(int32_t argc, char* argv[])
