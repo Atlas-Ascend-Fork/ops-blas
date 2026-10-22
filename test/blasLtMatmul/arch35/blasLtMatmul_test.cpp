@@ -161,6 +161,27 @@ TEST_F(LtMatmulArch35Test, NullA) {
     aclblasLtMatrixLayoutDestroy(Ddesc);
 }
 
+TEST_F(LtMatmulArch35Test, DefaultColumnOrderIsRejectedByMatmul)
+{
+    aclblasLtMatmulDesc_t computeDesc = nullptr;
+    ASSERT_EQ(aclblasLtMatmulDescCreate(&computeDesc, ACLBLAS_COMPUTE_32F, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+    aclblasLtMatrixLayout_t layouts[4]{};
+    for (auto& layout : layouts) {
+        ASSERT_EQ(aclblasLtMatrixLayoutCreate(&layout, ACL_FLOAT, 4, 4, 4), ACLBLAS_STATUS_SUCCESS);
+    }
+    float alpha = 1.0f;
+    float beta = 0.0f;
+    float data[16]{};
+    const aclblasStatus_t ret = aclblasLtMatmul(
+        LtMatmulArch35Test::ltHandle_, computeDesc, &alpha, data, layouts[0], data, layouts[1], &beta, nullptr,
+        layouts[2], data, layouts[3], nullptr, nullptr, 0, LtMatmulArch35Test::stream_);
+    EXPECT_EQ(ret, ACLBLAS_STATUS_NOT_SUPPORTED);
+    for (auto layout : layouts) {
+        EXPECT_EQ(aclblasLtMatrixLayoutDestroy(layout), ACLBLAS_STATUS_SUCCESS);
+    }
+    EXPECT_EQ(aclblasLtMatmulDescDestroy(computeDesc), ACLBLAS_STATUS_SUCCESS);
+}
+
 // ── CSV parameterized tests ──
 INSTANTIATE_TEST_SUITE_P(
     LtMatmul, LtMatmulArch35Test,

@@ -128,6 +128,11 @@ aclblasStatus_t LaunchEpilogue(const MatmulProblem& problem, void* dRawAddr, boo
 
 aclblasStatus_t MatmulLaunch(const MatmulProblem& problem)
 {
+    if (problem.orderA != ACLBLASLT_ORDER_ROW || problem.orderB != ACLBLASLT_ORDER_ROW ||
+        problem.orderC != ACLBLASLT_ORDER_ROW || problem.orderD != ACLBLASLT_ORDER_ROW) {
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
+
     const uint64_t k = problem.k;
     const aclDataType dtypeA = problem.dtypeA;
     const float alphaValue = problem.alpha;

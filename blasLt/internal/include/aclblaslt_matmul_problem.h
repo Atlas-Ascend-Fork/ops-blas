@@ -57,6 +57,10 @@ struct MatmulProblem {
     uint32_t ldb = 0;
     uint32_t ldc = 0;
     uint32_t ldd = 0;
+    aclblasLtOrder_t orderA = ACLBLASLT_ORDER_COL;
+    aclblasLtOrder_t orderB = ACLBLASLT_ORDER_COL;
+    aclblasLtOrder_t orderC = ACLBLASLT_ORDER_COL;
+    aclblasLtOrder_t orderD = ACLBLASLT_ORDER_COL;
 
     // execution context
     uint32_t numBlocks = 0;

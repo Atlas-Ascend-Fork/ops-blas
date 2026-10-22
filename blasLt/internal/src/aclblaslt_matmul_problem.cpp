@@ -52,6 +52,10 @@ void BuildMatmulProblem(
     out.ldb = static_cast<uint32_t>(bLayout->ld);
     out.ldc = static_cast<uint32_t>(cLayout->ld > 0 ? cLayout->ld : static_cast<int64_t>(n));
     out.ldd = static_cast<uint32_t>(dLayout->ld > 0 ? dLayout->ld : static_cast<int64_t>(n));
+    out.orderA = aLayout->order;
+    out.orderB = bLayout->order;
+    out.orderC = cLayout->order;
+    out.orderD = dLayout->order;
 
     out.numBlocks = numBlocks;
     out.stream = stream;
