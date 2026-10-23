@@ -75,6 +75,9 @@ inline std::vector<T> GetCasesFromCsv(const std::string& csvPath)
     std::string headerLine;
     bool hasHeader = false;
     while (std::getline(ifs, headerLine)) {
+        if (headerLine.compare(0, 3, "\xEF\xBB\xBF") == 0) {
+            headerLine.erase(0, 3);
+        }
         size_t first = headerLine.find_first_not_of(" \t\r\n");
         if (first != std::string::npos && headerLine[first] != '#') {
             hasHeader = true;

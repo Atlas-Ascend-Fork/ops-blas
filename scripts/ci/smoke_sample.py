@@ -25,6 +25,9 @@ BLAS_TEST_MODE=smoke 时把每个算子的 CSV 用例做确定性抽样，
     python3 smoke_sample.py <soc_arch> <op1> [op2 ...]
 输出（stdout）：
     "op:case1,case2;op2:...;" 格式（BLAS_TEST_CASES 协议）。
+
+CSV 与 C++ 读取器一致：接受 UTF-8 BOM，跳过空行和 # 注释，去除表头两端空白。
+Host 回归：python3 -m unittest discover -s scripts/ci/tests -p test_csv_input_formats.py
 """
 
 import csv
@@ -86,8 +89,12 @@ def sample_op(op, soc_arch):
     if not csv_path:
         return None
     try:
-        with open(csv_path, encoding="utf-8", errors="ignore") as f:
-            rows = list(csv.DictReader(f))
+        with open(csv_path, encoding="utf-8-sig", errors="ignore") as f:
+            lines = (line for line in f if line.strip() and not line.lstrip().startswith("#"))
+            reader = csv.DictReader(lines)
+            if reader.fieldnames:
+                reader.fieldnames = [name.strip() for name in reader.fieldnames]
+            rows = list(reader)
     except OSError:
         return None
     if not rows:
