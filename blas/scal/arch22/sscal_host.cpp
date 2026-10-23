@@ -102,7 +102,11 @@ aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, 
         LOG_PRINT("aclblasSscal: handle is nullptr\n");
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
-    if (n <= 0) {
+    if (n < 0) {
+        LOG_PRINT("aclblasSscal: n must not be negative\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }
     if (alpha == nullptr) {

@@ -116,7 +116,7 @@ int32_t TestSscal(aclblasHandle handle, aclrtStream stream)
         return 1);
     ret = aclblasSscal(handle, -1, &alpha, (float*)xDevice, incx);
     CHECK_RET(
-        ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSscal negative n should be a no-op. ERROR: %d\n", ret);
+        ret == ACLBLAS_STATUS_INVALID_VALUE, LOG_PRINT("aclblasSscal negative n validation failed. ERROR: %d\n", ret);
         aclrtFree(xDevice);
         return 1);
     ret = aclblasSscal(handle, totalLength, nullptr, (float*)xDevice, incx);
@@ -187,6 +187,31 @@ int32_t TestCsscal(aclblasHandle handle, aclrtStream stream)
     return VerifyCsscalResult(x, golden);
 }
 
+int32_t TestSscalArgumentValidation(aclblasHandle handle)
+{
+    const float alpha = 2.0f;
+    float value = 1.0f;
+    CHECK_RET(aclblasSscal(nullptr, 1, &alpha, &value, 1) == ACLBLAS_STATUS_HANDLE_IS_NULLPTR,
+        LOG_PRINT("Sscal null-handle validation failed\n"); return 1);
+    CHECK_RET(aclblasSscal(handle, -1, &alpha, &value, 1) == ACLBLAS_STATUS_INVALID_VALUE,
+        LOG_PRINT("Sscal negative-length validation failed\n"); return 1);
+    CHECK_RET(aclblasSscal(handle, 0, nullptr, nullptr, 1) == ACLBLAS_STATUS_SUCCESS,
+        LOG_PRINT("Sscal zero-length quick return failed\n"); return 1);
+    CHECK_RET(aclblasSscal(handle, 1, nullptr, &value, 1) == ACLBLAS_STATUS_INVALID_VALUE,
+        LOG_PRINT("Sscal null-alpha validation failed\n"); return 1);
+    CHECK_RET(aclblasSscal(handle, 1, &alpha, nullptr, 1) == ACLBLAS_STATUS_INVALID_VALUE,
+        LOG_PRINT("Sscal null-x validation failed\n"); return 1);
+    return 0;
+}
+
+void CleanupSscalTestResources(aclblasHandle handle, aclrtStream stream, int32_t deviceId)
+{
+    aclblasDestroy(handle);
+    aclrtDestroyStream(stream);
+    aclrtResetDevice(deviceId);
+    aclFinalize();
+}
+
 int32_t main(int32_t argc, char* argv[])
 {
     int32_t deviceId = 0;
@@ -203,15 +228,17 @@ int32_t main(int32_t argc, char* argv[])
     ret = aclblasSetStream(handle, stream);
     CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", ret); return ret);
 
+    CHECK_RET(TestSscalArgumentValidation(handle) == 0,
+        LOG_PRINT("Sscal argument validation test failed\n");
+        CleanupSscalTestResources(handle, stream, deviceId);
+        return 1);
+
     int32_t result = 0;
 
     result = TestSscal(handle, stream);
     if (result != 0) {
         std::cout << "[FAIL] Sscal test failed" << std::endl;
-        aclblasDestroy(handle);
-        aclrtDestroyStream(stream);
-        aclrtResetDevice(deviceId);
-        aclFinalize();
+        CleanupSscalTestResources(handle, stream, deviceId);
         return result;
     }
     std::cout << "[PASS] Sscal test passed" << std::endl;
@@ -219,18 +246,12 @@ int32_t main(int32_t argc, char* argv[])
     result = TestCsscal(handle, stream);
     if (result != 0) {
         std::cout << "[FAIL] Csscal test failed" << std::endl;
-        aclblasDestroy(handle);
-        aclrtDestroyStream(stream);
-        aclrtResetDevice(deviceId);
-        aclFinalize();
+        CleanupSscalTestResources(handle, stream, deviceId);
         return result;
     }
     std::cout << "[PASS] Csscal test passed" << std::endl;
 
-    aclblasDestroy(handle);
-    aclrtDestroyStream(stream);
-    aclrtResetDevice(deviceId);
-    aclFinalize();
+    CleanupSscalTestResources(handle, stream, deviceId);
 
     std::cout << "========================================" << std::endl;
     std::cout << "Test Summary:" << std::endl;
