@@ -29,14 +29,14 @@ y = alpha * op(A) * x + beta * y
 
 | 产品 | 是否支持 |
 |------|:---:|
-| Ascend 950PR / Ascend 950DT | 支持（既有 arch35 实现，本 PR 不改动） |
-| Atlas A3 训练系列产品 / Atlas A3 推理系列产品 | **支持**（arch22，本 PR 新增） |
-| Atlas A2 训练系列产品 / Atlas A2 推理系列产品 | **支持**（arch22，本 PR 新增） |
+| Ascend 950PR / Ascend 950DT | 支持（arch35 实现） |
+| Atlas A3 训练系列产品 / Atlas A3 推理系列产品 | 支持（arch22 实现） |
+| Atlas A2 训练系列产品 / Atlas A2 推理系列产品 | 支持（arch22 实现） |
 | Atlas 200I/500 A2 推理产品 | 不支持 |
 | Atlas 推理系列产品 | 不支持 |
 | Atlas 训练系列产品 | 不支持 |
 
-- Atlas A2/A3 系列产品由 `blas/gbmv/arch22/` 实现支持（本 PR 新增），精度/性能验证环境为 Atlas 800I A2（Ascend 910B3）+ CANN 9.1.0。
+- Atlas A2/A3 系列产品由 `blas/gbmv/arch22/` 实现支持，精度/性能验证环境为 Atlas 800I A2（Ascend 910B3）+ CANN 9.1.0。
 - 接口声明位于 `include/cann_ops_blas.h`，供其他产品线共用。
 
 #### 函数原型
@@ -138,9 +138,11 @@ aclblasDestroy(handle);
 
 #### 产品支持情况
 
-- Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Ascend 950PR / Ascend 950DT：支持（仅 arch35 实现）
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持（当前无 arch22 实现）
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持（当前无 arch22 实现）
+
+- `aclblasCgbmv` 当前仅提供 arch35（Ascend 950PR / Ascend 950DT）实现，Atlas A2/A3 系列产品对应的算子库中不包含该接口。
 
 #### 函数原型
 
