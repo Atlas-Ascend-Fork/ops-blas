@@ -30,10 +30,17 @@
     ```bash
     # 赋予可执行权限
     chmod +x build_out/cann-950-ops-blas_*.run
-    # 安装（root 用户默认安装到 /usr/local/Ascend）
-    ./build_out/cann-950-ops-blas_*.run --install --quiet --install-path=${install_path}
+    # 未指定安装路径时，root 用户默认安装到 /usr/local/Ascend，普通用户默认安装到 ~/Ascend
+    if [ -z "${install_path:-}" ]; then
+        if [ "$(id -u)" -eq 0 ]; then
+            install_path=/usr/local/Ascend
+        else
+            install_path="${HOME}/Ascend"
+        fi
+    fi
+    ./build_out/cann-950-ops-blas_*.run --install --quiet --install-path="${install_path}"
     ```
-    - `${install_path}`：表示指定安装路径，默认安装在 `/usr/local/Ascend` 目录。
+    - `${install_path}`：表示指定安装路径；未设置时，root 用户默认安装在 `/usr/local/Ascend`，普通用户默认安装在 `~/Ascend` 目录。
 
     安装后，ops-blas 的头文件和库文件会安装到 CANN 安装目录下：
 
