@@ -176,6 +176,10 @@ static void SrotmgPerfDevice(aclblasHandle_t handle, const SrotmgArch22Param& p,
     EXPECT_TRUE(Verifier::verifyScalar(out[1], d2G, cfg, p.caseName + "_perf_d2"));
     EXPECT_TRUE(Verifier::verifyScalar(out[2], x1G, cfg, p.caseName + "_perf_x1"));
     EXPECT_TRUE(Verifier::verifyScalar(out[4 + 0], paramG[0], cfg, p.caseName + "_perf_sflag"));
+    EXPECT_TRUE(Verifier::verifyScalar(out[5], paramG[1], cfg, p.caseName + "_perf_param_h11"));
+    EXPECT_TRUE(Verifier::verifyScalar(out[6], paramG[2], cfg, p.caseName + "_perf_param_h21"));
+    EXPECT_TRUE(Verifier::verifyScalar(out[7], paramG[3], cfg, p.caseName + "_perf_param_h12"));
+    EXPECT_TRUE(Verifier::verifyScalar(out[8], paramG[4], cfg, p.caseName + "_perf_param_h22"));
 
     aclrtFree(devBuf);
 }
