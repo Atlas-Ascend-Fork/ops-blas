@@ -279,7 +279,7 @@ x = op(A) * x    （原地覆写）
 #### 函数原型
 
 ```cpp
-aclblasStatus_t aclblasStbmv_legacy(aclblasHandle_t handle, const float *a, const int64_t lda, const float *x, float *y, const int64_t n, const int64_t k, const int64_t incx)
+aclblasStatus_t aclblasStbmv_legacy(aclblasHandle_t handle, aclblasFillMode uplo, aclblasOperation trans, aclblasDiagType diag, const float *a, const int64_t lda, const float *x, float *y, const int64_t n, const int64_t k, const int64_t incx)
 ```
 
 #### 参数说明
@@ -287,6 +287,9 @@ aclblasStatus_t aclblasStbmv_legacy(aclblasHandle_t handle, const float *a, cons
 | 参数名 | 输入/输出 | 参数类型 | 说明 |
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
+| uplo | 输入 | aclblasFillMode | 矩阵填充类型：ACLBLAS_UPPER(上三角)、ACLBLAS_LOWER(下三角)，Host 内存 |
+| trans | 输入 | aclblasOperation | 矩阵操作类型：ACLBLAS_OP_N(不转置)、ACLBLAS_OP_T(转置)、ACLBLAS_OP_C(共轭转置，实数下同 T)，Host 内存 |
+| diag | 输入 | aclblasDiagType | 对角线类型：ACLBLAS_NON_UNIT(非单位对角线)、ACLBLAS_UNIT(单位对角线，对角元素视为 1)，Host 内存 |
 | a | 输入 | const float*（FP32） | 下三角带状矩阵 float 数组，维度为 lda x n，Device 内存 |
 | lda | 输入 | int64_t | 矩阵 a 存储的主维长度，lda >= k + 1，Host 内存 |
 | x | 输入 | const float*（FP32） | float 输入向量，包含 n 个元素，Device 内存 |
