@@ -138,11 +138,9 @@ aclblasDestroy(handle);
 
 #### 产品支持情况
 
-- Ascend 950PR / Ascend 950DT：支持（仅 arch35 实现）
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持（当前无 arch22 实现）
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持（当前无 arch22 实现）
-
-- `aclblasCgbmv` 当前仅提供 arch35（Ascend 950PR / Ascend 950DT）实现，Atlas A2/A3 系列产品对应的算子库中不包含该接口。
+- Ascend 950PR / Ascend 950DT：支持（arch35 实现）
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持（arch22 实现）
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持（arch22 实现）
 
 #### 函数原型
 
@@ -347,3 +345,10 @@ int main()
     return 0;
 }
 ```
+
+#### 性能说明
+
+- 测试设备 Atlas 800T A2 (910B3)，msprof kernel 级 Task Duration，
+  有效采样 10 次取平均，达标线为标杆耗时 gpu_ms/0.8。
+- arch22 内核为多引擎混合调度：对角向量、N 大带瓦片、T/C 大带列点积
+  与通用波次扫描按 shape 自动选路。

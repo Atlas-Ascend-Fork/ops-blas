@@ -15,5 +15,7 @@ if(SOC_VERSION STREQUAL "ascend950")
     target_compile_options(cgbmv_test PRIVATE -O2)
     target_compile_options(cgbmv_benchmark PRIVATE -O2)
 else()
-    ops_blas_add_tests(${OPS_BLAS})
+    # 非 950 SoC（如 ascend910b3）同样走 gtest 注册（generic add_tests
+    # 不链 gtest，链接失败）。
+    ops_blas_add_gtest_tests(${OPS_BLAS} cgbmv_test)
 endif()
