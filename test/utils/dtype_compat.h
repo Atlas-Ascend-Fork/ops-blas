@@ -86,6 +86,10 @@ inline float fp16ToFloat(uint16_t h)
 inline uint16_t floatToBf16(float v)
 {
     uint32_t bits = *reinterpret_cast<const uint32_t*>(&v);
+    if ((bits & 0x7FFFFFFFu) > 0x7F800000u) {
+        // Preserve NaN before rounding can erase its payload or wrap the sign.
+        return static_cast<uint16_t>((bits >> 16) | 0x40u);
+    }
     uint32_t lsb = (bits >> 16) & 1u;
     bits += 0x7FFFu + lsb; // round-to-nearest-even
     return static_cast<uint16_t>(bits >> 16);
