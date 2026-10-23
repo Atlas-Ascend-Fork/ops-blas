@@ -29,6 +29,11 @@
 #define CHECK_ACL(expr) do { aclError _r = (expr); if (_r != ACL_SUCCESS) { \
     std::cerr << __FILE__ << ":" << __LINE__ << " aclError:" << _r << std::endl; return _r; } } while(0)
 
+// RunOneCtrsmCase 返回 bool，CHECK_ACL 中的 return 的是 aclError，非 0 会被转换为 true（成功），
+// 因此这里使用返回 false 的版本，失败时保持“用例失败”的语义。
+#define CHECK_ACL_BOOL(expr) do { aclError _r = (expr); if (_r != ACL_SUCCESS) { \
+    std::cerr << __FILE__ << ":" << __LINE__ << " aclError:" << _r << std::endl; return false; } } while(0)
+
 // 配置文件模式：逐行解析用例，批量执行并统计通过数（供 msprof/回归共享 handle）
 struct CfgCase { int m, n, batch, side, uplo, transa, diag; float ar, ai; std::string tag; };
 
@@ -95,7 +100,7 @@ static bool RunOneCtrsmCase(_aclblas_handle& handle, const CfgCase& c)
     bool okCase = (ret==ACLBLAS_STATUS_SUCCESS);
     if (okCase) {
         for (int b=0;b<c.batch;b++) {
-            aclrtMemcpy(hB[b],sB,dB[b],sB,ACL_MEMCPY_DEVICE_TO_HOST);
+            CHECK_ACL_BOOL(aclrtMemcpy(hB[b],sB,dB[b],sB,ACL_MEMCPY_DEVICE_TO_HOST));
             std::string fn = c.tag + "/output_b_" + std::to_string(b) + ".bin"; WriteFile(fn,hB[b],sB);
         }
     }

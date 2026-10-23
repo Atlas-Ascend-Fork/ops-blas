@@ -44,6 +44,17 @@
         }                                  \
     } while (0)
 
+// RunOneXxxCase 返回 bool，CHECK_ACL 中的 return 的是 aclError，非 0 会被转换为 true（成功），
+// 因此这里使用返回 false 的版本，失败时保持“用例失败”的语义。
+#define CHECK_ACL_BOOL(expr)                                                             \
+    do {                                                                                 \
+        aclError _ret = (expr);                                                          \
+        if (_ret != ACL_SUCCESS) {                                                       \
+            printf("[ERROR] acl call failed (%d) at %s:%d\n", _ret, __FILE__, __LINE__); \
+            return false;                                                                \
+        }                                                                                \
+    } while (0)
+
 // 为每个 batch 分配 host/device 内存、从 .bin 读取 A/B 并拷贝到 device
 static int LoadInputs(int32_t batchCount, size_t sizeA, size_t sizeB,
                       std::vector<uint8_t*>& hostA, std::vector<uint8_t*>& hostB,
@@ -176,7 +187,7 @@ static bool RunOneTrsmCase(_aclblas_handle& handle, const CfgCase& c)
     bool ok = (status == ACLBLAS_STATUS_SUCCESS);
     if (ok) {
         for (int32_t i = 0; i < c.batch; i++) {
-            aclrtMemcpy(hostB[i], sizeB, devB[i], sizeB, ACL_MEMCPY_DEVICE_TO_HOST);
+            CHECK_ACL_BOOL(aclrtMemcpy(hostB[i], sizeB, devB[i], sizeB, ACL_MEMCPY_DEVICE_TO_HOST));
             std::string fn = c.tag + "/output_b_" + std::to_string(i) + ".bin";
             WriteFile(fn, hostB[i], sizeB);
         }
