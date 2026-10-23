@@ -28,6 +28,7 @@ function(ops_blas_detect_asc_devkit_version)
   # cmake/test.cmake、test/CMakeLists.txt 四个文件中的 foreach 会自动处理。
   set(TENSOR_API_OPS
       "STRMM|/trmm/arch35/strmm|strmm"
+      "CTRMM|/trmm/arch35/ctrmm|ctrmm"
       "SDGMM|/dgmm/arch35/sdgmm|sdgmm"
       "GEMM_BATCHED|/gemm_batched/arch35/gemm_batched_|sgemm_batched,cgemm_batched"
       "SGEMM3M|/gemm3m/arch35/sgemm3m|sgemm3m"

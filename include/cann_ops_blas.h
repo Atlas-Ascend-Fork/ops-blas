@@ -353,6 +353,20 @@ aclblasStatus_t aclblasStrmm(
     aclblasDiagType_t diag, int m, int n, const float* alpha, const float* A, int lda,
     const float* B, int ldb, float* C, int ldc);
 
+/**
+ * @brief Single-precision complex triangular matrix-matrix multiplication.
+ *
+ * Computes C = alpha * op(A) * B (side=LEFT) or C = alpha * B * op(A) (side=RIGHT),
+ * where op(A) is one of A, A^T or A^H. A is a triangular matrix; when diag=UNIT,
+ * the diagonal of A is assumed to be unity and not referenced. B may be aliased
+ * with C for in-place computation (B == C). For alpha == (0,0), A and B are not
+ * referenced and the m×n region of C is set to zero.
+ */
+aclblasStatus_t aclblasCtrmm(
+    aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t trans,
+    aclblasDiagType_t diag, int m, int n, const aclblasComplex* alpha, const aclblasComplex* A, int lda,
+    const aclblasComplex* B, int ldb, aclblasComplex* C, int ldc);
+
 aclblasStatus_t aclblasStrsm(
     aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t trans,
     aclblasDiagType_t diag, int m, int n, const float* alpha, const float* A, int lda, float* B, int ldb);
