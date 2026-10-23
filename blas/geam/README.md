@@ -71,7 +71,7 @@ aclblasStatus_t aclblasSgeam(aclblasHandle_t handle, aclblasOperation_t transa, 
 
 #### 调用示例
 
-示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](https://www.hiascend.com/document/detail/zh/CANN/community/8.2.RC1/quickstart/quickstart_18_0041.html)。
+示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](https://gitcode.com/cann/ops-blas/blob/master/docs/zh/develop/compile_and_run_example.md)。
 
 以下示例演示 NN 模式（NoTrans/NoTrans），取 m=4, n=3, alpha=1.0, beta=0.5，计算 C(4x3) = 1.0 * A(4x3) + 0.5 * B(4x3)：
 
@@ -315,7 +315,7 @@ aclblasStatus_t aclblasCgeam(aclblasHandle_t handle, aclblasOperation_t transa, 
 
 #### 调用示例
 
-示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](https://www.hiascend.com/document/detail/zh/CANN/community/8.2.RC1/quickstart/quickstart_18_0041.html)。
+示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](https://gitcode.com/cann/ops-blas/blob/master/docs/zh/develop/compile_and_run_example.md)。
 
 以下示例演示 NC 模式（NoTrans/ConjTrans），取 m=2, n=3, alpha=(1+1i), beta=(0.5+0.5i)，计算 C(2x3) = (1+i) * A(2x3) + (0.5+0.5i) * B^H(2x3)：
 
