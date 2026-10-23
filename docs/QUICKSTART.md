@@ -80,22 +80,35 @@ Golden: 1.2 1.2 1.2 1.2 1.2 1.2 1.2 1.2 ...
 本阶段目的是对已成功运行的scopy算子尝试**修改核函数代码**。
 
 ### 1. 修改Kernel实现
-找到scopy算子的核心kernel实现文件`blas/copy/arch22/scopy_kernel.cpp`，尝试修改算子中的DataCopy操作：
+
+找到scopy算子的核心kernel实现文件`blas/copy/arch22/scopy_kernel.cpp`。scopy的搬运分两条路径：
+
+- `SingleIteration`：每次搬运一个完整分块（90KB / 4B = 23040个元素），仅在单核数据量达到23040个元素时执行；
+- `SingleIterationAligned`：搬运不足一个分块的剩余元素，**默认样例（16384个元素、8核，每核2048个元素）只会走这条路径**。
+
+以`SingleIterationAligned`为例，尝试注释掉其中的输出搬运`DataCopyPad`操作：
 
 ```cpp
 template <typename T>
-__aicore__ inline void CopyAIV<T>::SingleIteration(uint32_t curOffset, uint32_t dataCount)
+__aicore__ inline void CopyAIV<T>::SingleIterationAligned(uint32_t curOffset, uint32_t dataCount)
 {
+    uint8_t paddingNum = elementsPerBlock - dataCount % elementsPerBlock;
+    DataCopyExtParams copyParams{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
+    DataCopyPadExtParams<T> padParams{true, 0, paddingNum, 0};
+
     LocalTensor<T> inLocal = inQueue.AllocTensor<T>();
-    DataCopy(inLocal, inGM[curOffset], dataCount);
+    DataCopyPad(inLocal, inGM[curOffset], copyParams, padParams);
     inQueue.EnQue<T>(inLocal);
+
     int32_t eventIDMTE2ToMTE3 = static_cast<int32_t>(GetTPipePtr()->FetchEventID(AscendC::HardEvent::MTE2_MTE3));
     AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE3>(eventIDMTE2ToMTE3);
     AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE3>(eventIDMTE2ToMTE3);
+
     LocalTensor<T> outLocal = inQueue.DeQue<T>();
-    // DataCopy(outGM[curOffset], outLocal, dataCount);
-    // 补充相应的AIV计算操作
+    // 注释掉输出搬运，重新编译运行，观察样例的比对结果
+    // DataCopyPad(outGM[curOffset], outLocal, copyParams);
     inQueue.FreeTensor(outLocal);
+
     int32_t eventIDMTE3ToMTE2 = static_cast<int32_t>(GetTPipePtr()->FetchEventID(AscendC::HardEvent::MTE3_MTE2));
     AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(eventIDMTE3ToMTE2);
     AscendC::WaitFlag<AscendC::HardEvent::MTE3_MTE2>(eventIDMTE3ToMTE2);
@@ -123,7 +136,15 @@ __aicore__ inline void CopyAIV<T>::SingleIteration(uint32_t curOffset, uint32_t 
     bash build.sh --soc=${soc_version} --ops=scopy --run
     ```
 
-4. **成功标志**：输出结果精度比对成功。
+4. **预期结果**：注释掉输出搬运后，样例会打印比对失败，说明修改已编译生效，且测试能够捕获问题（样例的输出向量初始化为2.3、输入向量为1.2，输出搬运被注释后输出保持初始值2.3，与期望值1.2不一致）：
+    ```
+    Running scopy_test...
+    Output: 2.3 2.3 2.3 2.3 2.3 2.3 2.3 2.3 ...
+    Golden: 1.2 1.2 1.2 1.2 1.2 1.2 1.2 1.2 ...
+    [Failed] Case accuracy is verification failed!
+    ```
+
+5. **恢复验证**：将注释恢复为原代码后重新编译、安装、运行，输出恢复为精度比对成功，完成「修改→编译→验证」闭环：
     ```
     Running scopy_test...
     Output: 1.2 1.2 1.2 1.2 1.2 1.2 1.2 1.2 ...
@@ -131,34 +152,34 @@ __aicore__ inline void CopyAIV<T>::SingleIteration(uint32_t curOffset, uint32_t 
     [Success] Case accuracy is verification passed.
     ```
 
+> **说明**：样例中scopy与ccopy用例复用同一份kernel，注释后两个用例都会打印比对失败，属预期现象。
+>
+> 若改为注释`SingleIteration`中的输出搬运，默认样例（每核2048个元素）不经过该路径，测试仍会打印`[Success]`；需要把样例数据量放大到单核达到23040个元素（如`test/copy/scopy/arch22/scopy_test.cpp`中8核合计达到184320个元素）才能观察到影响。
+
 ## 三、算子调试
 本阶段以scopy算子为例，在算子中添加打印并采集算子性能数据，以便后续问题分析定位。
 
 ### 1. 打印
 算子如果出现执行失败、精度异常等问题，添加打印进行问题分析和定位。
 
-请在`blas/copy/arch22/scopy_kernel.cpp`中进行代码修改。
+请在`blas/copy/arch22/scopy_kernel.cpp`中进行代码修改（若你已在「二、算子开发」中注释过输出搬运，请先恢复代码再继续本节）。下面两个示例分别加在`Process()`与`SingleIterationAligned()`中，两者都会被默认样例执行到；`SingleIteration`仅在单核数据量达到23040个元素时执行，如需在该路径加打印请先放大样例数据量。
 
 * **printf**
 
-  该接口支持打印Scalar类型数据，如整数、字符型、布尔型等，详细介绍请参见[《Ascend C API》](https://hiascend.com/document/redirect/CannCommunityAscendCApi)中“算子调测API > printf”。
+  该接口支持打印Scalar类型数据，如整数、字符型、布尔型等，详细介绍请参见[《Ascend C API》](https://hiascend.com/document/redirect/CannCommunityAscendCApi)中“算子调测API > printf”。在`CopyAIV<T>::Process()`中添加：
 
   ```cpp
-  blockLength_ = (tilingData->totalLength + AscendC::GetBlockNum() - 1) / AscendC::GetBlockNum();
-  tileNum_ = tilingData->tileNum;
-  tileLength_ = ((blockLength_ + tileNum_ - 1) / tileNum_ / BUFFER_NUM) ?
-        ((blockLength_ + tileNum_ - 1) / tileNum_ / BUFFER_NUM) : 1;
-  // 打印当前核计算Block长度
-  AscendC::PRINTF("Tiling blockLength is %llu\n", blockLength_);
+  // 打印当前核的数据量与起始偏移
+  AscendC::PRINTF("Block %d: n is %u, calNum is %u, startOffset is %u\n", this->vecIdx, this->n, this->calNum,
+                  this->startOffset);
   ```
 * **DumpTensor**
 
-  该接口支持Dump指定Tensor的内容，同时支持打印自定义附加信息，比如当前行号等，详细介绍请参见[《Ascend C API》](https://hiascend.com/document/redirect/CannCommunityAscendCApi)中“算子调测API > DumpTensor”。
+  该接口支持Dump指定Tensor的内容，同时支持打印自定义附加信息，比如当前行号等，详细介绍请参见[《Ascend C API》](https://hiascend.com/document/redirect/CannCommunityAscendCApi)中“算子调测API > DumpTensor”。在`SingleIterationAligned()`中已有语句`LocalTensor<T> outLocal = inQueue.DeQue<T>();`之后添加一行：
 
   ```cpp
-  AscendC::LocalTensor<T> zLocal = outputQueueZ.DeQue<T>();
-  // 打印zLocal Tensor信息
-  DumpTensor(zLocal, 0, 128);
+  // 打印outLocal前32个元素的信息
+  AscendC::DumpTensor(outLocal, 0, 32);
   ```
 ### 2. 性能采集
 
