@@ -25,6 +25,7 @@ struct StrsmbatchedParam : public BlasTestParamBase {
     int m = 0;
     int n = 0;
     float alpha = 1.0f;
+    bool alphaIsNull = false;
     int lda = 0;
     int ldb = 0;
     int batchCount = 1;
@@ -39,9 +40,12 @@ struct StrsmbatchedParam : public BlasTestParamBase {
         diag = parseDiagType(ReadMap(map, "diag", "ACLBLAS_NON_UNIT"));
         m = parseInt(ReadMap(map, "m", "0"));
         n = parseInt(ReadMap(map, "n", "0"));
-        alpha = parseFloat(ReadMap(map, "alpha", "1.0"), 1.0f);
-        lda = parseInt(ReadMap(map, "lda", "0"));
-        ldb = parseInt(ReadMap(map, "ldb", "0"));
+        const std::string alphaStr = ReadMap(map, "alpha", "1.0");
+        alphaIsNull = (alphaStr == "null" || alphaStr == "NULLPTR" || alphaStr == "nullptr");
+        alpha = alphaIsNull ? 1.0f : parseFloat(alphaStr, 1.0f);
+        const int defaultLda = (side == ACLBLAS_SIDE_LEFT) ? m : n;
+        lda = (map.find("lda") != map.end()) ? parseInt(ReadMap(map, "lda", "0")) : defaultLda;
+        ldb = (map.find("ldb") != map.end()) ? parseInt(ReadMap(map, "ldb", "0")) : m;
         batchCount = parseInt(ReadMap(map, "batchCount", "1"));
         aFill = parseFill(ReadMap(map, "a", "RANDOM_NORM_P0.1_P1"));
         bFill = parseFill(ReadMap(map, "b", "RANDOM_NORM_P0.1_P1"));

@@ -25,9 +25,11 @@ side='R': X[i] * op(A[i]) = alpha * B[i]
 
 #### 产品支持情况
 
-- Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+| 产品 | 实现支持 | 验证状态 |
+|---|---|---|
+| Ascend 950PR / Ascend 950DT | 支持（arch35） | 沿用原实现 |
+| Atlas A3 训练/推理系列（含 Atlas 800I A3） | 支持（arch22） | 1200 项测试全部通过 |
+| Atlas A2 训练/推理系列（含 Atlas 800I A2） | 支持（arch22） | 1200 项测试全部通过 |
 
 > Ascend 950PR/Ascend 950DT 上的 strsmbatched 依赖 CANN asc-devkit >= 9.1（`ASC_DEVKIT_MAJOR >= 9 && ASC_DEVKIT_MINOR >= 1`），低于该版本时编译与运行将跳过此算子。
 
@@ -83,6 +85,8 @@ aclblasStatus_t aclblasStrsmBatched(
 - ldb >= max(1, m)
 - Blocked 路径要求：NoTrans 时 lda 和 ldb 须 8 对齐，尾 panel bs 须 8 对齐；不满足时回退至 SIMT-only 路径
 - 仅支持 FP32 数据类型
+- 单次调用临时工作区（Workspace）需求为 batchCount * (tempBatchStride + 8192) * sizeof(float) 字节，其中 tempBatchStride = align16(m) * align16(n)（非对齐跨度场景另含对齐重排区）
+- 受底层 aclblasHandle_t 最大工作区限制（ACLBLAS_MAX_WORKSPACE_SIZE = 2 GiB），调用方需保证单次调用的总工作区需求不超过 2 GiB，超出上限将返回 ACLBLAS_STATUS_ALLOC_FAILED。对于大尺寸叠加超大 Batch（例如 m=n>=1024 且 batchCount>=1024 等超 2 GiB 的组合），建议调用方按 Batch 分批调用
 
 #### 调用示例
 
@@ -364,3 +368,29 @@ L0 和 Fixpipe 保持串行，事件保证缓冲区读取完成后才可复用�
 异步执行错误由调用方在 stream 同步时检查。
 
 [精度与性能测试说明](../../test/trsmbatched/ctrsmbatched/README.md)。
+
+## Atlas A2/A3（arch22）实现与自测
+
+实现位于 `arch22/`，使用 Ascend C kernel 直调，共用上述公开接口。
+所有 kernel 提交至 handle 绑定的 stream；Host 不读取矩阵内容，除 alpha 标量与 A/B 指针数组在 Device 内存时需同步读取校验外，不在正常调用中同步设备。
+
+在安装了 Netlib BLAS、LAPACK、GTest 的 Ascend Linux 环境，从仓库根目录执行：
+
+```bash
+source /usr/local/Ascend/cann/set_env.sh
+bash build.sh --soc=ascend910b --ops=strsmbatched
+# 默认冒烟：前 50 条 CSV 用例及 3 项独立接口检查
+build/test/trsmbatched/strsmbatched/strsmbatched_test
+# 完整验收：显式启用全量 CSV 及补充回归，再按精度/性能筛选
+GSB_FULL_TEST=1 build/test/trsmbatched/strsmbatched/strsmbatched_test --gtest_filter='*-*TC_PF*'
+GSB_FULL_TEST=1 build/test/trsmbatched/strsmbatched/strsmbatched_test --gtest_filter='*TC_PF*'
+```
+
+A3 使用与实际设备匹配的 `--soc=ascend910_9382` 等参数重新编译并复验。测试支持通过
+`ASCEND_DEVICE_ID` 环境变量覆盖设备编号。
+
+`test/trsmbatched/strsmbatched/arch22/` 保留全量 `strsmbatched_test.csv`（1000 精度、200 性能）。
+默认仅加载 `strsmbatched_test_smoke.csv`，其内容为精选的 51 条用例，供流水线快速冒烟使用；
+设置 `GSB_FULL_TEST=1` 时加载全量任务 CSV。两种模式均保留独立接口检查；冒烟通过不能替代全量精度和性能验收。
+工作区按 `batchCount * (align16(m) * align16(n) + 8192) * sizeof(float)` 计算，受 handle 2 GiB 上限约束，超限返回 `ACLBLAS_STATUS_ALLOC_FAILED`，超大规格组合建议按 batch 分批调用。
+
