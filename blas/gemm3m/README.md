@@ -67,9 +67,14 @@ aclblasStatus_t aclblasSgemm3m(
 - transB=N 时 ldb >= max(1, 3*k)；transB=T/C 时 ldb >= max(1, n)
 - ldc >= max(1, m)
 - m>0 且 n>0 且 k>0 且 alpha!=0 时，A 和 B 不能为 nullptr
-- m>0 且 n>0 时，C 不能为 nullptr
+- 与 gemm 不同（gemm 仅在 k == 0 且 beta == 0 时允许 C 为 nullptr），gemm3m 在 m>0 且 n>0 时无论 beta、k 取值均要求 C 非 nullptr
 - 仅支持 FP32 数据类型
 - transA=C（共轭转置）对实数矩阵等价于 transA=T
+
+边界情况处理：
+- m == 0 或 n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS，不执行计算
+- k == 0 或 alpha == 0 时跳过矩阵乘，执行 C = beta * C（beta == 0 时置零，beta == 1 时不变，其他值逐元素缩放）
+- beta == 0.0f 时 C 不会被读取，无需在调用前初始化（但 C 指针本身仍不能为 nullptr）
 
 #### 调用示例
 
