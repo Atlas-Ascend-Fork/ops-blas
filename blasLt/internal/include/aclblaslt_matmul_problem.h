@@ -41,6 +41,9 @@ struct MatmulProblem {
     // scalars
     float alpha = 1.0f;
     float beta = 0.0f;
+    const void* alphaDevice = nullptr;
+    const void* betaDevice = nullptr;
+    bool devicePointerMode = false;
 
     // device pointers
     const void* A = nullptr;

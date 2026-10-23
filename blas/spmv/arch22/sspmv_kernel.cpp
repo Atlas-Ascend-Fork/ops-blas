@@ -73,6 +73,7 @@ private:
     TQue<QuePosition::VECIN, BUFFER_NUM> x2Queue;
     TQue<QuePosition::VECOUT, BUFFER_NUM> zQueue;
     TQue<QuePosition::VECOUT, BUFFER_NUM> z2Queue;
+    TQue<QuePosition::VECOUT, BUFFER_NUM> workspaceQueue;
 
     uint32_t vecIdx = 0;
     uint32_t n = 0;
@@ -122,6 +123,7 @@ __aicore__ inline void SpmvAIV<T>::Init(GM_ADDR aPacked, GM_ADDR x, GM_ADDR y, c
     pipe.InitBuffer(x2Queue, BUFFER_NUM, sizeof(T));
     pipe.InitBuffer(zQueue, BUFFER_NUM, sizeof(T));
     pipe.InitBuffer(z2Queue, BUFFER_NUM, maxDataCount * sizeof(T));
+    pipe.InitBuffer(workspaceQueue, BUFFER_NUM, maxDataCount * sizeof(T));
 }
 
 template <typename T>
@@ -149,12 +151,15 @@ __aicore__ inline void SpmvAIV<T>::Compute(uint32_t rowOffset, uint32_t colOffse
     LocalTensor<T> LocalX2 = x2Queue.DeQue<T>();
     LocalTensor<T> LocalZ = zQueue.AllocTensor<T>();
     LocalTensor<T> LocalZ2 = z2Queue.AllocTensor<T>();
+    LocalTensor<T> workLocal = workspaceQueue.AllocTensor<T>();
 
     int32_t eventIDMTE3ToV = static_cast<int32_t>(GetTPipePtr()->FetchEventID(AscendC::HardEvent::MTE3_V));
     AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(eventIDMTE3ToV);
     AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(eventIDMTE3ToV);
-    Mul(LocalZ, LocalA, LocalX, dataCount);
-    ReduceSum(LocalZ, LocalZ, LocalZ, dataCount);
+    Mul(LocalZ2, LocalA, LocalX, dataCount);
+    AscendC::PipeBarrier<PIPE_V>();
+    ReduceSum(LocalZ, LocalZ2, workLocal, dataCount);
+    AscendC::PipeBarrier<PIPE_V>();
     Muls(LocalZ, LocalZ, alpha, 1);
     auto scalar = LocalX2(0) * alpha;
     if (uplo == ACLBLAS_LOWER) {
@@ -172,6 +177,7 @@ __aicore__ inline void SpmvAIV<T>::Compute(uint32_t rowOffset, uint32_t colOffse
     z2Queue.EnQue<T>(LocalZ2);
     aQueue.FreeTensor(LocalA);
     x2Queue.FreeTensor(LocalX2);
+    workspaceQueue.FreeTensor(workLocal);
 }
 
 template <typename T>
@@ -256,12 +262,15 @@ __aicore__ inline void SpmvAIV<T>::ComputePad(uint32_t rowOffset, uint32_t colOf
     LocalTensor<T> LocalX2 = x2Queue.DeQue<T>();
     LocalTensor<T> LocalZ = zQueue.AllocTensor<T>();
     LocalTensor<T> LocalZ2 = z2Queue.AllocTensor<T>();
+    LocalTensor<T> workLocal = workspaceQueue.AllocTensor<T>();
 
     int32_t eventIDMTE3ToV = static_cast<int32_t>(GetTPipePtr()->FetchEventID(AscendC::HardEvent::MTE3_V));
     AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(eventIDMTE3ToV);
     AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(eventIDMTE3ToV);
-    Mul(LocalZ, LocalA, LocalX, dataCount);
-    ReduceSum(LocalZ, LocalZ, LocalZ, dataCount);
+    Mul(LocalZ2, LocalA, LocalX, dataCount);
+    AscendC::PipeBarrier<PIPE_V>();
+    ReduceSum(LocalZ, LocalZ2, workLocal, dataCount);
+    AscendC::PipeBarrier<PIPE_V>();
     Muls(LocalZ, LocalZ, alpha, 1);
     auto scalar = LocalX2(0) * alpha;
     if (uplo == ACLBLAS_LOWER) {
@@ -279,6 +288,7 @@ __aicore__ inline void SpmvAIV<T>::ComputePad(uint32_t rowOffset, uint32_t colOf
     z2Queue.EnQue<T>(LocalZ2);
     aQueue.FreeTensor(LocalA);
     x2Queue.FreeTensor(LocalX2);
+    workspaceQueue.FreeTensor(workLocal);
 }
 
 template <typename T>

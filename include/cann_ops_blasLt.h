@@ -105,6 +105,14 @@ typedef enum aclblasLtOrder {
 } aclblasLtOrder_t;
 
 /*! \ingroup types_module
+ *  \brief Storage location used for BLASLt alpha and beta scalar pointers.
+ */
+typedef enum aclblasLtPointerMode {
+  ACLBLASLT_POINTER_MODE_HOST = 0,   /**< alpha and beta point to host scalars. */
+  ACLBLASLT_POINTER_MODE_DEVICE = 1, /**< alpha and beta point to device scalars. */
+} aclblasLtPointerMode_t;
+
+/*! \ingroup types_module
  *  \brief  Property type.
  */
 typedef enum aclblasLtPropertyType {
@@ -172,7 +180,7 @@ typedef enum aclblasLtMatmulDescAttribute {
   ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_POINTER = 10,      /**<Epilogue auxiliary buffer pointer in the device memory. Data type: ``void*`` / ``const void*``. */
   ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_LD = 11,           /**<The leading dimension of the epilogue auxiliary buffer pointer in the device memory. Data type: ``int64_t``. */
   ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_BATCH_STRIDE = 12, /**<The batch stride of the epilogue auxiliary buffer pointer in the device memory. Data type: ``int64_t``. */
-  ACLBLASLT_MATMUL_DESC_POINTER_MODE = 13,              /**<Specifies that alpha and beta are passed by reference, whether they are scalars on the host or on the device, or device vectors. Default value is: ``ACLBLASLT_POINTER_MODE_HOST`` (on the host). Data type: ``int32_t`` based on ``aclblasLtPointerMode_t``. */
+  ACLBLASLT_MATMUL_DESC_POINTER_MODE = 13,              /**<Specifies whether alpha and beta point to host or device scalars. Default: ``ACLBLASLT_POINTER_MODE_HOST``. Data type: ``aclblasLtPointerMode_t``. */
   ACLBLASLT_MATMUL_DESC_AMAX_D_POINTER = 14,           /**<Device pointer to the memory that on completion will be set to the maximum of the absolute values in the output matrix. Data type: ``void*`` / ``const void*``. */
   ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_DATA_TYPE = 22,    /**<Type of the auxiliary vector in the device memory. Default value is: ``ACLBLASLT_DATATYPE_INVALID`` (using D matrix type). Data type: ``int32_t`` based on ``aclDataType``. */
   ACLBLASLT_MATMUL_DESC_A_SCALE_MODE = 31,                   /**<Scaling mode that defines how the matrix scaling factor for matrix A is interpreted. See ``aclblasLtMatmulMatrixScale_t``. */

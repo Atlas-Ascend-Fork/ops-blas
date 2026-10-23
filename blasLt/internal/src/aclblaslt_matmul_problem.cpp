@@ -36,8 +36,14 @@ void BuildMatmulProblem(
     out.dtypeC = cLayout->type;
     out.dtypeD = dLayout->type;
 
-    out.alpha = *reinterpret_cast<const float*>(alpha);
-    out.beta = *reinterpret_cast<const float*>(beta);
+    out.devicePointerMode = (desc->pointerMode == ACLBLASLT_POINTER_MODE_DEVICE);
+    if (out.devicePointerMode) {
+        out.alphaDevice = alpha;
+        out.betaDevice = beta;
+    } else {
+        out.alpha = *reinterpret_cast<const float*>(alpha);
+        out.beta = *reinterpret_cast<const float*>(beta);
+    }
 
     out.A = A;
     out.B = B;

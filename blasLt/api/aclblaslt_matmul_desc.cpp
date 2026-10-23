@@ -97,6 +97,23 @@ aclblasStatus_t SetDescScalePointer(const void*& field, const void* buf, size_t 
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+aclblasStatus_t SetDescPointerMode(aclblasLtMatmulDescImpl& impl, const void* buf, size_t sizeInBytes)
+{
+    if (sizeInBytes != sizeof(int32_t)) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    int32_t mode = 0;
+    aclblasStatus_t copyStatus = CheckedMemcpyS(&mode, sizeof(mode), buf, sizeof(mode));
+    if (copyStatus != ACLBLAS_STATUS_SUCCESS) {
+        return copyStatus;
+    }
+    if (mode != ACLBLASLT_POINTER_MODE_HOST && mode != ACLBLASLT_POINTER_MODE_DEVICE) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    impl.pointerMode = mode;
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 aclblasStatus_t ApplyMatmulDescSetAttr(
     aclblasLtMatmulDescImpl& impl, aclblasLtMatmulDescAttribute_t attr, const void* buf, size_t sizeInBytes)
 {
@@ -116,7 +133,7 @@ aclblasStatus_t ApplyMatmulDescSetAttr(
         case ACLBLASLT_MATMUL_DESC_B_SCALE_POINTER:
             return SetDescScalePointer(impl.scaleB, buf, sizeInBytes);
         case ACLBLASLT_MATMUL_DESC_POINTER_MODE:
-            return SetDescEnumFromI32(impl.pointerMode, buf, sizeInBytes);
+            return SetDescPointerMode(impl, buf, sizeInBytes);
         case ACLBLASLT_MATMUL_DESC_A_SCALE_MODE:
         case ACLBLASLT_MATMUL_DESC_B_SCALE_MODE:
             return ACLBLAS_STATUS_SUCCESS;

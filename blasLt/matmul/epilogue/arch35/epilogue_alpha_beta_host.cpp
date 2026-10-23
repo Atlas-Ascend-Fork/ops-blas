@@ -76,7 +76,8 @@ void epilogue_alpha_beta_get_tiling(
 
 void epilogue_alpha_beta_do(
     uint8_t* dRaw, uint8_t* c, uint8_t* d, uint32_t m, uint32_t n, uint32_t ldc, uint32_t ldd, uint32_t lddRaw,
-    float alpha, float beta, aclDataType dtypeC, aclDataType dtypeDRaw, aclDataType dtypeD, void* stream)
+    float alpha, float beta, aclDataType dtypeC, aclDataType dtypeDRaw, aclDataType dtypeD, void* stream,
+    const float* alphaDevice, const float* betaDevice)
 {
     EpilogueAlphaBetaTilingData tiling{};
     epilogue_alpha_beta_get_tiling(m, n, GetVectorCoreCount(), tiling);
@@ -89,5 +90,9 @@ void epilogue_alpha_beta_do(
     tiling.dtypeC = ToEpilogueDtype(dtypeC);
     tiling.dtypeD = ToEpilogueDtype(dtypeD);
     tiling.useC = (beta != 0.0f && c != nullptr) ? 1U : 0U;
-    epilogue_alpha_beta_kernel_do(dRaw, c, d, tiling, stream);
+    tiling.deviceScalarMode = (alphaDevice != nullptr && betaDevice != nullptr) ? 1U : 0U;
+    if (tiling.deviceScalarMode != 0U) {
+        tiling.useC = 1U;
+    }
+    epilogue_alpha_beta_kernel_do(dRaw, c, d, tiling, stream, alphaDevice, betaDevice);
 }

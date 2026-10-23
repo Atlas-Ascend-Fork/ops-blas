@@ -25,4 +25,5 @@
 void epilogue_alpha_beta_get_tiling(uint32_t m, uint32_t n, uint32_t numBlocks, EpilogueAlphaBetaTilingData& tilingData);
 void epilogue_alpha_beta_do(
     uint8_t* dRaw, uint8_t* c, uint8_t* d, uint32_t m, uint32_t n, uint32_t ldc, uint32_t ldd, uint32_t lddRaw,
-    float alpha, float beta, aclDataType dtypeC, aclDataType dtypeDRaw, aclDataType dtypeD, void* stream);
+    float alpha, float beta, aclDataType dtypeC, aclDataType dtypeDRaw, aclDataType dtypeD, void* stream,
+    const float* alphaDevice = nullptr, const float* betaDevice = nullptr);

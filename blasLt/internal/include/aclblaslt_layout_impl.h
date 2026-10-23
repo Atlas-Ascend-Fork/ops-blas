@@ -53,7 +53,7 @@ struct aclblasLtMatmulDescImpl {
     aclDataType biasDataType = ACL_DT_UNDEFINED;
     const void* scaleA = nullptr;
     const void* scaleB = nullptr;
-    int32_t pointerMode = 0;  // 0 = host
+    int32_t pointerMode = ACLBLASLT_POINTER_MODE_HOST;
 };
 static_assert(
     sizeof(aclblasLtMatmulDescImpl) <= sizeof(aclblasLtMatmulDescOpaque_t),

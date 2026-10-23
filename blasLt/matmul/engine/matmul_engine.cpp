@@ -100,7 +100,7 @@ aclblasStatus_t LaunchEpilogue(const MatmulProblem& problem, void* dRawAddr, boo
     const float alphaValue = problem.alpha;
     const float betaValue = problem.beta;
 
-    if (betaValue != 0.0f && problem.C == nullptr) {
+    if (!problem.devicePointerMode && betaValue != 0.0f && problem.C == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
@@ -118,9 +118,12 @@ aclblasStatus_t LaunchEpilogue(const MatmulProblem& problem, void* dRawAddr, boo
         }
     }
 
-    epilogue_alpha_beta_do(static_cast<uint8_t*>(dRawAddr), betaValue != 0.0f ? AsBytes(problem.C) : nullptr,
+    epilogue_alpha_beta_do(static_cast<uint8_t*>(dRawAddr),
+        (problem.devicePointerMode || betaValue != 0.0f) ? AsBytes(problem.C) : nullptr,
         static_cast<uint8_t*>(problem.D), static_cast<uint32_t>(m), static_cast<uint32_t>(n), ldc, ldd, lddRaw,
-        alphaValue, betaValue, dtypeC, dtypeDRaw, dtypeD, stream);
+        alphaValue, betaValue, dtypeC, dtypeDRaw, dtypeD, stream,
+        problem.devicePointerMode ? static_cast<const float*>(problem.alphaDevice) : nullptr,
+        problem.devicePointerMode ? static_cast<const float*>(problem.betaDevice) : nullptr);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -137,7 +140,7 @@ aclblasStatus_t MatmulLaunch(const MatmulProblem& problem)
     const aclDataType dtypeA = problem.dtypeA;
     const float alphaValue = problem.alpha;
     const float betaValue = problem.beta;
-    const bool needEpilogue = (alphaValue != 1.0f || betaValue != 0.0f);
+    const bool needEpilogue = problem.devicePointerMode || (alphaValue != 1.0f || betaValue != 0.0f);
     const bool cOverlap = (problem.C == problem.D) && needEpilogue;
     void* dRawAddr = (needEpilogue && cOverlap) ? problem.workspace : problem.D;
 

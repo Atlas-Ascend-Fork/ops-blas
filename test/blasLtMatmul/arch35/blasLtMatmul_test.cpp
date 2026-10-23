@@ -9,6 +9,7 @@
  */
 
 #include <cmath>
+#include <algorithm>
 #include <vector>
 #include <random>
 
@@ -137,6 +138,117 @@ protected:
 
 aclblasLtHandle_t LtMatmulArch35Test::ltHandle_ = nullptr;
 aclrtStream LtMatmulArch35Test::stream_ = nullptr;
+
+namespace {
+
+constexpr int32_t kDeviceMatmulDim = 16;
+constexpr size_t kDeviceMatmulElements = static_cast<size_t>(kDeviceMatmulDim) * kDeviceMatmulDim;
+constexpr size_t kDeviceMatmulBytes = kDeviceMatmulElements * sizeof(float);
+
+struct DeviceMatmulResources {
+    aclblasLtMatmulDesc_t computeDesc = nullptr;
+    aclblasLtMatrixLayout_t layouts[4]{};
+    void* deviceBuffers[6]{};
+
+    ~DeviceMatmulResources()
+    {
+        for (void* ptr : deviceBuffers) {
+            if (ptr != nullptr) { aclrtFree(ptr); }
+        }
+        for (auto layout : layouts) {
+            if (layout != nullptr) { aclblasLtMatrixLayoutDestroy(layout); }
+        }
+        if (computeDesc != nullptr) { aclblasLtMatmulDescDestroy(computeDesc); }
+    }
+};
+
+testing::AssertionResult createDeviceMatmulDescriptor(DeviceMatmulResources& resources)
+{
+    auto status = aclblasLtMatmulDescCreate(&resources.computeDesc, ACLBLAS_COMPUTE_32F, ACL_FLOAT);
+    if (status != ACLBLAS_STATUS_SUCCESS) { return testing::AssertionFailure() << "descriptor create: " << status; }
+    const int32_t pointerMode = ACLBLASLT_POINTER_MODE_DEVICE;
+    status = aclblasLtMatmulDescSetAttribute(resources.computeDesc, ACLBLASLT_MATMUL_DESC_POINTER_MODE, &pointerMode,
+        sizeof(pointerMode));
+    if (status != ACLBLAS_STATUS_SUCCESS) { return testing::AssertionFailure() << "pointer mode set: " << status; }
+    return testing::AssertionSuccess();
+}
+
+testing::AssertionResult createDeviceMatmulLayouts(DeviceMatmulResources& resources)
+{
+    for (auto& layout : resources.layouts) {
+        auto status = aclblasLtMatrixLayoutCreate(&layout, ACL_FLOAT, kDeviceMatmulDim, kDeviceMatmulDim,
+            kDeviceMatmulDim);
+        if (status != ACLBLAS_STATUS_SUCCESS) { return testing::AssertionFailure() << "layout create: " << status; }
+        const aclblasLtOrder_t row = ACLBLASLT_ORDER_ROW;
+        status = aclblasLtMatrixLayoutSetAttribute(layout, ACLBLASLT_MATRIX_LAYOUT_ORDER, &row, sizeof(row));
+        if (status != ACLBLAS_STATUS_SUCCESS) { return testing::AssertionFailure() << "layout order set: " << status; }
+    }
+    return testing::AssertionSuccess();
+}
+
+testing::AssertionResult allocateDeviceMatmulBuffers(DeviceMatmulResources& resources)
+{
+    for (size_t i = 0; i < 4; ++i) {
+        auto status = aclrtMalloc(&resources.deviceBuffers[i], kDeviceMatmulBytes, ACL_MEM_MALLOC_HUGE_FIRST);
+        if (status != ACL_SUCCESS) { return testing::AssertionFailure() << "matrix allocation " << i << ": " << status; }
+    }
+    for (size_t i = 4; i < 6; ++i) {
+        auto status = aclrtMalloc(&resources.deviceBuffers[i], sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST);
+        if (status != ACL_SUCCESS) { return testing::AssertionFailure() << "scalar allocation " << i << ": " << status; }
+    }
+    return testing::AssertionSuccess();
+}
+
+testing::AssertionResult copyDeviceMatmulInputs(const DeviceMatmulResources& resources)
+{
+    const float values[] = {2.0f, 3.0f, 5.0f};
+    const float scalars[] = {2.0f, 3.0f};
+    std::vector<float> matrix(kDeviceMatmulElements);
+    for (size_t i = 0; i < 3; ++i) {
+        std::fill(matrix.begin(), matrix.end(), values[i]);
+        auto status = aclrtMemcpy(resources.deviceBuffers[i], kDeviceMatmulBytes, matrix.data(), kDeviceMatmulBytes,
+            ACL_MEMCPY_HOST_TO_DEVICE);
+        if (status != ACL_SUCCESS) { return testing::AssertionFailure() << "matrix copy " << i << ": " << status; }
+    }
+    for (size_t i = 0; i < 2; ++i) {
+        auto status = aclrtMemcpy(resources.deviceBuffers[i + 4], sizeof(float), &scalars[i], sizeof(float),
+            ACL_MEMCPY_HOST_TO_DEVICE);
+        if (status != ACL_SUCCESS) { return testing::AssertionFailure() << "scalar copy " << i << ": " << status; }
+    }
+    return testing::AssertionSuccess();
+}
+
+testing::AssertionResult runDevicePointerModeMatmul(aclblasLtHandle_t handle, aclrtStream stream,
+    const DeviceMatmulResources& resources, std::vector<float>& result)
+{
+    auto status = aclblasLtMatmul(handle, resources.computeDesc, resources.deviceBuffers[4], resources.deviceBuffers[0],
+        resources.layouts[0], resources.deviceBuffers[1], resources.layouts[1], resources.deviceBuffers[5],
+        resources.deviceBuffers[2], resources.layouts[2], resources.deviceBuffers[3], resources.layouts[3], nullptr,
+        nullptr, 0, stream);
+    if (status != ACLBLAS_STATUS_SUCCESS) { return testing::AssertionFailure() << "matmul: " << status; }
+    auto syncStatus = aclrtSynchronizeStream(stream);
+    if (syncStatus != ACL_SUCCESS) { return testing::AssertionFailure() << "stream synchronize: " << syncStatus; }
+    auto copyStatus = aclrtMemcpy(result.data(), kDeviceMatmulBytes, resources.deviceBuffers[3], kDeviceMatmulBytes,
+        ACL_MEMCPY_DEVICE_TO_HOST);
+    if (copyStatus != ACL_SUCCESS) { return testing::AssertionFailure() << "result copy: " << copyStatus; }
+    return testing::AssertionSuccess();
+}
+
+} // namespace
+
+TEST_F(LtMatmulArch35Test, DevicePointerModeReadsScalarsOnDevice)
+{
+    DeviceMatmulResources resources;
+    ASSERT_TRUE(createDeviceMatmulDescriptor(resources));
+    ASSERT_TRUE(createDeviceMatmulLayouts(resources));
+    ASSERT_TRUE(allocateDeviceMatmulBuffers(resources));
+    ASSERT_TRUE(copyDeviceMatmulInputs(resources));
+    std::vector<float> result(kDeviceMatmulElements, 0.0f);
+    ASSERT_TRUE(runDevicePointerModeMatmul(ltHandle_, stream_, resources, result));
+    for (float v : result) {
+        ASSERT_NEAR(v, 207.0f, 1e-4f);
+    }
+}
 
 // ── TEST_F: null handle (TC_L0_25) ──
 TEST_F(LtMatmulArch35Test, NullHandle) {

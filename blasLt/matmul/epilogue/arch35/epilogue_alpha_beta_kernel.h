@@ -20,4 +20,5 @@
 #include "epilogue_alpha_beta_tiling_data.h"
 
 void epilogue_alpha_beta_kernel_do(
-    uint8_t* dRaw, uint8_t* c, uint8_t* d, const EpilogueAlphaBetaTilingData& tiling, void* stream);
+    uint8_t* dRaw, uint8_t* c, uint8_t* d, const EpilogueAlphaBetaTilingData& tiling, void* stream,
+    const float* alphaDevice, const float* betaDevice);

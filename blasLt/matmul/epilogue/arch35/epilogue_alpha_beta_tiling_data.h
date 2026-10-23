@@ -34,5 +34,6 @@ struct alignas(8) EpilogueAlphaBetaTilingData {
     uint8_t dtypeC{0};    // 0: FP32, 1: BF16
     uint8_t dtypeD{0};    // 0: FP32, 1: BF16
     uint8_t useC{0};
+    uint8_t deviceScalarMode{0};
 };
 #pragma pack(pop)
