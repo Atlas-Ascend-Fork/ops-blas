@@ -126,6 +126,17 @@ TEST_F(StrsmbatchedArch35Test, NullB)
     EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_VALUE);
 }
 
+// E12: batchCount == 0 with null alpha — scalar validation (alpha non-null)
+// runs before the batchCount == 0 no-op gate, so this still reports
+// INVALID_VALUE (L1_41/L1_42/L1_43/L1_44/L1_45 lock the CSV side).
+TEST_F(StrsmbatchedArch35Test, BatchZeroNullAlpha)
+{
+    aclblasStatus_t ret = aclblasStrsmBatched_npu(
+        StrsmbatchedArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT,
+        5, 5, nullptr, nullptr, 5, nullptr, 5, 0);
+    EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_VALUE);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     Strsmbatched, StrsmbatchedArch35Test,
     ::testing::ValuesIn(GetCasesFromCsv<StrsmbatchedParam>(ReplaceFileExtension2Csv(__FILE__))),
@@ -200,16 +211,48 @@ static void VerifyResults(const StrsmbatchedParam& p, int batchCount,
     }
 }
 
+// m/n < 0 negative path: size validation rejects the call before touching the
+// A/B pointer arrays, so null arrays are fine (batchCount pinned to 1).
+static void RunInvalidSizeCase(const StrsmbatchedParam& p, aclblasHandle_t handle)
+{
+    float alpha = p.alpha;
+    aclblasStatus_t ret = aclblasStrsmBatched_npu(
+        handle, p.side, p.uplo, p.trans, p.diag,
+        p.m, p.n, &alpha, nullptr, p.lda, nullptr, p.ldb, 1);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
+}
+
+// batchCount <= 0 path: NPU and golden both run so their statuses can be
+// compared. cuBLAS batched-family convention: batchCount == 0 is a legal no-op
+// that returns success without touching the A/B pointer arrays (null arrays
+// are acceptable); batchCount < 0 returns INVALID_VALUE. The golden mirrors
+// the NPU validation order (all scalar checks incl. lda/ldb run before the
+// no-op gate), so its status is comparable against the NPU result.
+static void RunBatchCountNonPositiveCase(const StrsmbatchedParam& p, aclblasHandle_t handle)
+{
+    float alpha = p.alpha;
+    aclblasStatus_t ret = aclblasStrsmBatched_npu(
+        handle, p.side, p.uplo, p.trans, p.diag,
+        p.m, p.n, &alpha, nullptr, p.lda, nullptr, p.ldb, p.batchCount);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
+    aclblasStatus_t goldenRet = aclblasStrsmBatched_cpu(
+        handle, p.side, p.uplo, p.trans, p.diag,
+        p.m, p.n, &alpha, nullptr, p.lda, nullptr, p.ldb, p.batchCount);
+    EXPECT_EQ(static_cast<int>(goldenRet), static_cast<int>(ret))
+        << "[" << p.caseName << "] golden status diverges from NPU status";
+}
+
 TEST_P(StrsmbatchedArch35Test, CsvDriven)
 {
     const auto& p = GetParam();
 
     if (p.m < 0 || p.n < 0) {
-        float alpha = p.alpha;
-        aclblasStatus_t ret = aclblasStrsmBatched_npu(
-            StrsmbatchedArch35Test::handle_, p.side, p.uplo, p.trans, p.diag,
-            p.m, p.n, &alpha, nullptr, p.lda, nullptr, p.ldb, 1);
-        EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
+        RunInvalidSizeCase(p, StrsmbatchedArch35Test::handle_);
+        return;
+    }
+
+    if (p.batchCount <= 0) {
+        RunBatchCountNonPositiveCase(p, StrsmbatchedArch35Test::handle_);
         return;
     }
 

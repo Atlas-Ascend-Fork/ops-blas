@@ -62,11 +62,15 @@ static aclblasStatus_t ValidateSsyr2kParams(
     CHECK_RET(
         beta != nullptr, OP_LOGE("aclblasSsyr2k", "beta must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE);
+    // A/B non-null criterion unified with ssyrk/ssyrkx: only required when
+    // both n > 0 and k > 0 (n == 0 or k == 0 means A/B are never referenced).
     CHECK_RET(
-        A != nullptr || k == 0, OP_LOGE("aclblasSsyr2k", "A must not be nullptr when k > 0");
+        !(A == nullptr && n > 0 && k > 0),
+        OP_LOGE("aclblasSsyr2k", "A must not be nullptr when n>0 and k>0");
         return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(
-        B != nullptr || k == 0, OP_LOGE("aclblasSsyr2k", "B must not be nullptr when k > 0");
+        !(B == nullptr && n > 0 && k > 0),
+        OP_LOGE("aclblasSsyr2k", "B must not be nullptr when n>0 and k>0");
         return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(C != nullptr || n == 0, OP_LOGE("aclblasSsyr2k", "C must not be nullptr when n > 0");
         return ACLBLAS_STATUS_INVALID_VALUE);

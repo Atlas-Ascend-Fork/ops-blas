@@ -47,7 +47,7 @@ aclblasStatus_t aclblasCher2k(aclblasHandle_t handle, aclblasFillMode_t uplo, ac
 | uplo | 输入 | aclblasFillMode_t | C 矩阵存储模式：ACLBLAS_UPPER(121) 仅更新上三角或 ACLBLAS_LOWER(122) 仅更新下三角，Host 内存 |
 | trans | 输入 | aclblasOperation_t | A、B 的转置模式：ACLBLAS_OP_N(111) 不转置或 ACLBLAS_OP_C(113) 共轭转置，Host 内存 |
 | n | 输入 | int | C 矩阵的阶数，n >= 0，Host 内存 |
-| k | 输入 | int | A、B 的第二维度（trans='N' 时），k >= 0，Host 内存 |
+| k | 输入 | int | 归约维度：trans='N' 时为 A、B 的列数（第二维度），trans='C' 时为 A、B 的行数（第一维度），k >= 0，Host 内存 |
 | alpha | 输入 | const aclblasComplex*（复数 FP32） | 复数标量乘数，不可为 nullptr，Host 或 Device 内存 |
 | A | 输入 | const aclblasComplex*（复数 FP32） | 输入复矩阵，trans='N' 时维度为 N×K，trans='C' 时维度为 K×N，Device 内存 |
 | lda | 输入 | int | A 矩阵的主维，trans='N' 时 lda >= max(1, n)，trans='C' 时 lda >= max(1, k)，Host 内存 |
@@ -57,7 +57,7 @@ aclblasStatus_t aclblasCher2k(aclblasHandle_t handle, aclblasFillMode_t uplo, ac
 | C | 输入/输出 | aclblasComplex*（复数 FP32） | N×N Hermitian 复矩阵，输入旧值，输出新值，仅 uplo 指定三角区域被更新，Device 内存 |
 | ldc | 输入 | int | C 矩阵的主维，ldc >= max(1, n)，Host 内存 |
 
-> 注：上表 alpha/beta 的「Host 或 Device 内存」为 arch22（Atlas A2）实现口径；arch35（Ascend 950）实现要求 alpha/beta 为 Device 指针（Device 标量）。
+> 注：alpha/beta 支持 Host 或 Device 指针，两代实现均按指针位置自动探测（alpha 与 beta 可独立选择侧别）：Host 指针在 host 侧解引用一次后随 tiling 下发；Device 指针不做 host 侧 D2H 读回——arch22 由 kernel 每次调用从 Device 内存读取真实值，arch35 由 K3/K4 kernel 从 GM 直读并派生标量标志。
 
 #### 约束说明
 
@@ -72,10 +72,11 @@ aclblasStatus_t aclblasCher2k(aclblasHandle_t handle, aclblasFillMode_t uplo, ac
 - alpha、beta 不可为 nullptr
 - A、B 不可为 nullptr（当 n > 0 且 k > 0 时）
 - alpha 为复数、beta 为**实数**：复数 beta 会破坏 C 的 Hermitian 性质，故按 BLAS 标准限定为实数
-- 仅更新指定三角，对角线虚部置零。另一三角和 leading-dimension padding 保持原值
-- 当 alpha 为 0（或 k 为 0）且 beta 为 1 时按 BLAS 语义直接返回，C 保持原值不变——**包含其对角线虚部**
+- 仅更新指定三角，对角线虚部置零。另一三角和 leading-dimension padding 保持原值（值语义不变；实现上 uplo='L' 时对角块的非 uplo（严格上）段按 C 旧值恒等回写，uplo='U' 时非 uplo 段不写出）
+- 当 alpha 为 0（或 k 为 0）且 beta 为 1 时按 BLAS 语义直接返回，C 保持原值不变——**包含其对角线虚部**（族内差异注：cherk 同为快返回不写 C，cherkx 无快返回、uplo 三角恒重写且对角虚部恒清零，见各自 README）
+- 当 beta = 0 时 C 的取值无需有效（cuBLAS 契约 "If beta == 0 then C does not have to be a valid input"）：uplo 指定三角不读取 C 旧值做缩放、直接写入新值，C 旧值中的 NaN/Inf 不进入 uplo 三角的结果（arch35 的 K3/K4 路径与 arch22 路径行为一致）；C 非 nullptr 时 uplo='L' 对角块的非 uplo（严格上）段仍按 C 旧值恒等回写（语义上不修改，NaN/Inf 原位保留、不扩散），C 为 nullptr 时按 arch35 口径直接成功返回、不发生任何写出
 - A、B、C 为列主序 complex64（`aclblasComplex`，即 fp32 实部 + fp32 虚部）存储的 Device 内存
-- 工作区大小由对齐后的 n、k 和 kernel 路径共同决定。申请失败或超过 `ACLBLAS_MAX_WORKSPACE_SIZE` 时返回错误，停止 launch
+- 工作区大小由对齐后的 n、k 和 kernel 路径共同决定（arch35 通用管线的定量公式见下方 arch35 分组）。申请失败或超过 `ACLBLAS_MAX_WORKSPACE_SIZE` 时返回错误，停止 launch
 
 arch22（Atlas A2）实现：
 
@@ -85,13 +86,14 @@ arch22（Atlas A2）实现：
 arch35（Ascend 950）实现：
 
 - 依赖 CANN asc-devkit >= 9.1，低于该版本编译与运行跳过此算子
-- alpha、beta 须为 Device 指针（Device 标量）
+- alpha、beta 可为 Host 或 Device 指针（按指针位置自动探测，与 arch22 口径一致）：Host 指针由 host 解引用一次后随 tiling 下发；Device 指针由 K3/K4 kernel 从 GM 直读并派生 isAlphaZero/isBetaZero/skipTemp，无 host 侧 D2H 读回与同步
 - C 指针口径：当 n > 0 且 beta != 0 时 C 不可为 nullptr；当 n > 0 且 beta = 0 时 C 允许为 nullptr（返回 SUCCESS 且不发生任何写出）；n = 0 时 C 可为 nullptr
 - n <= 8 走 K4 SIMT 融合直算路径（无 workspace）；n > 8 走 Cube+AIV 三阶段通用管线
+- 通用管线（n > 8）需约 16·n·k + 16·n² 字节库工作区（A/B 实/虚拆分缓存 4×4·n·k 与 4 份 GEMM 中间结果 4×4·n²；n 按 16 元素向上对齐、总量按 512 字节取整；skipTemp 即 alpha=0 或 k=0 时为 0）；当超出 `ACLBLAS_MAX_WORKSPACE_SIZE`（2 GiB）时返回 ACLBLAS_STATUS_ALLOC_FAILED
 - 输出 C 满足 Hermitian 性质：C[i][j] = conj(C[j][i])，对角线元素虚部精确为零（代数相消），非 uplo 三角与 ldc padding 字节保持不变
 - 异步执行：多个 kernel 全部下发至 handle 绑定的同一 stream，按流语义自动排序，算子内部无需显式同步；调用方读回结果前须自行同步所绑定的 stream（如 `aclrtSynchronizeStream(stream)`，见下方调用示例第 5 步）
 
-测试 CSV 口径：arch22 侧默认 CSV 含前 50 条用例，`CHER2K_FULL_REGRESSION=1` 读取全量 1214 条；arch35 侧为单文件 1200 条（含 200 条 TC_PF 性能用例），性能模式单独读取其中的性能用例。
+测试 CSV 口径：arch22 侧默认 CSV 含前 50 条用例，`CHER2K_FULL_REGRESSION=1` 读取全量 1214 条；arch35 侧为单文件 1203 条（含 200 条 TC_PF 性能用例与 3 条 TC_WB K4 路径锁定用例），性能模式单独读取其中的性能用例。
 
 #### 返回码
 
@@ -118,6 +120,23 @@ arch35（Ascend 950）实现：
 | 非法 uplo/trans 返回码 | INVALID_VALUE | 越界枚举返回 INVALID_ENUM；OP_T 返回 INVALID_VALUE |
 
 > 注：表中 cher2k 的 C 指针口径为 arch35 实现；arch22 实现更严格（仅零乘积且 beta=0 时允许 nullptr），见上方约束说明。
+
+#### 精度验证
+
+采用 `MIXED_TOLERANCE` 混合容差策略（对齐[生态算子开源精度标准](https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/experimental_standard.md) §2.1），complex64 输出按实部/虚部拆分后分别按 FP32 口径校验：
+
+| 数据类型 | rtol | atol | required_matched_ratio | max_abs_error_limit |
+|----------|------|------|----------------------|-------------------|
+| COMPLEX64（实部/虚部分别按 FP32 口径） | 2^-10 (9.77e-4) | 2^-16 (1.53e-5) | 0.99 | 1e-2 或 32·ULP |
+
+其中，ULP（Unit in the Last Place，末位单位）表示给定浮点数与相邻可表示值之间的间距。
+`max_abs_error_limit` 按输出元素逐个计算：第`i`个元素的误差上限为
+`max(1e-2, 32 * ULP(abs(golden[i])))`。精度验证需同时满足以下条件：
+
+- 至少 99% 的输出元素满足 `abs(actual[i] - golden[i]) <= atol + rtol * abs(golden[i])`。
+- 所有输出元素均满足 `abs(actual[i] - golden[i]) <= max_abs_error_limit[i]`。
+
+附加校验（超出混合容差表的算子专属硬断言）：对角线虚部模长无条件 <= 2^-16（Hermitian 承诺）；非 uplo 三角与 ldc padding 与输入 C 旧值逐位一致（不引用即不污染）。
 
 #### 调用示例
 

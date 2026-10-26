@@ -49,7 +49,8 @@ std::vector<CherkParam> LoadPerformanceCases()
     if (sourcePos == std::string::npos)
         throw std::runtime_error("Cannot derive cherk_test.csv from benchmark source path");
     csvPath.replace(sourcePos, std::char_traits<char>::length(sourceName), "cherk_test.csv");
-    if (csvPath.find("arch22") != std::string::npos) {
+    // arch22 与 arch35 均维护 smoke/full CSV 对：benchmark 恒读 full（含 TC_PF_ 性能验收用例）。
+    if (csvPath.find("arch22") != std::string::npos || csvPath.find("arch35") != std::string::npos) {
         csvPath.insert(csvPath.size() - 4U, "_full");
     }
 

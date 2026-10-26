@@ -142,10 +142,14 @@ static aclblasStatus_t ValidateTrsmbatchedEnums(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// Scalar-parameter validation only (enums, m/n, alpha, batchCount, lda/ldb):
+// every check here is a pure host-scalar condition with no dereference of the
+// A/B device pointer arrays, so it must run even when batchCount == 0 (cuBLAS
+// error-condition semantics are unconditional). The A/B array pointer checks
+// live in the entry after the batchCount == 0 no-op gate.
 static aclblasStatus_t ValidateTrsmbatchedParams(
     aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag,
-    int m, int n, const float* alpha, const float* const A[], const float* const B[],
-    int lda, int ldb, int batchCount)
+    int m, int n, const float* alpha, int lda, int ldb, int batchCount)
 {
     aclblasStatus_t st = ValidateTrsmbatchedEnums(side, uplo, trans, diag);
     if (st != ACLBLAS_STATUS_SUCCESS) return st;
@@ -157,20 +161,12 @@ static aclblasStatus_t ValidateTrsmbatchedParams(
         OP_LOGE("aclblasStrsmBatched", "alpha must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (batchCount < 1) {
-        OP_LOGE("aclblasStrsmBatched", "batchCount must be >= 1, got %d", batchCount);
+    if (batchCount < 0) {
+        OP_LOGE("aclblasStrsmBatched", "batchCount must be >= 0, got %d", batchCount);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (static_cast<size_t>(batchCount) > (SIZE_MAX / sizeof(float*))) {
         OP_LOGE("aclblasStrsmBatched", "batchCount too large: %d", batchCount);
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (B == nullptr) {
-        OP_LOGE("aclblasStrsmBatched", "B must not be nullptr");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (*alpha != 0.0f && A == nullptr) {
-        OP_LOGE("aclblasStrsmBatched", "A must not be nullptr when alpha != 0");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     int k = (side == ACLBLAS_SIDE_LEFT) ? m : n;
@@ -688,10 +684,33 @@ aclblasStatus_t aclblasStrsmBatched(
     CHECK_RET(h != nullptr,
         OP_LOGE("aclblasStrsmBatched", "handle is nullptr"); return ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 
-    aclblasStatus_t st = ValidateTrsmbatchedParams(side, uplo, trans, diag, m, n, alpha, A, B,
+    // Scalar-parameter validation first (enums, m/n, alpha, batchCount,
+    // lda/ldb): cuBLAS error-condition semantics are unconditional, so an
+    // invalid uplo/trans/diag/m/n/alpha/ld combined with batchCount == 0
+    // still reports INVALID_VALUE.
+    aclblasStatus_t st = ValidateTrsmbatchedParams(side, uplo, trans, diag, m, n, alpha,
         lda, ldb, batchCount);
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
+    }
+
+    // cuBLAS batched-family convention (gemvBatched/gemvStridedBatched treat
+    // batchCount < 0 as the only batchCount error condition): zero batches is
+    // a legal no-op. All scalar validation above has already run; the gate
+    // sits at the last moment before the A/B device pointer arrays would be
+    // checked or dereferenced, so they may be null when there is nothing to
+    // compute.
+    if (batchCount == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+
+    if (B == nullptr) {
+        OP_LOGE("aclblasStrsmBatched", "B must not be nullptr");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (*alpha != 0.0f && A == nullptr) {
+        OP_LOGE("aclblasStrsmBatched", "A must not be nullptr when alpha != 0");
+        return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (m == 0 || n == 0) {
         return ACLBLAS_STATUS_SUCCESS;

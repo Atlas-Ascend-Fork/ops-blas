@@ -2950,19 +2950,28 @@ __simt_callee__ __aicore__ inline void Cher2kSimtStore(
     const float hr = alphaReal * qr + alphaImag * qi;
     const float hi = alphaReal * qi - alphaImag * qr;
     const uint64_t cOff = static_cast<uint64_t>(j) * ldc * 2 + static_cast<uint64_t>(i) * 2;
-    const float cr = cGm[cOff];
-    const float ci = cGm[cOff + 1];
+    // [B-1] beta == 0: C is not a valid input (cuBLAS contract "If beta == 0
+    // then C does not have to be a valid input"), so the C_old load is skipped
+    // and its contribution is 0 — NaN/Inf in C never propagates through
+    // 0*C_old. Same gate as the K3 combine path (the isBetaZero branch that
+    // Duplicates the accumulators to zero instead of folding beta*C).
+    float betaCr = 0.0f;
+    float betaCi = 0.0f;
+    if (beta != 0.0f) {
+        betaCr = beta * cGm[cOff];
+        betaCi = beta * cGm[cOff + 1];
+    }
     // Hermitian diagonal: imag forced to 0 (same gate as K3 — the suite
     // asserts the diagonal imaginary magnitude within 2^-16 unconditionally).
     // The two independent k-length FP32 dots leave 1~3 ULP of real diagonal
     // residue behind (about 1e-5 at inner dim 64, over the gate at inner dim of 64 or more), so
     // the algebraic cancellation alone is not enough at larger k.
     if (i == j) {
-        cGm[cOff] = mr + hr + beta * cr;
+        cGm[cOff] = mr + hr + betaCr;
         cGm[cOff + 1] = 0.0f;
     } else {
-        cGm[cOff] = mr + hr + beta * cr;
-        cGm[cOff + 1] = mi + hi + beta * ci;
+        cGm[cOff] = mr + hr + betaCr;
+        cGm[cOff + 1] = mi + hi + betaCi;
     }
 }
 

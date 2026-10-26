@@ -17,7 +17,8 @@
  *          C = alpha*(Cr + i*Ci) + beta*C_old, only writes uplo triangle.
  *        Uses Te::Copy for GM↔UB, Te::Transform for vector compute,
  *        DeInterleave/Interleave for complex deinterleave/interleave.
- *        LOWER diagonal blocks: store full column + restore non-uplo from C_old.
+ *        LOWER diagonal blocks: build the full column image in UB (computed
+ *        uplo part + C_old restored strictly-upper segment) and store once.
  *        Hermitian diagonal imaginary part is forced to zero via SetValue,
  *        because t3[diag] and t4[diag] come from two independent GEMM
  *        computations whose floating-point difference is non-zero (O(0.1-1.0)).
@@ -505,8 +506,11 @@ __aicore__ inline void InterleaveAndStore(CherkCtx& ctx,
 
     // Cross-block sync: ensure this block's MTE3 store finishes before the next
     // ProcessBlock reuses the same UB buffers:
-    //   MTE3_V  — cOutBuf: MTE3 read → next V (Interleave) write
-    //   MTE3_MTE2 — cInBuf: MTE3 read (LOWER diag restore) → next MTE2 (LoadCOld) write
+    //   MTE3_V  — cOutBuf: MTE3 read → next V (Interleave/restore) write
+    //   MTE3_MTE2 — next MTE2 (LoadGemmResults/LoadCOld write t1..t4/cIn) waits
+    //     for this block's MTE3 stores; chained with the V_MTE3 handshake above,
+    //     this also orders it after this block's V reads of t1..t4/cIn
+    //     (including the LOWER diag UB-side restore Copy).
     SetFlag<HardEvent::MTE3_V>(0);
     WaitFlag<HardEvent::MTE3_V>(0);
     SetFlag<HardEvent::MTE3_MTE2>(0);
@@ -554,10 +558,13 @@ __aicore__ inline void ProcessBlock(CherkCtx& ctx,
         ApplyBeta(ctx, rows, cols, beta, skipTemp);
     }
 
-    // Only zero diagonal imag when GEMM ran (t3[diag]-t4[diag] float error)
-    if (!skipTemp) {
-        ZeroDiagonal(ctx, iBase, jBase, rows, cols);
-    }
+    // Zero the diagonal imaginary part on every path that reaches here:
+    //  - !skipTemp: t3[diag]-t4[diag] carries float error from two GEMMs;
+    //  - skipTemp && !isBetaZero (C = beta*C): netlib semantics is
+    //    C(J,J) = BETA*REAL(C(J,J)), so the beta-scaled imaginary part must
+    //    be forced to zero. The skipTemp && beta==0 path has already returned
+    //    above with an all-zero uplo triangle.
+    ZeroDiagonal(ctx, iBase, jBase, rows, cols);
     InterleaveAndStore(ctx, iBase, jBase, rows, cols);
 }
 

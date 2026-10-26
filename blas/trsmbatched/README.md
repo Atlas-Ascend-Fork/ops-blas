@@ -38,7 +38,7 @@ side='R': X[i] * op(A[i]) = alpha * B[i]
 
 ```cpp
 aclblasStatus_t aclblasStrsmBatched(
-    aclblasHandle handle,
+    aclblasHandle_t handle,
     aclblasSideMode_t side,
     aclblasFillMode_t uplo,
     aclblasOperation_t trans,
@@ -57,7 +57,7 @@ aclblasStatus_t aclblasStrsmBatched(
 
 | 参数名 | 输入/输出 | 参数类型 | 说明 |
 |--------|----------|---------|------|
-| handle | 输入 | aclblasHandle | ops-blas 库上下文句柄，携带 stream，Host 内存 |
+| handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
 | side | 输入 | aclblasSideMode_t | 三角矩阵位置：ACLBLAS_SIDE_LEFT（A 在左侧）/ ACLBLAS_SIDE_RIGHT（A 在右侧），Host 内存 |
 | uplo | 输入 | aclblasFillMode_t | 三角存储模式：ACLBLAS_UPPER（上三角）/ ACLBLAS_LOWER（下三角），Host 内存 |
 | trans | 输入 | aclblasOperation_t | 转置模式：ACLBLAS_OP_N（不转置）/ ACLBLAS_OP_T（转置）/ ACLBLAS_OP_C（共轭转置，实数下等价于 T），Host 内存 |
@@ -69,25 +69,46 @@ aclblasStatus_t aclblasStrsmBatched(
 | lda | 输入 | int | A[i] 的 leading dimension，side=LEFT 时 lda >= max(1,M)，side=RIGHT 时 lda >= max(1,N)，Host 内存 |
 | B | 输入/输出 | float* const[] | 批量右端/解矩阵指针数组，B[i] 指向第 i 个 (M,N) 矩阵，输出时原地覆盖为解矩阵 X[i]，Device 内存 |
 | ldb | 输入 | int | B[i] 的 leading dimension，ldb >= max(1,M)，Host 内存 |
-| batchCount | 输入 | int | 批量大小，>= 1，Host 内存 |
+| batchCount | 输入 | int | 批量大小，>= 0，Host 内存。0 表示无批量，为合法 no-op，直接返回成功且不访问 A/B 指针数组（允许为 nullptr）；< 0 返回 ACLBLAS_STATUS_INVALID_VALUE |
 
 #### 约束说明
 
 - m >= 0, n >= 0
-- batchCount >= 1
+- batchCount >= 0；batchCount == 0 为合法 no-op（对齐 cuBLAS 批量族约定）：标量参数（side/uplo/trans/diag/m/n/alpha/batchCount/lda/ldb）仍完整校验、非法组合照常报错，仅 A/B 指针数组不被校验与访问（允许为 nullptr），校验通过后直接返回 ACLBLAS_STATUS_SUCCESS；batchCount < 0 返回 ACLBLAS_STATUS_INVALID_VALUE
 - side 必须为 ACLBLAS_SIDE_LEFT 或 ACLBLAS_SIDE_RIGHT
 - uplo 必须为 ACLBLAS_UPPER 或 ACLBLAS_LOWER
 - trans 必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C
 - diag 必须为 ACLBLAS_NON_UNIT 或 ACLBLAS_UNIT
 - alpha 不为 nullptr
-- B 不为 nullptr
-- A 不为 nullptr（当 alpha != 0 时）
+- B 不为 nullptr（当 batchCount > 0 时）
+- A 不为 nullptr（当 alpha != 0 且 batchCount > 0 时）
 - lda >= max(1, K)，其中 K = (side==LEFT ? m : n)
 - ldb >= max(1, m)
-- Blocked 路径要求：NoTrans 时 lda 和 ldb 须 8 对齐，尾 panel bs 须 8 对齐；不满足时回退至 SIMT-only 路径
+- 计算路径仅按 m/n 阈值选择（SIMT / Blocked），对 lda/ldb 无额外对齐要求
 - 仅支持 FP32 数据类型
 - 单次调用临时工作区（Workspace）需求为 batchCount * (tempBatchStride + 8192) * sizeof(float) 字节，其中 tempBatchStride = align16(m) * align16(n)（非对齐跨度场景另含对齐重排区）
 - 受底层 aclblasHandle_t 最大工作区限制（ACLBLAS_MAX_WORKSPACE_SIZE = 2 GiB），调用方需保证单次调用的总工作区需求不超过 2 GiB，超出上限将返回 ACLBLAS_STATUS_ALLOC_FAILED。对于大尺寸叠加超大 Batch（例如 m=n>=1024 且 batchCount>=1024 等超 2 GiB 的组合），建议调用方按 Batch 分批调用
+
+边界情况处理：
+
+- m = 0 或 n = 0 时为合法 no-op，直接返回 ACLBLAS_STATUS_SUCCESS（不访问矩阵数据）
+- alpha = 0 时 A 不被引用，B 的逻辑区域直接写零（不读旧值，NaN/Inf 不传播）
+- 各 batch 相互独立，B[i] 不可重叠；UNIT 对角假定为 1 且不访问
+
+#### 精度验证
+
+采用 `MIXED_TOLERANCE` 混合容差策略（对齐[生态算子开源精度标准](https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/experimental_standard.md) §2.1）：
+
+| 数据类型 | rtol | atol | required_matched_ratio | max_abs_error_limit |
+|----------|------|------|----------------------|-------------------|
+| FLOAT32 | 2^-10 (9.77e-4) | 2^-16 (1.53e-5) | 0.99 | 1e-2 或 32·ULP |
+
+其中，ULP（Unit in the Last Place，末位单位）表示给定浮点数与相邻可表示值之间的间距。
+`max_abs_error_limit` 按输出元素逐个计算：第`i`个元素的误差上限为
+`max(1e-2, 32 * ULP(abs(golden[i])))`。精度验证需同时满足以下条件：
+
+- 至少 99% 的输出元素满足 `abs(actual[i] - golden[i]) <= atol + rtol * abs(golden[i])`。
+- 所有输出元素均满足 `abs(actual[i] - golden[i]) <= max_abs_error_limit[i]`。
 
 #### 调用示例
 

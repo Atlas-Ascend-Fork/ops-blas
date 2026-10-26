@@ -87,6 +87,8 @@ void ssyrkx_gemm_kernel_do(
 // ================================================================================
 
 constexpr uint32_t SYRKX_SCALE_UB_FLOATS = SYRKX_ARCH35_SCALE_BLOCK * SYRKX_ARCH35_SCALE_BLOCK;
+// Queue depth of the scale-kernel TQue buffers; 2 enables double buffering.
+constexpr uint32_t SYRKX_SCALE_QUE_DEPTH = 2;
 
 class SsyrkxScaleAIV {
 public:
@@ -98,7 +100,7 @@ public:
 
 private:
     TPipe& pipe_;
-    SsyrkxScaleTilingData tiling_;
+    const SsyrkxScaleTilingData* tiling_;
     GlobalTensor<float> tempGM_;
     GlobalTensor<float> cGM_;
     TQue<TPosition::VECIN, 1> tempQue_;
@@ -111,50 +113,58 @@ private:
 __aicore__ inline void SsyrkxScaleAIV::Init(
     GM_ADDR gmTemp, GM_ADDR gmC, const SsyrkxScaleTilingData& tiling)
 {
-    tiling_ = tiling;
+    // Kernel parameters stay valid for the whole core lifetime, so storing the
+    // address (instead of copying the struct) is safe.
+    tiling_ = &tiling;
     tempGM_.SetGlobalBuffer((__gm__ float*)gmTemp);
     cGM_.SetGlobalBuffer((__gm__ float*)gmC);
 
-    pipe_.InitBuffer(tempQue_, 2, SYRKX_SCALE_UB_FLOATS * sizeof(float));
-    pipe_.InitBuffer(cInQue_, 2, SYRKX_SCALE_UB_FLOATS * sizeof(float));
-    pipe_.InitBuffer(cOutQue_, 2, SYRKX_SCALE_UB_FLOATS * sizeof(float));
+    // Each queue buffers one SCALE_BLOCK x SCALE_BLOCK tile of floats:
+    //   tempQue_ - VECIN, enqueues temp-matrix tiles (GM -> UB)
+    //   cInQue_  - VECIN, enqueues the original C tiles (GM -> UB)
+    //   cOutQue_ - VECOUT, dequeues the scaled result tiles (UB -> GM)
+    // Depth SYRKX_SCALE_QUE_DEPTH = 2 gives every queue double buffering so
+    // that MTE transfers overlap with vector computation.
+    pipe_.InitBuffer(tempQue_, SYRKX_SCALE_QUE_DEPTH, SYRKX_SCALE_UB_FLOATS * sizeof(float));
+    pipe_.InitBuffer(cInQue_, SYRKX_SCALE_QUE_DEPTH, SYRKX_SCALE_UB_FLOATS * sizeof(float));
+    pipe_.InitBuffer(cOutQue_, SYRKX_SCALE_QUE_DEPTH, SYRKX_SCALE_UB_FLOATS * sizeof(float));
 
     uint32_t blockIdx = GetBlockIdx();
-    rowStart_ = blockIdx * tiling_.rowsPerCore;
-    rowEnd_ = Min<uint32_t>(rowStart_ + tiling_.rowsPerCore, tiling_.n);
+    rowStart_ = blockIdx * tiling_->rowsPerCore;
+    rowEnd_ = Min<uint32_t>(rowStart_ + tiling_->rowsPerCore, tiling_->n);
 }
 
 __aicore__ inline void SsyrkxScaleAIV::ProcessBlock(
     uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
 {
-    float alpha = tiling_.alphaVal;
-    float beta = tiling_.betaVal;
-    bool skipTemp = (tiling_.isAlphaZero || tiling_.isKZero);
-    bool isBetaZero = tiling_.isBetaZero;
+    float alpha = tiling_->alphaVal;
+    float beta = tiling_->betaVal;
+    bool skipTemp = (tiling_->isAlphaZero || tiling_->isKZero);
+    bool isBetaZero = tiling_->isBetaZero;
 
-    uint32_t ldc = tiling_.ldc;
-    uint32_t tempRowStride = tiling_.tempRowStride;
+    uint32_t ldc = tiling_->ldc;
+    uint32_t tempRowStride = tiling_->tempRowStride;
     uint32_t ubColStride = RoundUp<uint32_t>(rows, SYRKX_ARCH35_ELEMENTS_PER_BLOCK);
 
     LocalTensor<float> cInUb = cInQue_.AllocTensor<float>();
 
     auto blockCount = static_cast<uint16_t>(cols);
     auto blockLen = static_cast<uint32_t>(rows * sizeof(float));
-    int64_t cSrcStride = static_cast<int64_t>(static_cast<int64_t>(ldc) - rows) * sizeof(float);
-    DataCopyExtParams cpC{blockCount, blockLen, cSrcStride, 0, 0};
-    DataCopyPadExtParams<float> ppC{true, 0, 0, 0.0f};
-    int64_t cGmOffset = static_cast<int64_t>(jBase) * ldc + iBase;
-    DataCopyPad(cInUb, cGM_[cGmOffset], cpC, ppC);
+    int64_t cSrcStride = 0;
+    int64_t cGmOffset = 0;
+    SyrkLoadCBlock(cGM_, cInUb, iBase, jBase, rows, cols, ldc, cSrcStride, cGmOffset);
     cInQue_.EnQue(cInUb);
 
     LocalTensor<float> tempUb = tempQue_.AllocTensor<float>();
 
-    if (!skipTemp) {
+    // skipTemp (alpha == 0 or k == 0) is a rare degenerate case; hint the
+    // compiler so the common path (reading temp) stays preferred.
+    if (!__builtin_expect(skipTemp, 0)) {
         int64_t tempSrcStride = static_cast<int64_t>(static_cast<int64_t>(tempRowStride) - rows) * sizeof(float);
-        DataCopyExtParams cpTemp{blockCount, blockLen, tempSrcStride, 0, 0};
-        DataCopyPadExtParams<float> ppTemp{true, 0, 0, 0.0f};
+        DataCopyExtParams tempCopyParams{blockCount, blockLen, tempSrcStride, 0, 0};
+        DataCopyPadExtParams<float> tempPadParams{true, 0, 0, 0.0f};
         int64_t tempGmOffset = static_cast<int64_t>(jBase) * tempRowStride + iBase;
-        DataCopyPad(tempUb, tempGM_[tempGmOffset], cpTemp, ppTemp);
+        DataCopyPad(tempUb, tempGM_[tempGmOffset], tempCopyParams, tempPadParams);
     }
     tempQue_.EnQue(tempUb);
 
@@ -163,7 +173,7 @@ __aicore__ inline void SsyrkxScaleAIV::ProcessBlock(
 
     LocalTensor<float> cUb = cOutQue_.AllocTensor<float>();
 
-    SyrkScaleComputeResult(tiling_.uploMode, iBase, jBase, rows, cols, ubColStride,
+    SyrkScaleComputeResult(tiling_->uploMode, iBase, jBase, rows, cols, ubColStride,
         cUb, cInUb, tempUb, skipTemp, isBetaZero, alpha, beta);
 
     cOutQue_.EnQue(cUb);
@@ -172,14 +182,14 @@ __aicore__ inline void SsyrkxScaleAIV::ProcessBlock(
 
     cUb = cOutQue_.DeQue<float>();
 
-    DataCopyExtParams cpOut{blockCount, blockLen, 0, cSrcStride, 0};
-    DataCopyPad(cGM_[cGmOffset], cUb, cpOut);
+    DataCopyExtParams cOutCopyParams{blockCount, blockLen, 0, cSrcStride, 0};
+    DataCopyPad(cGM_[cGmOffset], cUb, cOutCopyParams);
     cOutQue_.FreeTensor(cUb);
 }
 
 __aicore__ inline void SsyrkxScaleAIV::Process()
 {
-    SyrkScaleProcess(*this, rowStart_, rowEnd_, tiling_.n, tiling_.uploMode, SYRKX_ARCH35_SCALE_BLOCK);
+    SyrkScaleProcess(*this, rowStart_, rowEnd_, tiling_->n, tiling_->uploMode, SYRKX_ARCH35_SCALE_BLOCK);
 }
 
 extern "C" __global__ __aicore__ void ssyrkx_scale_kernel(

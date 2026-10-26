@@ -11,7 +11,7 @@ trans='N': C = alpha * A * A^T + beta * C
 trans='T': C = alpha * A^T * A + beta * C
 ```
 
-其中 A 为 N×K（trans='N'）或 K×N（trans='T'）矩阵，C 为 N×N 对称矩阵。uplo='U' 时保留上三角区域并镜像到下三角，uplo='L' 时保留下三角区域并镜像到上三角。
+其中 A 为 N×K（trans='N'）或 K×N（trans='T'）矩阵，C 为 N×N 对称矩阵。uplo='U' 时仅更新上三角区域，uplo='L' 时仅更新下三角区域；另一三角的值语义不变、不参与 uplo 三角的计算（与 cuBLAS 语义一致，完整对称矩阵由调用方按对称性自行维护）。注意「值语义不变」不等于「零访问」：ssyrk 的 scale kernel 按 64×64 块整块读出/写回 C，对角跨越块的非 uplo 段会读取 C 旧值并恒等回写（语义上不修改）；csyrk 严格只访问 uplo 三角。详见各自接口章节的边界情况处理。
 
 包含以下接口：
 
@@ -46,7 +46,7 @@ aclblasStatus_t aclblasSsyrk(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 | uplo | 输入 | aclblasFillMode_t | C 矩阵存储模式：ACLBLAS_UPPER(121) 保留上三角或 ACLBLAS_LOWER(122) 保留下三角，Host 内存 |
 | trans | 输入 | aclblasOperation_t | A 矩阵转置模式：ACLBLAS_OP_N(111) 不转置、ACLBLAS_OP_T(112) 转置或 ACLBLAS_OP_C(113) 共轭转置（实数域等价于 OP_T），Host 内存 |
 | n | 输入 | int | C 矩阵的阶数，n >= 0，Host 内存 |
-| k | 输入 | int | A 矩阵的第二维度，k >= 0，Host 内存 |
+| k | 输入 | int | 归约维度：trans='N' 时为 A 的列数（第二维度），trans='T'/'C' 时为 A 的行数（第一维度），k >= 0，Host 内存 |
 | alpha | 输入 | const float*（FP32） | 标量乘数，不可为 nullptr，Device 内存 |
 | A | 输入 | const float*（FP32） | 输入矩阵，trans='N' 时维度为 N×K，trans='T' 时维度为 K×N，Device 内存 |
 | lda | 输入 | int | A 矩阵的主维，trans='N' 时 lda >= max(1, n)，trans='T'/'C' 时 lda >= max(1, k)，Host 内存 |
@@ -64,7 +64,32 @@ aclblasStatus_t aclblasSsyrk(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 - ldc >= max(1, n)
 - alpha、beta 不可为 nullptr
 - A 不可为 nullptr（当 n > 0 且 k > 0 时）
-- C 不可为 nullptr（当 n > 0 时）
+- C 不可为 nullptr（当 n > 0 时）。该校验为有意严于 cuBLAS 的差异：cuBLAS 仅在 beta != 0 时将 C 为 nullptr 视为错误，本实现为保证错误码口径一致，n > 0 时一律要求非空
+
+边界情况处理：
+
+- n = 0 时为合法 no-op，直接返回 ACLBLAS_STATUS_SUCCESS
+- k = 0 或 alpha = 0 时跳过矩阵乘，仅对 uplo 指定三角执行 C = beta * C
+- beta = 0 时 C 的取值无需有效（cuBLAS 契约 "If beta == 0 then C does not have to be a valid input"）：uplo 指定三角不读取 C 旧值做缩放、直接写为新值（含全零），其结果不依赖 C 旧值，C 旧值中的 NaN/Inf 不进入 uplo 三角的结果；但 C 指针仍须有效（n > 0 时非空校验不变），且实现上 C 仍被读取——对角跨越 64×64 块的非 uplo 段按 C_old 原值恒等回写（语义上不修改，该段的 NaN/Inf 原位保留、不扩散到 uplo 三角）
+
+workspace 说明（arch35）：
+
+- arch35 实现需约 4·n² 字节库工作区暂存 op(A)·op(A)^T 中间结果；当超出 ACLBLAS_MAX_WORKSPACE_SIZE（2 GiB）时返回 ACLBLAS_STATUS_ALLOC_FAILED
+
+#### 精度验证
+
+采用 `MIXED_TOLERANCE` 混合容差策略（对齐[生态算子开源精度标准](https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/experimental_standard.md) §2.1）：
+
+| 数据类型 | rtol | atol | required_matched_ratio | max_abs_error_limit |
+|----------|------|------|----------------------|-------------------|
+| FLOAT32 | 2^-10 (9.77e-4) | 2^-16 (1.53e-5) | 0.99 | 1e-2 或 32·ULP |
+
+其中，ULP（Unit in the Last Place，末位单位）表示给定浮点数与相邻可表示值之间的间距。
+`max_abs_error_limit` 按输出元素逐个计算：第`i`个元素的误差上限为
+`max(1e-2, 32 * ULP(abs(golden[i])))`。精度验证需同时满足以下条件：
+
+- 至少 99% 的输出元素满足 `abs(actual[i] - golden[i]) <= atol + rtol * abs(golden[i])`。
+- 所有输出元素均满足 `abs(actual[i] - golden[i]) <= max_abs_error_limit[i]`。
 
 #### 调用示例
 

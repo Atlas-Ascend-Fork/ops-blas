@@ -143,13 +143,11 @@ __aicore__ inline void SyrkScaleAIV::ProcessBlock(
     LocalTensor<float> cUb = cOutBuf_.Get<float>();
     LocalTensor<float> cInUb = cInBuf_.Get<float>();
 
-    // Read C columns [jBase, jBase+cols), rows [iBase, iBase+rows) — column-major, contiguous
-    int64_t cSrcStride = static_cast<int64_t>(ldc - rows) * sizeof(float);
-    DataCopyExtParams cpC{static_cast<uint16_t>(cols),
-        static_cast<uint32_t>(rows * sizeof(float)), cSrcStride, 0, 0};
-    DataCopyPadExtParams<float> ppC{true, 0, 0, 0.0f};
-    int64_t cGmOffset = static_cast<int64_t>(jBase) * ldc + iBase;
-    DataCopyPad(cInUb, cGM_[cGmOffset], cpC, ppC);
+    SyrkCrossBlockWarAcquire();
+
+    int64_t cSrcStride = 0;
+    int64_t cGmOffset = 0;
+    SyrkLoadCBlock(cGM_, cInUb, iBase, jBase, rows, cols, ldc, cSrcStride, cGmOffset);
 
     LocalTensor<float> tempUb = tempBuf_.Get<float>();
 
@@ -172,18 +170,19 @@ __aicore__ inline void SyrkScaleAIV::ProcessBlock(
     SyrkScaleComputeResult(tiling_.uploMode, iBase, jBase, rows, cols, ubColStride,
         cUb, cInUb, tempUb, skipTemp, isBetaZero, alpha, beta);
 
-    AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(0);
-
-    DataCopyExtParams cpOut{static_cast<uint16_t>(cols),
-        static_cast<uint32_t>(rows * sizeof(float)), 0,
-        cSrcStride, 0};
-    DataCopyPad(cGM_[cGmOffset], cUb, cpOut);
+    SyrkStoreCBlockAndSync(cGM_, cUb, cGmOffset, cSrcStride, rows, cols);
 }
 
 __aicore__ inline void SyrkScaleAIV::Process()
 {
+    // The pre-loop release primes block 0's acquire (the V pipe is empty, so
+    // it fires immediately); each later acquire is released by the previous
+    // block's compute-end release. The post-loop acquire consumes the final
+    // block's release, keeping the Set/Wait counts balanced (a residual Set
+    // without a matching Wait is undefined on Ascend 950).
+    SyrkCrossBlockWarRelease();
     SyrkScaleProcess(*this, rowStart_, rowEnd_, tiling_.n, tiling_.uploMode, SYRK_SCALE_BLOCK);
+    SyrkCrossBlockWarAcquire();
 }
 
 extern "C" __global__ __aicore__ void syrk_scale_kernel(

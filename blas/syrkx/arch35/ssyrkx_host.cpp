@@ -148,16 +148,6 @@ static SsyrkxGemmTilingData CalGemmTilingData(
     return tiling;
 }
 
-static SsyrkxScaleTilingData CalScaleTilingData(
-    uint32_t usedAivCoreNum, uint32_t n, uint32_t ldc,
-    uint8_t isAlphaZero, uint8_t isKZero, uint8_t isBetaZero, uint32_t tempRowStride,
-    uint8_t uploMode, float alphaVal, float betaVal)
-{
-    return ::CalScaleTilingData<SsyrkxScaleTilingData>(
-        usedAivCoreNum, n, ldc, isAlphaZero, isKZero, isBetaZero,
-        tempRowStride, uploMode, alphaVal, betaVal);
-}
-
 static aclblasStatus_t LaunchGemmKernel(
     _aclblas_handle* h, uint32_t n, uint32_t k, uint32_t lda, uint32_t ldb,
     aclblasOperation_t trans, const float* A, const float* B,
@@ -178,7 +168,7 @@ static aclblasStatus_t LaunchGemmKernel(
         gemmTiling.singleCoreM, gemmTiling.singleCoreN,
         gemmTiling.tileM, gemmTiling.tileN, gemmTiling.tileKChunk,
         gemmTiling.tempRowStride);
-    OP_LOGI("aclblasSsyrkx", "launching gemm kernel: aicCores=%u", actualAicCores);
+    OP_LOGI("aclblasSsyrkx", "launching gemm kernel: n=%u k=%u aicCores=%u", n, k, actualAicCores);
 
     // GEMM computes temp_T = op(B) * op(A)^T: left=gmB, right=gmA
     ssyrkx_gemm_kernel_do(
@@ -221,14 +211,19 @@ static aclblasStatus_t LaunchSsyrkxKernel(
         }
     }
 
-    SsyrkxScaleTilingData scaleTiling = CalScaleTilingData(
+    SsyrkxScaleTilingData scaleTiling = CalScaleTilingData<SsyrkxScaleTilingData>(
         ctx.usedAivCoreNum, n, ldc,
         static_cast<uint8_t>(ctx.isAlphaZero ? 1 : 0),
         static_cast<uint8_t>(ctx.isKZero ? 1 : 0),
         static_cast<uint8_t>(ctx.isBetaZero ? 1 : 0),
         ctx.tempRowStride,
         static_cast<uint8_t>(uplo), ctx.alphaVal, ctx.betaVal);
-    OP_LOGI("aclblasSsyrkx", "launching scale kernel: aivCores=%u", ctx.usedAivCoreNum);
+    OP_LOGD("aclblasSsyrkx",
+        "scale tiling: n=%u ldc=%u tempRowStride=%u rowsPerCore=%u uplo=%u "
+        "isAlphaZero=%u isKZero=%u isBetaZero=%u",
+        scaleTiling.n, scaleTiling.ldc, scaleTiling.tempRowStride, scaleTiling.rowsPerCore,
+        scaleTiling.uploMode, scaleTiling.isAlphaZero, scaleTiling.isKZero, scaleTiling.isBetaZero);
+    OP_LOGI("aclblasSsyrkx", "launching scale kernel: n=%u aivCores=%u", n, ctx.usedAivCoreNum);
     ssyrkx_scale_kernel_do(
         tempDevice, ToGmAddr(C),
         scaleTiling, ctx.usedAivCoreNum, h->stream);

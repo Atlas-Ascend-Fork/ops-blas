@@ -44,11 +44,19 @@ inline aclblasStatus_t ValidateStrsmbatchedGoldenParams(
     if (st != ACLBLAS_STATUS_SUCCESS) return st;
     if (m < 0 || n < 0) return ACLBLAS_STATUS_INVALID_VALUE;
     if (alpha == nullptr) return ACLBLAS_STATUS_INVALID_VALUE;
-    if (batchCount < 1) return ACLBLAS_STATUS_INVALID_VALUE;
-    if (B == nullptr) return ACLBLAS_STATUS_INVALID_VALUE;
+    // Mirror the NPU contract (cuBLAS batched-family convention): negative
+    // batchCount is invalid; zero batches is a legal no-op. Like the NPU
+    // entry, every scalar check (enums, m/n, alpha, batchCount, lda/ldb)
+    // runs unconditionally before the no-op gate, and the gate sits right
+    // before the pointer-array checks below, so an invalid ld combined with
+    // batchCount == 0 still reports INVALID_VALUE while null A/B arrays are
+    // acceptable when there is nothing to compute.
+    if (batchCount < 0) return ACLBLAS_STATUS_INVALID_VALUE;
     int aDim = (side == ACLBLAS_SIDE_LEFT) ? m : n;
     if (lda < std::max(1, aDim)) return ACLBLAS_STATUS_INVALID_VALUE;
     if (ldb < std::max(1, m)) return ACLBLAS_STATUS_INVALID_VALUE;
+    if (batchCount == 0) return ACLBLAS_STATUS_SUCCESS;
+    if (B == nullptr) return ACLBLAS_STATUS_INVALID_VALUE;
     if (*alpha != 0.0f && A == nullptr) return ACLBLAS_STATUS_INVALID_VALUE;
     return ACLBLAS_STATUS_SUCCESS;
 }
