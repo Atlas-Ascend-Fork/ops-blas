@@ -22,7 +22,7 @@
 #include "log/log.h"
 #include "sasum_tiling_data.h"
 
-void sasum_kernel_do(
+aclblasStatus_t sasum_kernel_do(
     uint8_t* inGM, uint8_t* outGM, uint8_t* workSpace, const SasumTilingData& tiling, uint32_t numBlocks, void* stream);
 
 namespace {
@@ -114,11 +114,10 @@ static aclblasStatus_t SasumExecuteKernel(
     }
 
     OP_LOGI("aclblasSasum", "launching kernel: blocks=%u", numBlocks);
-    sasum_kernel_do(
+    // issue #588: kernel_do 内 workspace 清零失败会以错误码返回，此处不下发内核并向上传播
+    return sasum_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float*>(x)), reinterpret_cast<uint8_t*>(result), workspaceDevice, tiling,
         numBlocks, h->stream);
-
-    return ACLBLAS_STATUS_SUCCESS;
 }
 
 } // namespace

@@ -80,17 +80,14 @@ int32_t TestCaxpy(aclblasHandle handle, aclrtStream stream)
     aclError aclRet = aclrtMalloc((void**)&xDevice, xByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc xDevice failed. ERROR: %d\n", aclRet); return aclRet);
     aclRet = aclrtMalloc((void**)&yDevice, yByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc yDevice failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
-        return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc yDevice failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
+              return aclRet);
     aclRet = aclrtMemcpy(xDevice, xByteSize, x.data(), xByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
-        aclrtFree(yDevice); return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
+              aclrtFree(yDevice); return aclRet);
     aclRet = aclrtMemcpy(yDevice, yByteSize, y.data(), yByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy yDevice failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
-        aclrtFree(yDevice); return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy yDevice failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
+              aclrtFree(yDevice); return aclRet);
 
     std::cout << "========== Testing aclblasCaxpy ==========" << std::endl;
     std::cout << "Formula: y = alpha * x + y" << std::endl;
@@ -99,18 +96,15 @@ int32_t TestCaxpy(aclblasHandle handle, aclrtStream stream)
     std::cout << "y = (" << valueY.real << ", " << valueY.imag << ") * " << totalLength << std::endl;
 
     auto ret = aclblasCaxpy(handle, totalLength, &alpha, xDevice, incx, yDevice, incy);
-    CHECK_RET(
-        ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCaxpy failed. ERROR: %d\n", ret); aclrtFree(xDevice);
-        aclrtFree(yDevice); return ret);
+    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCaxpy failed. ERROR: %d\n", ret); aclrtFree(xDevice);
+              aclrtFree(yDevice); return ret);
 
     aclRet = aclrtSynchronizeStream(stream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
-        aclrtFree(yDevice); return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(xDevice); aclrtFree(yDevice); return aclRet);
     aclRet = aclrtMemcpy(y.data(), yByteSize, yDevice, yByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy y failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
-        aclrtFree(yDevice); return aclRet);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy y failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
+              aclrtFree(yDevice); return aclRet);
     aclrtFree(xDevice);
     aclrtFree(yDevice);
 
@@ -120,6 +114,21 @@ int32_t TestCaxpy(aclblasHandle handle, aclrtStream stream)
     }
 
     return VerifyCaxpyResult(y, golden);
+}
+
+// issue #578: handle 为空时期望返回 HANDLE_IS_NULLPTR，而非解引用崩溃
+int32_t TestCaxpyNegative()
+{
+    std::cout << "========== Testing aclblasCaxpy negative case ==========" << std::endl;
+    constexpr aclblasComplex alpha{1.0f, 0.0f};
+    aclblasComplex dummy{};
+    auto ret = aclblasCaxpy(nullptr, 8, &alpha, &dummy, 1, &dummy, 1);
+    if (ret != ACLBLAS_STATUS_HANDLE_IS_NULLPTR) {
+        std::cout << "[FAIL] null handle: expected " << ACLBLAS_STATUS_HANDLE_IS_NULLPTR << " got " << ret << std::endl;
+        return 1;
+    }
+    std::cout << "[PASS] Caxpy negative case passed." << std::endl;
+    return 0;
 }
 
 int32_t main(int32_t argc, char* argv[])
@@ -151,6 +160,16 @@ int32_t main(int32_t argc, char* argv[])
     }
     std::cout << "[PASS] Caxpy test passed" << std::endl;
 
+    result = TestCaxpyNegative();
+    if (result != 0) {
+        std::cout << "[FAIL] Caxpy negative test failed" << std::endl;
+        aclblasDestroy(handle);
+        aclrtDestroyStream(stream);
+        aclrtResetDevice(deviceId);
+        aclFinalize();
+        return result;
+    }
+
     aclblasDestroy(handle);
     aclrtDestroyStream(stream);
     aclrtResetDevice(deviceId);
@@ -158,7 +177,7 @@ int32_t main(int32_t argc, char* argv[])
 
     std::cout << "========================================" << std::endl;
     std::cout << "Test Summary:" << std::endl;
-    std::cout << "  Passed: 1 - Caxpy" << std::endl;
+    std::cout << "  Passed: 2 - Caxpy, CaxpyNegative" << std::endl;
     std::cout << "========================================" << std::endl;
 
     return 0;

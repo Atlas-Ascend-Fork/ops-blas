@@ -210,8 +210,8 @@ __aicore__ inline void SasumAIV::CopyOut()
 }
 
 __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void SasumSimtCompute(
-    uint32_t calNum, uint32_t startOffset, uint32_t stride,
-    __gm__ const float* xGm, __gm__ float* partialOut, uint32_t blockDimPow2)
+    uint32_t calNum, uint32_t startOffset, uint32_t stride, __gm__ const float* xGm, __gm__ float* partialOut,
+    uint32_t blockDimPow2)
 {
     if (calNum == 0) {
         return;
@@ -349,10 +349,8 @@ __global__ __aicore__ void sasum_simt_kernel(GM_ADDR inGM, GM_ADDR workSpace, Sa
 
     if (calNum > 0) {
         asc_vf_call<SasumSimtCompute>(
-            dim3{tdata.nthreads, 1, 1},
-            calNum, tdata.startOffset[blockIdx], static_cast<uint32_t>(tdata.incx),
-            reinterpret_cast<__gm__ const float*>(inGM),
-            reinterpret_cast<__gm__ float*>(workSpace) + blockIdx,
+            dim3{tdata.nthreads, 1, 1}, calNum, tdata.startOffset[blockIdx], static_cast<uint32_t>(tdata.incx),
+            reinterpret_cast<__gm__ const float*>(inGM), reinterpret_cast<__gm__ float*>(workSpace) + blockIdx,
             RoundUpPow2(tdata.nthreads));
     }
 }
@@ -368,18 +366,23 @@ __global__ __aicore__ void sasum_reduce_kernel(GM_ADDR workSpace, GM_ADDR outGM,
     op.Process();
 }
 
-void sasum_kernel_do(GM_ADDR inGM, GM_ADDR outGM, GM_ADDR workSpace,
-                     const SasumTilingData& tiling, uint32_t numBlocks, void* stream)
+// issue #588: 返回值改为 aclblasStatus_t——incx≠1 路径的 workspace 清零失败时结果会静默错误，
+// 失败须传播给调用方且不下发后续内核
+aclblasStatus_t sasum_kernel_do(
+    GM_ADDR inGM, GM_ADDR outGM, GM_ADDR workSpace, const SasumTilingData& tiling, uint32_t numBlocks, void* stream)
 {
     auto aclStream = static_cast<aclrtStream>(stream);
 
     if (tiling.incx == 1) {
         sasum_aiv_kernel<<<numBlocks, nullptr, aclStream>>>(inGM, outGM, tiling);
-    } else {
-        size_t workspaceBytes = static_cast<size_t>(tiling.useCoreNum) * sizeof(float);
-        aclrtMemsetAsync(workSpace, workspaceBytes, 0, workspaceBytes, aclStream);
-        sasum_simt_kernel<<<numBlocks, nullptr, aclStream>>>(inGM, workSpace, tiling);
-        sasum_reduce_kernel<<<1, nullptr, aclStream>>>(workSpace, outGM, tiling.useCoreNum);
+        return ACLBLAS_STATUS_SUCCESS;
     }
+    size_t workspaceBytes = static_cast<size_t>(tiling.useCoreNum) * sizeof(float);
+    aclError memsetRet = aclrtMemsetAsync(workSpace, workspaceBytes, 0, workspaceBytes, aclStream);
+    if (memsetRet != ACL_SUCCESS) {
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    sasum_simt_kernel<<<numBlocks, nullptr, aclStream>>>(inGM, workSpace, tiling);
+    sasum_reduce_kernel<<<1, nullptr, aclStream>>>(workSpace, outGM, tiling.useCoreNum);
+    return ACLBLAS_STATUS_SUCCESS;
 }
-

@@ -2,8 +2,8 @@
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
- * Please refer to the License for details. You may not use the License for the License.
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
@@ -94,6 +94,23 @@ aclblasStatus_t aclblasComplexMatDot(
     aclblasHandle_t handle, int m, int n, const aclblasComplex* matx, const aclblasComplex* maty,
     aclblasComplex* result)
 {
+    // issue #581: handle 未判空即解引用会主机侧段错误
+    if (handle == nullptr) {
+        LOG_PRINT("aclblasComplexMatDot: handle is nullptr\n");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    // issue #581: m/n 必须为正值，且 m*n 需在 uint32 内可表示——负数转 uint32 后变成超大值、
+    // 乘积回绕会使 tiling 覆盖的元素数与真实矩阵不符，结果静默错误
+    if (m <= 0 || n <= 0) {
+        LOG_PRINT("aclblasComplexMatDot: invalid m=%d, n=%d, both must be positive\n", m, n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (static_cast<uint64_t>(m) * static_cast<uint64_t>(n) > 0xFFFFFFFFULL) {
+        LOG_PRINT(
+            "aclblasComplexMatDot: m*n=%lld exceeds uint32 range\n",
+            static_cast<long long>(static_cast<uint64_t>(m) * static_cast<uint64_t>(n)));
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     auto* h = handle;
     aclrtStream useStream = h->stream;
 
@@ -109,33 +126,30 @@ aclblasStatus_t aclblasComplexMatDot(
     uint8_t* tilingDevice = nullptr;
 
     aclError aclRet = aclrtMalloc((void**)&augDevice, augByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(ComplexMatDotTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(augDevice);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(augDevice);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet = aclrtMemcpy(augDevice, augByteSize, aug.data(), augByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(augDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
+              aclrtFree(augDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclRet = aclrtMemcpy(
         tilingDevice, sizeof(ComplexMatDotTilingData), &tiling, sizeof(ComplexMatDotTilingData),
         ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(augDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
+              aclrtFree(augDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
-    complex_mat_dot_kernel_do(reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(matx)), reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(maty)), augDevice,
-                              reinterpret_cast<uint8_t*>(result), tilingDevice, numBlocks, useStream);
+    complex_mat_dot_kernel_do(
+        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(matx)),
+        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(maty)), augDevice, reinterpret_cast<uint8_t*>(result),
+        tilingDevice, numBlocks, useStream);
     aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(augDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(tilingDevice); aclrtFree(augDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclrtFree(augDevice);
     aclrtFree(tilingDevice);

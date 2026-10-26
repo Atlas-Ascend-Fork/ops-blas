@@ -389,14 +389,78 @@ int TestStrmvLowerT()
     return VerifyResult(x, xGolden);
 }
 
+// issue #580: handle 为空与非法参数须返回对应错误码，而非解引用崩溃或按垃圾参数下发内核
+int TestStrmvNegative()
+{
+    std::cout << "Testing strmv negative cases:" << std::endl;
+    int failed = 0;
+    float dummy = 0.0f;
+
+    int32_t deviceId = 0;
+    aclInit(nullptr);
+    aclrtSetDevice(deviceId);
+    aclblasHandle_t handle = nullptr;
+    if (aclblasCreate(&handle) != ACLBLAS_STATUS_SUCCESS) {
+        std::cout << "[FAIL] aclblasCreate failed" << std::endl;
+        return 1;
+    }
+
+    // handle 为空：期望 HANDLE_IS_NULLPTR
+    auto ret = aclblasStrmv(nullptr, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, &dummy, 8, &dummy, 1);
+    if (ret != ACLBLAS_STATUS_HANDLE_IS_NULLPTR) {
+        std::cout << "[FAIL] null handle: expected " << ACLBLAS_STATUS_HANDLE_IS_NULLPTR << " got " << ret << std::endl;
+        ++failed;
+    }
+    // 非法 uplo
+    ret = aclblasStrmv(
+        handle, static_cast<aclblasFillMode_t>(0), ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, &dummy, 8, &dummy, 1);
+    if (ret != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[FAIL] invalid uplo: expected " << ACLBLAS_STATUS_INVALID_VALUE << " got " << ret << std::endl;
+        ++failed;
+    }
+    // 负 n
+    ret = aclblasStrmv(handle, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, -1, &dummy, 8, &dummy, 1);
+    if (ret != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[FAIL] negative n: expected " << ACLBLAS_STATUS_INVALID_VALUE << " got " << ret << std::endl;
+        ++failed;
+    }
+    // lda 过小
+    ret = aclblasStrmv(handle, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, &dummy, 4, &dummy, 1);
+    if (ret != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[FAIL] small lda: expected " << ACLBLAS_STATUS_INVALID_VALUE << " got " << ret << std::endl;
+        ++failed;
+    }
+    // incx 为 0
+    ret = aclblasStrmv(handle, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, &dummy, 8, &dummy, 0);
+    if (ret != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[FAIL] zero incx: expected " << ACLBLAS_STATUS_INVALID_VALUE << " got " << ret << std::endl;
+        ++failed;
+    }
+    // A 为空
+    ret = aclblasStrmv(handle, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, nullptr, 8, &dummy, 1);
+    if (ret != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[FAIL] null A: expected " << ACLBLAS_STATUS_INVALID_VALUE << " got " << ret << std::endl;
+        ++failed;
+    }
+    aclblasDestroy(handle);
+    aclrtResetDevice(deviceId);
+    aclFinalize();
+
+    if (failed == 0) {
+        std::cout << "[PASS] strmv negative cases" << std::endl;
+    }
+    return failed == 0 ? 0 : 1;
+}
+
 int32_t main(int32_t argc, char* argv[])
 {
     int ret1 = TestStrmvUpperN();
     int ret2 = TestStrmvLowerN();
     int ret3 = TestStrmvUpperT();
     int ret4 = TestStrmvLowerT();
+    int ret5 = TestStrmvNegative();
 
-    if (ret1 == 0 && ret2 == 0 && ret3 == 0 && ret4 == 0) {
+    if (ret1 == 0 && ret2 == 0 && ret3 == 0 && ret4 == 0 && ret5 == 0) {
         std::cout << "[PASS] strmv_test" << std::endl;
         return 0;
     } else {

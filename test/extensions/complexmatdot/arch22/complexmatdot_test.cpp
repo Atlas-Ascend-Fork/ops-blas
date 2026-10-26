@@ -2,8 +2,8 @@
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
- * Please refer to the License for details. You may not use the License for the License.
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
@@ -177,8 +177,9 @@ static uint32_t VerifyResult(const std::vector<float>& output, const std::vector
     auto printTensor = [](const std::vector<float>& tensor, const char* name) {
         constexpr size_t maxPrintSize = 20;
         std::cout << name << ": ";
-        std::copy(tensor.begin(), tensor.begin() + std::min(tensor.size(), maxPrintSize),
-                  std::ostream_iterator<float>(std::cout, " "));
+        std::copy(
+            tensor.begin(), tensor.begin() + std::min(tensor.size(), maxPrintSize),
+            std::ostream_iterator<float>(std::cout, " "));
         if (tensor.size() > maxPrintSize) {
             std::cout << "...";
         }
@@ -204,10 +205,65 @@ static uint32_t VerifyResult(const std::vector<float>& output, const std::vector
     return 1;
 }
 
+// issue #581: handle 为空与非法 m/n 须返回对应错误码，而非解引用崩溃或按回绕后的形状计算
+static int32_t TestComplexMatDotNegative()
+{
+    std::cout << "Testing complexmatdot negative cases:" << std::endl;
+    int failed = 0;
+    aclblasComplex dummy{};
+
+    int32_t deviceId = 0;
+    aclInit(nullptr);
+    aclrtSetDevice(deviceId);
+    aclblasHandle_t handle = nullptr;
+    if (aclblasCreate(&handle) != ACLBLAS_STATUS_SUCCESS) {
+        std::cout << "[Failed] aclblasCreate failed" << std::endl;
+        return 1;
+    }
+
+    // handle 为空：期望 HANDLE_IS_NULLPTR
+    auto ret = aclblasComplexMatDot(nullptr, 8, 8, &dummy, &dummy, &dummy);
+    if (ret != ACLBLAS_STATUS_HANDLE_IS_NULLPTR) {
+        std::cout << "[Failed] null handle: expected " << ACLBLAS_STATUS_HANDLE_IS_NULLPTR << " got " << ret
+                  << std::endl;
+        ++failed;
+    }
+    // 负维度 / 零维度
+    ret = aclblasComplexMatDot(handle, -1, 8, &dummy, &dummy, &dummy);
+    if (ret != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[Failed] negative m: expected " << ACLBLAS_STATUS_INVALID_VALUE << " got " << ret << std::endl;
+        ++failed;
+    }
+    ret = aclblasComplexMatDot(handle, 8, 0, &dummy, &dummy, &dummy);
+    if (ret != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[Failed] zero n: expected " << ACLBLAS_STATUS_INVALID_VALUE << " got " << ret << std::endl;
+        ++failed;
+    }
+    // m*n 溢出 uint32（65536 * 65536 = 2^32）
+    ret = aclblasComplexMatDot(handle, 65536, 65536, &dummy, &dummy, &dummy);
+    if (ret != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[Failed] m*n overflow: expected " << ACLBLAS_STATUS_INVALID_VALUE << " got " << ret << std::endl;
+        ++failed;
+    }
+    aclblasDestroy(handle);
+    aclrtResetDevice(deviceId);
+    aclFinalize();
+
+    if (failed == 0) {
+        std::cout << "[Success] complexmatdot negative cases passed." << std::endl;
+    }
+    return failed == 0 ? 0 : 1;
+}
+
 // ── Main — orchestration only ────────────────────────────────────────────────
 
 int32_t main()
 {
+    int32_t negativeStatus = TestComplexMatDotNegative();
+    if (negativeStatus != 0) {
+        return negativeStatus;
+    }
+
     ComplexMatDotTestData data = BuildComplexMatDotInput();
 
     ComplexMatDotTestContext ctx;
@@ -220,8 +276,7 @@ int32_t main()
     }
 
     size_t dataSize = COMPLEX_SIZE * sizeof(float);
-    aclError aclRet = aclrtMemcpy(data.result.data(), dataSize, ctx.resultDevice, dataSize,
-                                  ACL_MEMCPY_DEVICE_TO_HOST);
+    aclError aclRet = aclrtMemcpy(data.result.data(), dataSize, ctx.resultDevice, dataSize, ACL_MEMCPY_DEVICE_TO_HOST);
     if (aclRet != ACL_SUCCESS) {
         LOG_PRINT("aclrtMemcpy result failed. ERROR: %d\n", aclRet);
         CleanupTestRuntime(ctx);

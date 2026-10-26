@@ -8,6 +8,7 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <vector>
@@ -16,12 +17,12 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
-void cgemv_do_trans_kernel_do(uint8_t* d_A, uint8_t* d_x, uint8_t* d_y_in, uint8_t* maskBuf, uint8_t* d_y,
-                              uint8_t* workSpace, uint8_t* tilingGm,
-                              uint32_t numBlocks, void *stream);
-void cgemv_no_trans_kernel_do(uint8_t* d_A, uint8_t* d_x, uint8_t* d_y_in, uint8_t* maskBuf, uint8_t* d_y,
-                              uint8_t* workSpace, uint8_t* tilingGm,
-                              uint32_t numBlocks, void *stream);
+void cgemv_do_trans_kernel_do(
+    uint8_t* d_A, uint8_t* d_x, uint8_t* d_y_in, uint8_t* maskBuf, uint8_t* d_y, uint8_t* workSpace, uint8_t* tilingGm,
+    uint32_t numBlocks, void* stream);
+void cgemv_no_trans_kernel_do(
+    uint8_t* d_A, uint8_t* d_x, uint8_t* d_y_in, uint8_t* maskBuf, uint8_t* d_y, uint8_t* workSpace, uint8_t* tilingGm,
+    uint32_t numBlocks, void* stream);
 
 constexpr uint32_t MAX_CORE_CNT = 40;
 constexpr uint32_t WORKSPACE_SIZE = 16 * 1024 * 1024;
@@ -60,10 +61,51 @@ static uint32_t* CreateCgemvMask(int64_t m)
 
 aclblasStatus_t aclblasCgemv(
     aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, const aclblasComplex* alpha,
-    const aclblasComplex* A, int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta,
-    aclblasComplex* y, int incy)
+    const aclblasComplex* A, int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y,
+    int incy)
 {
+    if (handle == nullptr) {
+        LOG_PRINT("aclblasCgemv: handle is nullptr\n");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
     if (alpha == nullptr || beta == nullptr) {
+        LOG_PRINT("aclblasCgemv: alpha and beta must not be nullptr\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (trans != ACLBLAS_OP_N && trans != ACLBLAS_OP_T && trans != ACLBLAS_OP_C) {
+        LOG_PRINT("aclblasCgemv: invalid trans=%d\n", static_cast<int>(trans));
+        return ACLBLAS_STATUS_INVALID_ENUM;
+    }
+    if (m < 0 || n < 0) {
+        LOG_PRINT("aclblasCgemv: matrix dimensions m and n must be non-negative, got m=%d, n=%d\n", m, n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    // A 按 m 行 n 列存储（转置操作下同样成立）
+    if (lda < std::max(1, m)) {
+        LOG_PRINT("aclblasCgemv: invalid lda=%d, m=%d\n", lda, m);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    // 负步长是合法的 BLAS 语义，仅 0 非法
+    if (incx == 0 || incy == 0) {
+        LOG_PRINT("aclblasCgemv: incx and incy must not be zero, got incx=%d, incy=%d\n", incx, incy);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (m == 0 || n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    // !692 检视意见修复：对齐 arch35 ValidateCgemvParams 的 Netlib 语义——alpha=(0,0) 时
+    // A/x 不被引用允许为空；alpha=(0,0) 且 beta=(1,0) 时 y 也不被引用，快速返回
+    const bool alphaZero = (alpha->real == 0.0f && alpha->imag == 0.0f);
+    const bool betaOne = (beta->real == 1.0f && beta->imag == 0.0f);
+    if (alphaZero && betaOne) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (!alphaZero && (A == nullptr || x == nullptr)) {
+        LOG_PRINT("aclblasCgemv: A and x must not be nullptr when alpha is not zero\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (y == nullptr) {
+        LOG_PRINT("aclblasCgemv: y must not be nullptr\n");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     auto* h = handle;
@@ -93,44 +135,41 @@ aclblasStatus_t aclblasCgemv(
     uint8_t* tilingDevice = nullptr;
 
     aclError aclRet = aclrtMalloc((void**)&maskDevice, maskSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); delete[] mask;
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); delete[] mask;
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet = aclrtMalloc((void**)&workSpaceDevice, workSpaceSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(maskDevice);
-        delete[] mask; return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(maskDevice);
+              delete[] mask; return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(CgemvTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(workSpaceDevice);
-        aclrtFree(maskDevice); delete[] mask; return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(workSpaceDevice);
+              aclrtFree(maskDevice); delete[] mask; return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet = aclrtMemcpy(maskDevice, maskSize, mask, maskSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(workSpaceDevice); aclrtFree(maskDevice); delete[] mask; return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
+              aclrtFree(workSpaceDevice); aclrtFree(maskDevice); delete[] mask; return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclRet =
         aclrtMemcpy(tilingDevice, sizeof(CgemvTilingData), &tiling, sizeof(CgemvTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(workSpaceDevice); aclrtFree(maskDevice); delete[] mask; return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
+              aclrtFree(workSpaceDevice); aclrtFree(maskDevice); delete[] mask; return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     if (trans == ACLBLAS_OP_N) {
-        cgemv_no_trans_kernel_do(reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(A)), reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)),
-                                 reinterpret_cast<uint8_t*>(y), maskDevice, reinterpret_cast<uint8_t*>(y),
-                                 workSpaceDevice, tilingDevice, numBlocks, useStream);
+        cgemv_no_trans_kernel_do(
+            reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(A)),
+            reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)), reinterpret_cast<uint8_t*>(y), maskDevice,
+            reinterpret_cast<uint8_t*>(y), workSpaceDevice, tilingDevice, numBlocks, useStream);
     } else {
-        cgemv_do_trans_kernel_do(reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(A)), reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)),
-                                 reinterpret_cast<uint8_t*>(y), maskDevice, reinterpret_cast<uint8_t*>(y),
-                                 workSpaceDevice, tilingDevice, numBlocks, useStream);
+        cgemv_do_trans_kernel_do(
+            reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(A)),
+            reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)), reinterpret_cast<uint8_t*>(y), maskDevice,
+            reinterpret_cast<uint8_t*>(y), workSpaceDevice, tilingDevice, numBlocks, useStream);
     }
     aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(workSpaceDevice); aclrtFree(maskDevice); delete[] mask; return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(tilingDevice); aclrtFree(workSpaceDevice); aclrtFree(maskDevice); delete[] mask;
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclrtFree(maskDevice);
     aclrtFree(workSpaceDevice);

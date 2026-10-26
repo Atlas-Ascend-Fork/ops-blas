@@ -31,24 +31,18 @@
 constexpr int32_t MIX_NB_SMALL = 16;
 constexpr int32_t MIX_NB_LARGE = 32;
 
-
-static const char* GetSocVersion()
-{
-    return aclrtGetSocName();
-}
-
+static const char* GetSocVersion() { return aclrtGetSocName(); }
 
 static void GenerateCubeTiling(int32_t maxMN, uint8_t* tilingBuf, uint32_t* tilingSize)
 {
     auto ascendcPlatform = platform_ascendc::PlatformAscendCManager::GetInstance(GetSocVersion());
     matmul_tiling::MultiCoreMatmulTiling tilingApi(*ascendcPlatform);
     tilingApi.SetDim(1);
-    tilingApi.SetAType(matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND,
-                       matmul_tiling::DataType::DT_FLOAT, false);
-    tilingApi.SetBType(matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND,
-                       matmul_tiling::DataType::DT_FLOAT, false);
-    tilingApi.SetCType(matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND,
-                       matmul_tiling::DataType::DT_FLOAT);
+    tilingApi.SetAType(
+        matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND, matmul_tiling::DataType::DT_FLOAT, false);
+    tilingApi.SetBType(
+        matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND, matmul_tiling::DataType::DT_FLOAT, false);
+    tilingApi.SetCType(matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND, matmul_tiling::DataType::DT_FLOAT);
     tilingApi.SetOrgShape(maxMN, maxMN, maxMN);
     tilingApi.SetShape(maxMN, maxMN, maxMN);
     tilingApi.SetBias(false);
@@ -68,12 +62,10 @@ static bool IsValidTrans(aclblasOperation_t t) { return t == ACLBLAS_OP_N || t =
 static bool IsValidDiag(aclblasDiagType_t d) { return d == ACLBLAS_NON_UNIT || d == ACLBLAS_UNIT; }
 
 // 计算基本 tiling 参数（side/uplo/transa/diag 映射、useOrigA、nb 等）
-static void FillCtrsmTilingBasicParams(aclblasSideMode_t side, aclblasFillMode_t uplo,
-    aclblasOperation_t transa, aclblasDiagType_t diag,
-    int64_t m, int64_t n, int64_t lda, int64_t ldb, int64_t batchCount,
-    float alphaReal, float alphaImag,
-    CtrsmBatchedTilingData& td,
-    int32_t& kDim, int32_t& nCols, int32_t& kDimAligned, int32_t& nColsAligned,
+static void FillCtrsmTilingBasicParams(
+    aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t transa, aclblasDiagType_t diag, int64_t m,
+    int64_t n, int64_t lda, int64_t ldb, int64_t batchCount, float alphaReal, float alphaImag,
+    CtrsmBatchedTilingData& td, int32_t& kDim, int32_t& nCols, int32_t& kDimAligned, int32_t& nColsAligned,
     bool& sideRight, bool& useDualAiv)
 {
     kDim = (side == ACLBLAS_SIDE_LEFT) ? (int32_t)m : (int32_t)n;
@@ -110,20 +102,20 @@ static void FillCtrsmTilingBasicParams(aclblasSideMode_t side, aclblasFillMode_t
 
 // 计算 workspace 大小和 numBlocks
 static void ComputeWorkspaceAndBlocks(
-    CtrsmBatchedTilingData& td, int32_t kDimAligned, int32_t nColsAligned,
-    int32_t numSplits, int32_t splitNColsAligned, int32_t lastNColsAligned,
-    bool sideRight, bool useDualAiv, int64_t batchCount,
-    int32_t& maxMN, uint32_t& numBlocks, int32_t& effectiveBatch)
+    CtrsmBatchedTilingData& td, int32_t kDimAligned, int32_t nColsAligned, int32_t numSplits, int32_t splitNColsAligned,
+    int32_t lastNColsAligned, bool sideRight, bool useDualAiv, int64_t batchCount, int32_t& maxMN, uint32_t& numBlocks,
+    int32_t& effectiveBatch)
 {
     int32_t wsNCols = (numSplits > 1) ?
-        ((splitNColsAligned > lastNColsAligned) ? splitNColsAligned : lastNColsAligned)
-        : nColsAligned;
+                          ((splitNColsAligned > lastNColsAligned) ? splitNColsAligned : lastNColsAligned) :
+                          nColsAligned;
     int64_t aSize = (int64_t)kDimAligned * kDimAligned * 2;
     int64_t bSize = (int64_t)kDimAligned * wsNCols * 2;
     int64_t xnegSize = (int64_t)2 * 16 * 2 * td.nb * wsNCols * 2;
     int64_t rightTempSize = sideRight ? ((int64_t)wsNCols * kDimAligned * 2) : 0;
     int64_t gemmAreaSize = xnegSize;
-    if (rightTempSize > gemmAreaSize) gemmAreaSize = rightTempSize;
+    if (rightTempSize > gemmAreaSize)
+        gemmAreaSize = rightTempSize;
     int64_t splitBGemmSize = (bSize + gemmAreaSize);
     td.splitBGemmSize = splitBGemmSize * sizeof(float);
     if (numSplits > 1) {
@@ -133,7 +125,8 @@ static void ComputeWorkspaceAndBlocks(
     }
     maxMN = (kDimAligned > wsNCols) ? kDimAligned : wsNCols;
     int32_t maxK = 2 * kDimAligned;
-    if (maxK > maxMN) maxMN = maxK;
+    if (maxK > maxMN)
+        maxMN = maxK;
     if (numSplits > 1) {
         numBlocks = (uint32_t)((int32_t)batchCount * numSplits);
         effectiveBatch = (int32_t)batchCount;
@@ -142,16 +135,16 @@ static void ComputeWorkspaceAndBlocks(
         effectiveBatch = (int32_t)batchCount;
     } else {
         effectiveBatch = (int32_t)batchCount;
-        if (effectiveBatch % 2 != 0) effectiveBatch++;
+        if (effectiveBatch % 2 != 0)
+            effectiveBatch++;
         numBlocks = (uint32_t)(effectiveBatch / 2);
     }
 }
 
 // 计算 split/numBlocks/workspace 参数
 static void FillCtrsmTilingSplitAndBlocks(
-    CtrsmBatchedTilingData& td, int32_t kDim, int32_t nCols,
-    int32_t kDimAligned, int32_t nColsAligned, bool sideRight, bool useDualAiv,
-    int64_t batchCount, int32_t& maxMN, uint32_t& numBlocks, int32_t& effectiveBatch)
+    CtrsmBatchedTilingData& td, int32_t kDim, int32_t nCols, int32_t kDimAligned, int32_t nColsAligned, bool sideRight,
+    bool useDualAiv, int64_t batchCount, int32_t& maxMN, uint32_t& numBlocks, int32_t& effectiveBatch)
 {
     constexpr int32_t SPLIT_ALIGN = 16;
     constexpr int32_t TOTAL_AICORES = 20;
@@ -160,10 +153,12 @@ static void FillCtrsmTilingSplitAndBlocks(
         int32_t maxSplits = TOTAL_AICORES / (int32_t)batchCount;
         int32_t minSplitNCols = (td.nb > 64) ? td.nb : 64;
         int32_t maxBySize = nCols / minSplitNCols;
-        if (maxSplits > maxBySize) maxSplits = maxBySize;
+        if (maxSplits > maxBySize)
+            maxSplits = maxBySize;
         if ((int32_t)batchCount * maxSplits > TOTAL_AICORES)
             maxSplits = TOTAL_AICORES / (int32_t)batchCount;
-        if (maxSplits > 1) numSplits = maxSplits;
+        if (maxSplits > 1)
+            numSplits = maxSplits;
     }
     int32_t splitNCols = nCols;
     int32_t splitNColsAligned = nColsAligned;
@@ -180,86 +175,99 @@ static void FillCtrsmTilingSplitAndBlocks(
     td.splitNColsAligned = splitNColsAligned;
     td.lastNCols = lastNCols;
     td.lastNColsAligned = lastNColsAligned;
-    ComputeWorkspaceAndBlocks(td, kDimAligned, nColsAligned, numSplits,
-        splitNColsAligned, lastNColsAligned, sideRight, useDualAiv,
+    ComputeWorkspaceAndBlocks(
+        td, kDimAligned, nColsAligned, numSplits, splitNColsAligned, lastNColsAligned, sideRight, useDualAiv,
         batchCount, maxMN, numBlocks, effectiveBatch);
 }
 
 // 由 side/uplo/transa/diag 及尺寸推导 tiling 参数，并计算 kernel 启动参数（maxMN/numBlocks/effectiveBatch）
-static void FillCtrsmTiling(aclblasSideMode_t side, aclblasFillMode_t uplo,
-    aclblasOperation_t transa, aclblasDiagType_t diag,
-    int64_t m, int64_t n, int64_t lda, int64_t ldb, int64_t batchCount,
-    float alphaReal, float alphaImag,
-    CtrsmBatchedTilingData& td, int32_t& maxMN,
-    uint32_t& numBlocks, int32_t& effectiveBatch)
+static void FillCtrsmTiling(
+    aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t transa, aclblasDiagType_t diag, int64_t m,
+    int64_t n, int64_t lda, int64_t ldb, int64_t batchCount, float alphaReal, float alphaImag,
+    CtrsmBatchedTilingData& td, int32_t& maxMN, uint32_t& numBlocks, int32_t& effectiveBatch)
 {
     int32_t kDim, nCols, kDimAligned, nColsAligned;
     bool sideRight, useDualAiv;
-    FillCtrsmTilingBasicParams(side, uplo, transa, diag, m, n, lda, ldb, batchCount,
-        alphaReal, alphaImag, td, kDim, nCols, kDimAligned, nColsAligned,
-        sideRight, useDualAiv);
-    FillCtrsmTilingSplitAndBlocks(td, kDim, nCols, kDimAligned, nColsAligned,
-        sideRight, useDualAiv, batchCount, maxMN, numBlocks, effectiveBatch);
+    FillCtrsmTilingBasicParams(
+        side, uplo, transa, diag, m, n, lda, ldb, batchCount, alphaReal, alphaImag, td, kDim, nCols, kDimAligned,
+        nColsAligned, sideRight, useDualAiv);
+    FillCtrsmTilingSplitAndBlocks(
+        td, kDim, nCols, kDimAligned, nColsAligned, sideRight, useDualAiv, batchCount, maxMN, numBlocks,
+        effectiveBatch);
 }
 
 // 分配 device 内存、拷贝入参与 cube tiling、启动 kernel 并同步、释放资源
-static aclblasStatus_t LaunchCtrsmKernel(const CtrsmBatchedTilingData& td,
-    int32_t maxMN, uint32_t numBlocks, int32_t effectiveBatch,
-    const std::complex<float>* const aArray[], int64_t lda,
-    std::complex<float>* const bArray[], int64_t batchCount, aclrtStream stream)
+// !692 检视意见修复：任一失败路径统一走 cleanup 释放全部已分配设备缓冲，不再泄漏
+static aclblasStatus_t LaunchCtrsmKernel(
+    const CtrsmBatchedTilingData& td, int32_t maxMN, uint32_t numBlocks, int32_t effectiveBatch,
+    const std::complex<float>* const aArray[], int64_t lda, std::complex<float>* const bArray[], int64_t batchCount,
+    aclrtStream stream)
 {
     size_t ptrArraySize = (size_t)batchCount * sizeof(void*);
     uint8_t *tilingDevice = nullptr, *aArrayDevice = nullptr, *bArrayDevice = nullptr;
     uint8_t *cubeTilingDevice = nullptr, *gemmWsDevice = nullptr, *sysWsDevice = nullptr;
-
-    CHECK_RET(aclrtMalloc((void**)&tilingDevice, sizeof(td), ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS,
-              return ACLBLAS_STATUS_INTERNAL_ERROR);
-    CHECK_RET(aclrtMalloc((void**)&aArrayDevice, ptrArraySize, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS,
-              return ACLBLAS_STATUS_INTERNAL_ERROR);
-    CHECK_RET(aclrtMalloc((void**)&bArrayDevice, ptrArraySize, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS,
-              return ACLBLAS_STATUS_INTERNAL_ERROR);
-    aclrtMemcpy(tilingDevice, sizeof(td), &td, sizeof(td), ACL_MEMCPY_HOST_TO_DEVICE);
-    aclrtMemcpy(aArrayDevice, ptrArraySize, aArray, ptrArraySize, ACL_MEMCPY_HOST_TO_DEVICE);
-    aclrtMemcpy(bArrayDevice, ptrArraySize, bArray, ptrArraySize, ACL_MEMCPY_HOST_TO_DEVICE);
-
-    uint8_t cubeTilingBuf[2048];
-    uint32_t cubeTilingSize = 0;
-    GenerateCubeTiling(maxMN, cubeTilingBuf, &cubeTilingSize);
-    CHECK_RET(aclrtMalloc((void**)&cubeTilingDevice, sizeof(cubeTilingBuf), ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS,
-              return ACLBLAS_STATUS_INTERNAL_ERROR);
-    aclrtMemcpy(cubeTilingDevice, sizeof(cubeTilingBuf), cubeTilingBuf, sizeof(cubeTilingBuf), ACL_MEMCPY_HOST_TO_DEVICE);
-
-    size_t gemmWsSize = (size_t)effectiveBatch * td.workspaceOffset;
-    CHECK_RET(aclrtMalloc((void**)&gemmWsDevice, gemmWsSize, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS,
-              return ACLBLAS_STATUS_INTERNAL_ERROR);
-    aclrtMemset(gemmWsDevice, gemmWsSize, 0, gemmWsSize);
-
     auto platformInst = platform_ascendc::PlatformAscendCManager::GetInstance(GetSocVersion());
     size_t sysWsSize = static_cast<size_t>(platformInst->GetLibApiWorkSpaceSize());
-    if (sysWsSize < 16 * 1024 * 1024) sysWsSize = 16 * 1024 * 1024;
-    CHECK_RET(aclrtMalloc((void**)&sysWsDevice, sysWsSize, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS,
-              return ACLBLAS_STATUS_INTERNAL_ERROR);
+    if (sysWsSize < 16 * 1024 * 1024)
+        sysWsSize = 16 * 1024 * 1024;
 
-    ctrsm_batched_mix12_kernel_do(aArrayDevice, bArrayDevice, tilingDevice, cubeTilingDevice,
-                                   gemmWsDevice, sysWsDevice, numBlocks, stream);
-    aclError syncRet = aclrtSynchronizeStream(stream);
+    aclblasStatus_t status = ACLBLAS_STATUS_INTERNAL_ERROR;
+    do {
+        if (aclrtMalloc((void**)&tilingDevice, sizeof(td), ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
+            aclrtMalloc((void**)&aArrayDevice, ptrArraySize, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
+            aclrtMalloc((void**)&bArrayDevice, ptrArraySize, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
+            // issue #587: 拷贝失败时 tiling/指针数组保持未初始化，内核照常启动会读垃圾数据，
+            // 对齐 aclblasTrsmBatched 的写法补充返回值检查，失败即返回不下发内核
+            aclrtMemcpy(tilingDevice, sizeof(td), &td, sizeof(td), ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS ||
+            aclrtMemcpy(aArrayDevice, ptrArraySize, aArray, ptrArraySize, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS ||
+            aclrtMemcpy(bArrayDevice, ptrArraySize, bArray, ptrArraySize, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
+            break;
+        }
 
-    aclrtFree(sysWsDevice);
-    aclrtFree(gemmWsDevice);
-    aclrtFree(cubeTilingDevice);
-    aclrtFree(bArrayDevice);
-    aclrtFree(aArrayDevice);
-    aclrtFree(tilingDevice);
-    CHECK_RET(syncRet == ACL_SUCCESS, return ACLBLAS_STATUS_INTERNAL_ERROR);
-    return ACLBLAS_STATUS_SUCCESS;
+        uint8_t cubeTilingBuf[2048];
+        uint32_t cubeTilingSize = 0;
+        GenerateCubeTiling(maxMN, cubeTilingBuf, &cubeTilingSize);
+        if (aclrtMalloc((void**)&cubeTilingDevice, sizeof(cubeTilingBuf), ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
+            aclrtMemcpy(
+                cubeTilingDevice, sizeof(cubeTilingBuf), cubeTilingBuf, sizeof(cubeTilingBuf),
+                ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
+            break;
+        }
+
+        size_t gemmWsSize = (size_t)effectiveBatch * td.workspaceOffset;
+        if (aclrtMalloc((void**)&gemmWsDevice, gemmWsSize, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
+            aclrtMemset(gemmWsDevice, gemmWsSize, 0, gemmWsSize) != ACL_SUCCESS ||
+            aclrtMalloc((void**)&sysWsDevice, sysWsSize, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
+            break;
+        }
+
+        ctrsm_batched_mix12_kernel_do(
+            aArrayDevice, bArrayDevice, tilingDevice, cubeTilingDevice, gemmWsDevice, sysWsDevice, numBlocks, stream);
+        status =
+            (aclrtSynchronizeStream(stream) == ACL_SUCCESS) ? ACLBLAS_STATUS_SUCCESS : ACLBLAS_STATUS_INTERNAL_ERROR;
+    } while (0);
+
+    if (sysWsDevice != nullptr)
+        aclrtFree(sysWsDevice);
+    if (gemmWsDevice != nullptr)
+        aclrtFree(gemmWsDevice);
+    if (cubeTilingDevice != nullptr)
+        aclrtFree(cubeTilingDevice);
+    if (bArrayDevice != nullptr)
+        aclrtFree(bArrayDevice);
+    if (aArrayDevice != nullptr)
+        aclrtFree(aArrayDevice);
+    if (tilingDevice != nullptr)
+        aclrtFree(tilingDevice);
+    return status;
 }
 
 // 参数合法性校验：句柄、枚举、维度、lda/ldb。返回 SUCCESS 表示校验通过可继续
-static aclblasStatus_t ValidateCtrsmArgs(aclblasHandle_t handle,
-    aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t transa, aclblasDiagType_t diag,
-    int64_t m, int64_t n, const std::complex<float>* alpha,
-    const std::complex<float>* const aArray[], int64_t lda,
-    std::complex<float>* const bArray[], int64_t ldb, int64_t batchCount)
+static aclblasStatus_t ValidateCtrsmArgs(
+    aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t transa,
+    aclblasDiagType_t diag, int64_t m, int64_t n, const std::complex<float>* alpha,
+    const std::complex<float>* const aArray[], int64_t lda, std::complex<float>* const bArray[], int64_t ldb,
+    int64_t batchCount)
 {
     if (handle == nullptr) {
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
@@ -278,19 +286,13 @@ static aclblasStatus_t ValidateCtrsmArgs(aclblasHandle_t handle,
 }
 
 aclblasStatus_t aclblasCtrsmBatched(
-    aclblasHandle_t handle,
-    aclblasSideMode_t side,
-    aclblasFillMode_t uplo,
-    aclblasOperation_t transa,
-    aclblasDiagType_t diag,
-    int64_t m, int64_t n,
-    const std::complex<float>* alpha,
-    const std::complex<float>* const aArray[], int64_t lda,
-    std::complex<float>* const bArray[], int64_t ldb,
+    aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t transa,
+    aclblasDiagType_t diag, int64_t m, int64_t n, const std::complex<float>* alpha,
+    const std::complex<float>* const aArray[], int64_t lda, std::complex<float>* const bArray[], int64_t ldb,
     int64_t batchCount)
 {
-    aclblasStatus_t vst = ValidateCtrsmArgs(handle, side, uplo, transa, diag,
-                                            m, n, alpha, aArray, lda, bArray, ldb, batchCount);
+    aclblasStatus_t vst =
+        ValidateCtrsmArgs(handle, side, uplo, transa, diag, m, n, alpha, aArray, lda, bArray, ldb, batchCount);
     if (vst != ACLBLAS_STATUS_SUCCESS) {
         return vst;
     }
@@ -303,8 +305,7 @@ aclblasStatus_t aclblasCtrsmBatched(
     if (alphaReal == 0.0f && alphaImag == 0.0f) {
         for (int64_t i = 0; i < batchCount; i++) {
             size_t bytes = (size_t)m * ldb * 2 * sizeof(float);
-            CHECK_RET(aclrtMemset(bArray[i], bytes, 0, bytes) == ACL_SUCCESS,
-                      return ACLBLAS_STATUS_INTERNAL_ERROR);
+            CHECK_RET(aclrtMemset(bArray[i], bytes, 0, bytes) == ACL_SUCCESS, return ACLBLAS_STATUS_INTERNAL_ERROR);
         }
         return ACLBLAS_STATUS_SUCCESS;
     }
@@ -316,9 +317,9 @@ aclblasStatus_t aclblasCtrsmBatched(
     int32_t maxMN;
     uint32_t numBlocks;
     int32_t effectiveBatch;
-    FillCtrsmTiling(side, uplo, transa, diag, m, n, lda, ldb, batchCount,
-                    alphaReal, alphaImag, td, maxMN, numBlocks, effectiveBatch);
+    FillCtrsmTiling(
+        side, uplo, transa, diag, m, n, lda, ldb, batchCount, alphaReal, alphaImag, td, maxMN, numBlocks,
+        effectiveBatch);
 
-    return LaunchCtrsmKernel(td, maxMN, numBlocks, effectiveBatch,
-                             aArray, lda, bArray, batchCount, stream);
+    return LaunchCtrsmKernel(td, maxMN, numBlocks, effectiveBatch, aArray, lda, bArray, batchCount, stream);
 }
