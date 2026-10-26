@@ -13,9 +13,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cmath>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -118,7 +120,8 @@ public:
 protected:
     void processElement(float outVal, float goldVal) override
     {
-        if (std::abs(outVal - goldVal) > absTol_)
+        // 单侧 NaN/Inf 不应被 abs(out-gold) 的比较语义漏判为通过（issue #536）
+        if (!std::isfinite(outVal) || !std::isfinite(goldVal) || std::abs(outVal - goldVal) > absTol_)
             failCount_++;
     }
 
@@ -142,6 +145,10 @@ public:
 protected:
     void processElement(float outVal, float goldVal) override
     {
+        if (!std::isfinite(outVal) || !std::isfinite(goldVal)) {
+            maxRelErr_ = std::numeric_limits<double>::infinity();
+            return;
+        }
         double relErr = std::abs(outVal - goldVal) / (std::abs(goldVal) + eps_);
         if (relErr > maxRelErr_)
             maxRelErr_ = relErr;
@@ -170,7 +177,7 @@ protected:
     {
         double diff = std::abs(outVal - goldVal);
         double scale = std::abs(goldVal) + 1e-7;
-        if (diff > absTol_ && diff > relTol_ * scale)
+        if (!std::isfinite(outVal) || !std::isfinite(goldVal) || (diff > absTol_ && diff > relTol_ * scale))
             failCount_++;
     }
 

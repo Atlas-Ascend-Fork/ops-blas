@@ -21,8 +21,12 @@ n × 步长组合的测试性等价重复（同一 (n,incx,incy) 不同随机填
      覆盖数不变（验证：1200 行 887 组合 → 927 行 887 组合）；
   2. TC_EX 内部对同一 (n,incx,incy) 仅保留 1 种 x_fill（RANDOM_NORM_5_5
      与 VALUE_* 对纯 copy 的执行路径等价，保留首见）；
-  3. 负例（expect_result 非 SUCCESS / TC_ED 组）永不删除；
+  3. 负例（expect_result 非 SUCCESS / TC_ED 组）永不删除，且不参与
+     正例去重集合；
      边界小 n（<=4）的删除仅限与其他行参数完全一致时（规则 1）。
+
+负例保留优先于正例的两种去重规则。Host 回归（临时 CSV，未执行 CANN/NPU）：
+    python3 test/copy/ccopy/arch35/test_dedup_ccopy_negative_host.py
 
 用法（就地更新 CSV 前先打印预览）：
     python3 dedup_ccopy_csv.py arch35/ccopy_test.csv           # 预览
@@ -83,6 +87,12 @@ def main():
 
         neg = (er is not None and is_negative(m)) or name.startswith(NEG_PREFIX)
         edge = 0 <= n <= EDGE_KEEP_N
+
+        # 负例保留优先于两种去重规则，且不占用正例去重集合，
+        # 避免先出现的负例使同参数组合的正常用例被误删（issue #515）
+        if neg:
+            kept.append(row)
+            continue
 
         if exact in seen_exact:
             dropped.append((name, "exact-duplicate"))

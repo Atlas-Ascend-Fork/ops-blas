@@ -137,6 +137,9 @@ def run_gtest(binary, device, timeout, strict):
         }
     if duplicate:
         LOGGER.error("ERROR: duplicate STRICT_PERF results: %s", sorted(set(duplicate))[:5])
+        # 重复的 STRICT_PERF 记录意味着计时门禁结果不可信，必须判失败，
+        # 而不是仅打印错误后仍按底层进程退出码放行（issue #534）
+        return result.returncode or 1, timings
     return result.returncode, timings
 
 
