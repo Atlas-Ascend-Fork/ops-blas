@@ -23,6 +23,7 @@
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "error_check.h"
+#include "device.h"
 
 uint32_t VerifyResult(float output, float golden)
 {
@@ -41,6 +42,8 @@ uint32_t VerifyResult(float output, float golden)
     }
 }
 
+// 设备缓冲统一用 DeviceBuffer 托管：任何失败路径都不再泄漏
+// aclrtMalloc 内存，也不跳过 handle/stream/上下文清理（issue #356）
 int32_t test_scnrm2()
 {
     int32_t deviceId = 0;
@@ -48,54 +51,72 @@ int32_t test_scnrm2()
     constexpr uint32_t n = 8 * 1024;
     constexpr float realVal = 1.5f;
     constexpr float imagVal = 2.0f;
+    constexpr int incx = 1;
 
     std::vector<aclblasComplex> x(n, aclblasComplex{realVal, imagVal});
     float result = 0.0f;
-    int incx = 1;
-
-    aclInit(nullptr);
-    aclrtSetDevice(deviceId);
+    int32_t ret = 0;
 
     aclblasHandle_t handle = nullptr;
-    auto ret = aclblasCreate(&handle);
-    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", ret); return ret);
-
     aclrtStream stream = nullptr;
+
+    aclInit(nullptr);
+    if (aclrtSetDevice(deviceId) != ACL_SUCCESS) {
+        std::cout << "aclrtSetDevice failed." << std::endl;
+        aclFinalize();
+        return 1;
+    }
+    ret = aclblasCreate(&handle);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        std::cout << "aclblasCreate failed. ERROR: " << ret << std::endl;
+        aclFinalize();
+        return ret;
+    }
     aclrtCreateStream(&stream);
     ret = aclblasSetStream(handle, stream);
-    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", ret); return ret);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        std::cout << "aclblasSetStream failed. ERROR: " << ret << std::endl;
+        goto cleanup;
+    }
 
-    aclblasComplex* xDevice = nullptr;
-    float* resultDevice = nullptr;
-    size_t inputByteSize = n * sizeof(aclblasComplex);
-    size_t outputByteSize = sizeof(float);
+    {
+        try {
+            DeviceBuffer xDev(n * sizeof(aclblasComplex));
+            DeviceBuffer resultDev(sizeof(float));
+            xDev.copyFromHost(x.data(), xDev.size());
 
-    aclError aclRet = aclrtMalloc((void**)&xDevice, inputByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc xDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMalloc((void**)&resultDevice, outputByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc resultDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(xDevice, inputByteSize, x.data(), inputByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); return aclRet);
+            ret = aclblasScnrm2(handle, n, static_cast<aclblasComplex*>(xDev.ptr()), incx, resultDev.floatPtr());
+            if (ret != ACLBLAS_STATUS_SUCCESS) {
+                std::cout << "aclblasScnrm2 failed. ERROR: " << ret << std::endl;
+                goto cleanup;
+            }
+            aclError aclRet = aclrtSynchronizeStream(stream);
+            if (aclRet != ACL_SUCCESS) {
+                std::cout << "aclrtSynchronizeStream failed. ERROR: " << aclRet << std::endl;
+                ret = static_cast<int32_t>(aclRet);
+                goto cleanup;
+            }
+            resultDev.copyToHost(&result, sizeof(float));
+        } catch (const std::exception& e) {
+            std::cout << "device memory operation failed: " << e.what() << std::endl;
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+            goto cleanup;
+        }
 
-    ret = aclblasScnrm2(handle, n, xDevice, incx, resultDevice);
-    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasScnrm2 failed. ERROR: %d\n", ret); return ret);
+        float golden = std::sqrt(n * (realVal * realVal + imagVal * imagVal));
+        ret = static_cast<int32_t>(VerifyResult(result, golden));
+    }
 
-    aclRet = aclrtSynchronizeStream(stream);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(&result, outputByteSize, resultDevice, outputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy result failed. ERROR: %d\n", aclRet); return aclRet);
-
-    aclrtFree(xDevice);
-    aclrtFree(resultDevice);
-
-    aclblasDestroy(handle);
-    aclrtDestroyStream(stream);
+cleanup:
+    if (stream != nullptr) {
+        aclrtDestroyStream(stream);
+    }
+    if (handle != nullptr) {
+        aclblasDestroy(handle);
+    }
     aclrtResetDevice(deviceId);
     aclFinalize();
-
-    float golden = std::sqrt(n * (realVal * realVal + imagVal * imagVal));
-
-    return VerifyResult(result, golden);
+    return ret;
 }
 
 struct Snrm2TestContext {
@@ -184,75 +205,100 @@ struct Snrm2TestContext {
         edgeCaseResult |= RunCase("infinity and NaN", 0.0f, false, true);
         return edgeCaseResult;
     }
-    void Release(int32_t deviceId)
-    {
-        aclrtFree(xDevice);
-        aclrtFree(resultDevice);
-
-        aclblasDestroy(handle);
-        aclrtDestroyStream(stream);
-        aclrtResetDevice(deviceId);
-        aclFinalize();
-    }
 };
 
-int32_t main(int32_t argc, char* argv[])
+static int32_t runSnrm2Cases()
 {
     int32_t deviceId = 0;
 
     // Leave one element beyond the 8-element tiling boundary for tail coverage.
     constexpr uint32_t totalLength = 8 * 2048 + 1;
     constexpr float valueX = 1.2f;
+    constexpr int64_t incx = 1;
     std::vector<float> x(totalLength, valueX);
     float result = 0.0f;
-    int64_t incx = 1;
-
-    aclInit(nullptr);
-    aclrtSetDevice(deviceId);
+    int32_t ret = 0;
 
     aclblasHandle_t handle = nullptr;
-    auto ret = aclblasCreate(&handle);
-    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", ret); return ret);
-
     aclrtStream stream = nullptr;
+
+    aclInit(nullptr);
+    if (aclrtSetDevice(deviceId) != ACL_SUCCESS) {
+        std::cout << "aclrtSetDevice failed." << std::endl;
+        aclFinalize();
+        return 1;
+    }
+    ret = aclblasCreate(&handle);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        std::cout << "aclblasCreate failed. ERROR: " << ret << std::endl;
+        aclFinalize();
+        return ret;
+    }
     aclrtCreateStream(&stream);
     ret = aclblasSetStream(handle, stream);
-    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", ret); return ret);
-
-    float* xDevice = nullptr;
-    float* resultDevice = nullptr;
-    size_t inputByteSize = totalLength * sizeof(float);
-    size_t outputByteSize = sizeof(float);
-
-    aclError aclRet = aclrtMalloc((void**)&xDevice, inputByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc xDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMalloc((void**)&resultDevice, outputByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc resultDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(xDevice, inputByteSize, x.data(), inputByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); return aclRet);
-
-    ret = aclblasSnrm2(handle, totalLength, xDevice, incx, resultDevice);
-    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSnrm2 failed. ERROR: %d\n", ret); return ret);
-
-    aclRet = aclrtSynchronizeStream(stream);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(&result, outputByteSize, resultDevice, outputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy result failed. ERROR: %d\n", aclRet); return aclRet);
-
-    float golden = std::abs(valueX) * std::sqrt(static_cast<float>(totalLength));
-
-    int snrm2_result = VerifyResult(result, golden);
-    if (snrm2_result != 0) {
-        LOG_PRINT("normal aclblasSnrm2 case failed.\n");
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        std::cout << "aclblasSetStream failed. ERROR: " << ret << std::endl;
+        goto cleanup;
     }
 
-    Snrm2TestContext context{x, handle, stream, xDevice, resultDevice};
-    uint32_t edgeCaseResult = context.RunEdgeCases();
+    {
+        // DeviceBuffer 声明在 try 之外：生命周期需覆盖 try 内的使用与
+        // try 后 Snrm2TestContext 边界用例（跨核+尾块大值、FLT_MAX、Inf/NaN）的引用
+        DeviceBuffer xDev(totalLength * sizeof(float));
+        DeviceBuffer resultDev(sizeof(float));
+        try {
+            xDev.copyFromHost(x.data(), xDev.size());
 
-    context.Release(deviceId);
+            ret = aclblasSnrm2(handle, totalLength, xDev.floatPtr(), incx, resultDev.floatPtr());
+            if (ret != ACLBLAS_STATUS_SUCCESS) {
+                std::cout << "aclblasSnrm2 failed. ERROR: " << ret << std::endl;
+                goto cleanup;
+            }
+            aclError aclRet = aclrtSynchronizeStream(stream);
+            if (aclRet != ACL_SUCCESS) {
+                std::cout << "aclrtSynchronizeStream failed. ERROR: " << aclRet << std::endl;
+                ret = static_cast<int32_t>(aclRet);
+                goto cleanup;
+            }
+            resultDev.copyToHost(&result, sizeof(float));
+        } catch (const std::exception& e) {
+            std::cout << "device memory operation failed: " << e.what() << std::endl;
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+            goto cleanup;
+        }
 
-    if (snrm2_result != 0 || edgeCaseResult != 0) {
-        return 1;
+        float golden = std::abs(valueX) * std::sqrt(static_cast<float>(totalLength));
+        int snrm2Result = VerifyResult(result, golden);
+        if (snrm2Result != 0) {
+            LOG_PRINT("normal aclblasSnrm2 case failed.\n");
+            ret = 1;
+        }
+
+        // 缓冲区由 DeviceBuffer 托管，上下文仅持有非拥有指针
+        Snrm2TestContext context{x, handle, stream, xDev.floatPtr(), resultDev.floatPtr()};
+        uint32_t edgeCaseResult = context.RunEdgeCases();
+        if (edgeCaseResult != 0) {
+            ret = 1;
+        }
+    }
+
+cleanup:
+    if (stream != nullptr) {
+        aclrtDestroyStream(stream);
+    }
+    if (handle != nullptr) {
+        aclblasDestroy(handle);
+    }
+    aclrtResetDevice(deviceId);
+    aclFinalize();
+    return ret;
+}
+
+int32_t main(int32_t argc, char* argv[])
+{
+    int32_t ret = runSnrm2Cases();
+    if (ret != 0) {
+        return ret;
     }
 
     std::cout << "\n========== Testing scnrm2 ==========\n" << std::endl;

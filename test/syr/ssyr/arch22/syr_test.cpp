@@ -14,6 +14,7 @@
 #include <cmath>
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
+#include "device.h"
 
 constexpr float EPSILON = 1e-3f;
 
@@ -68,9 +69,42 @@ static void ComputeGoldenSsyrLower(float* A, const float* x, float alpha, int n,
     }
 }
 
-static int TestSsyrUpper()
+// 设备缓冲统一用 DeviceBuffer 托管：任何失败路径都不再泄漏
+// aclrtMalloc 内存，也不跳过 handle/stream/上下文清理（issue #357）
+static int32_t runSsyrDevice(
+    aclblasHandle_t handle, aclrtStream stream, aclblasFillMode_t uplo, int n, float alphaVal,
+    const std::vector<float>& x, int incx, std::vector<float>& a, int lda)
 {
-    std::cout << "Testing syr A2 (uplo=U):" << std::endl;
+    try {
+        DeviceBuffer aDev(a.size() * sizeof(float));
+        DeviceBuffer xDev(x.size() * sizeof(float));
+        DeviceBuffer alphaDev(sizeof(float));
+        aDev.copyFromHost(a.data(), aDev.size());
+        xDev.copyFromHost(x.data(), xDev.size());
+        alphaDev.copyFromHost(&alphaVal, sizeof(float));
+
+        int32_t ret = aclblasSsyr(handle, uplo, n, alphaDev.floatPtr(), xDev.floatPtr(), incx, aDev.floatPtr(), lda);
+        if (ret != ACLBLAS_STATUS_SUCCESS) {
+            std::cout << "aclblasSsyr failed. ERROR: " << ret << std::endl;
+            return ret;
+        }
+
+        aclError aclRet = aclrtSynchronizeStream(stream);
+        if (aclRet != ACL_SUCCESS) {
+            std::cout << "aclrtSynchronizeStream failed." << std::endl;
+            return static_cast<int32_t>(aclRet);
+        }
+        aDev.copyToHost(a.data(), aDev.size());
+        return ACLBLAS_STATUS_SUCCESS;
+    } catch (const std::exception& e) {
+        std::cout << "device memory operation failed: " << e.what() << std::endl;
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+}
+
+static int TestSsyrCase(const char* label, aclblasFillMode_t uplo)
+{
+    std::cout << "Testing syr A2 (uplo=" << (uplo == ACLBLAS_UPPER ? "U" : "L") << "):" << std::endl;
 
     int32_t deviceId = 0;
     constexpr int N = 128;
@@ -78,211 +112,68 @@ static int TestSsyrUpper()
     constexpr int incx = 1;
     constexpr float alphaVal = 2.0f;
 
-    std::vector<float> A(N * lda, 1.0f);
+    std::vector<float> a(N * lda, 1.0f);
     for (int i = 0; i < N; i++) {
-        for (int j = 0; j < i; j++) {
-            A[i * lda + j] = 0.0f;
+        for (int j = 0; j < N; j++) {
+            bool keep = (uplo == ACLBLAS_UPPER) ? (j >= i) : (j <= i);
+            a[i * lda + j] = keep ? a[i * lda + j] : 0.0f;
         }
-        A[i * lda + i] = 3.0f;
+        a[i * lda + i] = 3.0f;
     }
     std::vector<float> x(N);
     for (int i = 0; i < N; i++) {
         x[i] = static_cast<float>(i + 1);
     }
-    std::vector<float> AGolden = A;
-
-    ComputeGoldenSsyrUpper(AGolden.data(), x.data(), alphaVal, N, lda);
-
-    aclInit(nullptr);
-    aclrtSetDevice(deviceId);
-
-    aclblasHandle_t handle = nullptr;
-    auto ret = aclblasCreate(&handle);
-    if (ret != ACLBLAS_STATUS_SUCCESS) {
-        std::cout << "aclblasCreate failed. ERROR: " << ret << std::endl;
-        return ret;
+    std::vector<float> aGolden = a;
+    if (uplo == ACLBLAS_UPPER) {
+        ComputeGoldenSsyrUpper(aGolden.data(), x.data(), alphaVal, N, lda);
+    } else {
+        ComputeGoldenSsyrLower(aGolden.data(), x.data(), alphaVal, N, lda);
     }
 
+    aclblasHandle_t handle = nullptr;
     aclrtStream stream = nullptr;
+    int32_t ret = 0;
+
+    aclInit(nullptr);
+    if (aclrtSetDevice(deviceId) != ACL_SUCCESS) {
+        std::cout << "aclrtSetDevice failed." << std::endl;
+        aclFinalize();
+        return 1;
+    }
+    ret = aclblasCreate(&handle);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        std::cout << "aclblasCreate failed. ERROR: " << ret << std::endl;
+        aclFinalize();
+        return ret;
+    }
     aclrtCreateStream(&stream);
     ret = aclblasSetStream(handle, stream);
     if (ret != ACLBLAS_STATUS_SUCCESS) {
         std::cout << "aclblasSetStream failed. ERROR: " << ret << std::endl;
-        return ret;
+        goto cleanup;
     }
 
-    float* aDevice = nullptr;
-    float* xDevice = nullptr;
-    float* alphaDevice = nullptr;
-    size_t aByteSize = N * lda * sizeof(float);
-    size_t xByteSize = N * sizeof(float);
-    aclError aclRet = aclrtMalloc(reinterpret_cast<void**>(&aDevice), aByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMalloc aDevice failed." << std::endl;
-        return aclRet;
-    }
-    aclRet = aclrtMalloc(reinterpret_cast<void**>(&xDevice), xByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMalloc xDevice failed." << std::endl;
-        return aclRet;
-    }
-    aclRet = aclrtMalloc(reinterpret_cast<void**>(&alphaDevice), sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMalloc alphaDevice failed." << std::endl;
-        return aclRet;
+    ret = runSsyrDevice(handle, stream, uplo, N, alphaVal, x, incx, a, lda);
+    if (ret == ACLBLAS_STATUS_SUCCESS) {
+        ret = static_cast<int32_t>(VerifyResult(a, aGolden));
     }
 
-    aclRet = aclrtMemcpy(aDevice, aByteSize, A.data(), aByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMemcpy aDevice failed." << std::endl;
-        return aclRet;
+cleanup:
+    if (stream != nullptr) {
+        aclrtDestroyStream(stream);
     }
-    aclRet = aclrtMemcpy(xDevice, xByteSize, x.data(), xByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMemcpy xDevice failed." << std::endl;
-        return aclRet;
+    if (handle != nullptr) {
+        aclblasDestroy(handle);
     }
-    aclRet = aclrtMemcpy(alphaDevice, sizeof(float), &alphaVal, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMemcpy alphaDevice failed." << std::endl;
-        return aclRet;
-    }
-
-    ret = aclblasSsyr(handle, ACLBLAS_UPPER, N, alphaDevice, xDevice, incx, aDevice, lda);
-    if (ret != ACLBLAS_STATUS_SUCCESS) {
-        std::cout << "aclblasSsyr failed. ERROR: " << ret << std::endl;
-        return ret;
-    }
-
-    aclRet = aclrtSynchronizeStream(stream);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtSynchronizeStream failed." << std::endl;
-        return aclRet;
-    }
-    aclRet = aclrtMemcpy(A.data(), aByteSize, aDevice, aByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMemcpy A failed." << std::endl;
-        return aclRet;
-    }
-
-    aclrtFree(aDevice);
-    aclrtFree(xDevice);
-    aclrtFree(alphaDevice);
-    aclblasDestroy(handle);
-    aclrtDestroyStream(stream);
     aclrtResetDevice(deviceId);
     aclFinalize();
-
-    return static_cast<int>(VerifyResult(A, AGolden));
+    return ret;
 }
 
-static int TestSsyrLower()
-{
-    std::cout << "Testing syr A2 (uplo=L):" << std::endl;
+static int TestSsyrUpper() { return TestSsyrCase("U", ACLBLAS_UPPER); }
 
-    int32_t deviceId = 0;
-    constexpr int N = 128;
-    constexpr int lda = N;
-    constexpr int incx = 1;
-    constexpr float alphaVal = 2.0f;
-
-    std::vector<float> A(N * lda, 1.0f);
-    for (int i = 0; i < N; i++) {
-        for (int j = i + 1; j < N; j++) {
-            A[i * lda + j] = 0.0f;
-        }
-        A[i * lda + i] = 3.0f;
-    }
-    std::vector<float> x(N);
-    for (int i = 0; i < N; i++) {
-        x[i] = static_cast<float>(i + 1);
-    }
-    std::vector<float> AGolden = A;
-
-    ComputeGoldenSsyrLower(AGolden.data(), x.data(), alphaVal, N, lda);
-
-    aclInit(nullptr);
-    aclrtSetDevice(deviceId);
-
-    aclblasHandle_t handle = nullptr;
-    auto ret = aclblasCreate(&handle);
-    if (ret != ACLBLAS_STATUS_SUCCESS) {
-        std::cout << "aclblasCreate failed. ERROR: " << ret << std::endl;
-        return ret;
-    }
-
-    aclrtStream stream = nullptr;
-    aclrtCreateStream(&stream);
-    ret = aclblasSetStream(handle, stream);
-    if (ret != ACLBLAS_STATUS_SUCCESS) {
-        std::cout << "aclblasSetStream failed. ERROR: " << ret << std::endl;
-        return ret;
-    }
-
-    float* aDevice = nullptr;
-    float* xDevice = nullptr;
-    float* alphaDevice = nullptr;
-    size_t aByteSize = N * lda * sizeof(float);
-    size_t xByteSize = N * sizeof(float);
-    aclError aclRet = aclrtMalloc(reinterpret_cast<void**>(&aDevice), aByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMalloc aDevice failed." << std::endl;
-        return aclRet;
-    }
-    aclRet = aclrtMalloc(reinterpret_cast<void**>(&xDevice), xByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMalloc xDevice failed." << std::endl;
-        return aclRet;
-    }
-    aclRet = aclrtMalloc(reinterpret_cast<void**>(&alphaDevice), sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMalloc alphaDevice failed." << std::endl;
-        return aclRet;
-    }
-
-    aclRet = aclrtMemcpy(aDevice, aByteSize, A.data(), aByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMemcpy aDevice failed." << std::endl;
-        return aclRet;
-    }
-    aclRet = aclrtMemcpy(xDevice, xByteSize, x.data(), xByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMemcpy xDevice failed." << std::endl;
-        return aclRet;
-    }
-    aclRet = aclrtMemcpy(alphaDevice, sizeof(float), &alphaVal, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMemcpy alphaDevice failed." << std::endl;
-        return aclRet;
-    }
-
-    ret = aclblasSsyr(handle, ACLBLAS_LOWER, N, alphaDevice, xDevice, incx, aDevice, lda);
-    if (ret != ACLBLAS_STATUS_SUCCESS) {
-        std::cout << "aclblasSsyr failed. ERROR: " << ret << std::endl;
-        return ret;
-    }
-
-    aclRet = aclrtSynchronizeStream(stream);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtSynchronizeStream failed." << std::endl;
-        return aclRet;
-    }
-    aclRet = aclrtMemcpy(A.data(), aByteSize, aDevice, aByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    if (aclRet != ACL_SUCCESS) {
-        std::cout << "aclrtMemcpy A failed." << std::endl;
-        return aclRet;
-    }
-
-    aclrtFree(aDevice);
-    aclrtFree(xDevice);
-    aclrtFree(alphaDevice);
-    aclblasDestroy(handle);
-    aclrtDestroyStream(stream);
-    aclrtResetDevice(deviceId);
-    aclFinalize();
-
-    return static_cast<int>(VerifyResult(A, AGolden));
-}
+static int TestSsyrLower() { return TestSsyrCase("L", ACLBLAS_LOWER); }
 
 int32_t main(int32_t argc, char* argv[])
 {

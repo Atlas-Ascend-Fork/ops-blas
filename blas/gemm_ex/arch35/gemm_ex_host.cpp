@@ -295,6 +295,11 @@ static GemmExTilingData CalcBlockMmadTiling(
 
 static aclblasStatus_t HandleKZero(void* C, int ldc, int n, aclDataType Ctype, float betaVal)
 {
+    // k == 0 且 beta == 0 时契约允许 C 为 nullptr：此时无需写 C，直接成功返回，
+    // 避免对空指针执行 aclrtMemset/aclrtMemcpy（issue #355）
+    if (C == nullptr) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
     if (betaVal == 0.0f) {
         size_t elemSizeC = (Ctype == ACL_FLOAT) ? 4 : 2;
         size_t cBytes = static_cast<size_t>(ldc) * n * elemSizeC;

@@ -17,10 +17,10 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
-#include <iterator>
 #include <cmath>
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
+#include "device.h"
 
 #define CHECK_RET(cond, return_expr) \
     do {                             \
@@ -35,14 +35,15 @@
     } while (0)
 
 uint32_t VerifyResult(
-    std::vector<float>& outputX, std::vector<float>& outputY, std::vector<float>& goldenX, std::vector<float>& goldenY)
+    std::vector<aclblasComplex>& outputX, std::vector<aclblasComplex>& outputY, std::vector<aclblasComplex>& goldenX,
+    std::vector<aclblasComplex>& goldenY)
 {
-    auto printTensor = [](std::vector<float>& tensor, const char* name) {
+    auto printTensor = [](const std::vector<aclblasComplex>& tensor, const char* name) {
         constexpr size_t maxPrintSize = 20;
         std::cout << name << ": ";
-        std::copy(
-            tensor.begin(), tensor.begin() + std::min(tensor.size(), maxPrintSize),
-            std::ostream_iterator<float>(std::cout, " "));
+        for (size_t i = 0; i < std::min(tensor.size(), maxPrintSize); i++) {
+            std::cout << "(" << tensor[i].real << ", " << tensor[i].imag << ") ";
+        }
         if (tensor.size() > maxPrintSize) {
             std::cout << "...";
         }
@@ -57,15 +58,17 @@ uint32_t VerifyResult(
     size_t errorCount = 0;
 
     for (size_t i = 0; i < outputX.size(); i++) {
-        float relError = std::abs(outputX[i] - goldenX[i]) / (std::abs(goldenX[i]) + 1e-10f);
-        if (relError > epsilon) {
+        float relErrorReal = std::abs(outputX[i].real - goldenX[i].real) / (std::abs(goldenX[i].real) + 1e-10f);
+        float relErrorImag = std::abs(outputX[i].imag - goldenX[i].imag) / (std::abs(goldenX[i].imag) + 1e-10f);
+        if (relErrorReal > epsilon || relErrorImag > epsilon) {
             errorCount++;
         }
     }
 
     for (size_t i = 0; i < outputY.size(); i++) {
-        float relError = std::abs(outputY[i] - goldenY[i]) / (std::abs(goldenY[i]) + 1e-10f);
-        if (relError > epsilon) {
+        float relErrorReal = std::abs(outputY[i].real - goldenY[i].real) / (std::abs(goldenY[i].real) + 1e-10f);
+        float relErrorImag = std::abs(outputY[i].imag - goldenY[i].imag) / (std::abs(goldenY[i].imag) + 1e-10f);
+        if (relErrorReal > epsilon || relErrorImag > epsilon) {
             errorCount++;
         }
     }
@@ -89,54 +92,77 @@ int32_t main(int32_t argc, char* argv[])
     constexpr float c = 0.7071067811865476;
     constexpr float s = 0.7071067811865476;
 
-    std::vector<float> x(n, 1.0f);
-    std::vector<float> y(n, 2.0f);
+    // csrot 作用于复数向量：初值带非零虚部，覆盖共轭/虚部路径
+    std::vector<aclblasComplex> x(n, aclblasComplex{1.0f, 0.5f});
+    std::vector<aclblasComplex> y(n, aclblasComplex{2.0f, -1.0f});
 
     aclInit(nullptr);
     aclrtSetDevice(deviceId);
 
     aclblasHandle_t handle = nullptr;
-    auto ret = aclblasCreate(&handle);
-    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", ret); return ret);
-
     aclrtStream stream = nullptr;
+    int32_t ret = 0;
+    handle = nullptr;
+    stream = nullptr;
+    ret = aclblasCreate(&handle);
+    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", ret); aclFinalize();
+              return ret);
     aclrtCreateStream(&stream);
     ret = aclblasSetStream(handle, stream);
-    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", ret); return ret);
+    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", ret); goto cleanup);
 
-    aclblasComplex* xDevice = nullptr;
-    aclblasComplex* yDevice = nullptr;
-    size_t inputByteSize = n * sizeof(float);
+    {
+        // golden 必须基于设备调用前的原始输入计算：csrot 会就地改写 x/y，
+        // 在 copyToHost 之后取 x[i]/y[i] 求得的是旋转后的值（issue 修复）
+        std::vector<aclblasComplex> goldenX(n);
+        std::vector<aclblasComplex> goldenY(n);
+        for (uint32_t i = 0; i < n; i++) {
+            goldenX[i].real = c * x[i].real + s * y[i].real;
+            goldenX[i].imag = c * x[i].imag + s * y[i].imag;
+            goldenY[i].real = c * y[i].real - s * x[i].real;
+            goldenY[i].imag = c * y[i].imag - s * x[i].imag;
+        }
 
-    aclError aclRet = aclrtMalloc((void**)&xDevice, inputByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc xDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMalloc((void**)&yDevice, inputByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc yDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(xDevice, inputByteSize, x.data(), inputByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(yDevice, inputByteSize, y.data(), inputByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy yDevice failed. ERROR: %d\n", aclRet); return aclRet);
+        // 缓冲区按复数元素尺寸分配（issue #358：原实现按 float 尺寸只分配一半）
+        DeviceBuffer xDev(n * sizeof(aclblasComplex));
+        DeviceBuffer yDev(n * sizeof(aclblasComplex));
+        try {
+            xDev.copyFromHost(x.data(), xDev.size());
+            yDev.copyFromHost(y.data(), yDev.size());
+        } catch (const std::exception& e) {
+            LOG_PRINT("device memory operation failed: %s\n", e.what());
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+            goto cleanup;
+        }
 
-    ret = aclblasCsrot(handle, n, xDevice, 1, yDevice, 1, &c, &s);
-    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCsrot failed. ERROR: %d\n", ret); return ret);
+        ret = aclblasCsrot(
+            handle, n, static_cast<aclblasComplex*>(xDev.ptr()), 1, static_cast<aclblasComplex*>(yDev.ptr()), 1, &c,
+            &s);
+        CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCsrot failed. ERROR: %d\n", ret); goto cleanup);
 
-    aclRet = aclrtSynchronizeStream(stream);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(x.data(), inputByteSize, xDevice, inputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy x failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(y.data(), inputByteSize, yDevice, inputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy y failed. ERROR: %d\n", aclRet); return aclRet);
+        CHECK_RET(aclrtSynchronizeStream(stream) == ACL_SUCCESS,
+                  LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", ret);
+                  goto cleanup);
+        try {
+            xDev.copyToHost(x.data(), xDev.size());
+            yDev.copyToHost(y.data(), yDev.size());
+        } catch (const std::exception& e) {
+            LOG_PRINT("device memory operation failed: %s\n", e.what());
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+            goto cleanup;
+        }
 
-    aclrtFree(xDevice);
-    aclrtFree(yDevice);
+        ret = static_cast<int32_t>(VerifyResult(x, y, goldenX, goldenY));
+    }
 
-    aclblasDestroy(handle);
-    aclrtDestroyStream(stream);
+cleanup:
+    if (stream != nullptr) {
+        aclrtDestroyStream(stream);
+    }
+    if (handle != nullptr) {
+        aclblasDestroy(handle);
+    }
     aclrtResetDevice(deviceId);
     aclFinalize();
-
-    std::vector<float> goldenX(n, c * 1.0f + s * 2.0f);
-    std::vector<float> goldenY(n, c * 2.0f - s * 1.0f);
-
-    return VerifyResult(x, y, goldenX, goldenY);
+    return ret;
 }

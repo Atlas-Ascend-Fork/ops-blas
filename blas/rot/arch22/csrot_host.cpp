@@ -23,8 +23,7 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
-void csrot_kernel_do(uint8_t* x, uint8_t* y, uint8_t* workSpace, uint8_t* tilingGm,
-                     uint32_t numBlocks, void *stream);
+void csrot_kernel_do(uint8_t* x, uint8_t* y, uint8_t* workSpace, uint8_t* tilingGm, uint32_t numBlocks, void* stream);
 
 // Tiling data structure from sip
 struct RotTilingData {
@@ -34,8 +33,8 @@ struct RotTilingData {
 };
 
 aclblasStatus_t aclblasCsrot(
-    aclblasHandle_t handle, int n, aclblasComplex* x, int incx, aclblasComplex* y,
-    int incy, const float* c, const float* s)
+    aclblasHandle_t handle, int n, aclblasComplex* x, int incx, aclblasComplex* y, int incy, const float* c,
+    const float* s)
 {
     if (c == nullptr || s == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -47,7 +46,10 @@ aclblasStatus_t aclblasCsrot(
     size_t workSpaceSize = 32;
 
     RotTilingData tiling;
-    tiling.elementCount = static_cast<int32_t>(n);
+    // kernel 按交织复数的 float 分量逐分量旋转（x'_r = c*x_r + s*y_r 等），
+    // elementCount 必须是 float 分量数 2*n；传 n 会导致仅前一半复数元素
+    // 被旋转、后一半保持原值（issue #358 测试缓冲修正后暴露）
+    tiling.elementCount = static_cast<int32_t>(n) * 2;
     tiling.cosValue = *c;
     tiling.sinValue = *s;
 
@@ -55,27 +57,24 @@ aclblasStatus_t aclblasCsrot(
     uint8_t* tilingDevice = nullptr;
 
     aclError aclRet = aclrtMalloc((void**)&workSpaceDevice, workSpaceSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(RotTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(workSpaceDevice);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(workSpaceDevice);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet =
         aclrtMemcpy(tilingDevice, sizeof(RotTilingData), &tiling, sizeof(RotTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(workSpaceDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
+              aclrtFree(workSpaceDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
-    csrot_kernel_do(reinterpret_cast<uint8_t*>(x), reinterpret_cast<uint8_t*>(y), workSpaceDevice, tilingDevice,
-                    numBlocks, useStream);
+    csrot_kernel_do(
+        reinterpret_cast<uint8_t*>(x), reinterpret_cast<uint8_t*>(y), workSpaceDevice, tilingDevice, numBlocks,
+        useStream);
     aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(workSpaceDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(tilingDevice); aclrtFree(workSpaceDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclrtFree(workSpaceDevice);
     aclrtFree(tilingDevice);
