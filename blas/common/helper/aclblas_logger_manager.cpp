@@ -24,11 +24,12 @@ namespace AclBlas {
 aclblasStatus_t aclblasLoggerConfigure(int logIsOn, int logToStdOut, int logToStdErr, const char* logFile)
 {
     // Configuration is stored for consumption by the logging output path.
-    // logFile is NOT copied; caller must ensure it remains valid during logging.
+    // issue #601: logFile 以值拷贝保存（C ABI 边界不长期持有调用方裸指针），
+    // 调用方在配置返回后释放/复用原缓冲不影响后续日志输出。
     configure.logIsOn = logIsOn;
     configure.logToStdOut = logToStdOut;
     configure.logToStdErr = logToStdErr;
-    configure.logFile = logFile;
+    configure.logFile = (logFile != nullptr) ? std::string(logFile) : std::string();
     return aclblasStatus_t::ACLBLAS_STATUS_SUCCESS;
 }
 

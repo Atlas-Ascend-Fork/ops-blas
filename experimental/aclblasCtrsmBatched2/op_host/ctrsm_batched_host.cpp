@@ -206,10 +206,6 @@ static aclblasStatus_t LaunchCtrsmKernel(
     size_t ptrArraySize = (size_t)batchCount * sizeof(void*);
     uint8_t *tilingDevice = nullptr, *aArrayDevice = nullptr, *bArrayDevice = nullptr;
     uint8_t *cubeTilingDevice = nullptr, *gemmWsDevice = nullptr, *sysWsDevice = nullptr;
-    auto platformInst = platform_ascendc::PlatformAscendCManager::GetInstance(GetSocVersion());
-    size_t sysWsSize = static_cast<size_t>(platformInst->GetLibApiWorkSpaceSize());
-    if (sysWsSize < 16 * 1024 * 1024)
-        sysWsSize = 16 * 1024 * 1024;
 
     aclblasStatus_t status = ACLBLAS_STATUS_INTERNAL_ERROR;
     do {
@@ -227,10 +223,16 @@ static aclblasStatus_t LaunchCtrsmKernel(
         uint8_t cubeTilingBuf[2048];
         uint32_t cubeTilingSize = 0;
         GenerateCubeTiling(maxMN, cubeTilingBuf, &cubeTilingSize);
+        // issue #612: tiling 结构膨胀超过缓冲容量时编译期无感知，必须显式校验；
+        // 拷贝长度用实际 tiling 大小，避免把缓冲尾部未初始化区域一并下发设备
+        if (cubeTilingSize > sizeof(cubeTilingBuf)) {
+            status = ACLBLAS_STATUS_INVALID_VALUE;
+            break;
+        }
         if (aclrtMalloc((void**)&cubeTilingDevice, sizeof(cubeTilingBuf), ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
             aclrtMemcpy(
-                cubeTilingDevice, sizeof(cubeTilingBuf), cubeTilingBuf, sizeof(cubeTilingBuf),
-                ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
+                cubeTilingDevice, sizeof(cubeTilingBuf), cubeTilingBuf, cubeTilingSize, ACL_MEMCPY_HOST_TO_DEVICE) !=
+                ACL_SUCCESS) {
             break;
         }
 

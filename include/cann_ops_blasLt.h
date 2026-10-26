@@ -36,7 +36,7 @@ typedef struct _aclblaslt_handle* aclblasLtHandle_t;
  *  \brief Descriptor of the matrix layout.
  */
 typedef struct {
-  uint64_t data[8];
+    uint64_t data[8];
 } aclblasLtMatrixLayoutOpaque_t;
 
 typedef aclblasLtMatrixLayoutOpaque_t* aclblasLtMatrixLayout_t;
@@ -45,7 +45,7 @@ typedef aclblasLtMatrixLayoutOpaque_t* aclblasLtMatrixLayout_t;
  *  \brief Descriptor of the matmul operation.
  */
 typedef struct {
-  uint64_t data[24];
+    uint64_t data[24];
 } aclblasLtMatmulDescOpaque_t;
 
 typedef aclblasLtMatmulDescOpaque_t* aclblasLtMatmulDesc_t;
@@ -54,7 +54,7 @@ typedef aclblasLtMatmulDescOpaque_t* aclblasLtMatmulDesc_t;
  *  \brief Descriptor of the matrix transform operation.
  */
 typedef struct {
-  uint64_t data[8];
+    uint64_t data[8];
 } aclblasLtMatrixTransformDescOpaque_t;
 
 typedef aclblasLtMatrixTransformDescOpaque_t* aclblasLtMatrixTransformDesc_t;
@@ -63,7 +63,7 @@ typedef aclblasLtMatrixTransformDescOpaque_t* aclblasLtMatrixTransformDesc_t;
  *  \brief Descriptor of the matmul preference.
  */
 typedef struct {
-  uint64_t data[8];
+    uint64_t data[8];
 } aclblasLtMatmulPreferenceOpaque_t;
 
 typedef aclblasLtMatmulPreferenceOpaque_t* aclblasLtMatmulPreference_t;
@@ -74,11 +74,11 @@ typedef aclblasLtMatmulPreferenceOpaque_t* aclblasLtMatmulPreference_t;
  */
 typedef struct _aclblasLtMatmulAlgo_t {
 #ifdef __cplusplus
-  uint8_t data[16] = {0};
-  size_t max_workspace_bytes = 0;
+    uint8_t data[16] = {0};
+    size_t max_workspace_bytes = 0;
 #else
-  uint8_t data[16];
-  size_t max_workspace_bytes;
+    uint8_t data[16];
+    size_t max_workspace_bytes;
 #endif
 } aclblasLtMatmulAlgo_t;
 
@@ -86,129 +86,191 @@ typedef struct _aclblasLtMatmulAlgo_t {
  *  \brief Matmul Heuristic Result.
  */
 typedef struct _aclblasLtMatmulHeuristicResult_t {
-  aclblasLtMatmulAlgo_t algo; /**< Algo struct */
-  size_t workspaceSize = 0;       /**< Actual size of workspace memory required. */
-  aclblasStatus_t state = ACLBLAS_STATUS_SUCCESS;      /**< Result status. */
-  float wavesCount = 1.0;           /**< Waves count is a device utilization metric. */
-  int reserved[4];            /**< Reserved. */
+    aclblasLtMatmulAlgo_t algo; /**< Algo struct */
+#ifdef __cplusplus
+    size_t workspaceSize = 0;                       /**< Actual size of workspace memory required. */
+    aclblasStatus_t state = ACLBLAS_STATUS_SUCCESS; /**< Result status. */
+    float wavesCount = 1.0;                         /**< Waves count is a device utilization metric. */
+#else
+    size_t workspaceSize;  /**< Actual size of workspace memory required. */
+    aclblasStatus_t state; /**< Result status. */
+    float wavesCount;      /**< Waves count is a device utilization metric. */
+#endif
+    int reserved[4]; /**< Reserved. */
 } aclblasLtMatmulHeuristicResult_t;
 
 /*! \ingroup types_module
  *  \brief Matrix order.
  */
 typedef enum aclblasLtOrder {
-  ACLBLASLT_ORDER_COL = 0, /**< Column major */
-  ACLBLASLT_ORDER_ROW = 1, /**< Row major */
-  ACLBLASLT_ORDER_COL32 = 2,        /**< 32-column composite tiles, column major within each tile. */
-  ACLBLASLT_ORDER_COL4_4R2_8C = 3,  /**< 32-column 8-row composite quantization tiles. */
-  ACLBLASLT_ORDER_COL32_2R_4R4 = 4, /**< 32-column 32-row composite quantization tiles. */
+    ACLBLASLT_ORDER_COL = 0,          /**< Column major */
+    ACLBLASLT_ORDER_ROW = 1,          /**< Row major */
+    ACLBLASLT_ORDER_COL32 = 2,        /**< 32-column composite tiles, column major within each tile. */
+    ACLBLASLT_ORDER_COL4_4R2_8C = 3,  /**< 32-column 8-row composite quantization tiles. */
+    ACLBLASLT_ORDER_COL32_2R_4R4 = 4, /**< 32-column 32-row composite quantization tiles. */
 } aclblasLtOrder_t;
 
 /*! \ingroup types_module
  *  \brief Storage location used for BLASLt alpha and beta scalar pointers.
  */
 typedef enum aclblasLtPointerMode {
-  ACLBLASLT_POINTER_MODE_HOST = 0,   /**< alpha and beta point to host scalars. */
-  ACLBLASLT_POINTER_MODE_DEVICE = 1, /**< alpha and beta point to device scalars. */
+    ACLBLASLT_POINTER_MODE_HOST = 0,   /**< alpha and beta point to host scalars. */
+    ACLBLASLT_POINTER_MODE_DEVICE = 1, /**< alpha and beta point to device scalars. */
 } aclblasLtPointerMode_t;
 
 /*! \ingroup types_module
  *  \brief  Property type.
  */
 typedef enum aclblasLtPropertyType {
-  ACLBLASLT_PROPERTY_MAJOR_VERSION = 0, /**<Major version number. */
-  ACLBLASLT_PROPERTY_MINOR_VERSION = 1, /**<Minor version number. */
-  ACLBLASLT_PROPERTY_PATCH_LEVEL = 2,   /**<Patch version number. */
+    ACLBLASLT_PROPERTY_MAJOR_VERSION = 0, /**<Major version number. */
+    ACLBLASLT_PROPERTY_MINOR_VERSION = 1, /**<Minor version number. */
+    ACLBLASLT_PROPERTY_PATCH_LEVEL = 2,   /**<Patch version number. */
 } aclblasLtPropertyType_t;
 
 /*! \ingroup types_module
  *  \brief Specifies the enumeration type to set the postprocessing options for the epilogue.
  */
 typedef enum aclblasLtEpilogue {
-  ACLBLASLT_EPILOGUE_DEFAULT = 1,                 /**<No special postprocessing. Scale and quantize the results if necessary.*/
-  ACLBLASLT_EPILOGUE_RELU = 2,                    /**<Apply ReLU pointwise transform to the results (``x:=max(x, 0)``)*/
-  ACLBLASLT_EPILOGUE_BIAS = 4,                    /**<Apply (broadcast) bias from the bias vector. The bias vector length must match the number of rows in matrix D, and it must be packed (so the stride between vector elements is one). The bias vector is broadcast to all columns and added before applying the final postprocessing.*/
-  ACLBLASLT_EPILOGUE_RELU_BIAS = 6,               /**<Apply bias and then ReLU transform.*/
-  ACLBLASLT_EPILOGUE_GELU = 32,                   /**<Apply GELU pointwise transform to the results (``x:=GELU(x)``).*/
-  ACLBLASLT_EPILOGUE_GELU_BIAS = 36,              /**<Apply Bias and then GELU transform.*/
-  ACLBLASLT_EPILOGUE_RELU_AUX = 130,              /**<Output GEMM results before applying RELU transform.*/
-  ACLBLASLT_EPILOGUE_RELU_AUX_BIAS = 134,         /**<Output GEMM results after applying bias but before applying RELU transform.*/
-  ACLBLASLT_EPILOGUE_DRELU = 136,
-  ACLBLASLT_EPILOGUE_DRELU_BGRAD = 152,           /**<Apply gradient RELU transform and bias gradient to the results. Requires additional auxiliary input. */           /**<Apply gradient RELU transform. Requires additional auxiliary input. */
-  ACLBLASLT_EPILOGUE_GELU_AUX = 160,              /**<Output GEMM results before applying GELU transform.*/
-  ACLBLASLT_EPILOGUE_GELU_AUX_BIAS = 164,         /**<Output GEMM results after applying bias but before applying GELU transform.*/
-  ACLBLASLT_EPILOGUE_DGELU = 192,                 /**<Apply gradient GELU transform. Requires additional auxiliary input. */
-  ACLBLASLT_EPILOGUE_DGELU_BGRAD = 208,           /**<Apply gradient GELU transform and bias gradient to the results. Requires additional auxiliary input. */
-  ACLBLASLT_EPILOGUE_BGRADA = 256,                /**<Apply bias gradient to A and output GEMM result. */
-  ACLBLASLT_EPILOGUE_BGRADB = 512,                /**<Apply bias gradient to B and output GEMM result. */
-  ACLBLASLT_EPILOGUE_SIGMOID = 1024,              /**<Apply sigmoid activation function pointwise. */
-  ACLBLASLT_EPILOGUE_SWISH_EXT = 65536,           /**<Apply Swish pointwise transform to the results (``x:=Swish(x, 1)``).*/
-  ACLBLASLT_EPILOGUE_SWISH_BIAS_EXT = 65540,      /**<Apply Bias and then Swish transform.*/
-  ACLBLASLT_EPILOGUE_CLAMP_EXT = 131072,          /**<Apply pointwise clamp to the results (``x:=max(alpha, min(x, beta))``).*/
-  ACLBLASLT_EPILOGUE_CLAMP_BIAS_EXT = 131076,     /**<Apply Bias and then clamp.*/
-  ACLBLASLT_EPILOGUE_CLAMP_AUX_EXT = 131200,      /**<Output GEMM results before applying clamp transform.*/
-  ACLBLASLT_EPILOGUE_CLAMP_AUX_BIAS_EXT = 131204, /**<Output GEMM results after applying bias but before applying clamp transform.*/
+    ACLBLASLT_EPILOGUE_DEFAULT = 1, /**<No special postprocessing. Scale and quantize the results if necessary.*/
+    ACLBLASLT_EPILOGUE_RELU = 2,    /**<Apply ReLU pointwise transform to the results (``x:=max(x, 0)``)*/
+    ACLBLASLT_EPILOGUE_BIAS =
+        4, /**<Apply (broadcast) bias from the bias vector. The bias vector length must match the number of rows in
+              matrix D, and it must be packed (so the stride between vector elements is one). The bias vector is
+              broadcast to all columns and added before applying the final postprocessing.*/
+    ACLBLASLT_EPILOGUE_RELU_BIAS = 6,  /**<Apply bias and then ReLU transform.*/
+    ACLBLASLT_EPILOGUE_GELU = 32,      /**<Apply GELU pointwise transform to the results (``x:=GELU(x)``).*/
+    ACLBLASLT_EPILOGUE_GELU_BIAS = 36, /**<Apply Bias and then GELU transform.*/
+    ACLBLASLT_EPILOGUE_RELU_AUX = 130, /**<Output GEMM results before applying RELU transform.*/
+    ACLBLASLT_EPILOGUE_RELU_AUX_BIAS =
+        134, /**<Output GEMM results after applying bias but before applying RELU transform.*/
+    ACLBLASLT_EPILOGUE_DRELU = 136,
+    ACLBLASLT_EPILOGUE_DRELU_BGRAD = 152,
+    /**<Apply gradient RELU transform and bias gradient to the results. Requires additional auxiliary input. */ /**<Apply
+                                                                                                                   gradient
+                                                                                                                   RELU
+                                                                                                                   transform.
+                                                                                                                   Requires
+                                                                                                                   additional
+                                                                                                                   auxiliary
+                                                                                                                   input.
+                                                                                                                 */
+    ACLBLASLT_EPILOGUE_GELU_AUX = 160, /**<Output GEMM results before applying GELU transform.*/
+    ACLBLASLT_EPILOGUE_GELU_AUX_BIAS =
+        164,                        /**<Output GEMM results after applying bias but before applying GELU transform.*/
+    ACLBLASLT_EPILOGUE_DGELU = 192, /**<Apply gradient GELU transform. Requires additional auxiliary input. */
+    ACLBLASLT_EPILOGUE_DGELU_BGRAD =
+        208, /**<Apply gradient GELU transform and bias gradient to the results. Requires additional auxiliary input. */
+    ACLBLASLT_EPILOGUE_BGRADA = 256,      /**<Apply bias gradient to A and output GEMM result. */
+    ACLBLASLT_EPILOGUE_BGRADB = 512,      /**<Apply bias gradient to B and output GEMM result. */
+    ACLBLASLT_EPILOGUE_SIGMOID = 1024,    /**<Apply sigmoid activation function pointwise. */
+    ACLBLASLT_EPILOGUE_SWISH_EXT = 65536, /**<Apply Swish pointwise transform to the results (``x:=Swish(x, 1)``).*/
+    ACLBLASLT_EPILOGUE_SWISH_BIAS_EXT = 65540, /**<Apply Bias and then Swish transform.*/
+    ACLBLASLT_EPILOGUE_CLAMP_EXT = 131072, /**<Apply pointwise clamp to the results (``x:=max(alpha, min(x, beta))``).*/
+    ACLBLASLT_EPILOGUE_CLAMP_BIAS_EXT = 131076, /**<Apply Bias and then clamp.*/
+    ACLBLASLT_EPILOGUE_CLAMP_AUX_EXT = 131200,  /**<Output GEMM results before applying clamp transform.*/
+    ACLBLASLT_EPILOGUE_CLAMP_AUX_BIAS_EXT =
+        131204, /**<Output GEMM results after applying bias but before applying clamp transform.*/
 } aclblasLtEpilogue_t;
 
 /*! \ingroup types_module
  *  \brief Matrix layout attributes.
  */
 typedef enum aclblasLtMatrixLayoutAttribute {
-  ACLBLASLT_MATRIX_LAYOUT_BATCH_COUNT = 0,          /**< Batch count. Default: 1. Type: ``int32_t``. */
-  ACLBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET = 1, /**< Strided-batch offset (elements). Default: 0. Type: ``int64_t``. */
-  ACLBLASLT_MATRIX_LAYOUT_TYPE = 2,                 /**< Matrix data type. See ``aclDataType``. Type: ``uint32_t``. */
-  ACLBLASLT_MATRIX_LAYOUT_ORDER = 3,                /**< Memory order. See ``aclblasLtOrder_t``. Default: ``ACLBLASLT_ORDER_COL``. Type: ``int32_t``. */
-  ACLBLASLT_MATRIX_LAYOUT_ROWS = 4,                 /**< Row count. Type: ``uint64_t``. */
-  ACLBLASLT_MATRIX_LAYOUT_COLS = 5,                 /**< Column count. Type: ``uint64_t``. */
-  ACLBLASLT_MATRIX_LAYOUT_LD = 6,                   /**< Leading dimension (elements). Type: ``int64_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_BATCH_COUNT = 0, /**< Batch count. Default: 1. Type: ``int32_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET =
+        1,                            /**< Strided-batch offset (elements). Default: 0. Type: ``int64_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_TYPE = 2, /**< Matrix data type. See ``aclDataType``. Type: ``uint32_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_ORDER =
+        3, /**< Memory order. See ``aclblasLtOrder_t``. Default: ``ACLBLASLT_ORDER_COL``. Type: ``int32_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_ROWS = 4, /**< Row count. Type: ``uint64_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_COLS = 5, /**< Column count. Type: ``uint64_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_LD = 6,   /**< Leading dimension (elements). Type: ``int64_t``. */
 } aclblasLtMatrixLayoutAttribute_t;
 
 /*! \ingroup types_module
  *  \brief Matmul operation descriptor attributes.
  */
 typedef enum aclblasLtMatmulDescAttribute {
-  ACLBLASLT_MATMUL_DESC_TRANSA = 0,                     /**<Specifies the type of transformation operation that should be performed on matrix A. Default value is ``ACLBLAS_OP_N`` (for example, non-transpose operation). See ``aclblasOperation_t``. Data type: ``int32_t``. */
-  ACLBLASLT_MATMUL_DESC_TRANSB = 1,                     /**<Specifies the type of transformation operation that should be performed on matrix B. Default value is ``ACLBLAS_OP_N`` (for example, non-transpose operation). See ``aclblasOperation_t``. Data type: ``int32_t``. */
-  ACLBLASLT_MATMUL_DESC_EPILOGUE = 2,                   /**<Epilogue function. See ``aclblasLtEpilogue_t``. Default value is ``ACLBLASLT_EPILOGUE_DEFAULT``. Data type: ``uint32_t``. */
-  ACLBLASLT_MATMUL_DESC_BIAS_POINTER = 3,               /**<Bias or bias gradient vector pointer in the device memory. Data type: ``void*`` / ``const void*``. */
-  ACLBLASLT_MATMUL_DESC_BIAS_DATA_TYPE = 4,             /**<Type of the bias vector in the device memory. Can be set the same as the D matrix type or Scale type. Bias case: see ``ACLBLASLT_EPILOGUE_BIAS``. Data type: ``int32_t`` based on ``aclDataType``. */
-  ACLBLASLT_MATMUL_DESC_A_SCALE_POINTER = 5,            /**<Device pointer to the scale factor value that converts data in matrix A to the compute data type range. The scaling factor must have the same type as the compute type. If not specified, or set to NULL, the scaling factor is assumed to be ``1``. If set for an unsupported matrix data, scale, and compute type combination, calling aclblasLtMatmul() will return ``ACLBLAS_INVALID_VALUE``. Default value: NULL. Data type: ``void*`` ``/const void*``. */
-  ACLBLASLT_MATMUL_DESC_B_SCALE_POINTER = 6,            /**<Equivalent to ``ACLBLASLT_MATMUL_DESC_A_SCALE_POINTER`` for matrix B. Default value: NULL. Data type: ``void*`` / ``const void*``. */
-  ACLBLASLT_MATMUL_DESC_C_SCALE_POINTER = 7,            /**<Equivalent to ``ACLBLASLT_MATMUL_DESC_A_SCALE_POINTER`` for matrix C. Default value: NULL. Data type: ``void*`` / ``const void*``. */
-  ACLBLASLT_MATMUL_DESC_D_SCALE_POINTER = 8,            /**<Equivalent to ``ACLBLASLT_MATMUL_DESC_A_SCALE_POINTER`` for matrix D. Default value: NULL. Data type: ``void*`` / ``const void*``. */
-  ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_SCALE_POINTER = 9, /**<Equivalent to ``ACLBLASLT_MATMUL_DESC_A_SCALE_POINTER`` for matrix AUX. Default value: NULL. Data type: ``void*`` / ``const void*``. */
-  ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_POINTER = 10,      /**<Epilogue auxiliary buffer pointer in the device memory. Data type: ``void*`` / ``const void*``. */
-  ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_LD = 11,           /**<The leading dimension of the epilogue auxiliary buffer pointer in the device memory. Data type: ``int64_t``. */
-  ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_BATCH_STRIDE = 12, /**<The batch stride of the epilogue auxiliary buffer pointer in the device memory. Data type: ``int64_t``. */
-  ACLBLASLT_MATMUL_DESC_POINTER_MODE = 13,              /**<Specifies whether alpha and beta point to host or device scalars. Default: ``ACLBLASLT_POINTER_MODE_HOST``. Data type: ``aclblasLtPointerMode_t``. */
-  ACLBLASLT_MATMUL_DESC_AMAX_D_POINTER = 14,           /**<Device pointer to the memory that on completion will be set to the maximum of the absolute values in the output matrix. Data type: ``void*`` / ``const void*``. */
-  ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_DATA_TYPE = 22,    /**<Type of the auxiliary vector in the device memory. Default value is: ``ACLBLASLT_DATATYPE_INVALID`` (using D matrix type). Data type: ``int32_t`` based on ``aclDataType``. */
-  ACLBLASLT_MATMUL_DESC_A_SCALE_MODE = 31,                   /**<Scaling mode that defines how the matrix scaling factor for matrix A is interpreted. See ``aclblasLtMatmulMatrixScale_t``. */
-  ACLBLASLT_MATMUL_DESC_B_SCALE_MODE = 32,                   /**<Scaling mode that defines how the matrix scaling factor for matrix B is interpreted. See ``aclblasLtMatmulMatrixScale_t``. */
-  ACLBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_A_EXT = 100,     /**<Compute input A types. Defines the data type used for the input A of a matrix multiply. */
-  ACLBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_B_EXT = 101,           /**<Compute input B types. Defines the data type used for the input B of a matrix multiply. */
-  ACLBLASLT_MATMUL_DESC_EPILOGUE_ACT_ARG0_EXT = 102,              /**<First extra argument for the activation function. Data type: ``float``. */
-  ACLBLASLT_MATMUL_DESC_EPILOGUE_ACT_ARG1_EXT = 103,              /**<Second extra argument for the activation function. Data type: ``float``. */
-  ACLBLASLT_MATMUL_DESC_MAX,
+    ACLBLASLT_MATMUL_DESC_TRANSA = 0,   /**<Specifies the type of transformation operation that should be performed on
+                                           matrix A. Default value is ``ACLBLAS_OP_N`` (for example, non-transpose
+                                           operation). See ``aclblasOperation_t``. Data type: ``int32_t``. */
+    ACLBLASLT_MATMUL_DESC_TRANSB = 1,   /**<Specifies the type of transformation operation that should be performed on
+                                           matrix B. Default value is ``ACLBLAS_OP_N`` (for example, non-transpose
+                                           operation). See ``aclblasOperation_t``. Data type: ``int32_t``. */
+    ACLBLASLT_MATMUL_DESC_EPILOGUE = 2, /**<Epilogue function. See ``aclblasLtEpilogue_t``. Default value is
+                                           ``ACLBLASLT_EPILOGUE_DEFAULT``. Data type: ``uint32_t``. */
+    ACLBLASLT_MATMUL_DESC_BIAS_POINTER =
+        3, /**<Bias or bias gradient vector pointer in the device memory. Data type: ``void*`` / ``const void*``. */
+    ACLBLASLT_MATMUL_DESC_BIAS_DATA_TYPE =
+        4, /**<Type of the bias vector in the device memory. Can be set the same as the D matrix type or Scale type.
+              Bias case: see ``ACLBLASLT_EPILOGUE_BIAS``. Data type: ``int32_t`` based on ``aclDataType``. */
+    ACLBLASLT_MATMUL_DESC_A_SCALE_POINTER =
+        5, /**<Device pointer to the scale factor value that converts data in matrix A to the compute data type range.
+              The scaling factor must have the same type as the compute type. If not specified, or set to NULL, the
+              scaling factor is assumed to be ``1``. If set for an unsupported matrix data, scale, and compute type
+              combination, calling aclblasLtMatmul() will return ``ACLBLAS_INVALID_VALUE``. Default value: NULL. Data
+              type: ``void*`` ``/const void*``. */
+    ACLBLASLT_MATMUL_DESC_B_SCALE_POINTER = 6, /**<Equivalent to ``ACLBLASLT_MATMUL_DESC_A_SCALE_POINTER`` for matrix B.
+                                                  Default value: NULL. Data type: ``void*`` / ``const void*``. */
+    ACLBLASLT_MATMUL_DESC_C_SCALE_POINTER = 7, /**<Equivalent to ``ACLBLASLT_MATMUL_DESC_A_SCALE_POINTER`` for matrix C.
+                                                  Default value: NULL. Data type: ``void*`` / ``const void*``. */
+    ACLBLASLT_MATMUL_DESC_D_SCALE_POINTER = 8, /**<Equivalent to ``ACLBLASLT_MATMUL_DESC_A_SCALE_POINTER`` for matrix D.
+                                                  Default value: NULL. Data type: ``void*`` / ``const void*``. */
+    ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_SCALE_POINTER =
+        9, /**<Equivalent to ``ACLBLASLT_MATMUL_DESC_A_SCALE_POINTER`` for matrix AUX. Default value: NULL. Data type:
+              ``void*`` / ``const void*``. */
+    ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_POINTER =
+        10, /**<Epilogue auxiliary buffer pointer in the device memory. Data type: ``void*`` / ``const void*``. */
+    ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_LD = 11, /**<The leading dimension of the epilogue auxiliary buffer pointer in
+                                                   the device memory. Data type: ``int64_t``. */
+    ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_BATCH_STRIDE = 12, /**<The batch stride of the epilogue auxiliary buffer pointer
+                                                             in the device memory. Data type: ``int64_t``. */
+    ACLBLASLT_MATMUL_DESC_POINTER_MODE =
+        13, /**<Specifies whether alpha and beta point to host or device scalars. Default:
+               ``ACLBLASLT_POINTER_MODE_HOST``. Data type: ``aclblasLtPointerMode_t``. */
+    ACLBLASLT_MATMUL_DESC_AMAX_D_POINTER =
+        14, /**<Device pointer to the memory that on completion will be set to the maximum of the absolute values in the
+               output matrix. Data type: ``void*`` / ``const void*``. */
+    ACLBLASLT_MATMUL_DESC_EPILOGUE_AUX_DATA_TYPE =
+        22, /**<Type of the auxiliary vector in the device memory. Default value is: ``ACLBLASLT_DATATYPE_INVALID``
+               (using D matrix type). Data type: ``int32_t`` based on ``aclDataType``. */
+    ACLBLASLT_MATMUL_DESC_A_SCALE_MODE = 31, /**<Scaling mode that defines how the matrix scaling factor for matrix A is
+                                                interpreted. See ``aclblasLtMatmulMatrixScale_t``. */
+    ACLBLASLT_MATMUL_DESC_B_SCALE_MODE = 32, /**<Scaling mode that defines how the matrix scaling factor for matrix B is
+                                                interpreted. See ``aclblasLtMatmulMatrixScale_t``. */
+    ACLBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_A_EXT =
+        100, /**<Compute input A types. Defines the data type used for the input A of a matrix multiply. */
+    ACLBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_B_EXT =
+        101, /**<Compute input B types. Defines the data type used for the input B of a matrix multiply. */
+    ACLBLASLT_MATMUL_DESC_EPILOGUE_ACT_ARG0_EXT =
+        102, /**<First extra argument for the activation function. Data type: ``float``. */
+    ACLBLASLT_MATMUL_DESC_EPILOGUE_ACT_ARG1_EXT =
+        103, /**<Second extra argument for the activation function. Data type: ``float``. */
+    ACLBLASLT_MATMUL_DESC_MAX,
 } aclblasLtMatmulDescAttribute_t;
 
 /*! \ingroup types_module
  *  \brief Matrix transform descriptor attributes.
  */
 typedef enum aclblasLtMatrixTransformDescAttribute {
-  ACLBLASLT_MATRIX_TRANSFORM_DESC_SCALE_TYPE = 0,   /**<Scale (compute) data type. Set at create time. Data type: ``int32_t`` based on ``aclDataType``. */
-  ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE = 1, /**<Pointer mode for alpha / beta. Default host. Data type: ``int32_t``. */
-  ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA = 2,       /**<Transform operation on matrix A. Default ``ACLBLAS_OP_N``. See ``aclblasOperation_t``. Data type: ``int32_t``. */
-  ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSB = 3,       /**<Transform operation on matrix B. Default ``ACLBLAS_OP_N``. See ``aclblasOperation_t``. Data type: ``int32_t``. */
+    ACLBLASLT_MATRIX_TRANSFORM_DESC_SCALE_TYPE =
+        0, /**<Scale (compute) data type. Set at create time. Data type: ``int32_t`` based on ``aclDataType``. */
+    ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE =
+        1, /**<Pointer mode for alpha / beta. Default host. Data type: ``int32_t``. */
+    ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA = 2, /**<Transform operation on matrix A. Default ``ACLBLAS_OP_N``. See
+                                                   ``aclblasOperation_t``. Data type: ``int32_t``. */
+    ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSB = 3, /**<Transform operation on matrix B. Default ``ACLBLAS_OP_N``. See
+                                                   ``aclblasOperation_t``. Data type: ``int32_t``. */
 } aclblasLtMatrixTransformDescAttribute_t;
 
 /*! \ingroup types_module
  *  \brief Matmul preference attributes.
  */
 typedef enum aclblasLtMatmulPreferenceAttribute {
-  ACLBLASLT_MATMUL_PREF_SEARCH_MODE = 0,          /**<Search mode. Data type: ``uint32_t``. */
-  ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES = 1,  /**<Maximum allowed workspace memory. Default is 32MB (32*1024*1024 bytes). Data type: ``uint64_t``. */
-  ACLBLASLT_MATMUL_PREF_MAX = 2
+    ACLBLASLT_MATMUL_PREF_SEARCH_MODE = 0, /**<Search mode. Data type: ``uint32_t``. */
+    ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES =
+        1, /**<Maximum allowed workspace memory. Default is 32MB (32*1024*1024 bytes). Data type: ``uint64_t``. */
+    ACLBLASLT_MATMUL_PREF_MAX = 2
 } aclblasLtMatmulPreferenceAttribute_t;
 
 /*! \ingroup types_module
@@ -230,10 +292,10 @@ typedef enum aclblasLtMatmulTile {
  */
 typedef enum aclblasLtMatmulStages {
     ACLBLASLT_MATMUL_STAGES_UNDEFINED = 0, /**< Auto-select. */
-    ACLBLASLT_MATMUL_STAGES_1 = 1,          /**< Single buffer. */
-    ACLBLASLT_MATMUL_STAGES_2 = 2,          /**< Double buffer. */
-    ACLBLASLT_MATMUL_STAGES_3 = 3,          /**< Three-stage pipeline. */
-    ACLBLASLT_MATMUL_STAGES_4 = 4,          /**< Four-stage pipeline. */
+    ACLBLASLT_MATMUL_STAGES_1 = 1,         /**< Single buffer. */
+    ACLBLASLT_MATMUL_STAGES_2 = 2,         /**< Double buffer. */
+    ACLBLASLT_MATMUL_STAGES_3 = 3,         /**< Three-stage pipeline. */
+    ACLBLASLT_MATMUL_STAGES_4 = 4,         /**< Four-stage pipeline. */
 } aclblasLtMatmulStages_t;
 
 /*! \ingroup types_module
@@ -241,8 +303,8 @@ typedef enum aclblasLtMatmulStages {
  */
 typedef enum aclblasLtReductionScheme {
     ACLBLASLT_REDUCTION_SCHEME_NONE = 0,      /**< No reduction (splitK=1). */
-    ACLBLASLT_REDUCTION_SCHEME_INPLACE = 1,    /**< In-place reduction (reserved). */
-    ACLBLASLT_REDUCTION_SCHEME_WORKSPACE = 2,  /**< Workspace-based reduction (reserved). */
+    ACLBLASLT_REDUCTION_SCHEME_INPLACE = 1,   /**< In-place reduction (reserved). */
+    ACLBLASLT_REDUCTION_SCHEME_WORKSPACE = 2, /**< Workspace-based reduction (reserved). */
 } aclblasLtReductionScheme_t;
 
 /*! \ingroup types_module
@@ -253,13 +315,13 @@ typedef enum aclblasLtReductionScheme {
  *  SetAttribute / GetAttribute.
  */
 typedef enum aclblasLtMatmulAlgoConfigAttributes {
-    ACLBLASLT_ALGO_CONFIG_ID = 0,            /**< Read-only. Algorithm index. Type: int32_t. */
-    ACLBLASLT_ALGO_CONFIG_TILE_ID = 1,       /**< L1 Tile M x N shape. Default UNDEFINED. Type: uint32_t. */
-    ACLBLASLT_ALGO_CONFIG_STAGES_ID = 2,     /**< Pipeline stages. Default UNDEFINED. Type: uint32_t. */
-    ACLBLASLT_ALGO_CONFIG_SPLITK_NUM = 3,    /**< K split count. Default 1. Type: uint32_t. */
+    ACLBLASLT_ALGO_CONFIG_ID = 0,               /**< Read-only. Algorithm index. Type: int32_t. */
+    ACLBLASLT_ALGO_CONFIG_TILE_ID = 1,          /**< L1 Tile M x N shape. Default UNDEFINED. Type: uint32_t. */
+    ACLBLASLT_ALGO_CONFIG_STAGES_ID = 2,        /**< Pipeline stages. Default UNDEFINED. Type: uint32_t. */
+    ACLBLASLT_ALGO_CONFIG_SPLITK_NUM = 3,       /**< K split count. Default 1. Type: uint32_t. */
     ACLBLASLT_ALGO_CONFIG_REDUCTION_SCHEME = 4, /**< SplitK reduction scheme. Default NONE. Type: uint32_t. */
-    ACLBLASLT_ALGO_CONFIG_CUSTOM_OPTION = 5, /**< Dispatch policy. Type: uint32_t. */
-    ACLBLASLT_ALGO_CONFIG_INNER_SHAPE_ID = 6, /**< Inner MMA shape (not supported). Type: uint16_t. */
+    ACLBLASLT_ALGO_CONFIG_CUSTOM_OPTION = 5,    /**< Dispatch policy. Type: uint32_t. */
+    ACLBLASLT_ALGO_CONFIG_INNER_SHAPE_ID = 6,   /**< Inner MMA shape (not supported). Type: uint16_t. */
     ACLBLASLT_ALGO_CONFIG_MAX,
 } aclblasLtMatmulAlgoConfigAttributes_t;
 
@@ -281,11 +343,11 @@ typedef void (*aclblasLtLoggerCallback_t)(int logLevel, const char* functionName
  *  Maps 1:1 to cuBLASLt's CUBLASLT_LOG_LEVEL values.
  */
 typedef enum aclblasLtLogLevel {
-    ACLBLASLT_LOG_LEVEL_OFF       = 0, /**< Logging disabled (default). */
-    ACLBLASLT_LOG_LEVEL_ERROR     = 1, /**< Only errors. */
-    ACLBLASLT_LOG_LEVEL_TRACE     = 2, /**< API calls that launch kernels. */
-    ACLBLASLT_LOG_LEVEL_HINTS     = 3, /**< Performance hints. */
-    ACLBLASLT_LOG_LEVEL_INFO      = 4, /**< General library execution info. */
+    ACLBLASLT_LOG_LEVEL_OFF = 0,       /**< Logging disabled (default). */
+    ACLBLASLT_LOG_LEVEL_ERROR = 1,     /**< Only errors. */
+    ACLBLASLT_LOG_LEVEL_TRACE = 2,     /**< API calls that launch kernels. */
+    ACLBLASLT_LOG_LEVEL_HINTS = 3,     /**< Performance hints. */
+    ACLBLASLT_LOG_LEVEL_INFO = 4,      /**< General library execution info. */
     ACLBLASLT_LOG_LEVEL_API_TRACE = 5, /**< All API calls. */
 } aclblasLtLogLevel_t;
 
@@ -295,23 +357,23 @@ typedef enum aclblasLtLogLevel {
  *  Combine with bitwise OR. Maps 1:1 to cuBLASLt's CUBLASLT_LOG_MASK values.
  */
 typedef enum aclblasLtLogMask {
-    ACLBLASLT_LOG_MASK_OFF       = 0,  /**< Off. */
-    ACLBLASLT_LOG_MASK_ERROR     = 1,  /**< Error messages. */
-    ACLBLASLT_LOG_MASK_TRACE     = 2,  /**< Kernel-launch trace. */
-    ACLBLASLT_LOG_MASK_HINTS     = 4,  /**< Performance hints. */
-    ACLBLASLT_LOG_MASK_INFO      = 8,  /**< General info. */
+    ACLBLASLT_LOG_MASK_OFF = 0,        /**< Off. */
+    ACLBLASLT_LOG_MASK_ERROR = 1,      /**< Error messages. */
+    ACLBLASLT_LOG_MASK_TRACE = 2,      /**< Kernel-launch trace. */
+    ACLBLASLT_LOG_MASK_HINTS = 4,      /**< Performance hints. */
+    ACLBLASLT_LOG_MASK_INFO = 8,       /**< General info. */
     ACLBLASLT_LOG_MASK_API_TRACE = 16, /**< API trace. */
 } aclblasLtLogMask_t;
 
 /*! \ingroup library_module
  *  \brief Query aclBLASLt packed version number.
  */
- aclblasStatus_t aclblasLtGetVersion(size_t* version);
+aclblasStatus_t aclblasLtGetVersion(size_t* version);
 
- /*! \ingroup library_module
-  *  \brief Query aclBLASLt property value.
-  */
- aclblasStatus_t aclblasLtGetProperty(aclblasLtPropertyType_t type, int* value);
+/*! \ingroup library_module
+ *  \brief Query aclBLASLt property value.
+ */
+aclblasStatus_t aclblasLtGetProperty(aclblasLtPropertyType_t type, int* value);
 
 // Library management
 /*! \ingroup library_module
@@ -383,11 +445,8 @@ aclblasStatus_t aclblasLtDestroy(const aclblasLtHandle_t lightHandle);
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p matLayout is NULL or \p ld is negative.
  *  \retval ACLBLAS_STATUS_ALLOC_FAILED If the memory could not be allocated.
  */
-aclblasStatus_t aclblasLtMatrixLayoutCreate(aclblasLtMatrixLayout_t* matLayout,
-                                            aclDataType type,
-                                            uint64_t rows,
-                                            uint64_t cols,
-                                            int64_t ld);
+aclblasStatus_t aclblasLtMatrixLayoutCreate(
+    aclblasLtMatrixLayout_t* matLayout, aclDataType type, uint64_t rows, uint64_t cols, int64_t ld);
 
 /*! \ingroup library_module
  *  \brief Destroy a matrix layout descriptor.
@@ -426,19 +485,15 @@ aclblasStatus_t aclblasLtMatrixLayoutDestroy(const aclblasLtMatrixLayout_t matLa
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p buf is NULL or \p sizeInBytes
  *  doesn't match the size of the internal storage for the selected attribute.
  */
-aclblasStatus_t aclblasLtMatrixLayoutSetAttribute(aclblasLtMatrixLayout_t matLayout,
-                                                  aclblasLtMatrixLayoutAttribute_t attr,
-                                                  const void* buf,
-                                                  size_t sizeInBytes);
+aclblasStatus_t aclblasLtMatrixLayoutSetAttribute(
+    aclblasLtMatrixLayout_t matLayout, aclblasLtMatrixLayoutAttribute_t attr, const void* buf, size_t sizeInBytes);
 
 /*! \ingroup library_module
  *  \brief Get an attribute for a matrix descriptor.
  */
-aclblasStatus_t aclblasLtMatrixLayoutGetAttribute(const aclblasLtMatrixLayout_t matLayout,
-                                                  aclblasLtMatrixLayoutAttribute_t attr,
-                                                  void* buf,
-                                                  size_t sizeInBytes,
-                                                  size_t* sizeWritten);
+aclblasStatus_t aclblasLtMatrixLayoutGetAttribute(
+    const aclblasLtMatrixLayout_t matLayout, aclblasLtMatrixLayoutAttribute_t attr, void* buf, size_t sizeInBytes,
+    size_t* sizeWritten);
 
 // Matmul operation descriptor
 /*! \ingroup library_module
@@ -462,9 +517,8 @@ aclblasStatus_t aclblasLtMatrixLayoutGetAttribute(const aclblasLtMatrixLayout_t 
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p matmulDesc is NULL.
  *  \retval ACLBLAS_STATUS_ALLOC_FAILED If the memory could not be allocated.
  */
-aclblasStatus_t aclblasLtMatmulDescCreate(aclblasLtMatmulDesc_t* matmulDesc,
-                                          aclblasComputeType_t computeType,
-                                          aclDataType scaleType);
+aclblasStatus_t aclblasLtMatmulDescCreate(
+    aclblasLtMatmulDesc_t* matmulDesc, aclblasComputeType_t computeType, aclDataType scaleType);
 
 /*! \ingroup library_module
  *  \brief Destroy a matrix multiply descriptor.
@@ -502,9 +556,8 @@ aclblasStatus_t aclblasLtMatmulDescDestroy(const aclblasLtMatmulDesc_t matmulDes
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p matmulDesc is NULL.
  *  \retval ACLBLAS_STATUS_INTERNAL_ERROR If an internal copy fails.
  */
-aclblasStatus_t aclblasLtMatmulDescInit(aclblasLtMatmulDesc_t matmulDesc,
-                                        aclblasComputeType_t computeType,
-                                        aclDataType scaleType);
+aclblasStatus_t aclblasLtMatmulDescInit(
+    aclblasLtMatmulDesc_t matmulDesc, aclblasComputeType_t computeType, aclDataType scaleType);
 
 /*! \ingroup library_module
  *  \brief Set attribute to a matrix multiply descriptor.
@@ -529,10 +582,8 @@ aclblasStatus_t aclblasLtMatmulDescInit(aclblasLtMatmulDesc_t matmulDesc,
  *  doesn't match the size of the internal storage for the selected attribute.
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If \p attr is not a recognized attribute.
  */
-aclblasStatus_t aclblasLtMatmulDescSetAttribute(aclblasLtMatmulDesc_t matmulDesc,
-                                                aclblasLtMatmulDescAttribute_t attr,
-                                                const void* buf,
-                                                size_t sizeInBytes);
+aclblasStatus_t aclblasLtMatmulDescSetAttribute(
+    aclblasLtMatmulDesc_t matmulDesc, aclblasLtMatmulDescAttribute_t attr, const void* buf, size_t sizeInBytes);
 
 /*! \ingroup library_module
  *  \brief Get an attribute from a matrix multiply descriptor.
@@ -559,11 +610,9 @@ aclblasStatus_t aclblasLtMatmulDescSetAttribute(aclblasLtMatmulDesc_t matmulDesc
  *  attribute.
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If \p attr is not a recognized attribute.
  */
-aclblasStatus_t aclblasLtMatmulDescGetAttribute(aclblasLtMatmulDesc_t desc,
-                                                aclblasLtMatmulDescAttribute_t attr,
-                                                void* buf,
-                                                size_t sizeInBytes,
-                                                size_t* sizeWritten);
+aclblasStatus_t aclblasLtMatmulDescGetAttribute(
+    aclblasLtMatmulDesc_t desc, aclblasLtMatmulDescAttribute_t attr, void* buf, size_t sizeInBytes,
+    size_t* sizeWritten);
 
 // Preference
 /*! \ingroup library_module
@@ -626,11 +675,8 @@ aclblasStatus_t aclblasLtMatmulPreferenceDestroy(const aclblasLtMatmulPreference
  *  doesn't match the size of the internal storage for the selected attribute.
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If \p attr is not a recognized attribute.
  */
-aclblasStatus_t aclblasLtMatmulPreferenceSetAttribute(aclblasLtMatmulPreference_t pref,
-                                                      aclblasLtMatmulPreferenceAttribute_t attr,
-                                                      const void* buf,
-                                                      size_t sizeInBytes);
-
+aclblasStatus_t aclblasLtMatmulPreferenceSetAttribute(
+    aclblasLtMatmulPreference_t pref, aclblasLtMatmulPreferenceAttribute_t attr, const void* buf, size_t sizeInBytes);
 
 /*! \ingroup library_module
  *  \brief Get an attribute from a preference descriptor.
@@ -658,11 +704,9 @@ aclblasStatus_t aclblasLtMatmulPreferenceSetAttribute(aclblasLtMatmulPreference_
  *  attribute.
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If \p attr is not a recognized attribute.
  */
-aclblasStatus_t aclblasLtMatmulPreferenceGetAttribute(aclblasLtMatmulPreference_t pref,
-                                                      aclblasLtMatmulPreferenceAttribute_t attr,
-                                                      void* buf,
-                                                      size_t sizeInBytes,
-                                                      size_t* sizeWritten);
+aclblasStatus_t aclblasLtMatmulPreferenceGetAttribute(
+    aclblasLtMatmulPreference_t pref, aclblasLtMatmulPreferenceAttribute_t attr, void* buf, size_t sizeInBytes,
+    size_t* sizeWritten);
 
 // Heuristic
 /*! \ingroup library_module
@@ -694,15 +738,9 @@ aclblasStatus_t aclblasLtMatmulPreferenceGetAttribute(aclblasLtMatmulPreference_
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If the data type combination is
  *  unsupported.
  */
-aclblasStatus_t aclblasLtMatmulAlgoInit(aclblasLtHandle_t lightHandle,
-                                        aclblasComputeType_t computeType,
-                                        aclDataType scaleType,
-                                        aclDataType Atype,
-                                        aclDataType Btype,
-                                        aclDataType Ctype,
-                                        aclDataType Dtype,
-                                        int algoId,
-                                        aclblasLtMatmulAlgo_t* algo);
+aclblasStatus_t aclblasLtMatmulAlgoInit(
+    aclblasLtHandle_t lightHandle, aclblasComputeType_t computeType, aclDataType scaleType, aclDataType Atype,
+    aclDataType Btype, aclDataType Ctype, aclDataType Dtype, int algoId, aclblasLtMatmulAlgo_t* algo);
 
 /*! \ingroup library_module
  *  \brief Set a configuration attribute on a matmul algorithm.
@@ -726,10 +764,8 @@ aclblasStatus_t aclblasLtMatmulAlgoInit(aclblasLtHandle_t lightHandle,
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If the attribute is read-only or
  *  unsupported.
  */
-aclblasStatus_t aclblasLtMatmulAlgoConfigSetAttribute(aclblasLtMatmulAlgo_t* algo,
-                                                      aclblasLtMatmulAlgoConfigAttributes_t attr,
-                                                      const void* buf,
-                                                      size_t sizeInBytes);
+aclblasStatus_t aclblasLtMatmulAlgoConfigSetAttribute(
+    aclblasLtMatmulAlgo_t* algo, aclblasLtMatmulAlgoConfigAttributes_t attr, const void* buf, size_t sizeInBytes);
 
 /*! \ingroup library_module
  *  \brief Query a configuration attribute from a matmul algorithm.
@@ -756,11 +792,9 @@ aclblasStatus_t aclblasLtMatmulAlgoConfigSetAttribute(aclblasLtMatmulAlgo_t* alg
  *  small, or the algo magic is invalid.
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If the attribute is unsupported.
  */
-aclblasStatus_t aclblasLtMatmulAlgoConfigGetAttribute(const aclblasLtMatmulAlgo_t* algo,
-                                                      aclblasLtMatmulAlgoConfigAttributes_t attr,
-                                                      void* buf,
-                                                      size_t sizeInBytes,
-                                                      size_t* sizeWritten);
+aclblasStatus_t aclblasLtMatmulAlgoConfigGetAttribute(
+    const aclblasLtMatmulAlgo_t* algo, aclblasLtMatmulAlgoConfigAttributes_t attr, void* buf, size_t sizeInBytes,
+    size_t* sizeWritten);
 
 /*! \ingroup library_module
  *  \brief Retrieve the supported algorithm IDs for a matmul configuration.
@@ -795,16 +829,10 @@ aclblasStatus_t aclblasLtMatmulAlgoConfigGetAttribute(const aclblasLtMatmulAlgo_
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If the data type combination is
  *  unsupported.
  */
-aclblasStatus_t aclblasLtMatmulAlgoGetIds(aclblasLtHandle_t lightHandle,
-                                          aclblasComputeType_t computeType,
-                                          aclDataType scaleType,
-                                          aclDataType Atype,
-                                          aclDataType Btype,
-                                          aclDataType Ctype,
-                                          aclDataType Dtype,
-                                          int* algoIdsArray,
-                                          int algoIdsArrayLength,
-                                          int* numAlgoIds);
+aclblasStatus_t aclblasLtMatmulAlgoGetIds(
+    aclblasLtHandle_t lightHandle, aclblasComputeType_t computeType, aclDataType scaleType, aclDataType Atype,
+    aclDataType Btype, aclDataType Ctype, aclDataType Dtype, int* algoIdsArray, int algoIdsArrayLength,
+    int* numAlgoIds);
 
 /*! \ingroup library_module
  *  \brief Retrieve the possible algorithms.
@@ -845,16 +873,11 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(aclblasLtHandle_t lightHandle,
  *  \p requestedAlgoCount is less than or equal to zero, or the compute type is
  *  incompatible with the input matrix data types.
  */
-aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(aclblasLtHandle_t lightHandle,
-                                                aclblasLtMatmulDesc_t matmulDesc,
-                                                aclblasLtMatrixLayout_t Adesc,
-                                                aclblasLtMatrixLayout_t Bdesc,
-                                                aclblasLtMatrixLayout_t Cdesc,
-                                                aclblasLtMatrixLayout_t Ddesc,
-                                                aclblasLtMatmulPreference_t pref,
-                                                int requestedAlgoCount,
-                                                aclblasLtMatmulHeuristicResult_t heuristicResultsArray[],
-                                                int* returnAlgoCount);
+aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(
+    aclblasLtHandle_t lightHandle, aclblasLtMatmulDesc_t matmulDesc, aclblasLtMatrixLayout_t Adesc,
+    aclblasLtMatrixLayout_t Bdesc, aclblasLtMatrixLayout_t Cdesc, aclblasLtMatrixLayout_t Ddesc,
+    aclblasLtMatmulPreference_t pref, int requestedAlgoCount, aclblasLtMatmulHeuristicResult_t heuristicResultsArray[],
+    int* returnAlgoCount);
 
 // Matmul
 /*! \ingroup library_module
@@ -906,22 +929,11 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(aclblasLtHandle_t lightHandle,
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If the parameters are unexpectedly NULL, in
  *  conflict, or in an impossible configuration.
  */
-aclblasStatus_t aclblasLtMatmul(aclblasLtHandle_t lightHandle,
-                                aclblasLtMatmulDesc_t computeDesc,
-                                const void* alpha,
-                                const void* A,
-                                aclblasLtMatrixLayout_t Adesc,
-                                const void* B,
-                                aclblasLtMatrixLayout_t Bdesc,
-                                const void* beta,
-                                const void* C,
-                                aclblasLtMatrixLayout_t Cdesc,
-                                void* D,
-                                aclblasLtMatrixLayout_t Ddesc,
-                                const aclblasLtMatmulAlgo_t* algo,
-                                void* workspace,
-                                size_t workspaceSizeInBytes,
-                                aclrtStream stream);
+aclblasStatus_t aclblasLtMatmul(
+    aclblasLtHandle_t lightHandle, aclblasLtMatmulDesc_t computeDesc, const void* alpha, const void* A,
+    aclblasLtMatrixLayout_t Adesc, const void* B, aclblasLtMatrixLayout_t Bdesc, const void* beta, const void* C,
+    aclblasLtMatrixLayout_t Cdesc, void* D, aclblasLtMatrixLayout_t Ddesc, const aclblasLtMatmulAlgo_t* algo,
+    void* workspace, size_t workspaceSizeInBytes, aclrtStream stream);
 
 /*! \ingroup matrix_transform_module
  *  \brief Create a matrix transform descriptor.
@@ -931,8 +943,8 @@ aclblasStatus_t aclblasLtMatmul(aclblasLtHandle_t lightHandle,
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If transformDesc is NULL.
  *  \retval ACLBLAS_STATUS_ALLOC_FAILED If the descriptor allocation fails.
  */
-aclblasStatus_t aclblasLtMatrixTransformDescCreate(aclblasLtMatrixTransformDesc_t* transformDesc,
-                                                   aclDataType scaleType);
+aclblasStatus_t aclblasLtMatrixTransformDescCreate(
+    aclblasLtMatrixTransformDesc_t* transformDesc, aclDataType scaleType);
 
 /*! \ingroup matrix_transform_module
  *  \brief Destroy a matrix transform descriptor.
@@ -952,10 +964,9 @@ aclblasStatus_t aclblasLtMatrixTransformDescDestroy(const aclblasLtMatrixTransfo
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If the parameters are NULL or the size mismatches.
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If \p attr is not a recognized attribute.
  */
-aclblasStatus_t aclblasLtMatrixTransformDescSetAttribute(aclblasLtMatrixTransformDesc_t transformDesc,
-                                                         aclblasLtMatrixTransformDescAttribute_t attr,
-                                                         const void* buf,
-                                                         size_t sizeInBytes);
+aclblasStatus_t aclblasLtMatrixTransformDescSetAttribute(
+    aclblasLtMatrixTransformDesc_t transformDesc, aclblasLtMatrixTransformDescAttribute_t attr, const void* buf,
+    size_t sizeInBytes);
 
 /*! \ingroup matrix_transform_module
  *  \brief Query an attribute of a matrix transform descriptor.
@@ -968,11 +979,9 @@ aclblasStatus_t aclblasLtMatrixTransformDescSetAttribute(aclblasLtMatrixTransfor
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If the parameters are NULL or the buffer is too small.
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If \p attr is not a recognized attribute.
  */
-aclblasStatus_t aclblasLtMatrixTransformDescGetAttribute(aclblasLtMatrixTransformDesc_t transformDesc,
-                                                         aclblasLtMatrixTransformDescAttribute_t attr,
-                                                         void* buf,
-                                                         size_t sizeInBytes,
-                                                         size_t* sizeWritten);
+aclblasStatus_t aclblasLtMatrixTransformDescGetAttribute(
+    aclblasLtMatrixTransformDesc_t transformDesc, aclblasLtMatrixTransformDescAttribute_t attr, void* buf,
+    size_t sizeInBytes, size_t* sizeWritten);
 
 /*! \ingroup matrix_transform_module
  *  \brief Compute C = alpha * op(A) + beta * op(B) with layout / type transform.
@@ -993,17 +1002,10 @@ aclblasStatus_t aclblasLtMatrixTransformDescGetAttribute(aclblasLtMatrixTransfor
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If the dtype / order / op combination is unsupported.
  *  \retval ACLBLAS_STATUS_INTERNAL_ERROR If an internal launch or tiling error occurs.
  */
-aclblasStatus_t aclblasLtMatrixTransform(aclblasLtHandle_t lightHandle,
-                                         aclblasLtMatrixTransformDesc_t transformDesc,
-                                         const void* alpha,
-                                         const void* A,
-                                         aclblasLtMatrixLayout_t Adesc,
-                                         const void* beta,
-                                         const void* B,
-                                         aclblasLtMatrixLayout_t Bdesc,
-                                         void* C,
-                                         aclblasLtMatrixLayout_t Cdesc,
-                                         aclrtStream stream);
+aclblasStatus_t aclblasLtMatrixTransform(
+    aclblasLtHandle_t lightHandle, aclblasLtMatrixTransformDesc_t transformDesc, const void* alpha, const void* A,
+    aclblasLtMatrixLayout_t Adesc, const void* beta, const void* B, aclblasLtMatrixLayout_t Bdesc, void* C,
+    aclblasLtMatrixLayout_t Cdesc, aclrtStream stream);
 
 // ============================================================================
 // Logger (experimental)

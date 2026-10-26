@@ -17,6 +17,7 @@
 
 #include <acl/acl.h>
 #include <cstddef>
+#include <string>
 
 #include "cann_ops_blas.h"
 #include "log/log.h"
@@ -31,7 +32,9 @@ struct _aclblas_logger_configure {
     int logIsOn = 0;
     int logToStdOut = 0;
     int logToStdErr = 0;
-    const char* logFile = nullptr;
+    // issue #601: 以值拷贝保存日志文件路径——公开 C 接口不得长期持有调用方裸指针，
+    // 调用方缓冲（栈数组/临时字符串）失效后悬挂读为未定义行为
+    std::string logFile;
     aclblasLogCallback userCallback = nullptr;
 };
 
@@ -39,5 +42,4 @@ aclblasStatus_t aclblasLoggerConfigure(int logIsOn, int logToStdOut, int logToSt
 aclblasStatus_t aclblasSetLoggerCallback(aclblasLogCallback userCallback);
 aclblasStatus_t aclblasGetLoggerCallback(aclblasLogCallback* userCallback);
 
-}
-
+} // namespace AclBlas
