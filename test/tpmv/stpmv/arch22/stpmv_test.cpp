@@ -228,7 +228,13 @@ static int RunCase(const TestCase& tc, aclblasHandle_t handle, aclrtStream strea
         std::cout << "FAILED: aclrtMalloc dAP" << std::endl;
         return 1;
     }
-    aclrtMemcpy(dAP, packedBytes, apHost.data(), packedBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    // issue #593: H2D 拷贝失败时报错退出，不得在未初始化设备内存上执行内核
+    aclRet = aclrtMemcpy(dAP, packedBytes, apHost.data(), packedBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dAP);
+        std::cout << "FAILED: aclrtMemcpy dAP ERROR " << aclRet << std::endl;
+        return 1;
+    }
 
     void* dX = nullptr;
     aclRet = aclrtMalloc(&dX, xBytes, ACL_MEM_MALLOC_HUGE_FIRST);
@@ -237,7 +243,13 @@ static int RunCase(const TestCase& tc, aclblasHandle_t handle, aclrtStream strea
         std::cout << "FAILED: aclrtMalloc dX" << std::endl;
         return 1;
     }
-    aclrtMemcpy(dX, xBytes, xHost.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    aclRet = aclrtMemcpy(dX, xBytes, xHost.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dAP);
+        aclrtFree(dX);
+        std::cout << "FAILED: aclrtMemcpy dX ERROR " << aclRet << std::endl;
+        return 1;
+    }
 
     void* dY = nullptr;
     aclRet = aclrtMalloc(&dY, xBytes, ACL_MEM_MALLOC_HUGE_FIRST);
@@ -249,7 +261,14 @@ static int RunCase(const TestCase& tc, aclblasHandle_t handle, aclrtStream strea
     }
     {
         std::vector<float> yZero(xHost.size(), 0.0f);
-        aclrtMemcpy(dY, xBytes, yZero.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+        aclRet = aclrtMemcpy(dY, xBytes, yZero.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+        if (aclRet != ACL_SUCCESS) {
+            aclrtFree(dAP);
+            aclrtFree(dX);
+            aclrtFree(dY);
+            std::cout << "FAILED: aclrtMemcpy dY ERROR " << aclRet << std::endl;
+            return 1;
+        }
     }
 
     aclblasStatus_t blasRet = aclblasStpmv_legacy(
@@ -265,10 +284,25 @@ static int RunCase(const TestCase& tc, aclblasHandle_t handle, aclrtStream strea
         return 1;
     }
 
-    aclrtSynchronizeStream(stream);
+    // issue #593: 同步/D2H 失败时报错退出，不得以全零或陈旧数据参与比较
+    aclRet = aclrtSynchronizeStream(stream);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dAP);
+        aclrtFree(dX);
+        aclrtFree(dY);
+        std::cout << "FAILED: aclrtSynchronizeStream ERROR " << aclRet << std::endl;
+        return 1;
+    }
 
     std::vector<float> yNPU(xHost.size());
-    aclrtMemcpy(yNPU.data(), xBytes, dY, xBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    aclRet = aclrtMemcpy(yNPU.data(), xBytes, dY, xBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dAP);
+        aclrtFree(dX);
+        aclrtFree(dY);
+        std::cout << "FAILED: aclrtMemcpy D2H ERROR " << aclRet << std::endl;
+        return 1;
+    }
 
     std::vector<float> yGolden;
     ComputeGolden(
@@ -331,8 +365,24 @@ int32_t main(int32_t argc, char* argv[])
     }
 
     aclblasHandle_t handle = nullptr;
-    aclblasCreate(&handle);
-    aclblasSetStream(handle, stream);
+    // issue #593: 句柄创建/绑定失败时不得以未初始化句柄继续
+    aclblasStatus_t blasRet = aclblasCreate(&handle);
+    if (blasRet != ACLBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "aclblasCreate failed. ERROR: %d\n", blasRet);
+        aclrtDestroyStream(stream);
+        aclrtResetDevice(deviceId);
+        aclFinalize();
+        return blasRet;
+    }
+    blasRet = aclblasSetStream(handle, stream);
+    if (blasRet != ACLBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "aclblasSetStream failed. ERROR: %d\n", blasRet);
+        aclblasDestroy(handle);
+        aclrtDestroyStream(stream);
+        aclrtResetDevice(deviceId);
+        aclFinalize();
+        return blasRet;
+    }
 
     int failed = 0;
     int total = static_cast<int>(gTests.size());

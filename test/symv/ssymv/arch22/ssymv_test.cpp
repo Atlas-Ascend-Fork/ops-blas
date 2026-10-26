@@ -1,6 +1,11 @@
 /**
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
- * This program is free software ... see LICENSE in the root of the software repository.
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
  */
 
 #include <cstdint>
@@ -64,8 +69,8 @@ static const std::vector<TestCase> gSsymvTests = {
     {"n=129 LOWER", ACLBLAS_LOWER, 129, 129, 1.0f, 0.0f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-4f},
     {"n=255 UPPER", ACLBLAS_UPPER, 255, 255, 1.2f, 0.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-4f},
     {"n=257 LOWER", ACLBLAS_LOWER, 257, 257, 1.2f, 0.5f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-4f},
-    {"n=7681 UPPER full-chunk scalar writeback", ACLBLAS_UPPER, 7681, 7681, 0.5f, 0.25f, 1, 1,
-     ACLBLAS_STATUS_SUCCESS, 1e-3f},
+    {"n=7681 UPPER full-chunk scalar writeback", ACLBLAS_UPPER, 7681, 7681, 0.5f, 0.25f, 1, 1, ACLBLAS_STATUS_SUCCESS,
+     1e-3f},
     {"beta=0 LOWER n=32", ACLBLAS_LOWER, 32, 32, 1.5f, 0.0f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
     {"alpha=0 UPPER n=32", ACLBLAS_UPPER, 32, 32, 0.0f, 0.8f, 1, 1, ACLBLAS_STATUS_SUCCESS, 1e-5f},
     {"error: invalid uplo", static_cast<aclblasFillMode_t>(0), 10, 10, 1.0f, 0.0f, 1, 1, ACLBLAS_STATUS_INVALID_VALUE,
@@ -164,12 +169,46 @@ static int RunSsymvCase(const TestCase& tc, aclblasHandle_t handle, aclrtStream 
     void* dA = nullptr;
     void* dX = nullptr;
     void* dY = nullptr;
-    aclrtMalloc(&dA, aBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMemcpy(dA, aBytes, aHost.data(), aBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    aclrtMalloc(&dX, xBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMemcpy(dX, xBytes, xHost.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    aclrtMalloc(&dY, yBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMemcpy(dY, yBytes, yHost.data(), yBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    // issue #590: 分配/拷贝失败时报错退出，不得对空设备指针继续拷贝
+    aclError aclRet = aclrtMalloc(&dA, aBytes, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (aclRet != ACL_SUCCESS) {
+        std::cout << "FAILED: aclrtMalloc dA ERROR " << aclRet << std::endl;
+        return 1;
+    }
+    aclRet = aclrtMemcpy(dA, aBytes, aHost.data(), aBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dA);
+        std::cout << "FAILED: aclrtMemcpy dA ERROR " << aclRet << std::endl;
+        return 1;
+    }
+    aclRet = aclrtMalloc(&dX, xBytes, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dA);
+        std::cout << "FAILED: aclrtMalloc dX ERROR " << aclRet << std::endl;
+        return 1;
+    }
+    aclRet = aclrtMemcpy(dX, xBytes, xHost.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dA);
+        aclrtFree(dX);
+        std::cout << "FAILED: aclrtMemcpy dX ERROR " << aclRet << std::endl;
+        return 1;
+    }
+    aclRet = aclrtMalloc(&dY, yBytes, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dA);
+        aclrtFree(dX);
+        std::cout << "FAILED: aclrtMalloc dY ERROR " << aclRet << std::endl;
+        return 1;
+    }
+    aclRet = aclrtMemcpy(dY, yBytes, yHost.data(), yBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dA);
+        aclrtFree(dX);
+        aclrtFree(dY);
+        std::cout << "FAILED: aclrtMemcpy dY ERROR " << aclRet << std::endl;
+        return 1;
+    }
 
     aclblasStatus_t blasRet = aclblasSsymv(
         handle, tc.uplo, tc.n, &tc.alpha, static_cast<const float*>(dA), tc.lda, static_cast<const float*>(dX), tc.incx,
@@ -182,9 +221,24 @@ static int RunSsymvCase(const TestCase& tc, aclblasHandle_t handle, aclrtStream 
                   << std::endl;
         return 1;
     }
-    aclrtSynchronizeStream(stream);
+    // issue #590: 同步失败时内核结果不可信，报错退出而非基于陈旧数据比较
+    aclRet = aclrtSynchronizeStream(stream);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dA);
+        aclrtFree(dX);
+        aclrtFree(dY);
+        std::cout << "FAILED: aclrtSynchronizeStream ERROR " << aclRet << std::endl;
+        return 1;
+    }
     std::vector<float> yNpu(yHost.size());
-    aclrtMemcpy(yNpu.data(), yBytes, dY, yBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    aclRet = aclrtMemcpy(yNpu.data(), yBytes, dY, yBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dA);
+        aclrtFree(dX);
+        aclrtFree(dY);
+        std::cout << "FAILED: aclrtMemcpy D2H ERROR " << aclRet << std::endl;
+        return 1;
+    }
     std::vector<float> yGolden;
     ComputeSsymvGolden(aHost, xHost, yHost, nU32, ldaU32, tc.incx, tc.incy, tc.alpha, tc.beta, yGolden);
     aclrtFree(dA);
@@ -212,13 +266,34 @@ int32_t main(int32_t argc, char* argv[])
     (void)argc;
     (void)argv;
     int32_t deviceId = 0;
-    aclInit(nullptr);
-    aclrtSetDevice(deviceId);
+    // issue #590: 初始化链路逐一检查返回值，失败时明确报错并以非零码退出
+    aclError aclRet = aclInit(nullptr);
+    if (aclRet != ACL_SUCCESS) {
+        std::cout << "FAILED: aclInit ERROR " << aclRet << std::endl;
+        return 1;
+    }
+    aclRet = aclrtSetDevice(deviceId);
+    if (aclRet != ACL_SUCCESS) {
+        std::cout << "FAILED: aclrtSetDevice ERROR " << aclRet << std::endl;
+        return 1;
+    }
     aclrtStream stream = nullptr;
-    aclrtCreateStream(&stream);
+    aclRet = aclrtCreateStream(&stream);
+    if (aclRet != ACL_SUCCESS) {
+        std::cout << "FAILED: aclrtCreateStream ERROR " << aclRet << std::endl;
+        return 1;
+    }
     aclblasHandle_t handle = nullptr;
-    aclblasCreate(&handle);
-    aclblasSetStream(handle, stream);
+    aclblasStatus_t blasRet = aclblasCreate(&handle);
+    if (blasRet != ACLBLAS_STATUS_SUCCESS) {
+        std::cout << "FAILED: aclblasCreate ERROR " << blasRet << std::endl;
+        return 1;
+    }
+    blasRet = aclblasSetStream(handle, stream);
+    if (blasRet != ACLBLAS_STATUS_SUCCESS) {
+        std::cout << "FAILED: aclblasSetStream ERROR " << blasRet << std::endl;
+        return 1;
+    }
 
     int failed = 0;
     int total = static_cast<int>(gSsymvTests.size());

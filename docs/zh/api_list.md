@@ -813,19 +813,31 @@ Level 1 接口在向量之间进行运算，典型操作包括向量缩放（sca
 | [aclblasScasum](../../blas/asum/README.md) | 复数（complex64）向量绝对值分量之和（Ascend 950PR 支持） |
 | [aclblasSaxpy](../../blas/axpy/README.md) | 单精度浮点 AXPY（y = αx + y） |
 | [aclblasCaxpy](../../blas/axpy/README.md) | 复数 AXPY |
+| [aclblasAxpyEx](../../blas/axpy_ex/README.md) | 混合精度向量 AXPY（alpha 为 FP32，x/y 支持 FP16/BF16/FP32） |
 | [aclblasCdgmm](../../blas/dgmm/README.md) | 行主序单精度复数对角矩阵左乘 |
+| [aclblasSdgmm](../../blas/dgmm/README.md) | 单精度实数对角矩阵乘法 |
 | [aclblasComplexMatDot](../../extensions/complexmatdot/README.md) | 复数矩阵逐元素点乘 |
 | [aclblasScopy](../../blas/copy/README.md) | 单精度浮点向量拷贝 |
 | [aclblasCcopy](../../blas/copy/README.md) | 复数向量拷贝 |
+| [aclblasScopy_legacy](../../blas/copy/README.md) | 单精度浮点向量拷贝（legacy 接口） |
 | [aclblasSdot](../../blas/dot/README.md) | 实数向量点积 |
 | [aclblasCdotu](../../blas/dot/README.md) | 无共轭复数点积 |
 | [aclblasCdotc](../../blas/dot/README.md) | 共轭复数点积 |
+| [aclblasDotEx](../../blas/dotex/README.md) | 扩展精度向量点积 |
 | [aclblasIsamax](../../blas/iamax/README.md) | 查找向量中绝对值最大元素的索引 |
+| [aclblasIcamax](../../blas/iamax/README.md) | 查找复数向量中绝对值最大元素的索引 |
+| [aclblasIsamin](../../blas/iamin/README.md) | 查找向量中绝对值最小元素的索引 |
+| [aclblasIcamin](../../blas/iamin/README.md) | 查找复数向量中模最小元素的索引 |
 | [aclblasSnrm2](../../blas/nrm2/README.md) | 实数向量欧几里得范数 |
 | [aclblasScnrm2](../../blas/nrm2/README.md) | 复数向量欧几里得范数 |
+| [aclblasSnrm2Ex](../../blas/nrm2/README.md) | 扩展精度欧几里得范数（支持 FP16/FP32 输入） |
 | [aclblasCsrot](../../blas/rot/README.md) | 复数向量平面旋转 |
+| [aclblasSrot](../../blas/rot/README.md) | 单精度实数向量平面旋转 |
+| [aclblasRotEx](../../blas/rotex/README.md) | 混合精度 Givens 向量旋转 |
 | [aclblasSrotm](../../blas/rotm/README.md) | 实数向量 Modified Givens 旋转 |
 | [aclblasSrotmg](../../blas/rotmg/README.md) | 构造修正 Givens 旋转参数 |
+| [aclblasSrotg](../../blas/rotg/README.md) | 单精度构造 Givens 旋转参数 |
+| [aclblasCrotg](../../blas/rotg/README.md) | 单精度复数构造 Givens 旋转参数 |
 | [aclblasSscal](../../blas/scal/README.md) | 实数向量乘以标量 |
 | [aclblasCscal](../../blas/scal/README.md) | 复数向量乘以复数标量 |
 | [aclblasCsscal](../../blas/scal/README.md) | 复数向量乘以实数标量 |
@@ -851,7 +863,13 @@ Level 2 接口在矩阵与向量之间进行运算，典型操作包括通用矩
 | [aclblasTSTgemvBatched](../../blas/gemv_batched/README.md) | FP16 入/FP16 出批量矩阵-向量乘法（T 精度变体） |
 | [aclblasTSSgemvBatched](../../blas/gemv_batched/README.md) | FP16 入/FP32 出批量矩阵-向量乘法（T 精度变体） |
 | [aclblasCgemvBatched](../../blas/gemv_batched/README.md) | 复数批量矩阵-向量乘法 |
+| [aclblasSgemvStridedBatched](../../blas/gemv_strided_batched/README.md) | FP32 批量矩阵-向量跨步乘法 |
+| [aclblasHSHgemvStridedBatched](../../blas/gemv_strided_batched/README.md) | FP16 入/出批量矩阵-向量跨步乘法 |
+| [aclblasHSSgemvStridedBatched](../../blas/gemv_strided_batched/README.md) | FP16 入/FP32 出批量矩阵-向量跨步乘法 |
+| [aclblasTSTgemvStridedBatched](../../blas/gemv_strided_batched/README.md) | BF16 入/出批量矩阵-向量跨步乘法（T 精度变体） |
+| [aclblasTSSgemvStridedBatched](../../blas/gemv_strided_batched/README.md) | BF16 入/FP32 出批量矩阵-向量跨步乘法（T 精度变体） |
 | [aclblasSger](../../blas/ger/README.md) | 单精度浮点矩阵秩-1 更新 |
+| [aclblasCgeru](../../blas/ger/README.md) | 复数矩阵无共轭秩-1 更新 |
 | [aclblasCgerc](../../blas/gerc/README.md) | 复数矩阵共轭秩-1 更新 |
 | [aclblasSsbmv](../../blas/sbmv/README.md) | 单精度浮点对称带状矩阵-向量乘法 |
 | [aclblasSspmv](../../blas/spmv/README.md) | 单精度浮点对称 packed 矩阵-向量乘法 |
@@ -861,17 +879,25 @@ Level 2 接口在矩阵与向量之间进行运算，典型操作包括通用矩
 | [aclblasSsymv](../../blas/symv/README.md) | 单精度对称矩阵-向量乘法 |
 | [aclblasCsymv](../../blas/symv/README.md) | 单精度复数对称矩阵-向量乘法 |
 | [aclblasStbmv](../../blas/tbmv/README.md) | 单精度三角带状矩阵-向量乘法（标准接口） |
+| [aclblasCtbmv](../../blas/tbmv/README.md) | 单精度复数三角带状矩阵-向量乘法（标准接口） |
+| [aclblasStbmv_legacy](../../blas/tbmv/README.md) | 单精度三角带状矩阵-向量乘法（legacy 接口） |
 | [aclblasStpmv](../../blas/tpmv/README.md) | 单精度三角压缩矩阵-向量乘法（标准接口） |
+| [aclblasCtpmv](../../blas/tpmv/README.md) | 单精度复数三角压缩矩阵-向量乘法 |
+| [aclblasStpmv_legacy](../../blas/tpmv/README.md) | 单精度三角压缩矩阵-向量乘法（legacy 接口） |
 | [aclblasStpsv](../../blas/tpsv/README.md) | 单精度三角 packed 矩阵求解 |
 | [aclblasCtpsv](../../blas/tpsv/README.md) | 单精度复数三角 packed 矩阵求解 |
 | [aclblasStpttr](../../blas/tpttr/README.md) | 单精度压缩三角矩阵展开为常规矩阵 |
 | [aclblasStrmv](../../blas/trmv/README.md) | 实数三角矩阵-向量乘法 |
 | [aclblasCtrmv](../../blas/trmv/README.md) | 复数三角矩阵-向量乘法 |
 | [aclblasStrsv](../../blas/trsv/README.md) | 单精度三角矩阵求解 |
+| [aclblasCtrsv](../../blas/trsv/README.md) | 单精度复数三角矩阵求解 |
+| [aclblasStbsv](../../blas/tbsv/README.md) | 单精度三角带状方程组求解 |
+| [aclblasCtbsv](../../blas/tbsv/README.md) | 单精度复数三角带状方程组求解 |
 | [aclblasStrttp](../../blas/trttp/README.md) | 单精度常规三角矩阵压缩为 packed 格式 |
 | [aclblasSsyr](../../blas/syr/README.md) | 单精度对称秩-1 更新 |
 | [aclblasCsyr](../../blas/syr/README.md) | 单精度复数对称秩-1 更新（不共轭） |
 | [aclblasSsyr2](../../blas/syr2/README.md) | 单精度对称秩-2 更新 |
+| [aclblasCsyr2](../../blas/syr2/README.md) | 单精度复数对称秩-2 更新（不共轭） |
 
 ## aclBLAS Level 3 Function Reference
 
@@ -883,14 +909,35 @@ Level 3 接口在矩阵之间进行运算，典型操作包括对称矩阵乘法
 |---|---|
 | [aclblasSgemm](../../blas/gemm/README.md) | 单精度浮点通用矩阵乘法 |
 | [aclblasCgemm](../../blas/gemm/README.md) | 复数通用矩阵乘法 |
+| [aclblasSgemmBatched](../../blas/gemm_batched/README.md) | 单精度浮点批量矩阵乘法 |
+| [aclblasCgemmBatched](../../blas/gemm_batched/README.md) | 单精度复数批量矩阵乘法 |
+| [aclblasSgemmStridedBatched](../../blas/gemm_strided_batched/README.md) | 单精度浮点批量矩阵跨步乘法 |
+| [aclblasCgemmStridedBatched](../../blas/gemm_strided_batched/README.md) | 单精度复数批量矩阵跨步乘法 |
+| [aclblasSgemm3m](../../blas/gemm3m/README.md) | 单精度 3M 方法矩阵乘法 |
 | [aclblasSgemmGroupedBatched](../../blas/gemm_grouped_batched/README.md) | 单精度浮点分组批量矩阵乘法 |
+| [aclblasSsyrk](../../blas/syrk/README.md) | 单精度对称秩-k 更新 |
+| [aclblasCsyrk](../../blas/syrk/README.md) | 单精度复数对称秩-k 更新 |
+| [aclblasSsyr2k](../../blas/syr2k/README.md) | 单精度浮点对称秩-2k 更新 |
+| [aclblasCsyr2k](../../blas/syr2k/README.md) | 单精度复数对称秩-2k 更新 |
+| [aclblasSsyrkx](../../blas/syrkx/README.md) | 单精度浮点对称秩-k 更新扩展（A≠B） |
+| [aclblasCherk](../../blas/herk/README.md) | 单精度复数 Hermitian 秩-k 更新 |
+| [aclblasCherkx](../../blas/herkx/README.md) | 单精度复数 Hermitian 秩-k 更新扩展（A≠B） |
+| [aclblasCher2k](../../blas/her2k/README.md) | 单精度复数 Hermitian 秩-2k 更新 |
+| [aclblasSsymm](../../blas/symm/README.md) | 单精度浮点对称矩阵乘法 |
+| [aclblasCsymm](../../blas/symm/README.md) | 单精度复数对称矩阵乘法 |
+| [aclblasChemm](../../blas/hemm/README.md) | 单精度复数厄米特矩阵乘法 |
+| [aclblasStrmm](../../blas/trmm/README.md) | 单精度浮点三角矩阵乘法 |
+| [aclblasCtrmm](../../blas/trmm/README.md) | 单精度复数三角矩阵乘法 |
+| [aclblasStrsm](../../blas/trsm/README.md#aclblasstrsm) | 单精度三角矩阵线性方程组求解 |
+| [aclblasStrsmBatched](../../blas/trsmbatched/README.md) | 单精度浮点批量三角求解 |
+| [aclblasCtrsmBatched](../../blas/trsmbatched/README.md) | 单精度复数批量三角求解（Atlas 950PR） |
 | [aclblasSgelsBatched](../../blas/gels_batched/README.md) | 单精度批量最小二乘/最小范数求解 |
 | [aclblasSgeqrfBatched](../../blas/geqrf_batched/README.md) | 单精度批量 QR 分解 |
 | [aclblasSgetrfBatched](../../blas/getrf_batched/README.md) | 单精度批量 LU 分解（带部分主元选取） |
 | [aclblasSgetriBatched](../../blas/getri_batched/README.md) | 单精度批量矩阵求逆 |
+| [aclblasCgetriBatched](../../blas/getri_batched/README.md) | 单精度复数批量矩阵求逆 |
 | [aclblasSgetrsBatched](../../blas/getrs_batched/README.md) | 单精度批量线性方程组求解 |
 | [aclblasSmatinvBatched](../../blas/matinv_batched/README.md) | 单精度批量矩阵求逆 |
-| [aclblasSsymm](../../blas/symm/README.md) | 单精度浮点对称矩阵乘法 |
 | [aclblasCtrsm](../../blas/trsm/README.md#aclblasctrsm) | 单精度复数三角矩阵线性方程组求解（Ascend 950PR） |
 
 ## BLAS-like Extension
@@ -904,6 +951,7 @@ BLAS-like Extension 提供标准 BLAS Level 3 之外的扩展 GEMM 接口（以 
 | [aclblasSgeam](../../blas/geam/README.md) | 单精度矩阵加法：C = alpha * op(A) + beta * op(B) |
 | [aclblasCgeam](../../blas/geam/README.md) | 复数矩阵加法：C = alpha * op(A) + beta * op(B) |
 | [aclblasGemmEx](../../blas/gemm_ex/README.md) | 通用矩阵乘法扩展接口，支持 A/B/C 独立数据类型 |
+| [aclblasSgemmEx](../../blas/gemm_ex/README.md) | 单精度通用矩阵乘法（支持转置与 alpha/beta 缩放） |
 | [aclblasGemmBatchedEx](../../blas/gemm_batched_ex/README.md) | 通用矩阵乘法批量扩展接口 |
 | [aclblasGemmStridedBatchedEx](../../blas/gemm_strided_batched_ex/README.md) | 通用矩阵乘法跨步批量扩展接口 |
 | [aclblasGemmGroupedBatchedEx](../../blas/gemm_grouped_batched_ex/README.md) | 通用矩阵乘法分组批量扩展接口 |

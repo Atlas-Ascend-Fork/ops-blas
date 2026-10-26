@@ -1,6 +1,11 @@
 /**
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
- * This program is free software ... see LICENSE in the root of the software repository.
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
  */
 
 #include <cstdint>
@@ -180,13 +185,46 @@ static int RunSspmvCase(const TestCase& tc, aclblasHandle_t handle, aclrtStream 
     void* dAP = nullptr;
     void* dX = nullptr;
     void* dY = nullptr;
-    aclError aclRet;
-    aclRet = aclrtMalloc(&dAP, apBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMemcpy(dAP, apBytes, apHost.data(), apBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    // issue #592: 分配/拷贝失败时报错退出（删除原先从未读取的 aclRet 死赋值）
+    aclError aclRet = aclrtMalloc(&dAP, apBytes, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (aclRet != ACL_SUCCESS) {
+        std::cout << "FAILED: aclrtMalloc dAP ERROR " << aclRet << std::endl;
+        return 1;
+    }
+    aclRet = aclrtMemcpy(dAP, apBytes, apHost.data(), apBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dAP);
+        std::cout << "FAILED: aclrtMemcpy dAP ERROR " << aclRet << std::endl;
+        return 1;
+    }
     aclRet = aclrtMalloc(&dX, xBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMemcpy(dX, xBytes, xHost.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dAP);
+        std::cout << "FAILED: aclrtMalloc dX ERROR " << aclRet << std::endl;
+        return 1;
+    }
+    aclRet = aclrtMemcpy(dX, xBytes, xHost.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dAP);
+        aclrtFree(dX);
+        std::cout << "FAILED: aclrtMemcpy dX ERROR " << aclRet << std::endl;
+        return 1;
+    }
     aclRet = aclrtMalloc(&dY, yBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMemcpy(dY, yBytes, yHost.data(), yBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dAP);
+        aclrtFree(dX);
+        std::cout << "FAILED: aclrtMalloc dY ERROR " << aclRet << std::endl;
+        return 1;
+    }
+    aclRet = aclrtMemcpy(dY, yBytes, yHost.data(), yBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dAP);
+        aclrtFree(dX);
+        aclrtFree(dY);
+        std::cout << "FAILED: aclrtMemcpy dY ERROR " << aclRet << std::endl;
+        return 1;
+    }
     aclblasStatus_t blasRet = aclblasSspmv(
         handle, tc.uplo, tc.n, &tc.alpha, static_cast<const float*>(dAP), static_cast<const float*>(dX), tc.incx,
         &tc.beta, static_cast<float*>(dY), tc.incy);
@@ -200,10 +238,25 @@ static int RunSspmvCase(const TestCase& tc, aclblasHandle_t handle, aclrtStream 
         return 1;
     }
 
-    aclrtSynchronizeStream(stream);
+    // issue #592: 同步/D2H 失败时报错退出，不得基于陈旧数据比较
+    aclRet = aclrtSynchronizeStream(stream);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dAP);
+        aclrtFree(dX);
+        aclrtFree(dY);
+        std::cout << "FAILED: aclrtSynchronizeStream ERROR " << aclRet << std::endl;
+        return 1;
+    }
 
     std::vector<float> yNpu(yHost.size());
-    aclrtMemcpy(yNpu.data(), yBytes, dY, yBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    aclRet = aclrtMemcpy(yNpu.data(), yBytes, dY, yBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(dAP);
+        aclrtFree(dX);
+        aclrtFree(dY);
+        std::cout << "FAILED: aclrtMemcpy D2H ERROR " << aclRet << std::endl;
+        return 1;
+    }
 
     std::vector<float> yGolden;
     ComputeSspmvGolden(apHost, xHost, yHost, nU32, tc.uplo, tc.incx, tc.incy, tc.alpha, tc.beta, yGolden);
@@ -240,12 +293,29 @@ int32_t main(int32_t argc, char* argv[])
         fprintf(stderr, "aclInit failed\n");
         return ret;
     }
-    aclrtSetDevice(deviceId);
+    // issue #592: main 初始化链路逐一检查返回值，失败时明确报错并以非零码退出
+    aclError devRet = aclrtSetDevice(deviceId);
+    if (devRet != ACL_SUCCESS) {
+        fprintf(stderr, "aclrtSetDevice failed. ERROR: %d\n", devRet);
+        return devRet;
+    }
     aclrtStream stream = nullptr;
-    aclrtCreateStream(&stream);
+    devRet = aclrtCreateStream(&stream);
+    if (devRet != ACL_SUCCESS) {
+        fprintf(stderr, "aclrtCreateStream failed. ERROR: %d\n", devRet);
+        return devRet;
+    }
     aclblasHandle_t handle = nullptr;
-    aclblasCreate(&handle);
-    aclblasSetStream(handle, stream);
+    aclblasStatus_t blasRet = aclblasCreate(&handle);
+    if (blasRet != ACLBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "aclblasCreate failed. ERROR: %d\n", blasRet);
+        return blasRet;
+    }
+    blasRet = aclblasSetStream(handle, stream);
+    if (blasRet != ACLBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "aclblasSetStream failed. ERROR: %d\n", blasRet);
+        return blasRet;
+    }
 
     int failed = 0;
     int total = static_cast<int>(gSspmvTests.size());
