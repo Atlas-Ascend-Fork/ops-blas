@@ -84,10 +84,8 @@ add_subdirectory(blasLt)
 project(${OPS_BLASLT} LANGUAGES ASC CXX)
 add_library(${OPS_BLASLT} SHARED ${ALL_BLASLT_SRC_FILES})
 
-set_source_files_properties(
-    ${ALL_BLAS_SRC_FILES}
-    PROPERTIES LANGUAGE ASC
-)
+# issue #615: 删除对未初始化 ALL_BLAS_SRC_FILES 的空操作 set_source_files_properties
+# （该变量在 blas 子目录加入后才填充，真正生效的调用位于 add_library(${OPS_BLAS}) 之前）
 
 # cgerc has task-level microsecond latency targets. Keep its arch35 device
 # implementation optimized even when the repository's test build uses Debug.

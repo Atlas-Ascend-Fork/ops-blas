@@ -26,8 +26,12 @@ export BASE_PATH=$(
 BUILD_DIR="${BASE_PATH}/build"
 export BUILD_PATH="${BASE_PATH}/build"
 export BUILD_OUT_PATH="${BASE_PATH}/build_out"
-CORE_NUMS=$(cat /proc/cpuinfo | grep "processor" | wc -l)
 ARCH_INFO=$(uname -m)
+
+# issue #609: ASCEND_HOME_PATH 回退解析（支持仅设 ASCEND_TOOLKIT_HOME 的环境）
+# 必须先于 include/lib 路径导出，否则导出 /include、/lib64 等非法路径
+ASCEND_HOME="${ASCEND_HOME_PATH:-${ASCEND_TOOLKIT_HOME}}"
+export ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-${ASCEND_HOME}}"
 
 export INCLUDE_PATH="${ASCEND_HOME_PATH}/include"
 export ACLNN_INCLUDE_PATH="${INCLUDE_PATH}/aclnn"
@@ -133,7 +137,6 @@ else
     SOC_ARCH_DIRS=()
 fi
 
-
 # 展开家族名为具体算子列表
 # 例如: --ops=gbmv → --ops=sgbmv (如果 test/gbmv/sgbmv/CMakeLists.txt 存在)
 # 搜索逻辑: 在家族目录下遍历各算子子目录,检查是否有目标 archXX 目录
@@ -235,17 +238,15 @@ echo "BUILD_OPS=${BUILD_OPS}, RUN_TEST=${RUN_TEST}, ENABLE_PACKAGE=${ENABLE_PACK
 
 # ==========================
 # 环境检查（Ascend/CANN）
+# issue #609: ASCEND_HOME_PATH 回退解析已前移至脚本头部导出之前，此处仅保留缺省报错
 # ==========================
-ASCEND_HOME="${ASCEND_HOME_PATH:-${ASCEND_TOOLKIT_HOME}}"
-if [ -z "${ASCEND_HOME}" ]; then
+if [ -z "${ASCEND_HOME_PATH}" ]; then
     echo "Error: Ascend/CANN environment is not configured."
     echo "Please source the Ascend environment script first, e.g.:"
     echo "  source /usr/local/Ascend/ascend-toolkit/latest/set_env.sh"
     echo "  or source \${HOME}/Ascend/ascend-toolkit/latest/set_env.sh"
     exit 1
 fi
-# 确保后续使用的 ASCEND_HOME_PATH 有值
-export ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-${ASCEND_HOME}}"
 
 # ==========================
 # 运行测试前智能选择空闲设备
@@ -295,8 +296,8 @@ fi
 # ==========================
 # 构建
 # ==========================
-rm -rf ${BUILD_DIR}
-mkdir -p ${BUILD_DIR}
+rm -rf "${BUILD_DIR}"
+mkdir -p "${BUILD_DIR}"
 
 # 默认 SOC_VERSION，ASCEND_CANN_PACKAGE_PATH 使用环境变量
 if [ -z "${SOC_VERSION}" ]; then
@@ -344,12 +345,14 @@ if [ "${ENABLE_PACKAGE}" == "TRUE" ]; then
     CMAKE_OPTIONS="${CMAKE_OPTIONS} -DENABLE_PACKAGE=ON"
 fi
 
+# issue #610: 路径展开加引号（rm -rf/mkdir/cmake），路径含空格时不再被拆分；
+# CMAKE_OPTIONS 保持分词展开（多选项语义），如未来需支持带空格选项应改为 bash 数组
 cmake -S "${BASE_PATH}" -B "${BUILD_DIR}" ${CMAKE_OPTIONS}
-cmake --build ${BUILD_DIR} -j
+cmake --build "${BUILD_DIR}" -j
 if [ "${ENABLE_PACKAGE}" == "TRUE" ]; then
-    cmake --build ${BUILD_DIR} --target package
+    cmake --build "${BUILD_DIR}" --target package
 else
-    cmake --install ${BUILD_DIR}
+    cmake --install "${BUILD_DIR}"
 fi
 
 # ==========================

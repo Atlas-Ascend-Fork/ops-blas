@@ -18,10 +18,9 @@ set(OP_SRC_FILES "")
 file(GLOB children RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/*)
 foreach(child ${children})
     if(IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/${child})
-        
-        # 如果算子未被排除，则收集其源文件
-        if(NOT is_excluded)
-            # 递归收集非架构特定源码，避免与 archXX 目录重复收集
+
+        # issue #614: 删除全仓未定义变量 is_excluded 的恒真死守卫（排除机制已删除）
+        # 递归收集非架构特定源码，避免与 archXX 目录重复收集
             file(GLOB_RECURSE dir_srcs ${CMAKE_CURRENT_SOURCE_DIR}/${child}/*.cpp)
             foreach(src_file ${dir_srcs})
                 set(is_arch_specific FALSE)
@@ -47,7 +46,6 @@ foreach(child ${children})
                     endif()
                 endif()
             endforeach()
-        endif()
     endif()
 endforeach()
 

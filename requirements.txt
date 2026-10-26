@@ -1,10 +1,5 @@
+# issue #616: 仅保留仓内实际引用的依赖（numpy/scipy 用于 experimental 数据生成与校验），
+# 补充 tests/host 宿主测试所需 pytest；其余 8 个无引用包移除
 numpy
-decorator
-sympy
 scipy
-attrs
-psutil
-protobuf
-pyyaml
-setuptools
-wheel
+pytest

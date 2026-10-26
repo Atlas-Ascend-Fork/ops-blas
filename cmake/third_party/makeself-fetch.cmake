@@ -28,12 +28,16 @@ if (NOT EXISTS "${MAKESELF_PATH}/makeself-header.sh" OR NOT EXISTS "${MAKESELF_P
         SOURCE_DIR "${MAKESELF_PATH}"  # 直接解压到此目录
     )
     FetchContent_MakeAvailable(${MAKESELF_NAME})
+    # issue #608: chmod 目标为 FetchContent 实际解压目录 MAKESELF_PATH（原路径少一级
+    # 且混入 -E env/CMAKE_TLS_VERIFY 残留参数导致命令必然失败）；结果必须检查，
+    # exec 位加固失败提前告警而非后移到打包阶段才暴露
     execute_process(
-        COMMAND chmod 700 "${CMAKE_BINARY_DIR}/makeself/makeself.sh"
-        COMMAND chmod 700 "${CMAKE_BINARY_DIR}/makeself/makeself-header.sh"
-        -E env
-        CMAKE_TLS_VERIFY=0
+        COMMAND chmod 700 "${MAKESELF_PATH}/makeself.sh"
+        COMMAND chmod 700 "${MAKESELF_PATH}/makeself-header.sh"
         RESULT_VARIABLE CHMOD_RESULT
         ERROR_VARIABLE CHMOD_ERROR
     )
+    if(NOT CHMOD_RESULT EQUAL 0)
+        message(WARNING "makeself chmod failed: ${CHMOD_ERROR}")
+    endif()
 endif()
