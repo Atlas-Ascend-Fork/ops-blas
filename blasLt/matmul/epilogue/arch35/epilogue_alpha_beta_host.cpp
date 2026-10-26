@@ -27,19 +27,13 @@ namespace {
 constexpr uint32_t SIMT_MIN_THREAD_NUM = 128U;
 constexpr uint32_t SIMT_MAX_THREAD_NUM = 2048U;
 
-template <typename T>
-constexpr uint32_t CeilDiv(T a, T b)
+// issue #596: m*n 用 uint32 相乘在 m*n >= 2^32 时回绕，元素总数按 64 位计算。
+constexpr uint64_t CeilDivU64(uint64_t a, uint64_t b)
 {
     if (a == 0 || b == 0) {
-        return 0U;
+        return 0ULL;
     }
-    return static_cast<uint32_t>((a + b - 1) / b);
-}
-
-template <typename T>
-constexpr uint32_t CeilAlign(T a, T b)
-{
-    return CeilDiv(a, b) * static_cast<uint32_t>(b);
+    return (a + b - 1) / b;
 }
 
 uint32_t GetVectorCoreCount()
@@ -56,22 +50,21 @@ uint32_t GetVectorCoreCount()
     return static_cast<uint32_t>(vecCoreNum);
 }
 
-uint8_t ToEpilogueDtype(aclDataType dtype)
-{
-    return (dtype == ACL_BF16) ? 1U : 0U;
-}
+uint8_t ToEpilogueDtype(aclDataType dtype) { return (dtype == ACL_BF16) ? 1U : 0U; }
 
 } // namespace
 
-void epilogue_alpha_beta_get_tiling(
-    uint32_t m, uint32_t n, uint32_t numBlocks, EpilogueAlphaBetaTilingData& tilingData)
+void epilogue_alpha_beta_get_tiling(uint32_t m, uint32_t n, uint32_t numBlocks, EpilogueAlphaBetaTilingData& tilingData)
 {
     tilingData = {};
     tilingData.m = m;
     tilingData.n = n;
     tilingData.usedCoreNum = std::max(1U, numBlocks);
-    tilingData.numThreads =
-        std::min(CeilAlign(CeilDiv(m * n, tilingData.usedCoreNum), SIMT_MIN_THREAD_NUM), SIMT_MAX_THREAD_NUM);
+    // issue #596: m*n 以 64 位中间量计算，避免超大矩阵下乘法回绕低估线程需求
+    const uint64_t totalElements = static_cast<uint64_t>(m) * static_cast<uint64_t>(n);
+    const uint64_t perCore = CeilDivU64(totalElements, tilingData.usedCoreNum);
+    const uint64_t alignedThreads = CeilDivU64(perCore, SIMT_MIN_THREAD_NUM) * SIMT_MIN_THREAD_NUM;
+    tilingData.numThreads = static_cast<uint32_t>(std::min<uint64_t>(alignedThreads, SIMT_MAX_THREAD_NUM));
 }
 
 void epilogue_alpha_beta_do(

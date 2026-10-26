@@ -34,23 +34,26 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void EpilogueAlp
     constexpr bool C_BF16 = AscendC::IsSameType<TC, bfloat16_t>::value;
     constexpr bool D_BF16 = AscendC::IsSameType<TD, bfloat16_t>::value;
 
-    // alpha/beta 已由调用方按模式解析：DEVICE 模式下为从 GM 读回的标量值
-    const uint32_t total = m * n;
-    for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < total; idx += gridDim.x * blockDim.x) {
-        const uint32_t row = idx / n;
-        const uint32_t col = idx % n;
-        const uint32_t rawIdx = row * lddRaw + col;
-        const uint32_t outIdx = row * ldd + col;
+    // alpha/beta 已由调用方按模式解析：DEVICE 模式下为从 GM 读回的标量值。
+    // issue #596: total 与行内索引均按 64 位计算——m*n >= 2^32 或大 ld 下 (m-1)*ld+col
+    // 用 uint32 会回绕，导致 D 大面积漏写或写错位置。
+    const uint64_t total = static_cast<uint64_t>(m) * static_cast<uint64_t>(n);
+    for (uint64_t idx = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x; idx < total;
+         idx += static_cast<uint64_t>(gridDim.x) * blockDim.x) {
+        const uint64_t row = idx / n;
+        const uint64_t col = idx % n;
+        const uint64_t rawIdx = row * lddRaw + col;
+        const uint64_t outIdx = row * ldd + col;
 
         float rawVal = RAW_BF16 ? __bfloat162float(dRawGm[rawIdx]) : static_cast<float>(dRawGm[rawIdx]);
         float cVal = 0.0f;
         if constexpr (DEVICE_SCALAR) {
             if (useC && beta != 0.0f) {
-                const uint32_t cIdx = row * ldc + col;
+                const uint64_t cIdx = row * ldc + col;
                 cVal = C_BF16 ? __bfloat162float(cGm[cIdx]) : static_cast<float>(cGm[cIdx]);
             }
         } else if (useC) {
-            const uint32_t cIdx = row * ldc + col;
+            const uint64_t cIdx = row * ldc + col;
             cVal = C_BF16 ? __bfloat162float(cGm[cIdx]) : static_cast<float>(cGm[cIdx]);
         }
         const float result = alpha * rawVal + beta * cVal;
@@ -79,8 +82,8 @@ __aicore__ inline void LaunchEpilogueAlphaBetaTyped(
         betaValue = *reinterpret_cast<__gm__ const float*>(beta);
     }
     asc_vf_call<EpilogueAlphaBetaSimt<TDRaw, TC, TD, DEVICE_SCALAR>>(
-        dim3{tiling.numThreads, 1, 1}, tiling.m, tiling.n, tiling.ldc, tiling.ldd, tiling.lddRaw, alphaValue,
-        betaValue, useC, dRawGm, cGm, dGm);
+        dim3{tiling.numThreads, 1, 1}, tiling.m, tiling.n, tiling.ldc, tiling.ldd, tiling.lddRaw, alphaValue, betaValue,
+        useC, dRawGm, cGm, dGm);
 }
 
 template <typename TDRaw, typename TC, typename TD>

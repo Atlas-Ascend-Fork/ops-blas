@@ -58,15 +58,24 @@ namespace {
 inline uint8_t MatDtypeCode(aclDataType dtype)
 {
     switch (dtype) {
-        case ACL_FLOAT: return MT_DTYPE_FP32;
-        case ACL_FLOAT16: return MT_DTYPE_FP16;
-        case ACL_BF16: return MT_DTYPE_BF16;
-        case ACL_INT8: return MT_DTYPE_INT8;
-        case ACL_INT32: return MT_DTYPE_INT32;
-        case ACL_FLOAT8_E4M3FN: return MT_DTYPE_FP8_E4M3;
-        case ACL_FLOAT8_E5M2: return MT_DTYPE_FP8_E5M2;
-        case ACL_FLOAT4_E2M1: return MT_DTYPE_FP4;
-        default: return MT_DTYPE_INVALID;
+        case ACL_FLOAT:
+            return MT_DTYPE_FP32;
+        case ACL_FLOAT16:
+            return MT_DTYPE_FP16;
+        case ACL_BF16:
+            return MT_DTYPE_BF16;
+        case ACL_INT8:
+            return MT_DTYPE_INT8;
+        case ACL_INT32:
+            return MT_DTYPE_INT32;
+        case ACL_FLOAT8_E4M3FN:
+            return MT_DTYPE_FP8_E4M3;
+        case ACL_FLOAT8_E5M2:
+            return MT_DTYPE_FP8_E5M2;
+        case ACL_FLOAT4_E2M1:
+            return MT_DTYPE_FP4;
+        default:
+            return MT_DTYPE_INVALID;
     }
 }
 
@@ -94,31 +103,16 @@ inline size_t MatDtypeBytes(aclDataType dtype)
 
 // dtype code domain predicates. The float scale path is FP32/FP16/BF16; the integer path is
 // INT8/INT32; FP8 (E4M3FN/E5M2) and FP4 (E2M1) are their own scale paths (float / bfloat16_t).
-inline bool MatIsFloatCode(uint8_t code)
-{
-    return code <= MT_DTYPE_BF16;
-}
+inline bool MatIsFloatCode(uint8_t code) { return code <= MT_DTYPE_BF16; }
 
-inline bool MatIsIntCode(uint8_t code)
-{
-    return code == MT_DTYPE_INT8 || code == MT_DTYPE_INT32;
-}
+inline bool MatIsIntCode(uint8_t code) { return code == MT_DTYPE_INT8 || code == MT_DTYPE_INT32; }
 
-inline bool MatIsFp8Code(uint8_t code)
-{
-    return code == MT_DTYPE_FP8_E4M3 || code == MT_DTYPE_FP8_E5M2;
-}
+inline bool MatIsFp8Code(uint8_t code) { return code == MT_DTYPE_FP8_E4M3 || code == MT_DTYPE_FP8_E5M2; }
 
-inline bool MatIsFp4Code(uint8_t code)
-{
-    return code == MT_DTYPE_FP4;
-}
+inline bool MatIsFp4Code(uint8_t code) { return code == MT_DTYPE_FP4; }
 
 // FP4 packed leading dimension / byte count: two logical elements per byte (ceil).
-inline uint64_t MatFp4PackedLd(uint64_t logicalLd)
-{
-    return (logicalLd + 1U) / 2U;
-}
+inline uint64_t MatFp4PackedLd(uint64_t logicalLd) { return (logicalLd + 1U) / 2U; }
 
 // Number of independent leading-dim blocks in an FP4 physical buffer (mirrors the test wrapper
 // ltTransformNumBlocks): COL packs along columns (cols blocks), ROW along rows (rows blocks), and
@@ -131,7 +125,7 @@ inline uint32_t MatFp4NumBlocks(aclblasLtOrder_t order, uint64_t physRows, uint6
     if (order == ACLBLASLT_ORDER_ROW) {
         return static_cast<uint32_t>(physRows);
     }
-    return static_cast<uint32_t>((physCols + 31U) / 32U);  // COL32 / COL4_4R2_8C / COL32_2R_4R4
+    return static_cast<uint32_t>((physCols + 31U) / 32U); // COL32 / COL4_4R2_8C / COL32_2R_4R4
 }
 
 // Valid order enum (COL/ROW/COL32/COL4_4R2_8C/COL32_2R_4R4).
@@ -155,7 +149,7 @@ inline uint32_t MatComplexTileRowsHost(aclblasLtOrder_t order)
 
 inline uint8_t MatOpCode(aclblasOperation_t op)
 {
-    return (op == ACLBLAS_OP_N) ? 0U : 1U;  // C is treated as T (no complex dtype)
+    return (op == ACLBLAS_OP_N) ? 0U : 1U; // C is treated as T (no complex dtype)
 }
 
 // op enum validity: only N / T / C are supported (C is treated as T, no complex dtype).
@@ -175,16 +169,15 @@ inline uint64_t MatLeadingDimLowerBound(aclblasLtOrder_t order, uint64_t physRow
         return physCols;
     }
     if (order == ACLBLASLT_ORDER_COL32) {
-        return physRows * 32U;  // one 32-col group stride
+        return physRows * 32U; // one 32-col group stride
     }
     const uint64_t tileRows = MatComplexTileRowsHost(order);
     const uint64_t numRowBlocks = (physRows + tileRows - 1U) / tileRows;
-    return numRowBlocks * tileRows * 32U;  // group stride spans all row blocks
+    return numRowBlocks * tileRows * 32U; // group stride spans all row blocks
 }
 
 // Logical (rows x cols) of an input matrix after op, column-major basis.
-inline void MatLogicalDims(const MatTransformLayout* layout, aclblasOperation_t op, uint64_t& rows,
-                          uint64_t& cols)
+inline void MatLogicalDims(const MatTransformLayout* layout, aclblasOperation_t op, uint64_t& rows, uint64_t& cols)
 {
     if (op == ACLBLAS_OP_N) {
         rows = layout->rows;
@@ -208,7 +201,7 @@ inline uint8_t MatScalePathOfCode(uint8_t code)
     if (MatIsFp4Code(code)) {
         return MT_SCALE_PATH_FP4;
     }
-    return MT_SCALE_PATH_FP32;  // FP32 / FP16 / BF16
+    return MT_SCALE_PATH_FP32; // FP32 / FP16 / BF16
 }
 
 // Validate that the descriptor scaleType is consistent with the dtype scale path:
@@ -223,19 +216,16 @@ inline bool MatScaleTypeMatchesPath(uint8_t scalePath, aclDataType scaleType)
             return scaleType == ACL_FLOAT;
         case MT_SCALE_PATH_FP4:
             return scaleType == ACL_BF16 || scaleType == ACL_FLOAT;
-        default:  // MT_SCALE_PATH_FP32
+        default: // MT_SCALE_PATH_FP32
             return scaleType == ACL_FLOAT;
     }
 }
 
 // Compute domain of a dtype code, used to enforce cross-dtype legality. FP32/FP16/BF16/FP8/FP4 all
 // share the floating compute domain (cast to float/bf16); INT8/INT32 share the int32 domain.
-constexpr uint8_t MT_DOMAIN_FLOAT = 0;  // FP32 / FP16 / BF16 / FP8 / FP4
-constexpr uint8_t MT_DOMAIN_INT = 1;    // INT8 / INT32
-inline uint8_t MatComputeDomain(uint8_t code)
-{
-    return MatIsIntCode(code) ? MT_DOMAIN_INT : MT_DOMAIN_FLOAT;
-}
+constexpr uint8_t MT_DOMAIN_FLOAT = 0; // FP32 / FP16 / BF16 / FP8 / FP4
+constexpr uint8_t MT_DOMAIN_INT = 1;   // INT8 / INT32
+inline uint8_t MatComputeDomain(uint8_t code) { return MatIsIntCode(code) ? MT_DOMAIN_INT : MT_DOMAIN_FLOAT; }
 
 // Validate dtype domain consistency and order/dtype legality.
 // Rules: dtype in the supported set; A/B/C share one compute domain (FP8/FP4 cross float is legal,
@@ -252,20 +242,26 @@ inline aclblasStatus_t MatCheckDtypeAndOrder(
     const uint8_t domA = MatComputeDomain(codeA);
     const uint8_t domC = MatComputeDomain(codeC);
     if (domA != domC || (hasB && MatComputeDomain(codeB) != domA)) {
-        return ACLBLAS_STATUS_NOT_SUPPORTED;  // cross-domain (float<->int) conversion is out of scope
+        return ACLBLAS_STATUS_NOT_SUPPORTED; // cross-domain (float<->int) conversion is out of scope
+    }
+    // issue #585: 内核仅实例化 A/B 同 dtype 组合（MT_DTYPE_LIST 中每个实例的 A/B dtype code
+    // 一致），混合 A/B dtype 组合此前会落入 default 分支静默不启动内核却返回 SUCCESS，
+    // 此处在 host 校验收紧为与内核实例一致。
+    if (hasB && codeB != codeA) {
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
     const bool anyFp8 = MatIsFp8Code(codeA) || MatIsFp8Code(codeC) || (hasB && MatIsFp8Code(codeB));
     const bool anyFp4 = MatIsFp4Code(codeA) || MatIsFp4Code(codeC) || (hasB && MatIsFp4Code(codeB));
     if (anyFp8 && anyFp4) {
-        return ACLBLAS_STATUS_NOT_SUPPORTED;  // FP8 and FP4 use incompatible storage / scale domains
+        return ACLBLAS_STATUS_NOT_SUPPORTED; // FP8 and FP4 use incompatible storage / scale domains
     }
     if (!MatIsValidOrder(orderA) || !MatIsValidOrder(orderC) || (hasB && !MatIsValidOrder(orderB))) {
-        return ACLBLAS_STATUS_NOT_SUPPORTED;  // illegal order enum
+        return ACLBLAS_STATUS_NOT_SUPPORTED; // illegal order enum
     }
-    const bool anyComplex = MatIsComplexOrder(orderA) || MatIsComplexOrder(orderC) ||
-                            (hasB && MatIsComplexOrder(orderB));
+    const bool anyComplex =
+        MatIsComplexOrder(orderA) || MatIsComplexOrder(orderC) || (hasB && MatIsComplexOrder(orderB));
     if (anyComplex && domA == MT_DOMAIN_FLOAT && !anyFp8 && !anyFp4) {
-        return ACLBLAS_STATUS_NOT_SUPPORTED;  // complex layouts are not supported on the pure float path
+        return ACLBLAS_STATUS_NOT_SUPPORTED; // complex layouts are not supported on the pure float path
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
@@ -281,8 +277,7 @@ inline uint64_t MatLeadingDimLowerBoundStored(const MatTransformLayout* layout)
 
 // Validate that every participating layout's leading dimension meets its order lower bound.
 inline aclblasStatus_t MatCheckLeadingDims(
-    const MatTransformLayout* aLayout, const MatTransformLayout* bLayout,
-    const MatTransformLayout* cLayout, bool hasB)
+    const MatTransformLayout* aLayout, const MatTransformLayout* bLayout, const MatTransformLayout* cLayout, bool hasB)
 {
     if (aLayout->ld < static_cast<int64_t>(MatLeadingDimLowerBoundStored(aLayout))) {
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -313,8 +308,8 @@ struct MatCodes {
 // Validate op enum, batchCount, dtype/order combination and leading dimensions in one pass,
 // resolving the dtype codes and effective B order for the launch.
 inline aclblasStatus_t MatValidateConfig(
-    const aclblasLtMatrixTransformDescImpl* desc, const MatTransformLayout* aLayout,
-    const MatTransformLayout* bLayout, const MatTransformLayout* cLayout, bool hasB, MatCodes& codes)
+    const aclblasLtMatrixTransformDescImpl* desc, const MatTransformLayout* aLayout, const MatTransformLayout* bLayout,
+    const MatTransformLayout* cLayout, bool hasB, MatCodes& codes)
 {
     if (!MatIsValidOp(desc->transA) || (hasB && !MatIsValidOp(desc->transB))) {
         return ACLBLAS_STATUS_NOT_SUPPORTED;
@@ -344,10 +339,28 @@ inline bool MatBetaIsZero(uint8_t scalePath, const void* beta, uint32_t betaBits
     return *reinterpret_cast<const float*>(beta) == 0.0f;
 }
 
+// issue #586: matmul 侧对维度有 IsRepresentableAsUint32 前置校验，transform 侧同样依赖
+// uint32 tiling；rows/cols/ld 超过 2^32-1 时高位会被静默截断、内核按错误形状执行，入口显式拒绝。
+constexpr uint64_t MT_MAX_UINT32 = 0xFFFFFFFFULL;
+
+inline aclblasStatus_t MatCheckDimRanges(
+    const MatTransformLayout* aLayout, const MatTransformLayout* bLayout, const MatTransformLayout* cLayout, bool hasB,
+    uint64_t rows, uint64_t cols)
+{
+    if (rows > MT_MAX_UINT32 || cols > MT_MAX_UINT32) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (aLayout->ld > static_cast<int64_t>(MT_MAX_UINT32) || cLayout->ld > static_cast<int64_t>(MT_MAX_UINT32) ||
+        (hasB && bLayout->ld > static_cast<int64_t>(MT_MAX_UINT32))) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 // Validate that op(A) and (when present) op(B) logical dims match C. Returns no-op flag via outRows/outCols=0.
 inline aclblasStatus_t MatValidateDims(
-    const MatTransformLayout* aLayout, const MatTransformLayout* bLayout,
-    const aclblasLtMatrixTransformDescImpl* desc, bool hasB, uint64_t rows, uint64_t cols)
+    const MatTransformLayout* aLayout, const MatTransformLayout* bLayout, const aclblasLtMatrixTransformDescImpl* desc,
+    bool hasB, uint64_t rows, uint64_t cols)
 {
     uint64_t rowsA = 0U;
     uint64_t colsA = 0U;
@@ -371,14 +384,13 @@ inline uint32_t MatResolveVectorCores(int32_t deviceId)
     int64_t vecCoreNum = 0;
     aclError aclRet = aclrtGetDeviceInfo(deviceId, ACL_DEV_ATTR_VECTOR_CORE_NUM, &vecCoreNum);
     if (aclRet != ACL_SUCCESS || vecCoreNum <= 0) {
-        vecCoreNum = 8;  // fallback
+        vecCoreNum = 8; // fallback
     }
     return static_cast<uint32_t>(vecCoreNum);
 }
 
 // Resolve scalePath, alpha/beta bits and hasB; B / B-layout presence is checked by the caller.
-inline void MatResolveScalars(
-    uint8_t scalePath, const void* alpha, const void* beta, MatScalars& sc)
+inline void MatResolveScalars(uint8_t scalePath, const void* alpha, const void* beta, MatScalars& sc)
 {
     sc.scalePath = scalePath;
     // alpha / beta are passed as float for the FP32 / FP16 / BF16 / FP8 / FP4 scale types (the FP4
@@ -392,8 +404,8 @@ inline void MatResolveScalars(
 }
 
 // Pick the complex order that drives the group-path in-tile permutation, or COL when none.
-inline aclblasLtOrder_t MatPickComplexOrder(aclblasLtOrder_t orderA, aclblasLtOrder_t orderB, aclblasLtOrder_t orderC,
-                                          bool hasB)
+inline aclblasLtOrder_t MatPickComplexOrder(
+    aclblasLtOrder_t orderA, aclblasLtOrder_t orderB, aclblasLtOrder_t orderC, bool hasB)
 {
     if (MatIsComplexOrder(orderC)) {
         return orderC;
@@ -414,7 +426,7 @@ inline void* MatCreateIndexTable(aclblasLtOrder_t complexOrder)
     if (!MatIsComplexOrder(complexOrder)) {
         return nullptr;
     }
-    const uint32_t count = 32U * 32U;  // fixed 32x32 column-major tile (with padding scratch slots)
+    const uint32_t count = 32U * 32U; // fixed 32x32 column-major tile (with padding scratch slots)
     std::vector<uint32_t> table(count, 0U);
     if (MatBuildTileColMajorTable(static_cast<uint8_t>(complexOrder), table.data(), count) != count) {
         return nullptr;
@@ -434,20 +446,35 @@ inline void* MatCreateIndexTable(aclblasLtOrder_t complexOrder)
 // GM workspaces backing one transform launch: the pivot in-tile offset table, the per-operand
 // de-layout offset tables, and the de-layouted column-major ND buffers for op=T complex inputs.
 struct MatTransformWorkspaces {
-    void* idxTable = nullptr;   // pivot complex order column-major table (group path / output scatter)
-    void* idxTableA = nullptr;  // orderA de-layout table (A complex + op=T)
-    void* idxTableB = nullptr;  // orderB de-layout table (B complex + op=T)
-    void* ndA = nullptr;        // de-layouted column-major A workspace
-    void* ndB = nullptr;        // de-layouted column-major B workspace
+    void* idxTable = nullptr;  // pivot complex order column-major table (group path / output scatter)
+    void* idxTableA = nullptr; // orderA de-layout table (A complex + op=T)
+    void* idxTableB = nullptr; // orderB de-layout table (B complex + op=T)
+    void* ndA = nullptr;       // de-layouted column-major A workspace
+    void* ndB = nullptr;       // de-layouted column-major B workspace
 };
 
 inline void MatFreeTransformWorkspaces(MatTransformWorkspaces& ws)
 {
-    if (ws.idxTable != nullptr) { aclrtFree(ws.idxTable); ws.idxTable = nullptr; }
-    if (ws.idxTableA != nullptr) { aclrtFree(ws.idxTableA); ws.idxTableA = nullptr; }
-    if (ws.idxTableB != nullptr) { aclrtFree(ws.idxTableB); ws.idxTableB = nullptr; }
-    if (ws.ndA != nullptr) { aclrtFree(ws.ndA); ws.ndA = nullptr; }
-    if (ws.ndB != nullptr) { aclrtFree(ws.ndB); ws.ndB = nullptr; }
+    if (ws.idxTable != nullptr) {
+        aclrtFree(ws.idxTable);
+        ws.idxTable = nullptr;
+    }
+    if (ws.idxTableA != nullptr) {
+        aclrtFree(ws.idxTableA);
+        ws.idxTableA = nullptr;
+    }
+    if (ws.idxTableB != nullptr) {
+        aclrtFree(ws.idxTableB);
+        ws.idxTableB = nullptr;
+    }
+    if (ws.ndA != nullptr) {
+        aclrtFree(ws.ndA);
+        ws.ndA = nullptr;
+    }
+    if (ws.ndB != nullptr) {
+        aclrtFree(ws.ndB);
+        ws.ndB = nullptr;
+    }
 }
 
 // Allocate a column-major ND workspace (physRows * physCols elements of dtypeBytes) for a staged
@@ -468,9 +495,8 @@ inline void* MatAllocNdWorkspace(uint64_t physRows, uint64_t physCols, size_t dt
 // Allocate the pivot table plus the per-operand de-layout tables and ND workspaces required by
 // the requested launch. On any failure the caller frees whatever was already allocated.
 inline aclblasStatus_t MatAllocTransformWorkspaces(
-    aclblasLtOrder_t complexOrder, const MatTransformLayout* aLayout,
-    const MatTransformLayout* bLayout, bool delayoutA, bool delayoutB, uint8_t codeA, uint8_t codeB,
-    MatTransformWorkspaces& ws)
+    aclblasLtOrder_t complexOrder, const MatTransformLayout* aLayout, const MatTransformLayout* bLayout, bool delayoutA,
+    bool delayoutB, uint8_t codeA, uint8_t codeB, MatTransformWorkspaces& ws)
 {
     if (MatIsComplexOrder(complexOrder)) {
         ws.idxTable = MatCreateIndexTable(complexOrder);
@@ -499,10 +525,10 @@ inline aclblasStatus_t MatAllocTransformWorkspaces(
 
 // Build tiling, log launch parameters and dispatch the device kernel.
 inline aclblasStatus_t MatLaunch(
-    const void* A, const void* B, void* C, const MatTransformLayout* aLayout,
-    const MatTransformLayout* bLayout, const MatTransformLayout* cLayout,
-    const aclblasLtMatrixTransformDescImpl* desc, const MatScalars& sc, aclblasLtOrder_t orderB, uint8_t codeA,
-    uint8_t codeB, uint8_t codeC, uint64_t rows, uint64_t cols, uint32_t numBlocks, aclrtStream stream)
+    const void* A, const void* B, void* C, const MatTransformLayout* aLayout, const MatTransformLayout* bLayout,
+    const MatTransformLayout* cLayout, const aclblasLtMatrixTransformDescImpl* desc, const MatScalars& sc,
+    aclblasLtOrder_t orderB, uint8_t codeA, uint8_t codeB, uint8_t codeC, uint64_t rows, uint64_t cols,
+    uint32_t numBlocks, aclrtStream stream)
 {
     MatrixTransformTilingData tiling;
     matrix_transform_get_tiling(
@@ -526,8 +552,8 @@ inline aclblasStatus_t MatLaunch(
 
     const aclblasLtOrder_t complexOrder = MatPickComplexOrder(aLayout->order, orderB, cLayout->order, sc.hasB);
     MatTransformWorkspaces ws;
-    aclblasStatus_t wsStatus = MatAllocTransformWorkspaces(
-        complexOrder, aLayout, bLayout, delayoutA, delayoutB, codeA, codeB, ws);
+    aclblasStatus_t wsStatus =
+        MatAllocTransformWorkspaces(complexOrder, aLayout, bLayout, delayoutA, delayoutB, codeA, codeB, ws);
     if (wsStatus != ACLBLAS_STATUS_SUCCESS) {
         MatFreeTransformWorkspaces(ws);
         return wsStatus;
@@ -547,9 +573,9 @@ inline aclblasStatus_t MatLaunch(
         MatrixTransformTilingData delayoutTiling = tiling;
         delayoutTiling.phase = MT_PHASE_DELAYOUT;
         matrix_transform_kernel_do(
-            aDev, bDev, cDev, idxDev, idxADev, idxBDev, ndADev, ndBDev, codeA, codeB, codeC, delayoutTiling,
-            numBlocks, stream);
-        aclrtSynchronizeStream(stream);  // de-layout must finish before the main phase reads ND
+            aDev, bDev, cDev, idxDev, idxADev, idxBDev, ndADev, ndBDev, codeA, codeB, codeC, delayoutTiling, numBlocks,
+            stream);
+        aclrtSynchronizeStream(stream); // de-layout must finish before the main phase reads ND
 
         // Rewrite the staged operand to a COL linear input read from its ND workspace; the main
         // phase then applies op=T over the logical ND matrix.
@@ -568,11 +594,10 @@ inline aclblasStatus_t MatLaunch(
     // Phase 2 (or the only phase): the main transform.
     tiling.phase = MT_PHASE_MAIN;
     matrix_transform_kernel_do(
-        aDev, bDev, cDev, idxDev, idxADev, idxBDev, ndADev, ndBDev, codeA, codeB, codeC, tiling, numBlocks,
-        stream);
+        aDev, bDev, cDev, idxDev, idxADev, idxBDev, ndADev, ndBDev, codeA, codeB, codeC, tiling, numBlocks, stream);
     if (ws.idxTable != nullptr || ws.idxTableA != nullptr || ws.idxTableB != nullptr || ws.ndA != nullptr ||
         ws.ndB != nullptr) {
-        aclrtSynchronizeStream(stream);  // ensure the kernel consumed the workspaces before free
+        aclrtSynchronizeStream(stream); // ensure the kernel consumed the workspaces before free
     }
     MatFreeTransformWorkspaces(ws);
     return ACLBLAS_STATUS_SUCCESS;
@@ -594,15 +619,24 @@ struct MatFp4Workspaces {
 
 inline void MatFreeFp4Workspaces(MatFp4Workspaces& ws)
 {
-    if (ws.ndA != nullptr) { aclrtFree(ws.ndA); ws.ndA = nullptr; }
-    if (ws.ndB != nullptr) { aclrtFree(ws.ndB); ws.ndB = nullptr; }
-    if (ws.ndC != nullptr) { aclrtFree(ws.ndC); ws.ndC = nullptr; }
+    if (ws.ndA != nullptr) {
+        aclrtFree(ws.ndA);
+        ws.ndA = nullptr;
+    }
+    if (ws.ndB != nullptr) {
+        aclrtFree(ws.ndB);
+        ws.ndB = nullptr;
+    }
+    if (ws.ndC != nullptr) {
+        aclrtFree(ws.ndC);
+        ws.ndC = nullptr;
+    }
 }
 
 // Allocate the bf16 ND workspaces for whichever of A / B / C are fp4.
 inline aclblasStatus_t MatAllocFp4Workspaces(
-    const MatTransformLayout* aLayout, const MatTransformLayout* bLayout,
-    const MatTransformLayout* cLayout, bool fp4A, bool fp4B, bool fp4C, bool hasB, MatFp4Workspaces& ws)
+    const MatTransformLayout* aLayout, const MatTransformLayout* bLayout, const MatTransformLayout* cLayout, bool fp4A,
+    bool fp4B, bool fp4C, bool hasB, MatFp4Workspaces& ws)
 {
     ws.ldBf16A = 2U * static_cast<uint64_t>(aLayout->ld);
     ws.ldBf16B = hasB ? 2U * static_cast<uint64_t>(bLayout->ld) : 0U;
@@ -622,9 +656,9 @@ inline aclblasStatus_t MatAllocFp4Workspaces(
 
 // Build the base FP4 tiling shared by the unpack / repack phases (carries dims, packed lds, orders).
 inline MatrixTransformTilingData MatBuildFp4Tiling(
-    const MatTransformLayout* aLayout, const MatTransformLayout* bLayout,
-    const MatTransformLayout* cLayout, const aclblasLtMatrixTransformDescImpl* desc, const MatScalars& sc,
-    aclblasLtOrder_t orderB, uint64_t rows, uint64_t cols)
+    const MatTransformLayout* aLayout, const MatTransformLayout* bLayout, const MatTransformLayout* cLayout,
+    const aclblasLtMatrixTransformDescImpl* desc, const MatScalars& sc, aclblasLtOrder_t orderB, uint64_t rows,
+    uint64_t cols)
 {
     MatrixTransformTilingData tiling;
     matrix_transform_get_tiling(
@@ -639,11 +673,10 @@ inline MatrixTransformTilingData MatBuildFp4Tiling(
 // bf16 ND C output. An fp4 operand reads / writes its bf16 ND workspace; a non-fp4 operand keeps its
 // real dtype / buffer / ld so the FP4<->float cross cases run as one bf16-or-float transform.
 inline aclblasStatus_t MatFp4MainLaunch(
-    const void* A, const void* B, void* C, const MatTransformLayout* aLayout,
-    const MatTransformLayout* bLayout, const MatTransformLayout* cLayout,
-    const aclblasLtMatrixTransformDescImpl* desc, const MatScalars& sc, aclblasLtOrder_t orderB, uint8_t codeA,
-    uint8_t codeB, uint8_t codeC, bool fp4A, bool fp4B, bool fp4C, const MatFp4Workspaces& ws, uint64_t rows,
-    uint64_t cols, uint32_t numBlocks, aclrtStream stream)
+    const void* A, const void* B, void* C, const MatTransformLayout* aLayout, const MatTransformLayout* bLayout,
+    const MatTransformLayout* cLayout, const aclblasLtMatrixTransformDescImpl* desc, const MatScalars& sc,
+    aclblasLtOrder_t orderB, uint8_t codeA, uint8_t codeB, uint8_t codeC, bool fp4A, bool fp4B, bool fp4C,
+    const MatFp4Workspaces& ws, uint64_t rows, uint64_t cols, uint32_t numBlocks, aclrtStream stream)
 {
     MatTransformLayout bf16A = *aLayout;
     MatTransformLayout bf16B = sc.hasB ? *bLayout : *aLayout;
@@ -676,10 +709,10 @@ inline aclblasStatus_t MatFp4MainLaunch(
 // before freeing the bf16 ND workspaces. The main pass reuses the full bf16 engine (linear /
 // complex / op=T de-layout), so every order / op / cross combination is handled there unchanged.
 inline aclblasStatus_t MatLaunchFp4(
-    const void* A, const void* B, void* C, const MatTransformLayout* aLayout,
-    const MatTransformLayout* bLayout, const MatTransformLayout* cLayout,
-    const aclblasLtMatrixTransformDescImpl* desc, const MatScalars& sc, aclblasLtOrder_t orderB, uint8_t codeA,
-    uint8_t codeB, uint8_t codeC, uint64_t rows, uint64_t cols, uint32_t numBlocks, aclrtStream stream)
+    const void* A, const void* B, void* C, const MatTransformLayout* aLayout, const MatTransformLayout* bLayout,
+    const MatTransformLayout* cLayout, const aclblasLtMatrixTransformDescImpl* desc, const MatScalars& sc,
+    aclblasLtOrder_t orderB, uint8_t codeA, uint8_t codeB, uint8_t codeC, uint64_t rows, uint64_t cols,
+    uint32_t numBlocks, aclrtStream stream)
 {
     const bool fp4A = MatIsFp4Code(codeA);
     const bool fp4B = sc.hasB && MatIsFp4Code(codeB);
@@ -696,21 +729,20 @@ inline aclblasStatus_t MatLaunchFp4(
     uint8_t* cDev = reinterpret_cast<uint8_t*>(C);
 
     // Phase 1: unpack the packed fp4x2 inputs into their bf16 ND workspaces.
-    MatrixTransformTilingData unpackTiling = MatBuildFp4Tiling(
-        aLayout, bLayout, cLayout, desc, sc, orderB, rows, cols);
+    MatrixTransformTilingData unpackTiling = MatBuildFp4Tiling(aLayout, bLayout, cLayout, desc, sc, orderB, rows, cols);
     unpackTiling.phase = MT_PHASE_FP4_UNPACK;
     unpackTiling.fp4IsA = fp4A ? 1U : 0U;
     unpackTiling.fp4IsB = fp4B ? 1U : 0U;
     unpackTiling.fp4NumBlocksA = ws.numBlocksA;
     unpackTiling.fp4NumBlocksB = ws.numBlocksB;
-    matrix_transform_kernel_do(aDev, bDev, cDev, nullptr, nullptr, nullptr,
-                               reinterpret_cast<uint8_t*>(ws.ndA), reinterpret_cast<uint8_t*>(ws.ndB), MT_DTYPE_FP4,
-                               MT_DTYPE_FP4, MT_DTYPE_FP4, unpackTiling, numBlocks, stream);
+    matrix_transform_kernel_do(
+        aDev, bDev, cDev, nullptr, nullptr, nullptr, reinterpret_cast<uint8_t*>(ws.ndA),
+        reinterpret_cast<uint8_t*>(ws.ndB), MT_DTYPE_FP4, MT_DTYPE_FP4, MT_DTYPE_FP4, unpackTiling, numBlocks, stream);
 
     // Phase 2: the bf16 main transform.
     aclblasStatus_t mainStatus = MatFp4MainLaunch(
-        A, B, C, aLayout, bLayout, cLayout, desc, sc, orderB, codeA, codeB, codeC, fp4A, fp4B, fp4C, ws, rows,
-        cols, numBlocks, stream);
+        A, B, C, aLayout, bLayout, cLayout, desc, sc, orderB, codeA, codeB, codeC, fp4A, fp4B, fp4C, ws, rows, cols,
+        numBlocks, stream);
     if (mainStatus != ACLBLAS_STATUS_SUCCESS) {
         MatFreeFp4Workspaces(ws);
         return mainStatus;
@@ -724,12 +756,12 @@ inline aclblasStatus_t MatLaunchFp4(
         repackTiling.fp4IsB = 0U;
         repackTiling.fp4IsC = 1U;
         repackTiling.fp4NumBlocksC = ws.numBlocksC;
-        matrix_transform_kernel_do(reinterpret_cast<uint8_t*>(ws.ndC), nullptr, cDev, nullptr, nullptr, nullptr,
-                                   nullptr, nullptr, MT_DTYPE_FP4, MT_DTYPE_FP4, MT_DTYPE_FP4, repackTiling,
-                                   numBlocks, stream);
+        matrix_transform_kernel_do(
+            reinterpret_cast<uint8_t*>(ws.ndC), nullptr, cDev, nullptr, nullptr, nullptr, nullptr, nullptr,
+            MT_DTYPE_FP4, MT_DTYPE_FP4, MT_DTYPE_FP4, repackTiling, numBlocks, stream);
     }
 
-    aclrtSynchronizeStream(stream);  // ensure the pipeline consumed the bf16 ND workspaces before free
+    aclrtSynchronizeStream(stream); // ensure the pipeline consumed the bf16 ND workspaces before free
     MatFreeFp4Workspaces(ws);
     return ACLBLAS_STATUS_SUCCESS;
 }
@@ -752,8 +784,8 @@ aclblasStatus_t MatTransformLaunch(
     }
     const bool anyFp4Entry = MatIsFp4Code(codeAEntry) || MatIsFp4Code(codeCEntry);
     const bool anyFp8Entry = MatIsFp8Code(codeAEntry) || MatIsFp8Code(codeCEntry);
-    const uint8_t scalePath = anyFp4Entry ? MT_SCALE_PATH_FP4
-                                          : (anyFp8Entry ? MT_SCALE_PATH_FP8 : MatScalePathOfCode(codeAEntry));
+    const uint8_t scalePath =
+        anyFp4Entry ? MT_SCALE_PATH_FP4 : (anyFp8Entry ? MT_SCALE_PATH_FP8 : MatScalePathOfCode(codeAEntry));
     if (!MatScaleTypeMatchesPath(scalePath, desc->scaleType)) {
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
@@ -772,11 +804,16 @@ aclblasStatus_t MatTransformLaunch(
 
     const MatTransformLayout* bLayout = sc.hasB ? bLayoutIn : nullptr;
     if (bLayout != nullptr && !bLayoutValid) {
-        return ACLBLAS_STATUS_INVALID_VALUE;  // corrupted / foreign layout
+        return ACLBLAS_STATUS_INVALID_VALUE; // corrupted / foreign layout
     }
     aclblasStatus_t dimStatus = MatValidateDims(aLayout, bLayout, desc, sc.hasB, rows, cols);
     if (dimStatus != ACLBLAS_STATUS_SUCCESS) {
         return dimStatus;
+    }
+    // issue #586: 维度超限（> 2^32-1）在写 tiling 前拒绝，避免静默截断
+    aclblasStatus_t rangeStatus = MatCheckDimRanges(aLayout, bLayout, cLayout, sc.hasB, rows, cols);
+    if (rangeStatus != ACLBLAS_STATUS_SUCCESS) {
+        return rangeStatus;
     }
 
     MatCodes codes;
@@ -789,9 +826,11 @@ aclblasStatus_t MatTransformLaunch(
     // FP4 runs the dedicated unpack -> bf16 transform -> repack pipeline; every other path goes
     // straight through the templated engine (FP8 reuses the int8 byte movement with a float scale).
     if (sc.scalePath == MT_SCALE_PATH_FP4) {
-        return MatLaunchFp4(A, B, C, aLayout, bLayout, cLayout, desc, sc, codes.orderB, codes.codeA, codes.codeB,
-                           codes.codeC, rows, cols, vecCores, stream);
+        return MatLaunchFp4(
+            A, B, C, aLayout, bLayout, cLayout, desc, sc, codes.orderB, codes.codeA, codes.codeB, codes.codeC, rows,
+            cols, vecCores, stream);
     }
-    return MatLaunch(A, B, C, aLayout, bLayout, cLayout, desc, sc, codes.orderB, codes.codeA, codes.codeB, codes.codeC,
-                    rows, cols, vecCores, stream);
+    return MatLaunch(
+        A, B, C, aLayout, bLayout, cLayout, desc, sc, codes.orderB, codes.codeA, codes.codeB, codes.codeC, rows, cols,
+        vecCores, stream);
 }

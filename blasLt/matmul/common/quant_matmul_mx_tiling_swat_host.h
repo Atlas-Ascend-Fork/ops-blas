@@ -265,8 +265,8 @@ private:
     {
         const uint64_t baseMAlignNum = args_.transA ? GetShapeMxfp8(L2_ALIGN_SIZE) : CUBE_BLOCK;
         const uint64_t baseNAlignNum = args_.transB ? CUBE_BLOCK : GetShapeMxfp8(L2_ALIGN_SIZE);
-        uint64_t baseKAlignNum = (args_.transA && !args_.transB) ? GetShapeMxfp8(FP8_C0_SIZE) :
-                                                                   GetShapeMxfp8(L2_ALIGN_SIZE);
+        uint64_t baseKAlignNum =
+            (args_.transA && !args_.transB) ? GetShapeMxfp8(FP8_C0_SIZE) : GetShapeMxfp8(L2_ALIGN_SIZE);
         if (args_.transA || !args_.transB) {
             baseKAlignNum = GetShapeMxfp8(TILING_MXFP_DIVISOR_SIZE);
         }
@@ -312,16 +312,14 @@ private:
             }
 
             const uint64_t kAlignValue = Align(args_.k, baseKAlignNum);
-            uint64_t kMaxValue =
-                GetShapeMxfp8(platformInfo_.l0aSize / DB_SIZE) / std::max(tempBaseM, tempBaseN);
+            uint64_t kMaxValue = GetShapeMxfp8(platformInfo_.l0aSize / DB_SIZE) / std::max(tempBaseM, tempBaseN);
             kMaxValue = FloorAlign(kMaxValue, baseKAlignNum);
             if (kMaxValue >= baseKAlignNum) {
                 runInfo_.baseM = tempBaseM;
                 runInfo_.baseN = tempBaseN;
                 runInfo_.baseK = std::min(kAlignValue, kMaxValue);
-                runInfo_.baseK = runInfo_.baseK > BASEK_LIMIT ?
-                    Align(runInfo_.baseK / NUM_TWO, BASIC_BLOCK_SIZE_256) :
-                    runInfo_.baseK;
+                runInfo_.baseK = runInfo_.baseK > BASEK_LIMIT ? Align(runInfo_.baseK / NUM_TWO, BASIC_BLOCK_SIZE_256) :
+                                                                runInfo_.baseK;
             }
         }
     }
@@ -329,11 +327,11 @@ private:
     void CalcBasicBlock()
     {
         runInfo_.baseM = std::min(args_.m, BASIC_BLOCK_SIZE_256);
-        runInfo_.baseM = !args_.transA ? Align(runInfo_.baseM, CUBE_BLOCK) :
-                                         Align(runInfo_.baseM, GetShapeMxfp8(L1_ALIGN_SIZE));
+        runInfo_.baseM =
+            !args_.transA ? Align(runInfo_.baseM, CUBE_BLOCK) : Align(runInfo_.baseM, GetShapeMxfp8(L1_ALIGN_SIZE));
         runInfo_.baseN = std::min(args_.n, BASIC_BLOCK_SIZE_256);
-        runInfo_.baseN = args_.transB ? Align(runInfo_.baseN, CUBE_BLOCK) :
-                                        Align(runInfo_.baseN, GetShapeMxfp8(L1_ALIGN_SIZE));
+        runInfo_.baseN =
+            args_.transB ? Align(runInfo_.baseN, CUBE_BLOCK) : Align(runInfo_.baseN, GetShapeMxfp8(L1_ALIGN_SIZE));
         runInfo_.baseK = Align(std::min(args_.k, BASIC_BLOCK_SIZE_128), TILING_MXFP_DIVISOR_SIZE);
 
         const uint64_t blockNum = CeilDiv(args_.m, runInfo_.baseM) * CeilDiv(args_.n, runInfo_.baseN);
@@ -481,8 +479,12 @@ private:
     {
         const uint64_t scaleFactorAMax = std::min(MTE2_MIN_LOAD_SIZE / baseScaleASize, SCALER_FACTOR_MAX);
         const uint64_t scaleFactorBMax = std::min(MTE2_MIN_LOAD_SIZE / baseScaleBSize, SCALER_FACTOR_MAX);
-        uint64_t scaleFactorA = args.k / (runInfo.stepKa * runInfo.baseK);
-        uint64_t scaleFactorB = args.k / (runInfo.stepKb * runInfo.baseK);
+        // issue #584: k=0 时 stepK 会被归零，分母为 0 的整数除法在主机端触发 SIGFPE，
+        // 对分母做零值防护（k=0 已在引擎入口显式拒绝，本防护为纵深防御）。
+        const uint64_t denomA = runInfo.stepKa * runInfo.baseK;
+        const uint64_t denomB = runInfo.stepKb * runInfo.baseK;
+        uint64_t scaleFactorA = (denomA > 0UL) ? args.k / denomA : 0UL;
+        uint64_t scaleFactorB = (denomB > 0UL) ? args.k / denomB : 0UL;
         runInfo.scaleFactorA = std::max(SCALER_FACTOR_MIN, scaleFactorA);
         runInfo.scaleFactorB = std::max(SCALER_FACTOR_MIN, scaleFactorB);
         runInfo.scaleFactorA = std::min(scaleFactorAMax, runInfo.scaleFactorA);
@@ -509,8 +511,7 @@ private:
 };
 
 inline void quant_matmul_mxfp8_swat_get_tiling(
-    uint64_t m, uint64_t n, uint64_t k, bool transA, bool transB, uint64_t aicNum,
-    QuantMatmulTilingData& tilingData)
+    uint64_t m, uint64_t n, uint64_t k, bool transA, bool transB, uint64_t aicNum, QuantMatmulTilingData& tilingData)
 {
     QuantMatmulMxfp8TilingSwat engine;
     engine.GetTilingData(m, n, k, transA, transB, aicNum, tilingData);
@@ -639,8 +640,8 @@ private:
     {
         const uint64_t baseMAlignNum = args_.transA ? GetShapeMxfp4(L2_ALIGN_SIZE) : CUBE_BLOCK;
         const uint64_t baseNAlignNum = args_.transB ? CUBE_BLOCK : GetShapeMxfp4(L2_ALIGN_SIZE);
-        uint64_t baseKAlignNum = (args_.transA && !args_.transB) ? GetShapeMxfp4(FP8_C0_SIZE) :
-                                                                   GetShapeMxfp4(L2_ALIGN_SIZE);
+        uint64_t baseKAlignNum =
+            (args_.transA && !args_.transB) ? GetShapeMxfp4(FP8_C0_SIZE) : GetShapeMxfp4(L2_ALIGN_SIZE);
         if (args_.transA || !args_.transB) {
             baseKAlignNum = GetShapeMxfp4(TILING_MXFP_DIVISOR_SIZE);
         }
@@ -686,16 +687,14 @@ private:
             }
 
             const uint64_t kAlignValue = Align(args_.k, baseKAlignNum);
-            uint64_t kMaxValue =
-                GetShapeMxfp4(platformInfo_.l0aSize / DB_SIZE) / std::max(tempBaseM, tempBaseN);
+            uint64_t kMaxValue = GetShapeMxfp4(platformInfo_.l0aSize / DB_SIZE) / std::max(tempBaseM, tempBaseN);
             kMaxValue = FloorAlign(kMaxValue, baseKAlignNum);
             if (kMaxValue >= baseKAlignNum) {
                 runInfo_.baseM = tempBaseM;
                 runInfo_.baseN = tempBaseN;
                 runInfo_.baseK = std::min(kAlignValue, kMaxValue);
-                runInfo_.baseK = runInfo_.baseK > BASEK_LIMIT ?
-                    Align(runInfo_.baseK / NUM_TWO, BASIC_BLOCK_SIZE_256) :
-                    runInfo_.baseK;
+                runInfo_.baseK = runInfo_.baseK > BASEK_LIMIT ? Align(runInfo_.baseK / NUM_TWO, BASIC_BLOCK_SIZE_256) :
+                                                                runInfo_.baseK;
             }
         }
     }
@@ -703,11 +702,11 @@ private:
     void CalcBasicBlock()
     {
         runInfo_.baseM = std::min(args_.m, BASIC_BLOCK_SIZE_256);
-        runInfo_.baseM = !args_.transA ? Align(runInfo_.baseM, CUBE_BLOCK) :
-                                         Align(runInfo_.baseM, GetShapeMxfp4(L1_ALIGN_SIZE));
+        runInfo_.baseM =
+            !args_.transA ? Align(runInfo_.baseM, CUBE_BLOCK) : Align(runInfo_.baseM, GetShapeMxfp4(L1_ALIGN_SIZE));
         runInfo_.baseN = std::min(args_.n, BASIC_BLOCK_SIZE_256);
-        runInfo_.baseN = args_.transB ? Align(runInfo_.baseN, CUBE_BLOCK) :
-                                        Align(runInfo_.baseN, GetShapeMxfp4(L1_ALIGN_SIZE));
+        runInfo_.baseN =
+            args_.transB ? Align(runInfo_.baseN, CUBE_BLOCK) : Align(runInfo_.baseN, GetShapeMxfp4(L1_ALIGN_SIZE));
         runInfo_.baseK = Align(std::min(args_.k, BASIC_BLOCK_SIZE_256), TILING_MXFP_DIVISOR_SIZE);
 
         const uint64_t blockNum = CeilDiv(args_.m, runInfo_.baseM) * CeilDiv(args_.n, runInfo_.baseN);
@@ -855,8 +854,12 @@ private:
     {
         const uint64_t scaleFactorAMax = std::min(MTE2_MIN_LOAD_SIZE / baseScaleASize, SCALER_FACTOR_MAX);
         const uint64_t scaleFactorBMax = std::min(MTE2_MIN_LOAD_SIZE / baseScaleBSize, SCALER_FACTOR_MAX);
-        uint64_t scaleFactorA = args.k / (runInfo.stepKa * runInfo.baseK);
-        uint64_t scaleFactorB = args.k / (runInfo.stepKb * runInfo.baseK);
+        // issue #584: k=0 时 stepK 会被归零，分母为 0 的整数除法在主机端触发 SIGFPE，
+        // 对分母做零值防护（k=0 已在引擎入口显式拒绝，本防护为纵深防御）。
+        const uint64_t denomA = runInfo.stepKa * runInfo.baseK;
+        const uint64_t denomB = runInfo.stepKb * runInfo.baseK;
+        uint64_t scaleFactorA = (denomA > 0UL) ? args.k / denomA : 0UL;
+        uint64_t scaleFactorB = (denomB > 0UL) ? args.k / denomB : 0UL;
         runInfo.scaleFactorA = std::max(SCALER_FACTOR_MIN, scaleFactorA);
         runInfo.scaleFactorB = std::max(SCALER_FACTOR_MIN, scaleFactorB);
         runInfo.scaleFactorA = std::min(scaleFactorAMax, runInfo.scaleFactorA);
@@ -883,8 +886,7 @@ private:
 };
 
 inline void quant_matmul_mxfp4_swat_get_tiling(
-    uint64_t m, uint64_t n, uint64_t k, bool transA, bool transB, uint64_t aicNum,
-    QuantMatmulTilingData& tilingData)
+    uint64_t m, uint64_t n, uint64_t k, bool transA, bool transB, uint64_t aicNum, QuantMatmulTilingData& tilingData)
 {
     QuantMatmulMxfp4TilingSwat engine;
     engine.GetTilingData(m, n, k, transA, transB, aicNum, tilingData);
