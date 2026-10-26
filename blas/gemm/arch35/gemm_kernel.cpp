@@ -65,8 +65,8 @@ struct GemmTileState {
 };
 
 __aicore__ inline void ComputeBalancedAxis(
-    uint32_t length, uint32_t baseTile, uint32_t blockCount, uint32_t blockIdx,
-    uint64_t& elementOffset, uint32_t& actualLength)
+    uint32_t length, uint32_t baseTile, uint32_t blockCount, uint32_t blockIdx, uint64_t& elementOffset,
+    uint32_t& actualLength)
 {
     if (baseTile == 0 || blockCount == 0) {
         elementOffset = 0;
@@ -77,8 +77,7 @@ __aicore__ inline void ComputeBalancedAxis(
     uint32_t tilesPerBlock = tileCount / blockCount;
     uint32_t extraTileBlocks = tileCount % blockCount;
     uint32_t currentTileCount = tilesPerBlock + (blockIdx < extraTileBlocks ? 1U : 0U);
-    uint32_t startTile = blockIdx * tilesPerBlock +
-        (blockIdx < extraTileBlocks ? blockIdx : extraTileBlocks);
+    uint32_t startTile = blockIdx * tilesPerBlock + (blockIdx < extraTileBlocks ? blockIdx : extraTileBlocks);
     elementOffset = static_cast<uint64_t>(startTile) * baseTile;
     uint32_t remaining = length - static_cast<uint32_t>(elementOffset);
     uint32_t assignedLength = currentTileCount * baseTile;
@@ -118,11 +117,11 @@ __aicore__ inline bool InitGemmState(GemmCubeState& st, const GemmTilingData& ti
     st.mBlockIdx = AscendC::GetBlockIdx() % static_cast<uint32_t>(st.tiling.mBlocks);
     st.nBlockIdx = AscendC::GetBlockIdx() / static_cast<uint32_t>(st.tiling.mBlocks);
     ComputeBalancedAxis(
-        static_cast<uint32_t>(st.tiling.m), BASE_M, static_cast<uint32_t>(st.tiling.mBlocks),
-        st.mBlockIdx, st.mOffset, st.actualM);
+        static_cast<uint32_t>(st.tiling.m), BASE_M, static_cast<uint32_t>(st.tiling.mBlocks), st.mBlockIdx, st.mOffset,
+        st.actualM);
     ComputeBalancedAxis(
-        static_cast<uint32_t>(st.tiling.n), BASE_N, static_cast<uint32_t>(st.tiling.nBlocks),
-        st.nBlockIdx, st.nOffset, st.actualN);
+        static_cast<uint32_t>(st.tiling.n), BASE_N, static_cast<uint32_t>(st.tiling.nBlocks), st.nBlockIdx, st.nOffset,
+        st.actualN);
     if (st.actualM == 0 || st.actualN == 0) {
         return false;
     }
@@ -142,13 +141,12 @@ __aicore__ inline bool InitGemmState(GemmCubeState& st, const GemmTilingData& ti
 
 template <uint32_t BASE_M, uint32_t BASE_K, typename GM_TENSOR_A>
 __aicore__ inline void TensorCopyGM2L1A(
-    const GemmCubeState& st, GM_TENSOR_A& gmATensor, uint64_t l1OffsetBytes,
-    uint32_t mi, uint32_t kOffset, uint32_t curM, uint32_t curKChunk)
+    const GemmCubeState& st, GM_TENSOR_A& gmATensor, uint64_t l1OffsetBytes, uint32_t mi, uint32_t kOffset,
+    uint32_t curM, uint32_t curKChunk)
 {
     using T = float;
     uint64_t mPos = st.mOffset + static_cast<uint64_t>(mi) * BASE_M;
-    auto gmBlock = gmATensor.Slice(
-        te::MakeCoord(mPos, static_cast<uint64_t>(kOffset)), te::MakeShape(curM, curKChunk));
+    auto gmBlock = gmATensor.Slice(te::MakeCoord(mPos, static_cast<uint64_t>(kOffset)), te::MakeShape(curM, curKChunk));
     auto tensorAL1 = te::MakeTensor(
         te::MakeMemPtr<te::Location::L1, T>(l1OffsetBytes),
         te::MakeFrameLayout<te::NZLayoutPtn, AscendC::Std::Int<GEMM_FP32_C0>>(curM, curKChunk));
@@ -157,15 +155,15 @@ __aicore__ inline void TensorCopyGM2L1A(
 
 template <uint32_t BASE_M, uint32_t BASE_K>
 __aicore__ inline void TensorCopyL1ToL0A(
-    uint64_t l1OffsetBytes, uint64_t l0OffsetBytes,
-    uint32_t curM, uint32_t curKChunk, uint32_t kInnerOffset, uint32_t curK)
+    uint64_t l1OffsetBytes, uint64_t l0OffsetBytes, uint32_t curM, uint32_t curKChunk, uint32_t kInnerOffset,
+    uint32_t curK)
 {
     using T = float;
     auto tensorAL1 = te::MakeTensor(
         te::MakeMemPtr<te::Location::L1, T>(l1OffsetBytes),
         te::MakeFrameLayout<te::NZLayoutPtn, AscendC::Std::Int<GEMM_FP32_C0>>(curM, curKChunk));
-    auto tensorAL1Tile = tensorAL1.Slice(
-        te::MakeCoord(0L, static_cast<uint64_t>(kInnerOffset)), te::MakeShape(curM, curK));
+    auto tensorAL1Tile =
+        tensorAL1.Slice(te::MakeCoord(0L, static_cast<uint64_t>(kInnerOffset)), te::MakeShape(curM, curK));
     auto tensorAL0 = te::MakeTensor(
         te::MakeMemPtr<te::Location::L0A, T>(l0OffsetBytes),
         te::MakeFrameLayout<te::NZLayoutPtn, AscendC::Std::Int<GEMM_FP32_C0>>(curM, curK));
@@ -174,13 +172,12 @@ __aicore__ inline void TensorCopyL1ToL0A(
 
 template <uint32_t BASE_K, uint32_t BASE_N, typename GM_TENSOR_B>
 __aicore__ inline void TensorCopyGM2L1B(
-    const GemmCubeState& st, GM_TENSOR_B& gmBTensor, uint64_t l1OffsetBytes,
-    uint32_t ni, uint32_t kOffset, uint32_t curKChunk, uint32_t curN)
+    const GemmCubeState& st, GM_TENSOR_B& gmBTensor, uint64_t l1OffsetBytes, uint32_t ni, uint32_t kOffset,
+    uint32_t curKChunk, uint32_t curN)
 {
     using T = float;
     uint64_t nPos = st.nOffset + static_cast<uint64_t>(ni) * BASE_N;
-    auto gmBlock = gmBTensor.Slice(
-        te::MakeCoord(static_cast<uint64_t>(kOffset), nPos), te::MakeShape(curKChunk, curN));
+    auto gmBlock = gmBTensor.Slice(te::MakeCoord(static_cast<uint64_t>(kOffset), nPos), te::MakeShape(curKChunk, curN));
     auto tensorBL1 = te::MakeTensor(
         te::MakeMemPtr<te::Location::L1, T>(l1OffsetBytes),
         te::MakeFrameLayout<te::ZNLayoutPtn, AscendC::Std::Int<GEMM_FP32_C0>>(curKChunk, curN));
@@ -189,15 +186,15 @@ __aicore__ inline void TensorCopyGM2L1B(
 
 template <uint32_t BASE_K, uint32_t BASE_N>
 __aicore__ inline void TensorCopyL1ToL0B(
-    uint64_t l1OffsetBytes, uint64_t l0OffsetBytes,
-    uint32_t curKChunk, uint32_t curN, uint32_t kInnerOffset, uint32_t curK)
+    uint64_t l1OffsetBytes, uint64_t l0OffsetBytes, uint32_t curKChunk, uint32_t curN, uint32_t kInnerOffset,
+    uint32_t curK)
 {
     using T = float;
     auto tensorBL1 = te::MakeTensor(
         te::MakeMemPtr<te::Location::L1, T>(l1OffsetBytes),
         te::MakeFrameLayout<te::ZNLayoutPtn, AscendC::Std::Int<GEMM_FP32_C0>>(curKChunk, curN));
-    auto tensorBL1Tile = tensorBL1.Slice(
-        te::MakeCoord(static_cast<uint64_t>(kInnerOffset), 0L), te::MakeShape(curK, curN));
+    auto tensorBL1Tile =
+        tensorBL1.Slice(te::MakeCoord(static_cast<uint64_t>(kInnerOffset), 0L), te::MakeShape(curK, curN));
     auto tensorBL0 = te::MakeTensor(
         te::MakeMemPtr<te::Location::L0B, T>(l0OffsetBytes),
         te::MakeFrameLayout<te::ZNLayoutPtn, AscendC::Std::Int<GEMM_FP32_C0>>(curK, curN));
@@ -206,11 +203,8 @@ __aicore__ inline void TensorCopyL1ToL0B(
 
 template <uint32_t BASE_M, uint32_t BASE_N>
 __aicore__ inline void TensorMmadTile(
-    const GemmCubeState& st, uint64_t l0OffsetA, uint64_t l0OffsetB,
-    uint32_t mi, uint32_t ni,
-    uint32_t mStart, uint32_t nStart,
-    uint32_t curM, uint32_t curK, uint32_t curN,
-    bool isFirstK, bool isLastK)
+    const GemmCubeState& st, uint64_t l0OffsetA, uint64_t l0OffsetB, uint32_t mi, uint32_t ni, uint32_t mStart,
+    uint32_t nStart, uint32_t curM, uint32_t curK, uint32_t curN, bool isFirstK, bool isLastK)
 {
     using T = float;
     constexpr uint32_t C0_TILE_BYTES = BASE_M * BASE_N * sizeof(float);
@@ -229,16 +223,13 @@ __aicore__ inline void TensorMmadTile(
 
     uint8_t unitFlag = isLastK ? FINAL_ACCUMULATION : NON_FINAL_ACCUMULATION;
     te::MmadParams mmadParams{
-        static_cast<uint16_t>(curM), static_cast<uint16_t>(curN),
-        static_cast<uint16_t>(curK), unitFlag, isFirstK};
-    te::Mmad(te::MmadAtom<te::MmadTraits<te::MmadOperation>>{}.with(mmadParams),
-        tensorL0C, tensorAL0, tensorBL0);
+        static_cast<uint16_t>(curM), static_cast<uint16_t>(curN), static_cast<uint16_t>(curK), unitFlag, isFirstK};
+    te::Mmad(te::MmadAtom<te::MmadTraits<te::MmadOperation>>{}.with(mmadParams), tensorL0C, tensorAL0, tensorBL0);
 }
 
 template <uint32_t BASE_M, uint32_t BASE_N, typename GM_TENSOR_C>
 __aicore__ inline void TensorWriteFixpipeBlock(
-    const GemmCubeState& st, GM_TENSOR_C& gmCTensor,
-    uint32_t mi, uint32_t ni, uint32_t mStart, uint32_t nStart)
+    const GemmCubeState& st, GM_TENSOR_C& gmCTensor, uint32_t mi, uint32_t ni, uint32_t mStart, uint32_t nStart)
 {
     constexpr uint32_t C0_TILE_BYTES = BASE_M * BASE_N * sizeof(float);
     uint32_t curM = (mi != st.baseMCount) ? BASE_M : st.tailM;
@@ -251,8 +242,7 @@ __aicore__ inline void TensorWriteFixpipeBlock(
     auto tensorL0C = te::MakeTensor(
         te::MakeMemPtr<te::Location::L0C, float>(l0cOffset),
         te::MakeFrameLayout<te::NZLayoutPtn, AscendC::Std::Int<GEMM_L0C_C0>>(curM, curN));
-    te::MakeCopy(te::CopyL0C2GM{}).Call(gmBlockC, tensorL0C,
-        te::FixpipeParams{FINAL_ACCUMULATION});
+    te::MakeCopy(te::CopyL0C2GM{}).Call(gmBlockC, tensorL0C, te::FixpipeParams{FINAL_ACCUMULATION});
 }
 
 // ============================================================================
@@ -260,14 +250,11 @@ __aicore__ inline void TensorWriteFixpipeBlock(
 // ============================================================================
 template <uint32_t BM, uint32_t BK, uint32_t BN, typename TensorA, typename TensorB>
 __aicore__ inline void ProcessKChunk(
-    const GemmCubeState& st, TensorA gmATensor, TensorB gmBTensor,
-    const GemmTileState& tile, uint64_t l1OffsetA, uint64_t l1OffsetB,
-    uint32_t kOffset, uint32_t curKChunk, uint64_t l1BufId, uint64_t& l0PingPong)
+    const GemmCubeState& st, TensorA gmATensor, TensorB gmBTensor, const GemmTileState& tile, uint64_t l1OffsetA,
+    uint64_t l1OffsetB, uint32_t kOffset, uint32_t curKChunk, uint64_t l1BufId, uint64_t& l0PingPong)
 {
-    TensorCopyGM2L1A<BM, BK>(
-        st, gmATensor, l1OffsetA, tile.mi, kOffset, tile.curM, curKChunk);
-    TensorCopyGM2L1B<BK, BN>(
-        st, gmBTensor, l1OffsetB, tile.ni, kOffset, curKChunk, tile.curN);
+    TensorCopyGM2L1A<BM, BK>(st, gmATensor, l1OffsetA, tile.mi, kOffset, tile.curM, curKChunk);
+    TensorCopyGM2L1B<BK, BN>(st, gmBTensor, l1OffsetB, tile.ni, kOffset, curKChunk, tile.curN);
     AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE1>(l1BufId);
     AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE1>(l1BufId);
 
@@ -275,16 +262,12 @@ __aicore__ inline void ProcessKChunk(
         uint32_t remainingK = curKChunk - kInnerOffset;
         uint32_t curK = remainingK < BK ? remainingK : BK;
         uint64_t l0BufId = l0PingPong & GEMM_BUFFER_MASK;
-        uint64_t l0OffsetA =
-            l0BufId * (HardwareInfo<ArchType::ASCEND_V350>::l0ASize / GEMM_BUFFER_COUNT);
-        uint64_t l0OffsetB =
-            l0BufId * (HardwareInfo<ArchType::ASCEND_V350>::l0BSize / GEMM_BUFFER_COUNT);
+        uint64_t l0OffsetA = l0BufId * (HardwareInfo<ArchType::ASCEND_V350>::l0ASize / GEMM_BUFFER_COUNT);
+        uint64_t l0OffsetB = l0BufId * (HardwareInfo<ArchType::ASCEND_V350>::l0BSize / GEMM_BUFFER_COUNT);
 
         AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0BufId);
-        TensorCopyL1ToL0A<BM, BK>(
-            l1OffsetA, l0OffsetA, tile.curM, curKChunk, kInnerOffset, curK);
-        TensorCopyL1ToL0B<BK, BN>(
-            l1OffsetB, l0OffsetB, curKChunk, tile.curN, kInnerOffset, curK);
+        TensorCopyL1ToL0A<BM, BK>(l1OffsetA, l0OffsetA, tile.curM, curKChunk, kInnerOffset, curK);
+        TensorCopyL1ToL0B<BK, BN>(l1OffsetB, l0OffsetB, curKChunk, tile.curN, kInnerOffset, curK);
         AscendC::SetFlag<AscendC::HardEvent::MTE1_M>(l0BufId);
         AscendC::WaitFlag<AscendC::HardEvent::MTE1_M>(l0BufId);
 
@@ -292,8 +275,8 @@ __aicore__ inline void ProcessKChunk(
         bool isFirstK = (globalKOffset == 0);
         bool isLastK = (globalKOffset + curK == static_cast<uint32_t>(st.tiling.k));
         TensorMmadTile<BM, BN>(
-            st, l0OffsetA, l0OffsetB, tile.mi, tile.ni, tile.mStart, tile.nStart,
-            tile.curM, curK, tile.curN, isFirstK, isLastK);
+            st, l0OffsetA, l0OffsetB, tile.mi, tile.ni, tile.mStart, tile.nStart, tile.curM, curK, tile.curN, isFirstK,
+            isLastK);
         AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(l0BufId);
         l0PingPong++;
     }
@@ -302,62 +285,54 @@ __aicore__ inline void ProcessKChunk(
 
 template <uint32_t BM, uint32_t BK, uint32_t BN, typename TensorA, typename TensorB, typename TensorC>
 __aicore__ inline void ProcessMNTile(
-    const GemmCubeState& st, TensorA gmATensor, TensorB gmBTensor, TensorC gmCTensor,
-    const GemmTileState& tile, uint64_t l1BufferBytes,
-    uint64_t& l1PingPong, uint64_t& l0PingPong)
+    const GemmCubeState& st, TensorA gmATensor, TensorB gmBTensor, TensorC gmCTensor, const GemmTileState& tile,
+    uint64_t l1BufferBytes, uint64_t& l1PingPong, uint64_t& l0PingPong)
 {
     AscendC::WaitFlag<AscendC::HardEvent::FIX_M>(GEMM_ZERO_FLAG);
     for (uint32_t kOffset = 0; kOffset < static_cast<uint32_t>(st.tiling.k);
          kOffset += static_cast<uint32_t>(st.tiling.tileKChunk)) {
         uint32_t remainingK = static_cast<uint32_t>(st.tiling.k) - kOffset;
-        uint32_t curKChunk =
-            remainingK < static_cast<uint32_t>(st.tiling.tileKChunk) ?
-            remainingK : static_cast<uint32_t>(st.tiling.tileKChunk);
+        uint32_t curKChunk = remainingK < static_cast<uint32_t>(st.tiling.tileKChunk) ?
+                                 remainingK :
+                                 static_cast<uint32_t>(st.tiling.tileKChunk);
         uint64_t l1BufId = l1PingPong & GEMM_BUFFER_MASK;
         uint64_t l1OffsetA = l1BufId * l1BufferBytes;
-        uint64_t l1OffsetB = l1OffsetA +
-            static_cast<uint64_t>(BM) * static_cast<uint64_t>(st.tiling.tileKChunk) * sizeof(float);
+        uint64_t l1OffsetB =
+            l1OffsetA + static_cast<uint64_t>(BM) * static_cast<uint64_t>(st.tiling.tileKChunk) * sizeof(float);
 
         AscendC::WaitFlag<AscendC::HardEvent::MTE1_MTE2>(l1BufId);
         ProcessKChunk<BM, BK, BN>(
-            st, gmATensor, gmBTensor, tile, l1OffsetA, l1OffsetB,
-            kOffset, curKChunk, l1BufId, l0PingPong);
+            st, gmATensor, gmBTensor, tile, l1OffsetA, l1OffsetB, kOffset, curKChunk, l1BufId, l0PingPong);
         l1PingPong++;
     }
     AscendC::SetFlag<AscendC::HardEvent::M_FIX>(GEMM_ZERO_FLAG);
     AscendC::WaitFlag<AscendC::HardEvent::M_FIX>(GEMM_ZERO_FLAG);
-    TensorWriteFixpipeBlock<BM, BN>(
-        st, gmCTensor, tile.mi, tile.ni, tile.mStart, tile.nStart);
+    TensorWriteFixpipeBlock<BM, BN>(st, gmCTensor, tile.mi, tile.ni, tile.mStart, tile.nStart);
     AscendC::SetFlag<AscendC::HardEvent::FIX_M>(GEMM_ZERO_FLAG);
 }
 
-template <uint32_t BM, uint32_t BK, uint32_t BN, uint32_t C0_VAL, bool IsTransA, bool IsTransB,
-          typename TensorA, typename TensorB, typename TensorC>
+template <
+    uint32_t BM, uint32_t BK, uint32_t BN, uint32_t C0_VAL, bool IsTransA, bool IsTransB, typename TensorA,
+    typename TensorB, typename TensorC>
 __aicore__ inline void ProcessMNBlock(
-    const GemmCubeState& st, TensorA gmATensor, TensorB gmBTensor, TensorC gmCTensor,
-    uint64_t l1BufferBytes, uint64_t& l1PingPong, uint64_t& l0PingPong,
-    uint32_t mStart, uint32_t mEnd, uint32_t nStart, uint32_t nEnd)
+    const GemmCubeState& st, TensorA gmATensor, TensorB gmBTensor, TensorC gmCTensor, uint64_t l1BufferBytes,
+    uint64_t& l1PingPong, uint64_t& l0PingPong, uint32_t mStart, uint32_t mEnd, uint32_t nStart, uint32_t nEnd)
 {
     for (uint32_t mi = mStart; mi < mEnd; mi++) {
         for (uint32_t ni = nStart; ni < nEnd; ni++) {
             GemmTileState tile{
-                mi, ni, mStart, nStart,
-                (mi != st.baseMCount) ? BM : st.tailM,
-                (ni != st.baseNCount) ? BN : st.tailN};
-            ProcessMNTile<BM, BK, BN>(
-                st, gmATensor, gmBTensor, gmCTensor, tile,
-                l1BufferBytes, l1PingPong, l0PingPong);
+                mi, ni, mStart, nStart, (mi != st.baseMCount) ? BM : st.tailM, (ni != st.baseNCount) ? BN : st.tailN};
+            ProcessMNTile<BM, BK, BN>(st, gmATensor, gmBTensor, gmCTensor, tile, l1BufferBytes, l1PingPong, l0PingPong);
         }
     }
 }
 
-template <uint32_t BM, uint32_t BK, uint32_t BN, uint32_t C0_VAL, bool IsTransA, bool IsTransB,
-          typename TensorA, typename TensorB, typename TensorC>
-__aicore__ inline void ProcessAllTiles(
-    const GemmCubeState& st, TensorA gmATensor, TensorB gmBTensor, TensorC gmCTensor)
+template <
+    uint32_t BM, uint32_t BK, uint32_t BN, uint32_t C0_VAL, bool IsTransA, bool IsTransB, typename TensorA,
+    typename TensorB, typename TensorC>
+__aicore__ inline void ProcessAllTiles(const GemmCubeState& st, TensorA gmATensor, TensorB gmBTensor, TensorC gmCTensor)
 {
-    constexpr uint64_t L1_BUFFER_BYTES =
-        HardwareInfo<ArchType::ASCEND_V350>::l1Size / GEMM_BUFFER_COUNT;
+    constexpr uint64_t L1_BUFFER_BYTES = HardwareInfo<ArchType::ASCEND_V350>::l1Size / GEMM_BUFFER_COUNT;
     AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(GEMM_ZERO_FLAG);
     AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(GEMM_FIRST_FLAG);
     AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(GEMM_ZERO_FLAG);
@@ -369,14 +344,12 @@ __aicore__ inline void ProcessAllTiles(
     for (uint32_t mb = 0; mb < st.mBlockCount; mb++) {
         for (uint32_t nb = 0; nb < st.nBlockCount; nb++) {
             uint32_t mStart = mb * st.mBlockSize;
-            uint32_t mEnd =
-                (mStart + st.mBlockSize < st.mLoopCount) ? mStart + st.mBlockSize : st.mLoopCount;
+            uint32_t mEnd = (mStart + st.mBlockSize < st.mLoopCount) ? mStart + st.mBlockSize : st.mLoopCount;
             uint32_t nStart = nb * st.nBlockSize;
-            uint32_t nEnd =
-                (nStart + st.nBlockSize < st.nLoopCount) ? nStart + st.nBlockSize : st.nLoopCount;
+            uint32_t nEnd = (nStart + st.nBlockSize < st.nLoopCount) ? nStart + st.nBlockSize : st.nLoopCount;
             ProcessMNBlock<BM, BK, BN, C0_VAL, IsTransA, IsTransB>(
-                st, gmATensor, gmBTensor, gmCTensor, L1_BUFFER_BYTES, l1PingPong, l0PingPong,
-                mStart, mEnd, nStart, nEnd);
+                st, gmATensor, gmBTensor, gmCTensor, L1_BUFFER_BYTES, l1PingPong, l0PingPong, mStart, mEnd, nStart,
+                nEnd);
         }
     }
 
@@ -413,8 +386,8 @@ __aicore__ inline void GemmCubeKernelImpl(
         te::MakeFrameLayout<LayoutGM_B>(bDim0, bDim1));
     auto gmCTensor = te::MakeTensor(
         te::MakeMemPtr<te::Location::GM>(reinterpret_cast<__gm__ T*>(c)),
-        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(st.tiling.m),
-                                                  static_cast<uint64_t>(st.tiling.ldc)));
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(
+            static_cast<uint64_t>(st.tiling.m), static_cast<uint64_t>(st.tiling.ldc)));
 
     ProcessAllTiles<BM, BK, BN, C0_VAL, IsTransA, IsTransB>(st, gmATensor, gmBTensor, gmCTensor);
 }
@@ -454,10 +427,10 @@ public:
         pipe_ = pipe;
         m_ = tiling.m;
         n_ = tiling.n;
-        ldc_ = tiling.ldc;     // tempAB row stride (= CeilAlign(m, GEMM_FRACTAL))
-                              // Note: After ApplyColMajorSwap, tempAB stores C^T (transposed).
-                              // col index 0..n-1 maps to original M dimension, row index maps to N.
-        cLdc_ = tiling.cLdc;   // C matrix original ldc
+        ldc_ = tiling.ldc;   // tempAB row stride (= CeilAlign(m, GEMM_FRACTAL))
+                             // Note: After ApplyColMajorSwap, tempAB stores C^T (transposed).
+                             // col index 0..n-1 maps to original M dimension, row index maps to N.
+        cLdc_ = tiling.cLdc; // C matrix original ldc
         alpha_ = tiling.alphaReal;
         beta_ = tiling.betaReal;
         hasBeta_ = tiling.hasBeta;
@@ -477,8 +450,12 @@ public:
             int32_t colsPerCore = (n_ + blockNum - 1) / blockNum;
             startCol_ = blockIdx * colsPerCore;
             endCol_ = startCol_ + colsPerCore;
-            if (endCol_ > n_) endCol_ = n_;
-            if (startCol_ >= n_) { startCol_ = 0; endCol_ = 0; }
+            if (endCol_ > n_)
+                endCol_ = n_;
+            if (startCol_ >= n_) {
+                startCol_ = 0;
+                endCol_ = 0;
+            }
         } else {
             startCol_ = 0;
             endCol_ = n_;
@@ -491,7 +468,8 @@ public:
             int32_t rowOffset = 0;
             while (rowOffset < m_) {
                 int32_t count = m_ - rowOffset;
-                if (count > AB_TILE_SIZE) count = AB_TILE_SIZE;
+                if (count > AB_TILE_SIZE)
+                    count = AB_TILE_SIZE;
                 ProcessTile(col, rowOffset, count);
                 rowOffset += count;
             }
@@ -550,8 +528,8 @@ private:
     GlobalTensor<float> cOutGlobal_;
     int32_t m_ = 0;
     int32_t n_ = 0;
-    int32_t ldc_ = 0;     // tempAB row stride (= CeilAlign(m, 16))
-    int32_t cLdc_ = 0;    // C matrix original ldc
+    int32_t ldc_ = 0;  // tempAB row stride (= CeilAlign(m, 16))
+    int32_t cLdc_ = 0; // C matrix original ldc
     float alpha_ = 1.0f;
     float beta_ = 0.0f;
     int32_t hasBeta_ = 0;
@@ -583,8 +561,8 @@ constexpr int32_t SCALE_BUF_NUM = 2;
 class ScaleFp32Kernel {
 public:
     __aicore__ inline void Init(
-        __gm__ uint8_t* cInOut, int32_t m, int32_t n, int32_t ldc,
-        float betaReal, float betaImag, int32_t isComplex, TPipe* pipe)
+        __gm__ uint8_t* cInOut, int32_t m, int32_t n, int32_t ldc, float betaReal, float betaImag, int32_t isComplex,
+        TPipe* pipe)
     {
         pipe_ = pipe;
         m_ = m;
@@ -594,20 +572,25 @@ public:
         betaImag_ = betaImag;
         isComplex_ = isComplex;
         elemPerCol_ = isComplex ? (m * 2) : m;
-        cGlobal_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(cInOut),
-            static_cast<uint64_t>(ldc) * n * (isComplex ? 2 : 1));
+        cGlobal_.SetGlobalBuffer(
+            reinterpret_cast<__gm__ float*>(cInOut), static_cast<uint64_t>(ldc) * n * (isComplex ? 2 : 1));
         uint32_t blockNum = GetBlockNum();
         uint32_t blockIdx = GetBlockIdx();
         colsPerCore_ = (n_ + blockNum - 1) / blockNum;
         startCol_ = blockIdx * colsPerCore_;
         endCol_ = startCol_ + colsPerCore_;
-        if (endCol_ > n_) endCol_ = n_;
-        if (startCol_ >= n_) { startCol_ = 0; endCol_ = 0; }
+        if (endCol_ > n_)
+            endCol_ = n_;
+        if (startCol_ >= n_) {
+            startCol_ = 0;
+            endCol_ = 0;
+        }
     }
 
     __aicore__ inline void Process()
     {
-        if (startCol_ >= endCol_) return;
+        if (startCol_ >= endCol_)
+            return;
         pipe_->InitBuffer(inQue_, SCALE_BUF_NUM, SCALE_TILE_SIZE * sizeof(float));
         pipe_->InitBuffer(outQue_, SCALE_BUF_NUM, SCALE_TILE_SIZE * sizeof(float));
         pipe_->InitBuffer(calcBuf_, SCALE_TILE_SIZE * sizeof(float));
@@ -616,7 +599,8 @@ public:
             int32_t rowOffset = 0;
             while (rowOffset < elemPerCol_) {
                 int32_t count = elemPerCol_ - rowOffset;
-                if (count > SCALE_TILE_SIZE) count = SCALE_TILE_SIZE;
+                if (count > SCALE_TILE_SIZE)
+                    count = SCALE_TILE_SIZE;
                 ProcessTile(col, rowOffset, count);
                 rowOffset += count;
             }
@@ -683,8 +667,7 @@ private:
 } // namespace scale_kernel
 
 extern "C" __global__ __aicore__ void gemm_scale_kernel_fp32(
-    __gm__ uint8_t* cInOut, int32_t m, int32_t n, int32_t ldc,
-    float betaReal, float betaImag, int32_t isComplex)
+    __gm__ uint8_t* cInOut, int32_t m, int32_t n, int32_t ldc, float betaReal, float betaImag, int32_t isComplex)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     AscendC::TPipe pipe;
@@ -706,48 +689,55 @@ constexpr int32_t COMBINE_BUF_NUM = 2;
 class CgemmCombineKernel {
 public:
     __aicore__ inline void Init(
-        __gm__ uint8_t* t1, __gm__ uint8_t* t2, __gm__ uint8_t* t3, __gm__ uint8_t* t4,
-        int32_t tempLdc, __gm__ uint8_t* cInOut, int32_t m, int32_t n, int32_t ldc,
-        float ar, float ai, float br, float bi, AscendC::TPipe* pipe)
+        __gm__ uint8_t* t1, __gm__ uint8_t* t2, __gm__ uint8_t* t3, __gm__ uint8_t* t4, int32_t tempLdc,
+        __gm__ uint8_t* cInOut, int32_t m, int32_t n, int32_t ldc, float ar, float ai, float br, float bi,
+        AscendC::TPipe* pipe)
     {
         pipe_ = pipe;
         m_ = m;
         n_ = n;
         ldc_ = ldc;
         tempLdc_ = tempLdc;
-        ar_ = ar; ai_ = ai; br_ = br; bi_ = bi;
-        t1Global_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(t1),
-            static_cast<uint64_t>(tempLdc) * n);
-        t2Global_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(t2),
-            static_cast<uint64_t>(tempLdc) * n);
-        t3Global_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(t3),
-            static_cast<uint64_t>(tempLdc) * n);
-        t4Global_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(t4),
-            static_cast<uint64_t>(tempLdc) * n);
-        cGlobal_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(cInOut),
-            static_cast<uint64_t>(ldc) * n * 2);
+        ar_ = ar;
+        ai_ = ai;
+        br_ = br;
+        bi_ = bi;
+        t1Global_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(t1), static_cast<uint64_t>(tempLdc) * n);
+        t2Global_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(t2), static_cast<uint64_t>(tempLdc) * n);
+        t3Global_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(t3), static_cast<uint64_t>(tempLdc) * n);
+        t4Global_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(t4), static_cast<uint64_t>(tempLdc) * n);
+        cGlobal_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(cInOut), static_cast<uint64_t>(ldc) * n * 2);
         uint32_t blockNum = GetBlockNum();
         uint32_t blockIdx = GetBlockIdx();
         colsPerCore_ = (n_ + blockNum - 1) / blockNum;
         startCol_ = blockIdx * colsPerCore_;
         endCol_ = startCol_ + colsPerCore_;
-        if (endCol_ > n_) endCol_ = n_;
-        if (startCol_ >= n_) { startCol_ = 0; endCol_ = 0; }
+        if (endCol_ > n_)
+            endCol_ = n_;
+        if (startCol_ >= n_) {
+            startCol_ = 0;
+            endCol_ = 0;
+        }
     }
 
     __aicore__ inline void Process()
     {
-        if (startCol_ >= endCol_) return;
+        if (startCol_ >= endCol_)
+            return;
         pipe_->InitBuffer(t1Que_, COMBINE_BUF_NUM, COMBINE_TILE * sizeof(float));
         pipe_->InitBuffer(t2Que_, COMBINE_BUF_NUM, COMBINE_TILE * sizeof(float));
-        pipe_->InitBuffer(cQue_, COMBINE_BUF_NUM, COMBINE_TILE * sizeof(float));
-        pipe_->InitBuffer(outQue_, COMBINE_BUF_NUM, COMBINE_TILE * sizeof(float));
+        // ProcessTile 的交织复数 C 路径按 2*count 个 float 读写 cQue_/outQue_（count 最大为
+        // COMBINE_TILE），缓冲区必须按两倍 tile 尺寸分配，否则 count>COMBINE_TILE/2（即
+        // m>128）时 DataCopyPad/SetValue 越界（issue #458）
+        pipe_->InitBuffer(cQue_, COMBINE_BUF_NUM, COMBINE_TILE * 2 * sizeof(float));
+        pipe_->InitBuffer(outQue_, COMBINE_BUF_NUM, COMBINE_TILE * 2 * sizeof(float));
 
         for (int32_t col = startCol_; col < endCol_; col++) {
             int32_t rowOffset = 0;
             while (rowOffset < m_) {
                 int32_t count = m_ - rowOffset;
-                if (count > COMBINE_TILE) count = COMBINE_TILE;
+                if (count > COMBINE_TILE)
+                    count = COMBINE_TILE;
                 ProcessTile(col, rowOffset, count);
                 rowOffset += count;
             }
@@ -843,9 +833,8 @@ private:
 } // namespace cgemm_combine
 
 extern "C" __global__ __aicore__ void gemm_cgemm_combine_kernel(
-    __gm__ uint8_t* t1, __gm__ uint8_t* t2, __gm__ uint8_t* t3, __gm__ uint8_t* t4,
-    int32_t tempLdc, __gm__ uint8_t* cInOut, int32_t m, int32_t n, int32_t ldc,
-    float ar, float ai, float br, float bi)
+    __gm__ uint8_t* t1, __gm__ uint8_t* t2, __gm__ uint8_t* t3, __gm__ uint8_t* t4, int32_t tempLdc,
+    __gm__ uint8_t* cInOut, int32_t m, int32_t n, int32_t ldc, float ar, float ai, float br, float bi)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     AscendC::TPipe pipe;
@@ -858,37 +847,27 @@ extern "C" __global__ __aicore__ void gemm_cgemm_combine_kernel(
 // Kernel launchers
 // ============================================================================
 
-void gemm_kernel_do(
-    uint32_t numBlocks, void* stream,
-    GM_ADDR a, GM_ADDR b, GM_ADDR c,
-    const GemmTilingData& tilingData)
+void gemm_kernel_do(uint32_t numBlocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, const GemmTilingData& tilingData)
 {
     gemm_kernel_fp32<<<numBlocks, nullptr, stream>>>(a, b, c, tilingData);
 }
 
 void gemm_alpha_beta_do(
-    uint32_t numBlocks, void* stream,
-    GM_ADDR tempAB, GM_ADDR cOrig, GM_ADDR cOut,
-    const GemmTilingData& tilingData)
+    uint32_t numBlocks, void* stream, GM_ADDR tempAB, GM_ADDR cOrig, GM_ADDR cOut, const GemmTilingData& tilingData)
 {
-    ab_kernel::gemm_alpha_beta_kernel_fp32<<<numBlocks, nullptr, stream>>>(
-        tempAB, cOrig, cOut, tilingData);
+    ab_kernel::gemm_alpha_beta_kernel_fp32<<<numBlocks, nullptr, stream>>>(tempAB, cOrig, cOut, tilingData);
 }
 
 void gemm_scale_do(
-    uint32_t numBlocks, void* stream,
-    GM_ADDR cInOut, int32_t m, int32_t n, int32_t ldc,
-    float betaReal, float betaImag, int32_t isComplex)
+    uint32_t numBlocks, void* stream, GM_ADDR cInOut, int32_t m, int32_t n, int32_t ldc, float betaReal, float betaImag,
+    int32_t isComplex)
 {
-    gemm_scale_kernel_fp32<<<numBlocks, nullptr, stream>>>(
-        cInOut, m, n, ldc, betaReal, betaImag, isComplex);
+    gemm_scale_kernel_fp32<<<numBlocks, nullptr, stream>>>(cInOut, m, n, ldc, betaReal, betaImag, isComplex);
 }
 
 void gemm_cgemm_combine_do(
-    uint32_t numBlocks, void* stream,
-    GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, int32_t tempLdc,
-    GM_ADDR cInOut, int32_t m, int32_t n, int32_t ldc,
-    float ar, float ai, float br, float bi)
+    uint32_t numBlocks, void* stream, GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, int32_t tempLdc, GM_ADDR cInOut,
+    int32_t m, int32_t n, int32_t ldc, float ar, float ai, float br, float bi)
 {
     gemm_cgemm_combine_kernel<<<numBlocks, nullptr, stream>>>(
         t1, t2, t3, t4, tempLdc, cInOut, m, n, ldc, ar, ai, br, bi);
