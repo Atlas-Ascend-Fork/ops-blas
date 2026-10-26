@@ -13,7 +13,7 @@
 | 层次 | 职责 | 由谁承担 |
 |------|------|----------|
 | 用例参数 | 维度、系数、步长、fill mode、期望返回码、精度阈值等 | `<op>_test.csv` |
-| 框架公共能力 | CSV 解析、枚举解析、数组填充、精度验证、GTest 基类 | `test/frame/*.h`（7 个头文件） |
+| 框架公共能力 | CSV 解析、枚举解析、数组填充、精度验证、GTest 基类 | `test/frame/*.h`（9 个头文件） |
 | 算子专属逻辑 | 参数结构体、CPU golden、NPU wrapper | `<op>_param.h` / `<op>_golden.h` / `<op>_npu_wrapper.h` |
 
 设计原则：
@@ -76,7 +76,7 @@ TC_L0_001,Small square banded matrix,ACLBLAS_OP_N,8,8,2,2,1.5,random,5,random,1,
 ```
 ops-blas/
   test/
-    frame/                          # ST 框架公共头文件（7 个，header-only）
+    frame/                          # ST 框架公共头文件（9 个，header-only）
       csv_loader.h                  # csv_map、ReadMap、GetCasesFromCsv、PrintCaseInfoString、枚举解析
       blas_test.h                   # BlasTest<Param> 模板基类（SetUpTestSuite/TearDownTestSuite）
       fill.h                        # BlasDataFill、makeBlasArray、makeBlasTriangular、makeBlasBanded、makeBlasStrided
@@ -84,15 +84,20 @@ ops-blas/
       types.h                       # VerifyConfig、PrecisionMode
       data.h                        # DataGenerator（旧式算子兼容）
       device.h                      # DeviceBuffer、allocAndCopyToDevice、adjustStridedBase（旧式算子兼容）
+      dtype_utils.h                 # dtype 工具（bf16/fp8 转换等）
+      npu_event_timer.h             # NPU 事件计时（性能用例）
       test_main.cpp                 # 共享 main() 入口
-    stpttr/
-      stpttr_param.h                # StpttrParam（继承 BlasTestParamBase）
-      stpttr_golden.h               # aclblasStpttr_cpu() golden
-      arch35/
-        stpttr_npu_wrapper.h        # aclblasStpttr_npu() NPU wrapper
-        stpttr_test.cpp             # GTest 入口
-        stpttr_test.csv             # CSV 用例表
-    gbmv/                            # 同 stpttr 结构
+    tpttr/                          # 家族目录（family）
+      stpttr/                       # 接口子目录（精度变体），param/golden 在本层
+        stpttr_param.h              # StpttrParam（继承 BlasTestParamBase）
+        stpttr_golden.h             # aclblasStpttr_cpu() golden
+        arch35/
+          stpttr_npu_wrapper.h      # aclblasStpttr_npu() NPU wrapper
+          stpttr_test.cpp           # GTest 入口
+          stpttr_test.csv           # CSV 用例表
+    gbmv/                           # 同 tpttr：家族目录下按精度变体嵌套接口子目录
+      sgbmv/
+      cgbmv/
 ```
 
 ---

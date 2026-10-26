@@ -586,11 +586,11 @@ aclblasStatus_t aclblasLtMatmulAlgoConfigGetAttribute(const aclblasLtMatmulAlgo_
                                                       size_t* sizeWritten);
 ```
 
-查询算法描述符的配置属性。当 `sizeInBytes=0` 时，仅通过 `sizeWritten` 返回所需字节数，不写 `buf`（对齐 cuBLAS 探长语义）。
+查询算法描述符的配置属性。当 `sizeInBytes=0` 时，仅通过 `sizeWritten` 返回所需字节数，不写 `buf`（对齐 cuBLAS 探测（probe）语义）。
 
 | 返回值 | 含义 |
 |---|---|
-| `ACLBLAS_STATUS_SUCCESS` | 查询成功（含 `sizeInBytes=0` 探长）。 |
+| `ACLBLAS_STATUS_SUCCESS` | 查询成功（含 `sizeInBytes=0` 探测）。 |
 | `ACLBLAS_STATUS_INVALID_VALUE` | 指针为空、缓冲区过小或 magic 校验失败。 |
 | `ACLBLAS_STATUS_NOT_SUPPORTED` | 属性未识别或不支持。 |
 

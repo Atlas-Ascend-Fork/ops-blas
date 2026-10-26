@@ -15,7 +15,7 @@
     ```bash
     bash build.sh --pkg --soc=ascend950
     ```
-    - `--soc` 参数须与运行设备的芯片型号一致，支持的 SOC 值：`ascend910b`、`ascend910_93`、`ascend950`。
+    - `--soc` 参数须与运行设备的芯片型号一致，支持的 SOC 值：`ascend910b`、`ascend910_93`、`ascend950`、`ascend310p`。
     - 上述命令不带 `--ops` 参数，为全量编译，run 包包含全部算子；如需裁剪编译，可追加 `--ops=<算子名1,算子名2>`（如 `--ops=sscal`）。请注意 **run 包只包含本次编译的算子**：若示例调用的算子未被编入，链接时会报 `undefined reference to aclblasXxx`。本文档后续示例调用 `aclblasSscal`，请确保 run 包中包含 `sscal` 算子（使用上述全量命令，或追加 `--ops=sscal`）。
 
     编译成功后，安装包生成在 `build_out/` 目录下，文件名类似 `cann-950-ops-blas_<cann_version>_linux-<arch>.run`。

@@ -35,6 +35,7 @@ ${soc_version}设置方法如下：
 - Atlas A2 训练系列产品/Atlas A2 推理系列产品：取值为ascend910b
 - Atlas A3 训练系列产品/Atlas A3 推理系列产品：取值为ascend910_93
 - 950系列产品：取值为ascend950
+- Ascend 310P 系列产品（如 Atlas 300I 推理卡）：取值为ascend310p
 
 <img src="./zh/figures/socInfo.png" alt="芯片版本" width="800px" height="160px">
 

@@ -5,7 +5,7 @@
 > - **目录结构**：`blas/` 可以是 `${op}/archXX/` 结构（如 `blas/gbmv/arch35/`），其中 `${op}` 为算子名（去除精度前缀的族名，如 `gbmv`、`scal`）。
 > - **算子目录与源码前缀**：`blas/` 下 `${op}` 目录内 `*_host.cpp`、`*_kernel.cpp` 等文件名前缀与具体接口名一致（例如 `blas/gbmv/arch35/sgbmv_host.cpp`），以目录内实际文件为准。
 > - **测试子目录命名**：`test/` 下按算子名组织子目录，部分算子含精度变体子目录（如 `test/gbmv/sgbmv/`），以 `test/` 下实际目录为准。
-> - **平台裁剪**：部分算子会随 `SOC_VERSION` 在 `blas/CMakeLists.txt` 的排除列表中不参与编译，若本地仓中缺少对应目录或无可执行体，属工程裁剪策略所致。
+> - **平台裁剪**：部分算子会按 asc-devkit 版本开关（`blas/CMakeLists.txt` 中的 `TENSOR_API_OPS`/`ENABLE_BLAS_*` 列表）不参与编译，若本地仓中缺少对应目录或无可执行体，属工程裁剪策略所致。
 > - **架构子目录**：若某算子目录下存在 `${arch_dir}`（如 `arch35`、`arch22`），表示面向特定 NPU 架构的差异化实现，由顶层 CMake 按当前 SOC 选择是否编入；若缺少该目录，通常表示当前实现未拆分架构专用源码。
 > - **测试工程**：`test/` 下用例需在配置工程时开启 `BUILD_TEST` 并设置 `TEST_NAMES`（分号分隔的算子测试子目录名）后才会参与构建，详见根目录 [CMakeLists.txt](../../../CMakeLists.txt) 与 [QuickStart](../../../docs/QUICKSTART.md)。
 > - 若需补充算子或文档，欢迎参考 [贡献指南](../../../CONTRIBUTING.md)。
