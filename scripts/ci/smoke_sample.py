@@ -57,17 +57,22 @@ def group_prefix(case_name):
 
 
 def sample_group(names):
-    """组内排序后等距取样，首尾必留，输出保持排序序。"""
+    """组内排序后等距取样，首尾必留，输出保持排序序。
+
+    选中数量必须不超过 keep（大组保留上限，issue #501）：旧的
+    `size // keep` 向下取整步长 + range(0, size, step) + 补尾的写法会
+    多选（如 200 个样本、keep=24 时先选 25 个、补尾后 26 个）。
+    """
     size = len(names)
     if size <= SMALL_GROUP_KEEP:
         return list(names)
     keep = max(4, min(LARGE_GROUP_KEEP, size // LARGE_GROUP_STEP_DIVISOR))
-    step = max(1, size // keep)
-    picked = set()
-    for i in range(0, size, step):
-        picked.add(names[i])
-    picked.add(names[-1])  # 尾部边界（通常是大规模/极端参数）
-    return sorted(picked)
+    keep = min(keep, size)
+    if keep >= size:
+        return list(names)
+    # 等距取 keep 个下标：i*(size-1)//(keep-1) 严格递增，天然含首（0）与尾（size-1）
+    picked_indexes = {i * (size - 1) // (keep - 1) for i in range(keep)}
+    return [names[i] for i in sorted(picked_indexes)]
 
 
 def find_csv(op, soc_arch):
