@@ -698,10 +698,11 @@ TEST_F(LtMatmulArch35Test, DevicePointerMode)
     ASSERT_EQ(aclrtMalloc(&dD, dBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
     ASSERT_EQ(aclrtMalloc(&dAlpha, sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
     ASSERT_EQ(aclrtMalloc(&dBeta, sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
-    aclrtMemcpy(dA, aBytes, aHost.data(), aBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    aclrtMemcpy(dB, bBytes, bHost.data(), bBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    aclrtMemcpy(dAlpha, sizeof(float), &alphaHost, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
-    aclrtMemcpy(dBeta, sizeof(float), &betaHost, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
+    // issue #603: H2D 失败时内核会在未初始化内存（含标量）上计算，与同文件 malloc 检查风格一致
+    ASSERT_EQ(aclrtMemcpy(dA, aBytes, aHost.data(), aBytes, ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMemcpy(dB, bBytes, bHost.data(), bBytes, ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMemcpy(dAlpha, sizeof(float), &alphaHost, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMemcpy(dBeta, sizeof(float), &betaHost, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
 
     aclblasStatus_t ret = aclblasLtMatmul(
         ltHandle_, computeDesc, dAlpha, dA, Adesc, dB, Bdesc, dBeta, nullptr, Cdesc, dD, Ddesc, nullptr, nullptr, 0,
@@ -709,7 +710,7 @@ TEST_F(LtMatmulArch35Test, DevicePointerMode)
     EXPECT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
 
     std::vector<float> dHost(static_cast<size_t>(M) * ldd, 0.0f);
-    aclrtMemcpy(dHost.data(), dBytes, dD, dBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    ASSERT_EQ(aclrtMemcpy(dHost.data(), dBytes, dD, dBytes, ACL_MEMCPY_DEVICE_TO_HOST), ACL_SUCCESS);
 
     std::vector<float> golden(static_cast<size_t>(M) * ldd, 0.0f);
     aclblasLtMatmul_cpu(

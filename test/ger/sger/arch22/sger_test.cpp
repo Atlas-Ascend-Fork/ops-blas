@@ -71,8 +71,11 @@ TEST_P(SgerArch22Test, CsvDriven)
         return;
 
     // Step 3: CPU golden via the shared aclblasSger_cpu (validates and computes).
+    // issue #606: 参考调用失败时 golden 停留在输入初值，会产生假失败
     std::vector<float> golden = aOriginal; // start from original A
-    aclblasSger_cpu(SgerArch22Test::handle_, p.m, p.n, alphaPtr, xPtr, p.incx, yPtr, p.incy, golden.data(), p.lda);
+    ASSERT_EQ(
+        aclblasSger_cpu(SgerArch22Test::handle_, p.m, p.n, alphaPtr, xPtr, p.incx, yPtr, p.incy, golden.data(), p.lda),
+        ACLBLAS_STATUS_SUCCESS);
 
     // Step 4: Verify precision. alpha=0 leaves A untouched → bit-exact comparison;
     // otherwise use MERE_MARE (defaults: MERE < 2^-13, MARE < 10 * 2^-13).

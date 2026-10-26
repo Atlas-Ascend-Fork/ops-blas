@@ -101,8 +101,13 @@ inline std::vector<T> GetCasesFromCsv(const std::string& csvPath)
             continue;
 
         auto values = CsvSplitLine(line);
-        if (values.size() < keys.size())
+        if (values.size() < keys.size()) {
+            // issue #607: 残缺行（字段数少于表头）不得静默跳过——用例无声消失导致覆盖丢失，
+            // 编辑/合并 CSV 的缺列失误必须在 CI 中可见
+            ADD_FAILURE() << "malformed csv row (fields=" << values.size() << ", header=" << keys.size()
+                          << "), case dropped";
             continue;
+        }
 
         csv_map row;
         for (size_t i = 0; i < keys.size(); i++) {

@@ -53,10 +53,7 @@ struct BenchStats {
     std::string minCase;
 };
 
-const char* UploStr(aclblasFillMode_t v)
-{
-    return v == ACLBLAS_UPPER ? "UPPER" : "LOWER";
-}
+const char* UploStr(aclblasFillMode_t v) { return v == ACLBLAS_UPPER ? "UPPER" : "LOWER"; }
 
 const char* TransStr(aclblasOperation_t v)
 {
@@ -69,10 +66,7 @@ const char* TransStr(aclblasOperation_t v)
     return "C";
 }
 
-const char* DiagStr(aclblasDiagType_t v)
-{
-    return v == ACLBLAS_UNIT ? "UNIT" : "NON_UNIT";
-}
+const char* DiagStr(aclblasDiagType_t v) { return v == ACLBLAS_UNIT ? "UNIT" : "NON_UNIT"; }
 
 void FillRandom(std::vector<aclblasComplex>& data, uint32_t seed)
 {
@@ -107,8 +101,8 @@ void FreePair(aclblasComplex* aDev, aclblasComplex* xDev)
 }
 
 bool AllocAndCopy(
-    const std::vector<aclblasComplex>& aHost, const std::vector<aclblasComplex>& xHost,
-    aclblasComplex*& aDev, aclblasComplex*& xDev)
+    const std::vector<aclblasComplex>& aHost, const std::vector<aclblasComplex>& xHost, aclblasComplex*& aDev,
+    aclblasComplex*& xDev)
 {
     const size_t aBytes = aHost.size() * sizeof(aclblasComplex);
     const size_t xBytes = xHost.size() * sizeof(aclblasComplex);
@@ -125,19 +119,21 @@ bool AllocAndCopy(
 }
 
 bool TimedRepeats(
-    aclblasHandle_t handle, aclrtStream stream, const Case& c,
-    aclblasComplex* aDev, aclblasComplex* xDev, float& avgUs)
+    aclblasHandle_t handle, aclrtStream stream, const Case& c, aclblasComplex* aDev, aclblasComplex* xDev, float& avgUs)
 {
     auto launch = [&]() {
-        return aclblasCtbsv(handle, c.uplo, c.trans, c.diag, c.n, c.k, aDev, c.lda, xDev, 1) ==
-               ACLBLAS_STATUS_SUCCESS;
+        return aclblasCtbsv(handle, c.uplo, c.trans, c.diag, c.n, c.k, aDev, c.lda, xDev, 1) == ACLBLAS_STATUS_SUCCESS;
     };
     for (int i = 0; i < WARMUP; ++i) {
         if (!launch()) {
             return false;
         }
     }
-    aclrtSynchronizeStream(stream);
+    // issue #605: 同步失败时不得产出性能数据
+    if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+        std::cerr << "ctbsv bench: aclrtSynchronizeStream failed" << std::endl;
+        return false;
+    }
 
     aclrtEvent start = nullptr;
     aclrtEvent stop = nullptr;
@@ -152,7 +148,13 @@ bool TimedRepeats(
         }
     }
     aclrtRecordEvent(stop, stream);
-    aclrtSynchronizeStream(stream);
+    // issue #605: 同步失败时不得产出性能数据
+    if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+        std::cerr << "ctbsv bench: aclrtSynchronizeStream failed" << std::endl;
+        aclrtDestroyEvent(start);
+        aclrtDestroyEvent(stop);
+        return false;
+    }
     float totalMs = 0.0f;
     aclrtEventElapsedTime(&totalMs, start, stop);
     avgUs = totalMs * 1000.0f / static_cast<float>(REPEATS);
@@ -219,8 +221,8 @@ void ParseArgs(int argc, char** argv, BenchOpts& opts)
 
 void EmitRow(std::ostream& os, const Case& c, const char* extra)
 {
-    os << c.name << "," << c.n << "," << c.k << "," << UploStr(c.uplo) << ","
-       << TransStr(c.trans) << "," << DiagStr(c.diag) << extra;
+    os << c.name << "," << c.n << "," << c.k << "," << UploStr(c.uplo) << "," << TransStr(c.trans) << ","
+       << DiagStr(c.diag) << extra;
 }
 
 void RecordCase(const Case& c, double npuUs, BenchStats& stats, std::ofstream& csv)
@@ -239,13 +241,12 @@ void RecordCase(const Case& c, double npuUs, BenchStats& stats, std::ofstream& c
         stats.minCase = c.name;
     }
     std::ostringstream extra;
-    extra << std::fixed << std::setprecision(3) << "," << npuUs << "," << gpuUs << ","
-          << ratio << "," << targetUs << "," << (ok ? "PASS" : "FAIL") << "\n";
+    extra << std::fixed << std::setprecision(3) << "," << npuUs << "," << gpuUs << "," << ratio << "," << targetUs
+          << "," << (ok ? "PASS" : "FAIL") << "\n";
     EmitRow(std::cout, c, extra.str().c_str());
     if (csv.is_open()) {
-        csv << c.name << "," << c.n << "," << c.k << "," << UploStr(c.uplo) << ","
-            << TransStr(c.trans) << "," << DiagStr(c.diag) << "," << c.lda << ","
-            << npuUs << "," << gpuUs << "," << ratio << "," << targetUs << ","
+        csv << c.name << "," << c.n << "," << c.k << "," << UploStr(c.uplo) << "," << TransStr(c.trans) << ","
+            << DiagStr(c.diag) << "," << c.lda << "," << npuUs << "," << gpuUs << "," << ratio << "," << targetUs << ","
             << (ok ? "PASS" : "FAIL") << "\n";
     }
 }
@@ -273,9 +274,8 @@ int RunCases(aclblasHandle_t handle, aclrtStream stream, const BenchOpts& opts)
         }
         RecordCase(c, static_cast<double>(avgUs), stats, csv);
     }
-    std::cout << "summary,pass=" << stats.pass << ",fail=" << stats.fail
-              << ",min_ratio=" << stats.minRatio << ",min_case=" << stats.minCase
-              << ",threshold=" << RATIO_THRESHOLD << "\n";
+    std::cout << "summary,pass=" << stats.pass << ",fail=" << stats.fail << ",min_ratio=" << stats.minRatio
+              << ",min_case=" << stats.minCase << ",threshold=" << RATIO_THRESHOLD << "\n";
     return stats.fail;
 }
 

@@ -31,10 +31,7 @@ class Csyr2Test : public BlasTest<Csyr2Param> {};
 
 namespace {
 
-bool IsZero(const aclblasComplex& value)
-{
-    return value.real == 0.0f && value.imag == 0.0f;
-}
+bool IsZero(const aclblasComplex& value) { return value.real == 0.0f && value.imag == 0.0f; }
 
 size_t VectorStorageSize(int n, int inc)
 {
@@ -91,9 +88,9 @@ Csyr2HostData PrepareHostData(const Csyr2Param& p)
     return data;
 }
 
-void VerifyUpdatedTriangle(const Csyr2Param& p, const std::vector<aclblasComplex>& actual,
-    const std::vector<aclblasComplex>& original, const std::vector<aclblasComplex>& x,
-    const std::vector<aclblasComplex>& y)
+void VerifyUpdatedTriangle(
+    const Csyr2Param& p, const std::vector<aclblasComplex>& actual, const std::vector<aclblasComplex>& original,
+    const std::vector<aclblasComplex>& x, const std::vector<aclblasComplex>& y)
 {
     csyr2_test::ComplexAccuracy stats;
     csyr2_test::AccuracyConfig config;
@@ -102,8 +99,8 @@ void VerifyUpdatedTriangle(const Csyr2Param& p, const std::vector<aclblasComplex
     std::vector<aclblasComplex> goldenColumn(static_cast<size_t>(p.lda));
     for (int col = 0; col < p.n; ++col) {
         std::copy_n(original.data() + static_cast<size_t>(col) * p.lda, p.lda, goldenColumn.data());
-        csyr2_test::Csyr2GoldenColumn(p.uplo, p.n, p.alpha, x.data(), p.incx, y.data(), p.incy,
-            col, goldenColumn.data());
+        csyr2_test::Csyr2GoldenColumn(
+            p.uplo, p.n, p.alpha, x.data(), p.incx, y.data(), p.incy, col, goldenColumn.data());
         const int rowBegin = p.uplo == ACLBLAS_UPPER ? 0 : col;
         const int rowEnd = p.uplo == ACLBLAS_UPPER ? col + 1 : p.n;
         for (int row = rowBegin; row < rowEnd; ++row) {
@@ -115,23 +112,23 @@ void VerifyUpdatedTriangle(const Csyr2Param& p, const std::vector<aclblasComplex
     // expanded triangle arrays (up to 256 MiB of vector capacity at n=4096).
     for (bool real : {true, false}) {
         const auto& component = real ? stats.real : stats.imag;
-        std::printf("[CSYR2_ACCURACY] case=%s component=%s total=%zu matchedRatio=%.9g "
-                    "maxAbsErr=%.9g MERE=%.9g MARE=%.9g cap_failures=%zu special_mismatch=%zu\n",
+        std::printf(
+            "[CSYR2_ACCURACY] case=%s component=%s total=%zu matchedRatio=%.9g "
+            "maxAbsErr=%.9g MERE=%.9g MARE=%.9g cap_failures=%zu special_mismatch=%zu\n",
             p.caseName.c_str(), real ? "real" : "imag", component.total, component.matchedRatio(),
-            component.maxAbsError, component.mere(), component.mare, component.capFailCount,
-            component.specialMismatch);
+            component.maxAbsError, component.mere(), component.mare, component.capFailCount, component.specialMismatch);
         EXPECT_TRUE(csyr2_test::ComponentPass(component, config)) << p.caseName << (real ? " real" : " imag");
         EXPECT_TRUE(csyr2_test::MereMarePass(component, config)) << p.caseName << (real ? " real" : " imag");
     }
     const bool worstReal = stats.real.maxAbsError >= stats.imag.maxAbsError;
     const auto& worst = worstReal ? stats.real : stats.imag;
-    std::printf("[ACCURACY] case=%s max_error=%.9g ratio=%.9g worst_case=%s:index=%zu\n",
-        p.caseName.c_str(), worst.maxAbsError, std::min(stats.real.matchedRatio(), stats.imag.matchedRatio()),
-        worstReal ? "real" : "imag", worst.worstIndex);
+    std::printf(
+        "[ACCURACY] case=%s max_error=%.9g ratio=%.9g worst_case=%s:index=%zu\n", p.caseName.c_str(), worst.maxAbsError,
+        std::min(stats.real.matchedRatio(), stats.imag.matchedRatio()), worstReal ? "real" : "imag", worst.worstIndex);
 }
 
-void VerifyUnchangedStorage(const Csyr2Param& p, const std::vector<aclblasComplex>& actual,
-    const std::vector<aclblasComplex>& original)
+void VerifyUnchangedStorage(
+    const Csyr2Param& p, const std::vector<aclblasComplex>& actual, const std::vector<aclblasComplex>& original)
 {
     for (int col = 0; col < p.n; ++col) {
         for (int row = 0; row < p.lda; ++row) {
@@ -154,7 +151,8 @@ void VerifyManualN2(aclblasHandle_t handle, aclrtStream stream, aclblasFillMode_
     std::vector<aclblasComplex> a{{1.0f, 0.0f}, {2.0f, 1.0f}, {-3.0f, 2.0f}, {4.0f, -2.0f}};
     std::vector<aclblasComplex> golden = a;
     csyr2_test::Csyr2Golden(uplo, 2, alpha, x.data(), 1, y.data(), 1, golden.data(), 2);
-    ASSERT_EQ(ACLBLAS_STATUS_SUCCESS,
+    ASSERT_EQ(
+        ACLBLAS_STATUS_SUCCESS,
         aclblasCsyr2_npu(handle, stream, uplo, 2, &alpha, x.data(), 1, y.data(), 1, a.data(), 2));
     for (size_t index = 0; index < a.size(); ++index) {
         EXPECT_FLOAT_EQ(golden[index].real, a[index].real) << "real index=" << index;
@@ -162,9 +160,10 @@ void VerifyManualN2(aclblasHandle_t handle, aclrtStream stream, aclblasFillMode_
     }
 }
 
-void VerifyGuardedMatrix(const std::vector<aclblasComplex>& actual,
-    const std::vector<aclblasComplex>& original, const std::vector<aclblasComplex>& golden,
-    size_t guardCount, size_t matrixElements, int n, int lda, aclblasFillMode_t uplo)
+void VerifyGuardedMatrix(
+    const std::vector<aclblasComplex>& actual, const std::vector<aclblasComplex>& original,
+    const std::vector<aclblasComplex>& golden, size_t guardCount, size_t matrixElements, int n, int lda,
+    aclblasFillMode_t uplo)
 {
     if (lda <= 0) {
         ADD_FAILURE() << "invalid lda=" << lda;
@@ -205,8 +204,8 @@ aclError CopyComplexFromDevice(std::vector<aclblasComplex>& host, const void* de
     return aclrtMemcpy(host.data(), bytes, device, bytes, ACL_MEMCPY_DEVICE_TO_HOST);
 }
 
-void VerifyGuardedNoncontiguousLayout(aclblasHandle_t handle, aclrtStream stream, aclblasFillMode_t uplo,
-    int n = 7, int incx = -2, int incy = 3)
+void VerifyGuardedNoncontiguousLayout(
+    aclblasHandle_t handle, aclrtStream stream, aclblasFillMode_t uplo, int n = 7, int incx = -2, int incy = 3)
 {
     const int lda = n + 4;
     constexpr size_t guardCount = 3;
@@ -281,8 +280,9 @@ struct ScopedEvents {
     }
 };
 
-bool RunWarmup(aclblasHandle_t handle, aclrtStream stream, const Csyr2Param& p,
-    const aclblasComplex* xDevice, const aclblasComplex* yDevice, aclblasComplex* aDevice)
+bool RunWarmup(
+    aclblasHandle_t handle, aclrtStream stream, const Csyr2Param& p, const aclblasComplex* xDevice,
+    const aclblasComplex* yDevice, aclblasComplex* aDevice)
 {
     for (int i = 0; i < WARMUP_COUNT; ++i) {
         if (aclblasCsyr2(handle, p.uplo, p.n, &p.alpha, xDevice, p.incx, yDevice, p.incy, aDevice, p.lda) !=
@@ -298,8 +298,9 @@ bool RunWarmup(aclblasHandle_t handle, aclrtStream stream, const Csyr2Param& p,
     return true;
 }
 
-bool RunTimedBatch(aclblasHandle_t handle, const Csyr2Param& p, const aclblasComplex* xDevice,
-    const aclblasComplex* yDevice, aclblasComplex* aDevice)
+bool RunTimedBatch(
+    aclblasHandle_t handle, const Csyr2Param& p, const aclblasComplex* xDevice, const aclblasComplex* yDevice,
+    aclblasComplex* aDevice)
 {
     for (int repeat = 0; repeat < REPEAT_COUNT; ++repeat) {
         if (aclblasCsyr2(handle, p.uplo, p.n, &p.alpha, xDevice, p.incx, yDevice, p.incy, aDevice, p.lda) !=
@@ -316,9 +317,9 @@ double ThreadCpuUs(const rusage& usage)
     return 1e6 * (usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + usage.ru_utime.tv_usec + usage.ru_stime.tv_usec;
 }
 
-bool MeasureSample(aclblasHandle_t handle, aclrtStream stream, const Csyr2Param& p,
-    const std::vector<aclblasComplex>& original, const aclblasComplex* xDevice,
-    const aclblasComplex* yDevice, aclblasComplex* aDevice, const ScopedEvents& events,
+bool MeasureSample(
+    aclblasHandle_t handle, aclrtStream stream, const Csyr2Param& p, const std::vector<aclblasComplex>& original,
+    const aclblasComplex* xDevice, const aclblasComplex* yDevice, aclblasComplex* aDevice, const ScopedEvents& events,
     int sample, float& sampleUs)
 {
     const size_t matrixBytes = original.size() * sizeof(aclblasComplex);
@@ -336,7 +337,10 @@ bool MeasureSample(aclblasHandle_t handle, aclrtStream stream, const Csyr2Param&
         return false;
     }
     if (!RunTimedBatch(handle, p, xDevice, yDevice, aDevice)) {
-        aclrtSynchronizeStream(stream);
+        // issue #605: 失败分支的同步失败同样要可见
+        if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+            ADD_FAILURE() << "sample reset sync failed for n=" << p.n;
+        }
         return false;
     }
     if (aclrtRecordEvent(events.end, stream) != ACL_SUCCESS || aclrtSynchronizeEvent(events.end) != ACL_SUCCESS) {
@@ -352,8 +356,9 @@ bool MeasureSample(aclblasHandle_t handle, aclrtStream stream, const Csyr2Param&
         std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - wallStart).count();
     const bool usageOk = getrusage(RUSAGE_THREAD, &afterUsage) == 0 && beforeUsageOk;
     sampleUs = elapsedMs * 1000.0f / REPEAT_COUNT;
-    std::printf("CSYR2_SAMPLE case=%s n=%d sample=%d repeats=%d mean_us=%.6f "
-                "batch_wall_us=%.3f thread_cpu_us=%.3f voluntary_switches=%ld involuntary_switches=%ld\n",
+    std::printf(
+        "CSYR2_SAMPLE case=%s n=%d sample=%d repeats=%d mean_us=%.6f "
+        "batch_wall_us=%.3f thread_cpu_us=%.3f voluntary_switches=%ld involuntary_switches=%ld\n",
         p.caseName.c_str(), p.n, sample, REPEAT_COUNT, sampleUs, wallUs,
         usageOk ? ThreadCpuUs(afterUsage) - ThreadCpuUs(beforeUsage) : -1.0,
         usageOk ? afterUsage.ru_nvcsw - beforeUsage.ru_nvcsw : -1L,
@@ -373,8 +378,7 @@ float AverageSamples(const std::array<float, SAMPLE_COUNT>& samples)
     return static_cast<float>(totalUs / SAMPLE_COUNT);
 }
 
-float MeasureMeanDeviceUs(aclblasHandle_t handle, aclrtStream stream, const Csyr2Param& p,
-    const Csyr2HostData& data)
+float MeasureMeanDeviceUs(aclblasHandle_t handle, aclrtStream stream, const Csyr2Param& p, const Csyr2HostData& data)
 {
     const auto& x = data.x;
     const auto& y = data.y;
@@ -415,7 +419,10 @@ struct ScopedBlasStream {
     ~ScopedBlasStream()
     {
         if (stream != nullptr) {
-            aclrtSynchronizeStream(stream);
+            // issue #605: 收尾同步失败仅记录，不在析构路径抛出
+            if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+                std::cerr << "csyr2_test: scoped stream sync failed" << std::endl;
+            }
         }
         if (handle != nullptr) {
             aclblasDestroy(handle);
@@ -432,9 +439,9 @@ TEST_F(Csyr2Test, NullHandle)
 {
     const aclblasComplex alpha{1.0f, 0.0f};
     aclblasComplex value{0.0f, 0.0f};
-    EXPECT_EQ(ACLBLAS_STATUS_HANDLE_IS_NULLPTR,
-        aclblasCsyr2_npu(nullptr, nullptr, ACLBLAS_UPPER, 1, &alpha, &value, 1, &value, 1,
-            &value, 1));
+    EXPECT_EQ(
+        ACLBLAS_STATUS_HANDLE_IS_NULLPTR,
+        aclblasCsyr2_npu(nullptr, nullptr, ACLBLAS_UPPER, 1, &alpha, &value, 1, &value, 1, &value, 1));
 }
 
 TEST_F(Csyr2Test, ManualN2UpperAndLowerOnBoundStream)
@@ -457,11 +464,14 @@ TEST_F(Csyr2Test, ExtremeIncrementsForSingleElementAreNotNarrowed)
     std::vector<aclblasComplex> a{{0.5f, 1.5f}};
     const std::vector<aclblasComplex> original = a;
     std::vector<aclblasComplex> golden = a;
-    csyr2_test::Csyr2Golden(ACLBLAS_UPPER, 1, alpha, x.data(), std::numeric_limits<int>::min(), y.data(),
-        std::numeric_limits<int>::max(), golden.data(), 1);
-    ASSERT_EQ(ACLBLAS_STATUS_SUCCESS,
-        aclblasCsyr2_npu(handle_, stream_, ACLBLAS_UPPER, 1, &alpha, x.data(), std::numeric_limits<int>::min(),
-            y.data(), std::numeric_limits<int>::max(), a.data(), 1));
+    csyr2_test::Csyr2Golden(
+        ACLBLAS_UPPER, 1, alpha, x.data(), std::numeric_limits<int>::min(), y.data(), std::numeric_limits<int>::max(),
+        golden.data(), 1);
+    ASSERT_EQ(
+        ACLBLAS_STATUS_SUCCESS,
+        aclblasCsyr2_npu(
+            handle_, stream_, ACLBLAS_UPPER, 1, &alpha, x.data(), std::numeric_limits<int>::min(), y.data(),
+            std::numeric_limits<int>::max(), a.data(), 1));
     EXPECT_FLOAT_EQ(golden[0].real, a[0].real);
     EXPECT_FLOAT_EQ(golden[0].imag, a[0].imag);
     EXPECT_NE(0, std::memcmp(a.data(), original.data(), sizeof(aclblasComplex)));
@@ -482,10 +492,11 @@ TEST_F(Csyr2Test, LargeIndexHostValidationDoesNotLaunch)
     aclblasComplex value{0.0f, 0.0f};
     // This exercises the largest legal structural values without allocating
     // impossible vectors.  Null x must be rejected before tiling/launch.
-    EXPECT_EQ(ACLBLAS_STATUS_INVALID_VALUE,
-        aclblasCsyr2(handle_, ACLBLAS_LOWER, std::numeric_limits<int>::max(), &alpha, nullptr,
-            std::numeric_limits<int>::min(), &value, std::numeric_limits<int>::max(), &value,
-            std::numeric_limits<int>::max()));
+    EXPECT_EQ(
+        ACLBLAS_STATUS_INVALID_VALUE,
+        aclblasCsyr2(
+            handle_, ACLBLAS_LOWER, std::numeric_limits<int>::max(), &alpha, nullptr, std::numeric_limits<int>::min(),
+            &value, std::numeric_limits<int>::max(), &value, std::numeric_limits<int>::max()));
 }
 
 TEST_F(Csyr2Test, GenericPathBeyondVectorCapacity)
@@ -497,9 +508,10 @@ TEST_F(Csyr2Test, GenericPathBeyondVectorCapacity)
         p.uplo = uplo;
         p.alpha = {0.5f, -0.25f};
         auto data = PrepareHostData(p);
-        ASSERT_EQ(ACLBLAS_STATUS_SUCCESS,
-            aclblasCsyr2_npu(handle_, stream_, p.uplo, p.n, &p.alpha, data.x.data(), p.incx,
-                data.y.data(), p.incy, data.a.data(), p.lda));
+        ASSERT_EQ(
+            ACLBLAS_STATUS_SUCCESS, aclblasCsyr2_npu(
+                                        handle_, stream_, p.uplo, p.n, &p.alpha, data.x.data(), p.incx, data.y.data(),
+                                        p.incy, data.a.data(), p.lda));
         VerifyUpdatedTriangle(p, data.a, data.aOriginal, data.x, data.y);
         VerifyUnchangedStorage(p, data.a, data.aOriginal);
     }
@@ -530,18 +542,20 @@ TEST_F(Csyr2Test, IndependentStreamsAndConsecutiveInPlaceUpdates)
     auto expectedFirst = initial;
     auto expectedSecond = initial;
     for (int iteration = 0; iteration < 3; ++iteration) {
-        EXPECT_EQ(ACLBLAS_STATUS_SUCCESS,
-            aclblasCsyr2(handle_, ACLBLAS_UPPER, n, &alpha,
-                static_cast<const aclblasComplex*>(firstBuffers.x), 1,
-                static_cast<const aclblasComplex*>(firstBuffers.y), 1,
-                static_cast<aclblasComplex*>(firstBuffers.a), lda));
+        EXPECT_EQ(
+            ACLBLAS_STATUS_SUCCESS,
+            aclblasCsyr2(
+                handle_, ACLBLAS_UPPER, n, &alpha, static_cast<const aclblasComplex*>(firstBuffers.x), 1,
+                static_cast<const aclblasComplex*>(firstBuffers.y), 1, static_cast<aclblasComplex*>(firstBuffers.a),
+                lda));
         csyr2_test::Csyr2Golden(ACLBLAS_UPPER, n, alpha, x.data(), 1, y.data(), 1, expectedFirst.data(), lda);
         alpha.imag = -alpha.imag;
-        EXPECT_EQ(ACLBLAS_STATUS_SUCCESS,
-            aclblasCsyr2(second.handle, ACLBLAS_LOWER, n, &alpha,
-                static_cast<const aclblasComplex*>(secondBuffers.x), 1,
-                static_cast<const aclblasComplex*>(secondBuffers.y), 1,
-                static_cast<aclblasComplex*>(secondBuffers.a), lda));
+        EXPECT_EQ(
+            ACLBLAS_STATUS_SUCCESS,
+            aclblasCsyr2(
+                second.handle, ACLBLAS_LOWER, n, &alpha, static_cast<const aclblasComplex*>(secondBuffers.x), 1,
+                static_cast<const aclblasComplex*>(secondBuffers.y), 1, static_cast<aclblasComplex*>(secondBuffers.a),
+                lda));
         csyr2_test::Csyr2Golden(ACLBLAS_LOWER, n, alpha, x.data(), 1, y.data(), 1, expectedSecond.data(), lda);
         alpha.real = -alpha.real;
     }
@@ -580,9 +594,10 @@ TEST_F(Csyr2Test, InfinityPropagationMatchesCublasInBothLayouts)
             y[csyr2_test::LogicalOffset(1, n, p.incy)] = {3.0f, 4.0f};
             std::vector<aclblasComplex> a(n * lda, {0.5f, 0.75f});
             const auto original = a;
-            ASSERT_EQ(ACLBLAS_STATUS_SUCCESS,
-                aclblasCsyr2_npu(handle_, stream_, uplo, n, &p.alpha, x.data(), p.incx,
-                    y.data(), p.incy, a.data(), lda));
+            ASSERT_EQ(
+                ACLBLAS_STATUS_SUCCESS,
+                aclblasCsyr2_npu(
+                    handle_, stream_, uplo, n, &p.alpha, x.data(), p.incx, y.data(), p.incy, a.data(), lda));
             // Independent observed cuBLAS 12.6.4 classifications. Checking
             // these directly prevents a shared Golden/kernel order mistake.
             if (uplo == ACLBLAS_UPPER) {
@@ -658,8 +673,9 @@ TEST_P(Csyr2Test, CsvDriven)
         ASSERT_TRUE(std::isfinite(meanUs));
         struct rusage usage {};
         ASSERT_EQ(0, getrusage(RUSAGE_SELF, &usage));
-        std::printf("[PERF] case=%s average_us=%.6f warmup=10 samples=60 repeats=100 "
-                    "timer=device_event peak_memory_bytes=%llu memory_scope=process_high_watermark\n",
+        std::printf(
+            "[PERF] case=%s average_us=%.6f warmup=10 samples=60 repeats=100 "
+            "timer=device_event peak_memory_bytes=%llu memory_scope=process_high_watermark\n",
             p.caseName.c_str(), meanUs, static_cast<unsigned long long>(usage.ru_maxrss) * 1024ULL);
     }
 }

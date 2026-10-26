@@ -51,8 +51,12 @@ public:
 private:
     void Cleanup() noexcept
     {
-        if (stream)
-            aclrtSynchronizeStream(stream);
+        if (stream) {
+            // issue #605: 收尾同步失败仅记录，不在清理路径抛出
+            if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+                std::cerr << "cscal_test: cleanup aclrtSynchronizeStream failed" << std::endl;
+            }
+        }
         if (handle) {
             aclblasDestroy(handle);
             handle = nullptr;
@@ -83,7 +87,10 @@ public:
     ~Buffer()
     {
         if (data) {
-            aclrtSynchronizeStream(stream);
+            // issue #605: 收尾同步失败仅记录，不在析构路径抛出
+            if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+                std::cerr << "cscal_test: buffer aclrtSynchronizeStream failed" << std::endl;
+            }
             aclrtFree(data);
         }
     }

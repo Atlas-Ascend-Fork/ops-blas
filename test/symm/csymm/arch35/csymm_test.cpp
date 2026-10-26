@@ -104,10 +104,9 @@ TEST_F(CsymmArch35Test, NullHandle)
     std::vector<float> a(32, 0.0f);
     std::vector<float> b(32, 0.0f);
     std::vector<float> c(32, 0.0f);
-    aclblasStatus_t ret = aclblasCsymm_npu(nullptr, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, 4, 4, &alpha,
-        reinterpret_cast<const aclblasComplex*>(a.data()), 4,
-        reinterpret_cast<const aclblasComplex*>(b.data()), 4, &beta,
-        reinterpret_cast<aclblasComplex*>(c.data()), 4);
+    aclblasStatus_t ret = aclblasCsymm_npu(
+        nullptr, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, 4, 4, &alpha, reinterpret_cast<const aclblasComplex*>(a.data()), 4,
+        reinterpret_cast<const aclblasComplex*>(b.data()), 4, &beta, reinterpret_cast<aclblasComplex*>(c.data()), 4);
     EXPECT_EQ(ret, ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 }
 
@@ -117,9 +116,9 @@ TEST_F(CsymmArch35Test, NullA)
     aclblasComplex beta = {1.0f, 0.0f};
     std::vector<float> b(32, 0.0f);
     std::vector<float> c(32, 0.0f);
-    aclblasStatus_t ret = aclblasCsymm_npu(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, 4, 4,
-        &alpha, nullptr, 4, reinterpret_cast<const aclblasComplex*>(b.data()), 4, &beta,
-        reinterpret_cast<aclblasComplex*>(c.data()), 4);
+    aclblasStatus_t ret = aclblasCsymm_npu(
+        CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, 4, 4, &alpha, nullptr, 4,
+        reinterpret_cast<const aclblasComplex*>(b.data()), 4, &beta, reinterpret_cast<aclblasComplex*>(c.data()), 4);
     EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_VALUE);
 }
 
@@ -129,8 +128,9 @@ TEST_F(CsymmArch35Test, NullB)
     aclblasComplex beta = {1.0f, 0.0f};
     std::vector<float> a(32, 0.0f);
     std::vector<float> c(32, 0.0f);
-    aclblasStatus_t ret = aclblasCsymm_npu(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, 4, 4,
-        &alpha, reinterpret_cast<const aclblasComplex*>(a.data()), 4, nullptr, 4, &beta,
+    aclblasStatus_t ret = aclblasCsymm_npu(
+        CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, 4, 4, &alpha,
+        reinterpret_cast<const aclblasComplex*>(a.data()), 4, nullptr, 4, &beta,
         reinterpret_cast<aclblasComplex*>(c.data()), 4);
     EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_VALUE);
 }
@@ -141,9 +141,10 @@ TEST_F(CsymmArch35Test, NullC)
     aclblasComplex beta = {1.0f, 0.0f};
     std::vector<float> a(32, 0.0f);
     std::vector<float> b(32, 0.0f);
-    aclblasStatus_t ret = aclblasCsymm_npu(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, 4, 4,
-        &alpha, reinterpret_cast<const aclblasComplex*>(a.data()), 4,
-        reinterpret_cast<const aclblasComplex*>(b.data()), 4, &beta, nullptr, 4);
+    aclblasStatus_t ret = aclblasCsymm_npu(
+        CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, 4, 4, &alpha,
+        reinterpret_cast<const aclblasComplex*>(a.data()), 4, reinterpret_cast<const aclblasComplex*>(b.data()), 4,
+        &beta, nullptr, 4);
     EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_VALUE);
 }
 
@@ -154,9 +155,10 @@ TEST_F(CsymmArch35Test, NullCBetaZero)
     aclblasComplex beta = {0.0f, 0.0f};
     std::vector<float> a(32, 0.0f);
     std::vector<float> b(32, 0.0f);
-    aclblasStatus_t ret = aclblasCsymm_npu(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, 4, 4,
-        &alpha, reinterpret_cast<const aclblasComplex*>(a.data()), 4,
-        reinterpret_cast<const aclblasComplex*>(b.data()), 4, &beta, nullptr, 4);
+    aclblasStatus_t ret = aclblasCsymm_npu(
+        CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, 4, 4, &alpha,
+        reinterpret_cast<const aclblasComplex*>(a.data()), 4, reinterpret_cast<const aclblasComplex*>(b.data()), 4,
+        &beta, nullptr, 4);
     EXPECT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
 }
 
@@ -169,8 +171,9 @@ TEST_F(CsymmArch35Test, AlphaZeroNullA)
     aclblasComplex beta = {1.0f, 0.0f};
     std::vector<float> cHost = makeBlasArray(2 * m * n, parseFill("RANDOM_NORM_5_5"), 44);
     std::vector<float> cResult = cHost;
-    aclblasStatus_t ret = aclblasCsymm_npu(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, m, n,
-        &alpha, nullptr, m, nullptr, m, &beta, reinterpret_cast<aclblasComplex*>(cResult.data()), m);
+    aclblasStatus_t ret = aclblasCsymm_npu(
+        CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, m, n, &alpha, nullptr, m, nullptr, m, &beta,
+        reinterpret_cast<aclblasComplex*>(cResult.data()), m);
     EXPECT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
     VerifyConfig cfg;
     cfg.mode = PrecisionMode::EXACT;
@@ -190,10 +193,10 @@ TEST_F(CsymmArch35Test, AlphaZeroBetaZeroClearsC)
     std::vector<float> bHost = makeBlasArray(2 * m * n, parseFill("RANDOM_NORM_5_5"), 46);
     std::vector<float> cHost = makeBlasArray(2 * m * n, parseFill("RANDOM_NORM_5_5"), 47);
     std::vector<float> cResult = cHost;
-    aclblasStatus_t ret = aclblasCsymm_npu(CsymmArch35Test::handle_, ACLBLAS_SIDE_RIGHT, ACLBLAS_UPPER, m, n,
-        &alpha, reinterpret_cast<const aclblasComplex*>(aHost.data()), n,
-        reinterpret_cast<const aclblasComplex*>(bHost.data()), m, &beta,
-        reinterpret_cast<aclblasComplex*>(cResult.data()), m);
+    aclblasStatus_t ret = aclblasCsymm_npu(
+        CsymmArch35Test::handle_, ACLBLAS_SIDE_RIGHT, ACLBLAS_UPPER, m, n, &alpha,
+        reinterpret_cast<const aclblasComplex*>(aHost.data()), n, reinterpret_cast<const aclblasComplex*>(bHost.data()),
+        m, &beta, reinterpret_cast<aclblasComplex*>(cResult.data()), m);
     EXPECT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
     for (size_t i = 0; i < cResult.size(); ++i) {
         EXPECT_EQ(cResult[i], 0.0f) << "AlphaZeroBetaZeroClearsC: element " << i << " not cleared";
@@ -211,17 +214,17 @@ TEST_F(CsymmArch35Test, AlphaZeroBetaScale)
     std::vector<float> bHost = makeBlasArray(2 * m * n, parseFill("RANDOM_NORM_5_5"), 47);
     std::vector<float> cHost = makeBlasArray(2 * m * n, parseFill("RANDOM_NORM_5_5"), 48);
     std::vector<float> cResult = cHost;
-    aclblasStatus_t ret = aclblasCsymm_npu(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, m, n,
-        &alpha, reinterpret_cast<const aclblasComplex*>(aHost.data()), m,
-        reinterpret_cast<const aclblasComplex*>(bHost.data()), m, &beta,
-        reinterpret_cast<aclblasComplex*>(cResult.data()), m);
+    aclblasStatus_t ret = aclblasCsymm_npu(
+        CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, m, n, &alpha,
+        reinterpret_cast<const aclblasComplex*>(aHost.data()), m, reinterpret_cast<const aclblasComplex*>(bHost.data()),
+        m, &beta, reinterpret_cast<aclblasComplex*>(cResult.data()), m);
     EXPECT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
 
     std::vector<float> golden = cHost;
-    aclblasCsymm_cpu(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, m, n, &alpha,
-        reinterpret_cast<const aclblasComplex*>(aHost.data()), m,
-        reinterpret_cast<const aclblasComplex*>(bHost.data()), m, &beta,
-        reinterpret_cast<aclblasComplex*>(golden.data()), m);
+    aclblasCsymm_cpu(
+        CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, m, n, &alpha,
+        reinterpret_cast<const aclblasComplex*>(aHost.data()), m, reinterpret_cast<const aclblasComplex*>(bHost.data()),
+        m, &beta, reinterpret_cast<aclblasComplex*>(golden.data()), m);
     VerifyConfig cfg;
     applyMixedTolerance(cfg, ACL_FLOAT, golden.data(), golden.size());
     EXPECT_TRUE(Verifier::verifyVector(cResult.data(), golden.data(), golden.size(), 1, cfg, "AlphaZeroBetaScale"));
@@ -232,8 +235,8 @@ TEST_F(CsymmArch35Test, QuickReturnNullHandle)
 {
     aclblasComplex alpha = {1.0f, 0.0f};
     aclblasComplex beta = {1.0f, 0.0f};
-    aclblasStatus_t ret = aclblasCsymm_npu(nullptr, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, 0, 0, &alpha,
-        nullptr, 0, nullptr, 0, &beta, nullptr, 0);
+    aclblasStatus_t ret = aclblasCsymm_npu(
+        nullptr, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, 0, 0, &alpha, nullptr, 0, nullptr, 0, &beta, nullptr, 0);
     EXPECT_EQ(ret, ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 }
 
@@ -243,8 +246,8 @@ TEST_F(CsymmArch35Test, QuickReturnInvalidSide)
     aclblasComplex alpha = {1.0f, 0.0f};
     aclblasComplex beta = {1.0f, 0.0f};
     const aclblasSideMode_t invalidSide = static_cast<aclblasSideMode_t>(0xFF);
-    aclblasStatus_t ret = aclblasCsymm_npu(CsymmArch35Test::handle_, invalidSide, ACLBLAS_LOWER, 0, 4, &alpha,
-        nullptr, 0, nullptr, 4, &beta, nullptr, 4);
+    aclblasStatus_t ret = aclblasCsymm_npu(
+        CsymmArch35Test::handle_, invalidSide, ACLBLAS_LOWER, 0, 4, &alpha, nullptr, 0, nullptr, 4, &beta, nullptr, 4);
     EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_ENUM);
 }
 
@@ -253,8 +256,9 @@ TEST_F(CsymmArch35Test, QuickReturnInvalidUplo)
     aclblasComplex alpha = {1.0f, 0.0f};
     aclblasComplex beta = {1.0f, 0.0f};
     const aclblasFillMode_t invalidUplo = static_cast<aclblasFillMode_t>(0xFF);
-    aclblasStatus_t ret = aclblasCsymm_npu(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, invalidUplo, 4, 0, &alpha,
-        nullptr, 4, nullptr, 0, &beta, nullptr, 0);
+    aclblasStatus_t ret = aclblasCsymm_npu(
+        CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, invalidUplo, 4, 0, &alpha, nullptr, 4, nullptr, 0, &beta, nullptr,
+        0);
     EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_ENUM);
 }
 
@@ -263,14 +267,20 @@ TEST_F(CsymmArch35Test, ZeroDimQuickReturn)
 {
     aclblasComplex alpha = {1.0f, 0.0f};
     aclblasComplex beta = {1.0f, 0.0f};
-    EXPECT_EQ(aclblasCsymm(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, 0, 4, &alpha,
-        nullptr, 0, nullptr, 0, &beta, nullptr, 0),
+    EXPECT_EQ(
+        aclblasCsymm(
+            CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, 0, 4, &alpha, nullptr, 0, nullptr, 0, &beta,
+            nullptr, 0),
         ACLBLAS_STATUS_SUCCESS);
-    EXPECT_EQ(aclblasCsymm(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, 4, 0, &alpha,
-        nullptr, 0, nullptr, 0, &beta, nullptr, 0),
+    EXPECT_EQ(
+        aclblasCsymm(
+            CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, 4, 0, &alpha, nullptr, 0, nullptr, 0, &beta,
+            nullptr, 0),
         ACLBLAS_STATUS_SUCCESS);
-    EXPECT_EQ(aclblasCsymm(CsymmArch35Test::handle_, ACLBLAS_SIDE_RIGHT, ACLBLAS_LOWER, 0, 0, &alpha,
-        nullptr, 0, nullptr, 0, &beta, nullptr, 0),
+    EXPECT_EQ(
+        aclblasCsymm(
+            CsymmArch35Test::handle_, ACLBLAS_SIDE_RIGHT, ACLBLAS_LOWER, 0, 0, &alpha, nullptr, 0, nullptr, 0, &beta,
+            nullptr, 0),
         ACLBLAS_STATUS_SUCCESS);
 }
 
@@ -282,17 +292,21 @@ TEST_F(CsymmArch35Test, InvalidLeadingDimensions)
     std::vector<float> buf(2 * 16 * 16, 0.0f);
     const auto* p = reinterpret_cast<const aclblasComplex*>(buf.data());
     auto* out = reinterpret_cast<aclblasComplex*>(buf.data());
-    EXPECT_EQ(aclblasCsymm(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, 16, 16, &alpha,
-        p, 8, p, 16, &beta, out, 16),
+    EXPECT_EQ(
+        aclblasCsymm(
+            CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, 16, 16, &alpha, p, 8, p, 16, &beta, out, 16),
         ACLBLAS_STATUS_INVALID_VALUE);
-    EXPECT_EQ(aclblasCsymm(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, 16, 16, &alpha,
-        p, 16, p, 8, &beta, out, 16),
+    EXPECT_EQ(
+        aclblasCsymm(
+            CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, 16, 16, &alpha, p, 16, p, 8, &beta, out, 16),
         ACLBLAS_STATUS_INVALID_VALUE);
-    EXPECT_EQ(aclblasCsymm(CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, 16, 16, &alpha,
-        p, 16, p, 16, &beta, out, 8),
+    EXPECT_EQ(
+        aclblasCsymm(
+            CsymmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, 16, 16, &alpha, p, 16, p, 16, &beta, out, 8),
         ACLBLAS_STATUS_INVALID_VALUE);
-    EXPECT_EQ(aclblasCsymm(CsymmArch35Test::handle_, ACLBLAS_SIDE_RIGHT, ACLBLAS_UPPER, 16, 16, nullptr,
-        p, 16, p, 16, &beta, out, 16),
+    EXPECT_EQ(
+        aclblasCsymm(
+            CsymmArch35Test::handle_, ACLBLAS_SIDE_RIGHT, ACLBLAS_UPPER, 16, 16, nullptr, p, 16, p, 16, &beta, out, 16),
         ACLBLAS_STATUS_INVALID_VALUE);
 }
 
@@ -301,8 +315,7 @@ TEST_F(CsymmArch35Test, InvalidLeadingDimensions)
 // ---------------------------------------------------------------------------
 
 INSTANTIATE_TEST_SUITE_P(
-    Csymm, CsymmArch35Test,
-    ::testing::ValuesIn(GetCasesFromCsv<CsymmParam>(ReplaceFileExtension2Csv(__FILE__))),
+    Csymm, CsymmArch35Test, ::testing::ValuesIn(GetCasesFromCsv<CsymmParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<CsymmParam>);
 
 // Deterministic, cheap pseudo-random fill for TC_PF_* performance rows.
@@ -326,24 +339,48 @@ inline void FillPerfData(std::vector<float>& v, int64_t count, uint32_t seed)
 // (same protocol as RunCsymmPerfCase). Emitted as
 // [CSYMM_PERF] <case> <avg_us>; the GTest (N ms) row stays only as a coarse bound.
 // Allocate device buffers and copy the input operands H2D for one perf sample.
-static inline void CsymmPerfAllocCopy(
-    const CsymmHostData& d, void*& dA, void*& dB, void*& dC,
-    size_t aBytes, size_t bBytes, size_t cBytes)
+// issue #602: 分配/拷贝失败时报错并释放已分配缓冲，返回 false 使本轮性能数据无效
+static inline bool CsymmPerfAllocCopy(
+    const CsymmHostData& d, void*& dA, void*& dB, void*& dC, size_t aBytes, size_t bBytes, size_t cBytes)
 {
-    aclrtMalloc(&dA, aBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMalloc(&dB, bBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMalloc(&dC, cBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    aclrtMemcpy(dA, aBytes, d.aPtr, aBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    aclrtMemcpy(dB, bBytes, d.bPtr, bBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    aclrtMemcpy(dC, cBytes, d.cPtr, cBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclrtMalloc(&dA, aBytes, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
+        ADD_FAILURE() << "perf aclrtMalloc dA failed";
+        return false;
+    }
+    if (aclrtMalloc(&dB, bBytes, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
+        ADD_FAILURE() << "perf aclrtMalloc dB failed";
+        aclrtFree(dA);
+        dA = nullptr;
+        return false;
+    }
+    if (aclrtMalloc(&dC, cBytes, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
+        ADD_FAILURE() << "perf aclrtMalloc dC failed";
+        aclrtFree(dB);
+        dB = nullptr;
+        aclrtFree(dA);
+        dA = nullptr;
+        return false;
+    }
+    if (aclrtMemcpy(dA, aBytes, d.aPtr, aBytes, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS ||
+        aclrtMemcpy(dB, bBytes, d.bPtr, bBytes, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS ||
+        aclrtMemcpy(dC, cBytes, d.cPtr, cBytes, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
+        ADD_FAILURE() << "perf aclrtMemcpy H2D failed";
+        aclrtFree(dC);
+        dC = nullptr;
+        aclrtFree(dB);
+        dB = nullptr;
+        aclrtFree(dA);
+        dA = nullptr;
+        return false;
+    }
+    return true;
 }
 
 // Steady-state kernel sampling. Returns the per-sample
 // average microseconds over warmup + timed direct aclblasCsymm launches.
 static inline double CsymmPerfSampleLoop(
-    aclblasHandle handle, const CsymmParam& p, const CsymmHostData& d,
-    const aclblasComplex* dAptr, const aclblasComplex* dBptr, aclblasComplex* dCptr,
-    aclrtStream stream)
+    aclblasHandle handle, const CsymmParam& p, const CsymmHostData& d, const aclblasComplex* dAptr,
+    const aclblasComplex* dBptr, aclblasComplex* dCptr, aclrtStream stream)
 {
     constexpr int kPfSamples = 30;
     const char* pfEventEnv = std::getenv("CSYMM_PF_EVENT");
@@ -364,8 +401,16 @@ static inline double CsymmPerfSampleLoop(
         const int b = (pfBatch < remaining) ? pfBatch : remaining;
         const auto t0 = std::chrono::steady_clock::now();
         for (int i = 0; i < b; ++i) {
-            aclblasCsymm(handle, p.side, p.uplo, p.m, p.n,
-                d.alphaPtr, dAptr, p.lda, dBptr, p.ldb, d.betaPtr, dCptr, p.ldc);
+            // issue #602: 内核调用失败时本轮数据无效，显式失败而非继续计时
+            if (aclblasCsymm(
+                    handle, p.side, p.uplo, p.m, p.n, d.alphaPtr, dAptr, p.lda, dBptr, p.ldb, d.betaPtr, dCptr,
+                    p.ldc) != ACLBLAS_STATUS_SUCCESS) {
+                ADD_FAILURE() << "perf aclblasCsymm failed, sample data invalid";
+                if (pfEventPoll) {
+                    aclrtDestroyEvent(pollEvt);
+                }
+                return -1.0;
+            }
         }
         if (pfEventPoll) {
             aclrtRecordEvent(pollEvt, stream);
@@ -374,8 +419,13 @@ static inline double CsymmPerfSampleLoop(
                 __builtin_ia32_pause();
                 aclrtQueryEvent(pollEvt, &evtStatus);
             }
-        } else {
-            aclrtSynchronizeStream(stream);
+        } else if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+            // issue #605: 同步失败时本轮数据无效
+            ADD_FAILURE() << "perf aclrtSynchronizeStream failed";
+            if (pfEventPoll) {
+                aclrtDestroyEvent(pollEvt);
+            }
+            return -1.0;
         }
         const auto t1 = std::chrono::steady_clock::now();
         pfTotalUs += std::chrono::duration<double, std::micro>(t1 - t0).count();
@@ -391,8 +441,7 @@ static inline double CsymmPerfSampleLoop(
 // average over warmup + timed direct aclblasCsymm launches on device buffers
 // (same protocol as RunCsymmPerfCase). Emitted as
 // [CSYMM_PERF] <case> <avg_us>; the GTest (N ms) row stays only as a coarse bound.
-static inline void CsymmRunPerfSampling(
-    aclblasHandle handle, const CsymmParam& p, const CsymmHostData& d)
+static inline void CsymmRunPerfSampling(aclblasHandle handle, const CsymmParam& p, const CsymmHostData& d)
 {
     const int64_t aDim = (p.side == ACLBLAS_SIDE_LEFT) ? p.m : p.n;
     const size_t aBytes = static_cast<size_t>(aDim) * static_cast<size_t>(p.lda) * sizeof(aclblasComplex);
@@ -401,19 +450,47 @@ static inline void CsymmRunPerfSampling(
     void* dA = nullptr;
     void* dB = nullptr;
     void* dC = nullptr;
-    CsymmPerfAllocCopy(d, dA, dB, dC, aBytes, bBytes, cBytes);
+    if (!CsymmPerfAllocCopy(d, dA, dB, dC, aBytes, bBytes, cBytes)) {
+        return;
+    }
     auto* dAptr = static_cast<const aclblasComplex*>(dA);
     auto* dBptr = static_cast<const aclblasComplex*>(dB);
     auto* dCptr = static_cast<aclblasComplex*>(dC);
     constexpr int kPfWarmup = 5;
     for (int i = 0; i < kPfWarmup; ++i) {
-        aclblasCsymm(handle, p.side, p.uplo, p.m, p.n,
-            d.alphaPtr, dAptr, p.lda, dBptr, p.ldb, d.betaPtr, dCptr, p.ldc);
+        if (aclblasCsymm(
+                handle, p.side, p.uplo, p.m, p.n, d.alphaPtr, dAptr, p.lda, dBptr, p.ldb, d.betaPtr, dCptr, p.ldc) !=
+            ACLBLAS_STATUS_SUCCESS) {
+            ADD_FAILURE() << "perf warmup aclblasCsymm failed";
+            (void)aclrtFree(dA);
+            (void)aclrtFree(dB);
+            (void)aclrtFree(dC);
+            return;
+        }
     }
     aclrtStream stream = nullptr;
-    aclblasGetStream(handle, &stream);
-    aclrtSynchronizeStream(stream);
+    // issue #602/#605: GetStream 与 sync 失败时不得产出性能数据
+    if (aclblasGetStream(handle, &stream) != ACLBLAS_STATUS_SUCCESS || stream == nullptr) {
+        ADD_FAILURE() << "perf aclblasGetStream failed";
+        (void)aclrtFree(dA);
+        (void)aclrtFree(dB);
+        (void)aclrtFree(dC);
+        return;
+    }
+    if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+        ADD_FAILURE() << "perf aclrtSynchronizeStream failed";
+        (void)aclrtFree(dA);
+        (void)aclrtFree(dB);
+        (void)aclrtFree(dC);
+        return;
+    }
     const double avgUs = CsymmPerfSampleLoop(handle, p, d, dAptr, dBptr, dCptr, stream);
+    if (avgUs < 0.0) {
+        (void)aclrtFree(dA);
+        (void)aclrtFree(dB);
+        (void)aclrtFree(dC);
+        return;
+    }
     std::cout << "[CSYMM_PERF] " << p.caseName << " " << avgUs << std::endl;
     (void)aclrtFree(dA);
     (void)aclrtFree(dB);
@@ -452,8 +529,9 @@ static void CsymmPrepareCsvCase(const CsymmParam& p, CsymmHostData& d, bool isPe
 static void CsymmVerifyCsvCase(aclblasHandle handle, const CsymmParam& p, CsymmHostData& d)
 {
     std::vector<float> golden = d.cHost;
-    aclblasCsymm_cpu(handle, p.side, p.uplo, p.m, p.n, d.alphaPtr, d.aPtr, p.lda,
-        d.bPtr, p.ldb, d.betaPtr, reinterpret_cast<aclblasComplex*>(golden.data()), p.ldc);
+    aclblasCsymm_cpu(
+        handle, p.side, p.uplo, p.m, p.n, d.alphaPtr, d.aPtr, p.lda, d.bPtr, p.ldb, d.betaPtr,
+        reinterpret_cast<aclblasComplex*>(golden.data()), p.ldc);
     const size_t count = static_cast<size_t>(p.ldc) * static_cast<size_t>(p.n) * 2U;
     if (CsymmHasNonFinite(golden)) {
         EXPECT_TRUE(CsymmVerifyNonFinitePattern(d.cResult.data(), golden.data(), count, 0.99, p.caseName));
@@ -461,8 +539,7 @@ static void CsymmVerifyCsvCase(aclblasHandle handle, const CsymmParam& p, CsymmH
     }
     VerifyConfig cfg;
     // alpha == (0,0) with beta in {(0,0), (1,0)} is bit-reproducible: C is zeroed or untouched.
-    if (p.isZeroAlpha() &&
-        ((p.betaReal == 0.0f && p.betaImag == 0.0f) || (p.betaReal == 1.0f && p.betaImag == 0.0f))) {
+    if (p.isZeroAlpha() && ((p.betaReal == 0.0f && p.betaImag == 0.0f) || (p.betaReal == 1.0f && p.betaImag == 0.0f))) {
         cfg.mode = PrecisionMode::EXACT;
     } else {
         applyMixedTolerance(cfg, ACL_FLOAT, golden.data(), count);
@@ -479,9 +556,9 @@ TEST_P(CsymmArch35Test, CsvDriven)
     CsymmPrepareCsvCase(p, d, isPerfRow);
     CsymmTimingMark("fill_done");
 
-    aclblasStatus_t ret = aclblasCsymm_npu(CsymmArch35Test::handle_, p.side, p.uplo, p.m, p.n,
-        d.alphaPtr, d.aPtr, p.lda, d.bPtr, p.ldb, d.betaPtr, d.cPtr, p.ldc,
-        !isPerfRow /* copyBack */);
+    aclblasStatus_t ret = aclblasCsymm_npu(
+        CsymmArch35Test::handle_, p.side, p.uplo, p.m, p.n, d.alphaPtr, d.aPtr, p.lda, d.bPtr, p.ldb, d.betaPtr, d.cPtr,
+        p.ldc, !isPerfRow /* copyBack */);
     CsymmTimingMark("npu_done");
 
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
@@ -548,7 +625,8 @@ void RunCsymmPerfCase(aclblasHandle handle, const CsymmPerfCase& c)
     constexpr int kWarmup = 10;
     constexpr int kSamples = 50;
     for (int i = 0; i < kWarmup; ++i) {
-        ASSERT_EQ(aclblasCsymm(handle, c.side, c.uplo, c.m, c.n, &alpha, dAptr, aDim, dBptr, c.m, &beta, dCptr, c.m),
+        ASSERT_EQ(
+            aclblasCsymm(handle, c.side, c.uplo, c.m, c.n, &alpha, dAptr, aDim, dBptr, c.m, &beta, dCptr, c.m),
             ACLBLAS_STATUS_SUCCESS);
     }
     aclrtStream stream = nullptr;
@@ -558,16 +636,16 @@ void RunCsymmPerfCase(aclblasHandle handle, const CsymmPerfCase& c)
     double totalUs = 0.0;
     for (int i = 0; i < kSamples; ++i) {
         const auto t0 = std::chrono::steady_clock::now();
-        ASSERT_EQ(aclblasCsymm(handle, c.side, c.uplo, c.m, c.n, &alpha, dAptr, aDim, dBptr, c.m, &beta, dCptr, c.m),
+        ASSERT_EQ(
+            aclblasCsymm(handle, c.side, c.uplo, c.m, c.n, &alpha, dAptr, aDim, dBptr, c.m, &beta, dCptr, c.m),
             ACLBLAS_STATUS_SUCCESS);
         ASSERT_EQ(aclrtSynchronizeStream(stream), ACL_SUCCESS);
         const auto t1 = std::chrono::steady_clock::now();
         totalUs += std::chrono::duration<double, std::micro>(t1 - t0).count();
     }
     const double avgUs = totalUs / static_cast<double>(kSamples);
-    std::cout << "[PERF] " << c.name << " m=" << c.m << " n=" << c.n
-              << " avg=" << avgUs << " us, task-book baseline=" << c.baselineUs
-              << " us, baseline/avg=" << (c.baselineUs / avgUs)
+    std::cout << "[PERF] " << c.name << " m=" << c.m << " n=" << c.n << " avg=" << avgUs
+              << " us, task-book baseline=" << c.baselineUs << " us, baseline/avg=" << (c.baselineUs / avgUs)
               << (avgUs <= c.baselineUs ? " (target met)" : " (target NOT met)") << std::endl;
     EXPECT_LE(avgUs, c.baselineUs * kCsymmPerfGuardSlack)
         << c.name << " avg " << avgUs << " us regressed beyond the guard band";
@@ -590,7 +668,8 @@ TEST_F(CsymmArch35Test, PerfTaskBookCases)
     const char* perfOnlyEnv = std::getenv("CSYMM_PERF_ONLY");
     const int perfOnly = perfOnlyEnv ? std::atoi(perfOnlyEnv) : -1;
     for (int ci = 0; ci < static_cast<int>(sizeof(cases) / sizeof(cases[0])); ci++) {
-        if (perfOnly >= 0 && perfOnly != ci) continue;
+        if (perfOnly >= 0 && perfOnly != ci)
+            continue;
         RunCsymmPerfCase(CsymmArch35Test::handle_, cases[ci]);
     }
 }

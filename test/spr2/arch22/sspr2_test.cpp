@@ -65,11 +65,11 @@ CaseBuffers PrepareBuffers(const Sspr2Param& p)
     return b;
 }
 
-void PrintEvidence(const std::string& caseId, const std::string& ret, const std::string& check,
-                   const std::string& result, const std::string& detail = "")
+void PrintEvidence(
+    const std::string& caseId, const std::string& ret, const std::string& check, const std::string& result,
+    const std::string& detail = "")
 {
-    std::cout << "EVIDENCE|" << caseId << "|ret=" << ret << "|check=" << check
-              << "|result=" << result;
+    std::cout << "EVIDENCE|" << caseId << "|ret=" << ret << "|check=" << check << "|result=" << result;
     if (!detail.empty()) {
         std::cout << "|detail=" << detail;
     }
@@ -86,8 +86,7 @@ TEST_F(Sspr2Arch22Test, NullHandle)
     float alpha = 1.0f;
     float x[16] = {0};
     float ap[136] = {0};
-    aclblasStatus_t ret = aclblasSspr2_npu(
-        nullptr, ACLBLAS_UPPER, 16, &alpha, x, 1, x, 1, ap);
+    aclblasStatus_t ret = aclblasSspr2_npu(nullptr, ACLBLAS_UPPER, 16, &alpha, x, 1, x, 1, ap);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_HANDLE_IS_NULLPTR));
     PrintEvidence("SSPR2-L0-010-wrapper", "ACLBLAS_STATUS_HANDLE_IS_NULLPTR", "STATUS_ONLY", "PASS");
 }
@@ -99,15 +98,14 @@ static std::vector<Sspr2Param> GetAllSspr2Cases()
     {
         std::string p(__FILE__);
         size_t s = p.rfind('/');
-        if (s != std::string::npos) dir = p.substr(0, s + 1);
+        if (s != std::string::npos)
+            dir = p.substr(0, s + 1);
     }
     return GetCasesFromCsv<Sspr2Param>(dir + "sspr2_test_cases.csv");
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    Sspr2Arch22, Sspr2Arch22Test,
-    ::testing::ValuesIn(GetAllSspr2Cases()),
-    PrintCaseInfoString<Sspr2Param>);
+    Sspr2Arch22, Sspr2Arch22Test, ::testing::ValuesIn(GetAllSspr2Cases()), PrintCaseInfoString<Sspr2Param>);
 
 TEST_P(Sspr2Arch22Test, CsvDriven)
 {
@@ -132,8 +130,8 @@ TEST_P(Sspr2Arch22Test, CsvDriven)
     // 由测试工程构造 nullptr handle，其余用框架共享有效句柄。
     const bool expectNullHandle = (c.expectResult == "ACLBLAS_STATUS_HANDLE_IS_NULLPTR");
     const aclblasStatus_t ret = aclblasSspr2_npu(
-        expectNullHandle ? nullptr : Sspr2Arch22Test::handle_, static_cast<aclblasFillMode_t>(c.uplo),
-        c.n, b.alphaPtr, b.xPtr, c.incx, b.yPtr, c.incy, b.apPtr);
+        expectNullHandle ? nullptr : Sspr2Arch22Test::handle_, static_cast<aclblasFillMode_t>(c.uplo), c.n, b.alphaPtr,
+        b.xPtr, c.incx, b.yPtr, c.incy, b.apPtr);
 
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult))
         << "[" << c.caseId << "] status mismatch: got " << sspr2_st::StatusName(ret);
@@ -163,12 +161,10 @@ TEST_P(Sspr2Arch22Test, CsvDriven)
 
     // golden：同输入调用内置 cblas_sspr2_ref（Netlib sspr2.f 语义）
     std::vector<float> golden = b.apOrig;
-    Sspr2GoldenCompute(c.uplo, c.n, c.alphaNull ? 0.0f : c.alpha,
-                       b.xPtr, c.incx, b.yPtr, c.incy, golden.data());
+    Sspr2GoldenCompute(c.uplo, c.n, c.alphaNull ? 0.0f : c.alpha, b.xPtr, c.incx, b.yPtr, c.incy, golden.data());
     auto r = sspr2_st::VerifyGoldenTolerance(b.apPtr, golden.data(), apLen, c.rtol, c.atol, 1e-2);
-    ASSERT_TRUE(r.Pass(c.matchedRatio))
-        << "[" << c.caseId << "] tol fail: mismatch=" << r.mismatchCount << " ratio=" << r.matchedRatio
-        << " maxAbsErr=" << r.maxAbsErr;
+    ASSERT_TRUE(r.Pass(c.matchedRatio)) << "[" << c.caseId << "] tol fail: mismatch=" << r.mismatchCount
+                                        << " ratio=" << r.matchedRatio << " maxAbsErr=" << r.maxAbsErr;
 
     if (c.check == sspr2_st::CheckKind::NAN_PROPAGATE) {
         ASSERT_GT(sspr2_st::CountNan(b.apPtr, apLen), size_t{0});
@@ -214,7 +210,8 @@ std::vector<Sspr2PfParam> GetPfCases()
     {
         std::string p(__FILE__);
         size_t s = p.rfind('/');
-        if (s != std::string::npos) dir = p.substr(0, s + 1);
+        if (s != std::string::npos)
+            dir = p.substr(0, s + 1);
     }
     auto cases = GetCasesFromCsv<Sspr2PfParam>(dir + "sspr2_test.csv");
     for (size_t i = 0; i < cases.size(); ++i) {
@@ -249,14 +246,12 @@ std::vector<PfDeviceData>& PfDeviceStore()
 // AMORT 均摊均值（除数保护：samples == 0 前置守卫 + std::max(1, samples) 包裹除数）。
 // 可达输入下 samples 已被 clamp 至 [2, 64]（RunPfPerfCase 内 max(2, min(kMaxSamples,
 // ...))），故 max(1, samples) == samples，与直接除法逐位一致。
-double PfAmortUs(std::chrono::steady_clock::time_point t0, std::chrono::steady_clock::time_point t1,
-                 int samples)
+double PfAmortUs(std::chrono::steady_clock::time_point t0, std::chrono::steady_clock::time_point t1, int samples)
 {
     if (samples == 0) {
         return 0.0;
     }
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count() / 1000.0 /
-        std::max(1, samples);
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count() / 1000.0 / std::max(1, samples);
 }
 
 } // namespace
@@ -343,8 +338,8 @@ protected:
         const auto& c = p.core;
         CaseBuffers b = PrepareBuffers(p);
         const aclblasStatus_t ret = aclblasSspr2_npu(
-            Sspr2Arch22PfTest::handle_, static_cast<aclblasFillMode_t>(c.uplo),
-            c.n, b.alphaPtr, b.xPtr, c.incx, b.yPtr, c.incy, b.apPtr);
+            Sspr2Arch22PfTest::handle_, static_cast<aclblasFillMode_t>(c.uplo), c.n, b.alphaPtr, b.xPtr, c.incx, b.yPtr,
+            c.incy, b.apPtr);
         ASSERT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult))
             << "[" << c.caseId << "] status mismatch: got " << sspr2_st::StatusName(ret);
         PrintEvidence(c.caseId, sspr2_st::StatusName(ret), "PERF", "PASS", "mode=wrapper");
@@ -362,10 +357,10 @@ protected:
         // 吃掉整个单例 wall。
         const auto w0 = std::chrono::steady_clock::now();
         (void)call();
-        aclrtSynchronizeStream(Sspr2Arch22PfTest::stream_);
+        // issue #605: 同步失败时不得产出性能数据
+        ASSERT_EQ(aclrtSynchronizeStream(Sspr2Arch22PfTest::stream_), ACL_SUCCESS);
         const auto w1 = std::chrono::steady_clock::now();
-        const double estUs =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(w1 - w0).count() / 1000.0;
+        const double estUs = std::chrono::duration_cast<std::chrono::nanoseconds>(w1 - w0).count() / 1000.0;
 
         int samples = static_cast<int>(kWallBudgetUs / std::max(estUs, 1.0));
         samples = std::max(2, std::min(kMaxSamples, samples));
@@ -374,14 +369,16 @@ protected:
         for (int i = 0; i < samples; ++i) {
             (void)call();
         }
-        aclrtSynchronizeStream(Sspr2Arch22PfTest::stream_);
+        // issue #605: 同步失败时不得产出性能数据
+        ASSERT_EQ(aclrtSynchronizeStream(Sspr2Arch22PfTest::stream_), ACL_SUCCESS);
         const auto t1 = std::chrono::steady_clock::now();
         const double avgUs = PfAmortUs(t0, t1, samples);
         std::cout << "[" << c.caseId << "] PERF avg_us=" << avgUs << " (samples=" << samples
-                  << ", warmup=2, est_us=" << estUs << ", n=" << c.n << ", uplo="
-                  << (c.uplo == 121 ? "UPPER" : "LOWER") << ")" << std::endl;
-        PrintEvidence(c.caseId, retName, "PERF", "PASS",
-                      std::string("avg_us=") + std::to_string(avgUs) + " samples=" + std::to_string(samples));
+                  << ", warmup=2, est_us=" << estUs << ", n=" << c.n << ", uplo=" << (c.uplo == 121 ? "UPPER" : "LOWER")
+                  << ")" << std::endl;
+        PrintEvidence(
+            c.caseId, retName, "PERF", "PASS",
+            std::string("avg_us=") + std::to_string(avgUs) + " samples=" + std::to_string(samples));
     }
 
     // ── perf 模式单例（设备常驻 → warmup → 计时采样 → 同步） ──
@@ -390,18 +387,17 @@ protected:
         const auto& c = p.core;
         const float alphaHost = c.alphaNull ? 0.0f : c.alpha;
         auto call = [&]() {
-            return aclblasSspr2(Sspr2Arch22PfTest::handle_, static_cast<aclblasFillMode_t>(c.uplo),
-                c.n, &alphaHost, static_cast<const float*>(PfDeviceStore()[static_cast<size_t>(p.pfIndex)].dX),
-                c.incx, static_cast<float*>(PfDeviceStore()[static_cast<size_t>(p.pfIndex)].dY), c.incy,
+            return aclblasSspr2(
+                Sspr2Arch22PfTest::handle_, static_cast<aclblasFillMode_t>(c.uplo), c.n, &alphaHost,
+                static_cast<const float*>(PfDeviceStore()[static_cast<size_t>(p.pfIndex)].dX), c.incx,
+                static_cast<float*>(PfDeviceStore()[static_cast<size_t>(p.pfIndex)].dY), c.incy,
                 static_cast<float*>(PfDeviceStore()[static_cast<size_t>(p.pfIndex)].dAP));
         };
         const auto& store = PfDeviceStore();
-        const bool resident = (p.pfIndex >= 0) &&
-                              (static_cast<size_t>(p.pfIndex) < store.size()) &&
+        const bool resident = (p.pfIndex >= 0) && (static_cast<size_t>(p.pfIndex) < store.size()) &&
                               store[static_cast<size_t>(p.pfIndex)].ready;
         // 兜底：设备数据缺失（分配失败/n<=0）或负向期望 → wrapper 单次调用，仅状态断言
-        if (!resident ||
-            static_cast<int>(p.expectResult) != static_cast<int>(ACLBLAS_STATUS_SUCCESS)) {
+        if (!resident || static_cast<int>(p.expectResult) != static_cast<int>(ACLBLAS_STATUS_SUCCESS)) {
             RunPfWrapperFallback(p);
             return;
         }
@@ -422,8 +418,8 @@ protected:
         const auto& c = p.core;
         CaseBuffers b = PrepareBuffers(p);
         const aclblasStatus_t ret = aclblasSspr2_npu(
-            Sspr2Arch22PfTest::handle_, static_cast<aclblasFillMode_t>(c.uplo),
-            c.n, b.alphaPtr, b.xPtr, c.incx, b.yPtr, c.incy, b.apPtr);
+            Sspr2Arch22PfTest::handle_, static_cast<aclblasFillMode_t>(c.uplo), c.n, b.alphaPtr, b.xPtr, c.incx, b.yPtr,
+            c.incy, b.apPtr);
         ASSERT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult))
             << "[" << c.caseId << "] status mismatch: got " << sspr2_st::StatusName(ret);
         if (static_cast<int>(ret) != static_cast<int>(p.expectResult)) {
@@ -436,8 +432,7 @@ protected:
         }
 
         std::vector<float> golden = b.apOrig;
-        Sspr2GoldenCompute(c.uplo, c.n, c.alphaNull ? 0.0f : c.alpha,
-                           b.xPtr, c.incx, b.yPtr, c.incy, golden.data());
+        Sspr2GoldenCompute(c.uplo, c.n, c.alphaNull ? 0.0f : c.alpha, b.xPtr, c.incx, b.yPtr, c.incy, golden.data());
         const size_t apLen = c.ApLen();
 
         // ── frame MERE/MARE verdict（test/frame/verify.h MereMareStrategy 语义，
@@ -450,10 +445,9 @@ protected:
 
         // 19 列 GOLDEN 双指标容差：仅证据行（verdict 由 MERE/MARE 承担）
         auto r = sspr2_st::VerifyGoldenTolerance(b.apPtr, golden.data(), apLen, c.rtol, c.atol, 1e-2);
-        PrintEvidence(c.caseId, sspr2_st::StatusName(ret), "GOLDEN_TOL",
-                      r.Pass(c.matchedRatio) ? "PASS" : "FAIL",
-                      "mismatch=" + std::to_string(r.mismatchCount) +
-                          " maxAbsErr=" + std::to_string(r.maxAbsErr));
+        PrintEvidence(
+            c.caseId, sspr2_st::StatusName(ret), "GOLDEN_TOL", r.Pass(c.matchedRatio) ? "PASS" : "FAIL",
+            "mismatch=" + std::to_string(r.mismatchCount) + " maxAbsErr=" + std::to_string(r.maxAbsErr));
 
         ASSERT_TRUE(mereOk) << "[" << c.caseId << "] frame MERE/MARE verdict failed";
         PrintEvidence(c.caseId, sspr2_st::StatusName(ret), "MERE_MARE", "PASS");
@@ -461,9 +455,7 @@ protected:
 };
 
 INSTANTIATE_TEST_SUITE_P(
-    Sspr2Pf, Sspr2Arch22PfTest,
-    ::testing::ValuesIn(GetPfCases()),
-    PrintCaseInfoString<Sspr2PfParam>);
+    Sspr2Pf, Sspr2Arch22PfTest, ::testing::ValuesIn(GetPfCases()), PrintCaseInfoString<Sspr2PfParam>);
 
 TEST_P(Sspr2Arch22PfTest, PerfDriven)
 {

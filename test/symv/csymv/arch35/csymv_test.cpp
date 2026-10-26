@@ -44,7 +44,10 @@ protected:
     static void TearDownTestSuite()
     {
         if (stream_ != nullptr) {
-            aclrtSynchronizeStream(stream_);
+            // issue #605: 收尾同步失败仅记录，不在清理路径抛出
+            if (aclrtSynchronizeStream(stream_) != ACL_SUCCESS) {
+                std::cerr << "csymv_test: teardown aclrtSynchronizeStream failed" << std::endl;
+            }
         }
         if (handle_ != nullptr) {
             aclblasDestroy(handle_);

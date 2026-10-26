@@ -289,7 +289,11 @@ static void RunPerfCase(aclblasHandle_t handle, aclrtStream stream, const CsyrkP
             handle, p.uplo, p.trans, p.n, p.k, static_cast<const aclblasComplex*>(bufs.dAlpha),
             static_cast<const aclblasComplex*>(bufs.dA), p.lda, static_cast<const aclblasComplex*>(bufs.dBeta),
             static_cast<aclblasComplex*>(bufs.dC), p.ldc);
-        aclrtSynchronizeStream(stream);
+        // issue #605: 同步失败时记录失败（ADD_FAILURE 使整个用例 FAIL，不再产出有效性能结论）
+        if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+            ADD_FAILURE() << "csyrk perf aclrtSynchronizeStream failed";
+            return;
+        }
     };
     int64_t win0 = 0;
     int64_t win1 = 0;

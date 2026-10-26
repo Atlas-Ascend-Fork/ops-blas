@@ -137,7 +137,11 @@ int32_t main(int32_t argc, char* argv[])
     CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclblasScopy_legacy failed. ERROR: %d\n", ret); aclrtFree(yDevice);
               aclrtFree(xDevice); aclblasDestroy(handle); aclrtDestroyStream(stream); return ret);
 
-    aclrtSynchronizeStream(stream);
+    // issue #605: 同步失败时内核错误被吞，须显式失败
+    aclRet = aclrtSynchronizeStream(stream);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(yDevice); aclrtFree(xDevice); aclblasDestroy(handle); aclrtDestroyStream(stream);
+              return aclRet);
 
     aclRet = aclrtMemcpy(yHost.data(), totalByteSize, yDevice, totalByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy yHost failed. ERROR: %d\n", aclRet); aclrtFree(yDevice);
@@ -195,7 +199,11 @@ int32_t main(int32_t argc, char* argv[])
     CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclblasCcopy failed. ERROR: %d\n", ret); aclrtFree(cyDevice);
               aclrtFree(cxDevice); aclblasDestroy(handle2); aclrtDestroyStream(stream2); return ret);
 
-    aclrtSynchronizeStream(stream2);
+    // issue #605: 同步失败时内核错误被吞，须显式失败
+    aclRet = aclrtSynchronizeStream(stream2);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(cyDevice); aclrtFree(cxDevice); aclblasDestroy(handle2); aclrtDestroyStream(stream2);
+              return aclRet);
 
     aclRet = aclrtMemcpy(cyHost.data(), complexByteSize, cyDevice, complexByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy cyHost failed. ERROR: %d\n", aclRet); aclrtFree(cyDevice);

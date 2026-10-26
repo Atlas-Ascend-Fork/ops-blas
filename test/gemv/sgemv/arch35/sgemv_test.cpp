@@ -42,8 +42,7 @@ TEST_P(SgemvArch35Test, CsvDriven)
     const int yCount = isTransN ? p.m : p.n;
 
     // Generate input data with distinct seeds for A, x, y
-    auto aHost =
-        makeBlasArray(static_cast<int64_t>(p.lda) * std::max(1, p.n), p.a, p.randomSeed);
+    auto aHost = makeBlasArray(static_cast<int64_t>(p.lda) * std::max(1, p.n), p.a, p.randomSeed);
     auto xHost = makeBlasStrided(xCount, p.incx, p.x, p.randomSeed + 1);
     auto yHost = makeBlasStrided(yCount, p.incy, p.y, p.randomSeed + 2);
 
@@ -64,9 +63,12 @@ TEST_P(SgemvArch35Test, CsvDriven)
 
     // CPU golden path: same inputs, compute reference
     std::vector<float> yCpu = yHost;
-    aclblasSgemv_cpu(
-        SgemvArch35Test::handle_, p.trans, p.m, p.n, alphaPtr, aHost.data(), p.lda, xHost.data(), p.incx, betaPtr,
-        yCpu.data(), p.incy);
+    // issue #606: 参考调用失败时 golden 停留在输入初值，会产生假失败
+    ASSERT_EQ(
+        aclblasSgemv_cpu(
+            SgemvArch35Test::handle_, p.trans, p.m, p.n, alphaPtr, aHost.data(), p.lda, xHost.data(), p.incx, betaPtr,
+            yCpu.data(), p.incy),
+        ACLBLAS_STATUS_SUCCESS);
 
     if (yCount == 0) {
         return;

@@ -91,7 +91,8 @@ static void TestNormalPath(const SasumParam& p, aclblasHandle_t handle)
         return;
 
     float golden = 0.0f;
-    aclblasSasum_cpu(handle, p.n, xHost.data(), p.incx, &golden);
+    // issue #606: 参考调用失败时 golden 为 0，会产生与被测实现无关的假失败
+    ASSERT_EQ(aclblasSasum_cpu(handle, p.n, xHost.data(), p.incx, &golden), ACLBLAS_STATUS_SUCCESS);
 
     VerifySasumResult(result, golden, p.caseName);
 }

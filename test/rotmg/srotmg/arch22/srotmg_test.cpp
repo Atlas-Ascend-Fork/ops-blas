@@ -127,7 +127,9 @@ static void SrotmgPerfDevice(aclblasHandle_t handle, const SrotmgArch22Param& p,
 
     auto call = [&]() { return aclblasSrotmg(handle, devBuf + 0, devBuf + 1, devBuf + 2, devBuf + 3, devBuf + 4); };
     auto resetInput = [&]() {
-        aclrtMemcpy(devBuf, 4 * sizeof(float), init, 4 * sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
+        // issue #613: 重置拷贝失败会使正确性检查基于错误输入，须显式失败
+        ASSERT_EQ(
+            aclrtMemcpy(devBuf, 4 * sizeof(float), init, 4 * sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
     };
 
     // golden (CPU cblas) on the same inputs
@@ -155,6 +157,8 @@ static void SrotmgPerfDevice(aclblasHandle_t handle, const SrotmgArch22Param& p,
     // clock/power states that inflate a single round by ~1us.
     const int samples = p.iters > MIN_SAMPLES ? p.iters : MIN_SAMPLES;
     double avgUs = SrotmgTimedMedian(call, samples);
+    // issue #613: 计时失败哨兵值 -1.0 必须使用例 FAIL，不得静默记为性能数据
+    ASSERT_GE(avgUs, 0.0) << "srotmg perf timing failed (sentinel -1.0)";
     if (avgUsOut != nullptr) {
         *avgUsOut = avgUs;
     }

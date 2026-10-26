@@ -3,7 +3,7 @@
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OR ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
@@ -100,9 +100,22 @@ static void TestNormalPath(const ScasumParam& p, aclblasHandle_t handle)
         const size_t xBytes = (p.n > 0 ? static_cast<size_t>((p.n - 1) * absInc + 1) : 1) * sizeof(aclblasComplex);
         aclblasComplex* dX = nullptr;
         float* dR = nullptr;
-        aclrtMalloc(reinterpret_cast<void**>(&dX), xBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-        aclrtMalloc(reinterpret_cast<void**>(&dR), sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST);
-        aclrtMemcpy(dX, xBytes, xPtr, xBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+        // issue #604: 分配/拷贝失败时报错退出，不得对空指针 H2D 或产出无效性能数据
+        if (aclrtMalloc(reinterpret_cast<void**>(&dX), xBytes, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMalloc dX failed\n");
+            return;
+        }
+        if (aclrtMalloc(reinterpret_cast<void**>(&dR), sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMalloc dR failed\n");
+            aclrtFree(dX);
+            return;
+        }
+        if (aclrtMemcpy(dX, xBytes, xPtr, xBytes, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMemcpy H2D failed\n");
+            aclrtFree(dR);
+            aclrtFree(dX);
+            return;
+        }
 
         // Warmup (10 iterations).
         for (int i = 0; i < 10; i++) {
@@ -125,7 +138,12 @@ static void TestNormalPath(const ScasumParam& p, aclblasHandle_t handle)
         aclrtFree(dR);
         return;
     }
-    aclblasScasum_cpu(handle, p.n, xPtr, p.incx, &golden);
+    // issue #604: CPU 参考失败时 golden 停留在初值，会产生与被测实现无关的假失败
+    if (aclblasScasum_cpu(handle, p.n, xPtr, p.incx, &golden) != ACLBLAS_STATUS_SUCCESS) {
+        result = 1;
+        printf("[%s] ERROR: aclblasScasum_cpu failed, golden invalid\n", p.caseName.c_str());
+        return;
+    }
 
     VerifyScasumResult(result, golden, p.caseName);
 }

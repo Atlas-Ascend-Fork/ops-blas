@@ -118,7 +118,10 @@ protected:
 
         aclblasDestroy(guard.handle);
         guard.handle = nullptr;
-        aclrtSynchronizeStream(guard.stream);
+        // issue #605: 夹具收尾同步失败仅记录，不在清理路径抛出
+        if (aclrtSynchronizeStream(guard.stream) != ACL_SUCCESS) {
+            std::cerr << "blas_test: teardown aclrtSynchronizeStream failed" << std::endl;
+        }
         aclrtDestroyStream(guard.stream);
         guard.stream = nullptr;
         aclrtResetDevice(blas_test_detail::RuntimeDeviceId());

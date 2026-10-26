@@ -79,24 +79,25 @@ static void RunComplexTestCase(const GemmParam& p, aclblasHandle_t testHandle)
 
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
         aclblasStatus_t ret = aclblasCgemm_npu(
-            testHandle, p.transA, p.transB, p.m, p.n, p.k,
-            alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc);
+            testHandle, p.transA, p.transB, p.m, p.n, p.k, alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc);
         EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
         return;
     }
 
     aclblasStatus_t ret = aclblasCgemm_npu(
-        testHandle, p.transA, p.transB, p.m, p.n, p.k,
-        alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc);
+        testHandle, p.transA, p.transB, p.m, p.n, p.k, alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc);
     ASSERT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_SUCCESS));
 
     if (p.m <= 0 || p.n <= 0 || cPtr == nullptr)
         return;
 
     std::vector<std::complex<float>> cGolden(cOrig);
-    aclblasCgemm_cpu(testHandle, p.transA, p.transB, p.m, p.n, p.k,
-                     alphaVal, aComplex.data(), p.lda, bComplex.data(), p.ldb,
-                     betaVal, cGolden.data(), p.ldc);
+    // issue #606: 参考调用失败时 golden 停留在输入初值，会产生假失败
+    ASSERT_EQ(
+        aclblasCgemm_cpu(
+            testHandle, p.transA, p.transB, p.m, p.n, p.k, alphaVal, aComplex.data(), p.lda, bComplex.data(), p.ldb,
+            betaVal, cGolden.data(), p.ldc),
+        ACLBLAS_STATUS_SUCCESS);
 
     std::vector<float> cNpuFlat(cCount * 2);
     std::vector<float> cGoldenFlat(cCount * 2);
@@ -140,15 +141,13 @@ static void RunRealTestCase(const GemmParam& p, aclblasHandle_t testHandle)
 
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
         aclblasStatus_t ret = aclblasSgemm_npu(
-            testHandle, p.transA, p.transB, p.m, p.n, p.k,
-            alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc);
+            testHandle, p.transA, p.transB, p.m, p.n, p.k, alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc);
         EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
         return;
     }
 
     aclblasStatus_t ret = aclblasSgemm_npu(
-        testHandle, p.transA, p.transB, p.m, p.n, p.k,
-        alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc);
+        testHandle, p.transA, p.transB, p.m, p.n, p.k, alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc);
     ASSERT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_SUCCESS));
 
     if (p.m <= 0 || p.n <= 0 || cPtr == nullptr)
@@ -156,9 +155,12 @@ static void RunRealTestCase(const GemmParam& p, aclblasHandle_t testHandle)
 
     size_t cCount = static_cast<size_t>(p.ldc) * p.n;
     std::vector<float> cGolden(cOrig);
-    aclblasSgemm_cpu(testHandle, p.transA, p.transB, p.m, p.n, p.k,
-                     alphaVal, aFloat.data(), p.lda, bFloat.data(), p.ldb,
-                     betaVal, cGolden.data(), p.ldc);
+    // issue #606: 参考调用失败时 golden 停留在输入初值，会产生假失败
+    ASSERT_EQ(
+        aclblasSgemm_cpu(
+            testHandle, p.transA, p.transB, p.m, p.n, p.k, alphaVal, aFloat.data(), p.lda, bFloat.data(), p.ldb,
+            betaVal, cGolden.data(), p.ldc),
+        ACLBLAS_STATUS_SUCCESS);
 
     VerifyConfig cfg;
     if (alphaVal == 0.0f) {

@@ -44,14 +44,22 @@ static void RunPerfCase(
     for (int i = 0; i < 10; i++) {
         aclblasCtrmv(handle, p.uplo, p.trans, p.diag, p.n, dAC, p.lda, dXC, p.incx);
     }
-    aclrtSynchronizeStream(stream);
+    // issue #605: 同步失败时报错退出，不得基于陈旧数据产出性能数据
+    if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+        printf("[ERROR] aclrtSynchronizeStream failed\n");
+        return;
+    }
 
     const int samples = 100;
     auto t0 = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < samples; i++) {
         aclblasCtrmv(handle, p.uplo, p.trans, p.diag, p.n, dAC, p.lda, dXC, p.incx);
     }
-    aclrtSynchronizeStream(stream);
+    // issue #605: 同步失败时报错退出
+    if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+        printf("[ERROR] aclrtSynchronizeStream failed\n");
+        return;
+    }
     auto t1 = std::chrono::high_resolution_clock::now();
     double avgUs = std::chrono::duration<double, std::micro>(t1 - t0).count() / samples;
     printf(
