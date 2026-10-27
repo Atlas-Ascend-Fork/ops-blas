@@ -44,17 +44,10 @@ struct _aclblas_handle {
 extern "C" {
 #endif
 
-aclblasStatus_t aclblasStrsmBatched(
-    aclblasHandle_t handle,
-    aclblasSideMode_t side,
-    aclblasFillMode_t uplo,
-    aclblasOperation_t trans,
-    aclblasDiagType_t diag,
-    int64_t m, int64_t n,
-    const float* alpha,
-    const float* const A[], int64_t lda,
-    float* const B[], int64_t ldb,
-    int64_t batchCount);
+aclblasStatus_t aclblasStrsmBatchedEx(
+    aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t trans,
+    aclblasDiagType_t diag, int64_t m, int64_t n, const float* alpha, const float* const A[], int64_t lda,
+    float* const B[], int64_t ldb, int64_t batchCount);
 
 #ifdef __cplusplus
 }
@@ -63,16 +56,9 @@ aclblasStatus_t aclblasStrsmBatched(
 // C++ only API (uses std::complex)
 #ifdef __cplusplus
 aclblasStatus_t aclblasCtrsmBatched(
-    aclblasHandle_t handle,
-    aclblasSideMode_t side,
-    aclblasFillMode_t uplo,
-    aclblasOperation_t trans,
-    aclblasDiagType_t diag,
-    int64_t m, int64_t n,
-    const std::complex<float>* alpha,
-    const std::complex<float>* const A[], int64_t lda,
-    std::complex<float>* const B[], int64_t ldb,
-    int64_t batchCount);
+    aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t trans,
+    aclblasDiagType_t diag, int64_t m, int64_t n, const std::complex<float>* alpha,
+    const std::complex<float>* const A[], int64_t lda, std::complex<float>* const B[], int64_t ldb, int64_t batchCount);
 #endif
 
 // ---------------------------------------------------------------------------
@@ -91,7 +77,7 @@ aclblasStatus_t aclblasCtrsmBatched(
  * @param [in] bufferLen: buffer length
  * @return read result
  */
-inline bool ReadFile(const std::string &filePath, size_t bufferSize, void *buffer, size_t bufferLen)
+inline bool ReadFile(const std::string& filePath, size_t bufferSize, void* buffer, size_t bufferLen)
 {
     if (buffer == nullptr) {
         ERROR_LOG("buffer is nullptr");
@@ -118,7 +104,7 @@ inline bool ReadFile(const std::string &filePath, size_t bufferSize, void *buffe
         return false;
     }
 
-    file.read(static_cast<char *>(buffer), bufferSize);
+    file.read(static_cast<char*>(buffer), bufferSize);
     if (!file) {
         ERROR_LOG("Read file failed");
         file.close();
@@ -136,7 +122,7 @@ inline bool ReadFile(const std::string &filePath, size_t bufferSize, void *buffe
  * @param [in] size: size to write
  * @return write result
  */
-inline bool WriteFile(const std::string &filePath, const void *buffer, size_t size)
+inline bool WriteFile(const std::string& filePath, const void* buffer, size_t size)
 {
     if (buffer == nullptr) {
         ERROR_LOG("Write file failed. buffer is nullptr");

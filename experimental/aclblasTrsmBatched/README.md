@@ -18,7 +18,7 @@
 ## 接口定义
 
 ```c
-aclblasStatus_t aclblasStrsmBatched(
+aclblasStatus_t aclblasStrsmBatchedEx(
     aclblasHandle_t handle,
     aclblasSideMode_t side,
     aclblasFillMode_t uplo,

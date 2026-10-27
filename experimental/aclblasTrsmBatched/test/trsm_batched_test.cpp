@@ -56,9 +56,9 @@
     } while (0)
 
 // 为每个 batch 分配 host/device 内存、从 .bin 读取 A/B 并拷贝到 device
-static int LoadInputs(int32_t batchCount, size_t sizeA, size_t sizeB,
-                      std::vector<uint8_t*>& hostA, std::vector<uint8_t*>& hostB,
-                      std::vector<float*>& devA, std::vector<float*>& devB)
+static int LoadInputs(
+    int32_t batchCount, size_t sizeA, size_t sizeB, std::vector<uint8_t*>& hostA, std::vector<uint8_t*>& hostB,
+    std::vector<float*>& devA, std::vector<float*>& devB)
 {
     for (int32_t i = 0; i < batchCount; i++) {
         CHECK_ACL(aclrtMallocHost((void**)&hostA[i], sizeA));
@@ -77,9 +77,9 @@ static int LoadInputs(int32_t batchCount, size_t sizeA, size_t sizeB,
 }
 
 // 将 device 结果回写 .bin，并释放所有 host/device 内存
-static int StoreOutputsAndFree(int32_t batchCount, size_t sizeB,
-                               std::vector<uint8_t*>& hostA, std::vector<uint8_t*>& hostB,
-                               std::vector<float*>& devA, std::vector<float*>& devB)
+static int StoreOutputsAndFree(
+    int32_t batchCount, size_t sizeB, std::vector<uint8_t*>& hostA, std::vector<uint8_t*>& hostB,
+    std::vector<float*>& devA, std::vector<float*>& devB)
 {
     for (int32_t i = 0; i < batchCount; i++) {
         CHECK_ACL(aclrtMemcpy(hostB[i], sizeB, devB[i], sizeB, ACL_MEMCPY_DEVICE_TO_HOST));
@@ -98,9 +98,13 @@ static int StoreOutputsAndFree(int32_t batchCount, size_t sizeB,
 // 解析命令行参数并映射为算子枚举与尺寸
 struct TrsmArgs {
     int32_t m, n, batchCount, sideI;
-    aclblasSideMode_t side; aclblasFillMode_t uplo;
-    aclblasOperation_t transa; aclblasDiagType_t diag;
-    float alpha; int32_t lda, ldb; size_t sizeA, sizeB;
+    aclblasSideMode_t side;
+    aclblasFillMode_t uplo;
+    aclblasOperation_t transa;
+    aclblasDiagType_t diag;
+    float alpha;
+    int32_t lda, ldb;
+    size_t sizeA, sizeB;
 };
 
 static TrsmArgs ParseTrsmArgs(int32_t argc, char* argv[])
@@ -126,18 +130,30 @@ static TrsmArgs ParseTrsmArgs(int32_t argc, char* argv[])
 }
 
 // 配置文件中的一个用例
-struct CfgCase { int32_t m, n, batch, side, uplo, transa, diag; float alpha; std::string tag; };
+struct CfgCase {
+    int32_t m, n, batch, side, uplo, transa, diag;
+    float alpha;
+    std::string tag;
+};
 
 // 运行单个配置用例：从 <tag>/input_*.bin 加载 -> 调用算子 -> 成功则写 <tag>/output_b_*.bin
 // issue #479: 失败路径统一释放本用例已分配的设备/主机内存（未分配的指针保持 nullptr，跳过）
-static void FreeTrsmCaseBuffers(std::vector<uint8_t*>& hostA, std::vector<float*>& devA,
-                                std::vector<uint8_t*>& hostB, std::vector<float*>& devB)
+static void FreeTrsmCaseBuffers(
+    std::vector<uint8_t*>& hostA, std::vector<float*>& devA, std::vector<uint8_t*>& hostB, std::vector<float*>& devB)
 {
     for (size_t j = 0; j < hostA.size(); j++) {
-        if (devA[j] != nullptr) { aclrtFree(devA[j]); }
-        if (hostA[j] != nullptr) { aclrtFreeHost(hostA[j]); }
-        if (devB[j] != nullptr) { aclrtFree(devB[j]); }
-        if (hostB[j] != nullptr) { aclrtFreeHost(hostB[j]); }
+        if (devA[j] != nullptr) {
+            aclrtFree(devA[j]);
+        }
+        if (hostA[j] != nullptr) {
+            aclrtFreeHost(hostA[j]);
+        }
+        if (devB[j] != nullptr) {
+            aclrtFree(devB[j]);
+        }
+        if (hostB[j] != nullptr) {
+            aclrtFreeHost(hostB[j]);
+        }
     }
 }
 
@@ -181,9 +197,9 @@ static bool RunOneTrsmCase(_aclblas_handle& handle, const CfgCase& c)
     }
     std::vector<const float*> aArray(devA.begin(), devA.end());
     std::vector<float*> bArray(devB.begin(), devB.end());
-    aclblasStatus_t status = aclblasStrsmBatched((aclblasHandle_t)&handle, side, uplo, transa, diag,
-                                                 c.m, c.n, &c.alpha, aArray.data(), lda,
-                                                 bArray.data(), ldb, c.batch);
+    aclblasStatus_t status = aclblasStrsmBatchedEx(
+        (aclblasHandle_t)&handle, side, uplo, transa, diag, c.m, c.n, &c.alpha, aArray.data(), lda, bArray.data(), ldb,
+        c.batch);
     bool ok = (status == ACLBLAS_STATUS_SUCCESS);
     if (ok) {
         for (int32_t i = 0; i < c.batch; i++) {
@@ -193,7 +209,10 @@ static bool RunOneTrsmCase(_aclblas_handle& handle, const CfgCase& c)
         }
     }
     for (int32_t i = 0; i < c.batch; i++) {
-        aclrtFree(devA[i]); aclrtFreeHost(hostA[i]); aclrtFree(devB[i]); aclrtFreeHost(hostB[i]);
+        aclrtFree(devA[i]);
+        aclrtFreeHost(hostA[i]);
+        aclrtFree(devB[i]);
+        aclrtFreeHost(hostB[i]);
     }
     return ok;
 }
@@ -202,32 +221,43 @@ static bool RunOneTrsmCase(_aclblas_handle& handle, const CfgCase& c)
 static int RunConfigMode(const char* cfgPath)
 {
     std::ifstream cfg(cfgPath);
-    if (!cfg.is_open()) { printf("[ERROR] cannot open config %s\n", cfgPath); return 1; }
+    if (!cfg.is_open()) {
+        printf("[ERROR] cannot open config %s\n", cfgPath);
+        return 1;
+    }
     std::vector<CfgCase> cases;
     std::string line;
     while (std::getline(cfg, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        CfgCase c; std::istringstream ss(line);
+        if (line.empty() || line[0] == '#')
+            continue;
+        CfgCase c;
+        std::istringstream ss(line);
         ss >> c.m >> c.n >> c.batch >> c.side >> c.uplo >> c.transa >> c.diag >> c.alpha >> c.tag;
-        if (!ss.fail()) cases.push_back(c);
+        if (!ss.fail())
+            cases.push_back(c);
     }
     int32_t deviceId = 0;
     CHECK_ACL(aclInit(nullptr));
     CHECK_ACL(aclrtSetDevice(deviceId));
     aclrtStream stream = nullptr;
     CHECK_ACL(aclrtCreateStream(&stream));
-    _aclblas_handle handle; handle.stream = stream;
+    _aclblas_handle handle;
+    handle.stream = stream;
     int total = 0, ok = 0, fail = 0;
     for (size_t i = 0; i < cases.size(); i++) {
         total++;
         if (RunOneTrsmCase(handle, cases[i])) {
-            ok++; printf("  [%zu/%zu] %s OK\n", i + 1, cases.size(), cases[i].tag.c_str());
+            ok++;
+            printf("  [%zu/%zu] %s OK\n", i + 1, cases.size(), cases[i].tag.c_str());
         } else {
-            fail++; printf("  [%zu/%zu] %s KERNEL_FAIL\n", i + 1, cases.size(), cases[i].tag.c_str());
+            fail++;
+            printf("  [%zu/%zu] %s KERNEL_FAIL\n", i + 1, cases.size(), cases[i].tag.c_str());
         }
     }
     printf("Kernel done: %d/%d passed\n", ok, total);
-    CHECK_ACL(aclrtDestroyStream(stream)); CHECK_ACL(aclrtResetDevice(deviceId)); CHECK_ACL(aclFinalize());
+    CHECK_ACL(aclrtDestroyStream(stream));
+    CHECK_ACL(aclrtResetDevice(deviceId));
+    CHECK_ACL(aclFinalize());
     return fail > 0 ? 1 : 0;
 }
 
@@ -251,18 +281,20 @@ int32_t main(int32_t argc, char* argv[])
     std::vector<uint8_t*> hostA(a.batchCount), hostB(a.batchCount);
     std::vector<float*> devA(a.batchCount), devB(a.batchCount);
     int loadRet = LoadInputs(a.batchCount, a.sizeA, a.sizeB, hostA, hostB, devA, devB);
-    if (loadRet != 0) return loadRet;
+    if (loadRet != 0)
+        return loadRet;
 
     std::vector<const float*> aArray(devA.begin(), devA.end());
     std::vector<float*> bArray(devB.begin(), devB.end());
 
-    aclblasStatus_t status = aclblasStrsmBatched((aclblasHandle_t)&handle, a.side, a.uplo, a.transa, a.diag,
-                                                 a.m, a.n, &a.alpha, aArray.data(), a.lda, bArray.data(), a.ldb,
-                                                 a.batchCount);
-    CHECK_RET(status == ACLBLAS_STATUS_SUCCESS, "aclblasStrsmBatched failed");
+    aclblasStatus_t status = aclblasStrsmBatchedEx(
+        (aclblasHandle_t)&handle, a.side, a.uplo, a.transa, a.diag, a.m, a.n, &a.alpha, aArray.data(), a.lda,
+        bArray.data(), a.ldb, a.batchCount);
+    CHECK_RET(status == ACLBLAS_STATUS_SUCCESS, "aclblasStrsmBatchedEx failed");
 
     int storeRet = StoreOutputsAndFree(a.batchCount, a.sizeB, hostA, hostB, devA, devB);
-    if (storeRet != 0) return storeRet;
+    if (storeRet != 0)
+        return storeRet;
 
     CHECK_ACL(aclrtDestroyStream(stream));
     CHECK_ACL(aclrtResetDevice(deviceId));
