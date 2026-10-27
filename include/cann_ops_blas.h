@@ -9,13 +9,18 @@
  */
 
 #pragma once
+#ifdef __cplusplus
 #include <cstdint>
 #include <cstddef>
+#else
+#include <stdint.h>
+#include <stddef.h>
+#endif
 #include <acl/acl.h>
 #include "cann_ops_blas_common.h"
 
-using aclblasHandle = struct _aclblas_handle*;
-using aclblasLogCallback = void (*)(const char*);
+typedef struct _aclblas_handle* aclblasHandle;
+typedef void (*aclblasLogCallback)(const char*);
 
 typedef struct _aclblas_handle* aclblasHandle_t;
 
@@ -188,13 +193,13 @@ aclblasStatus_t aclblasCtpmv(
 // Early arch22 implementation. Prefer aclblasStpmv for new code; this interface may evolve or be removed in future
 // releases.
 aclblasStatus_t aclblasStpmv_legacy(
-    aclblasHandle_t handle, aclblasFillMode uplo, aclblasOperation trans, aclblasDiagType diag, int64_t n,
+    aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int64_t n,
     const float* aPacked, const float* x, float* y, int64_t incx);
 
 // Early implementation with a non-standard parameter layout. Prefer aclblasStbmv for new code; this interface may
 // evolve or be removed in future releases.
 aclblasStatus_t aclblasStbmv_legacy(
-    aclblasHandle_t handle, aclblasFillMode uplo, aclblasOperation trans, aclblasDiagType diag, const float* a,
+    aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, const float* a,
     const int64_t lda, const float* x, float* y, const int64_t n, const int64_t k, const int64_t incx);
 
 aclblasStatus_t aclblasStbmv(
