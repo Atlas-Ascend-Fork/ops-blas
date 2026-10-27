@@ -43,48 +43,32 @@ static const char* OP_TAG = "aclblasCherk";
 //  Parameter validation
 // ==========================================================================
 static aclblasStatus_t ValidateCherkParams(
-    aclblasFillMode_t uplo, aclblasOperation_t trans,
-    int n, int k,
-    const float* alpha, const aclblasComplex* A, int lda,
-    const float* beta, const aclblasComplex* C, int ldc)
+    aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const float* alpha, const aclblasComplex* A,
+    int lda, const float* beta, const aclblasComplex* C, int ldc)
 {
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE(OP_TAG, "uplo must be UPPER(121) or LOWER(122), got %d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_C,
-        OP_LOGE(OP_TAG, "trans must be OP_N(111) or OP_C(113), got %d", static_cast<int>(trans));
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE(OP_TAG, "uplo must be UPPER(121) or LOWER(122), got %d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_C,
+              OP_LOGE(OP_TAG, "trans must be OP_N(111) or OP_C(113), got %d", static_cast<int>(trans));
+              return ACLBLAS_STATUS_INVALID_VALUE);
     if (trans == ACLBLAS_OP_N) {
-        CHECK_RET(
-            lda >= std::max(1, n),
-            OP_LOGE(OP_TAG, "lda must be >= max(1,n) for trans=N, got lda=%d n=%d", lda, n);
-            return ACLBLAS_STATUS_INVALID_VALUE);
+        CHECK_RET(lda >= std::max(1, n),
+                  OP_LOGE(OP_TAG, "lda must be >= max(1,n) for trans=N, got lda=%d n=%d", lda, n);
+                  return ACLBLAS_STATUS_INVALID_VALUE);
     } else {
-        CHECK_RET(
-            lda >= std::max(1, k),
-            OP_LOGE(OP_TAG, "lda must be >= max(1,k) for trans=T/C, got lda=%d k=%d", lda, k);
-            return ACLBLAS_STATUS_INVALID_VALUE);
+        CHECK_RET(lda >= std::max(1, k),
+                  OP_LOGE(OP_TAG, "lda must be >= max(1,k) for trans=T/C, got lda=%d k=%d", lda, k);
+                  return ACLBLAS_STATUS_INVALID_VALUE);
     }
-    CHECK_RET(
-        ldc >= std::max(1, n),
-        OP_LOGE(OP_TAG, "ldc must be >= max(1,n), got ldc=%d n=%d", ldc, n);
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        alpha != nullptr, OP_LOGE(OP_TAG, "alpha must not be nullptr");
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        beta != nullptr, OP_LOGE(OP_TAG, "beta must not be nullptr");
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        !(A == nullptr && n > 0 && k > 0),
-        OP_LOGE(OP_TAG, "A must not be nullptr when n>0 and k>0");
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        !(C == nullptr && n > 0),
-        OP_LOGE(OP_TAG, "C must not be nullptr when n>0");
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(ldc >= std::max(1, n), OP_LOGE(OP_TAG, "ldc must be >= max(1,n), got ldc=%d n=%d", ldc, n);
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(alpha != nullptr, OP_LOGE(OP_TAG, "alpha must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(beta != nullptr, OP_LOGE(OP_TAG, "beta must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(!(A == nullptr && n > 0 && k > 0), OP_LOGE(OP_TAG, "A must not be nullptr when n>0 and k>0");
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(!(C == nullptr && n > 0), OP_LOGE(OP_TAG, "C must not be nullptr when n>0");
+              return ACLBLAS_STATUS_INVALID_VALUE);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -92,12 +76,11 @@ static aclblasStatus_t ValidateCherkParams(
 //  GEMM tiling computation (reuses gemm pattern)
 // ==========================================================================
 static GemmTilingData CalCherkGemmTilingData(
-    int n, int k, int lda, int ldb, int tempLdc,
-    aclblasOperation_t transa, aclblasOperation_t transb)
+    int n, int k, int lda, int ldb, int tempLdc, aclblasOperation_t transa, aclblasOperation_t transb)
 {
     GemmTilingData tiling{};
-    tiling.m = n;  // HERK: m = n (C is n×n)
-    tiling.n = n;  // HERK: n = n
+    tiling.m = n; // HERK: m = n (C is n×n)
+    tiling.n = n; // HERK: n = n
     tiling.k = k;
     tiling.lda = lda;
     tiling.ldb = ldb;
@@ -136,7 +119,8 @@ static void CalcMultiCorePartition(GemmTilingData& tiling, uint32_t cubeCoreNum)
     int32_t bestUtilization = 0;
     for (int32_t mb = 1; mb <= mTiles && mb <= maxCores; mb++) {
         int32_t nb = std::min(nTiles, maxCores / mb);
-        if (nb < 1) nb = 1;
+        if (nb < 1)
+            nb = 1;
         int32_t utilization = mb * nb;
         if (utilization > bestUtilization && utilization <= maxCores) {
             bestUtilization = utilization;
@@ -163,9 +147,8 @@ static void PrepareCubeTiling(GemmTilingData& tiling, uint32_t cubeCoreNum)
 //  Combine tiling computation
 // ==========================================================================
 static CherkCombineTilingData CalCombineTilingData(
-    uint32_t usedAivCoreNum, uint32_t n, uint32_t ldc, uint32_t tempLdc,
-    uint8_t isAlphaZero, uint8_t isKZero, uint8_t isBetaZero,
-    uint8_t uploMode, float alphaVal, float betaVal)
+    uint32_t usedAivCoreNum, uint32_t n, uint32_t ldc, uint32_t tempLdc, uint8_t isAlphaZero, uint8_t isKZero,
+    uint8_t isBetaZero, uint8_t uploMode, float alphaVal, float betaVal)
 {
     CherkCombineTilingData tiling{};
     tiling.n = n;
@@ -184,11 +167,21 @@ static CherkCombineTilingData CalCombineTilingData(
 // ==========================================================================
 //  PrepareCherkParams — read alpha/beta, compute flags
 // ==========================================================================
+static aclblasStatus_t ReadCherkScalarsFromDevice(
+    const float* alpha, const float* beta, float& alphaVal, float& betaVal, aclrtStream stream)
+{
+    alphaVal = 0.0f;
+    betaVal = 0.0f;
+    aclblasStatus_t readRet = ReadAlphaBetaFromDevice(alpha, beta, alphaVal, betaVal, stream, OP_TAG);
+    if (readRet != ACLBLAS_STATUS_SUCCESS) {
+        return readRet;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 static aclblasStatus_t PrepareCherkParams(
-    _aclblas_handle* h, aclblasOperation_t& trans, uint32_t k,
-    const float* alpha, const float* beta,
-    float& alphaVal, float& betaVal,
-    bool& isAlphaZero, bool& isKZero, bool& isBetaZero, bool& skipTemp)
+    _aclblas_handle* h, aclblasOperation_t& trans, uint32_t k, const float* alpha, const float* beta, float& alphaVal,
+    float& betaVal, bool& isAlphaZero, bool& isKZero, bool& isBetaZero, bool& skipTemp)
 {
     aclrtStream stream = h->stream;
 
@@ -197,13 +190,33 @@ static aclblasStatus_t PrepareCherkParams(
         trans = ACLBLAS_OP_T;
     }
 
-    // Read alpha, beta from device
-    alphaVal = 0.0f;
-    betaVal = 0.0f;
-    aclblasStatus_t readRet = ReadAlphaBetaFromDevice(
-        alpha, beta, alphaVal, betaVal, stream, OP_TAG);
-    if (readRet != ACLBLAS_STATUS_SUCCESS) {
-        return readRet;
+    // Resolve alpha/beta: accept host or device pointers, reject mixing.
+    // Issue #628: previous implementation assumed device pointers and always
+    // issued D2H copies, reading garbage when callers passed host scalars.
+    bool alphaIsDevice = false;
+    bool betaIsDevice = false;
+    aclblasStatus_t locRet = CheckPtrLocation(alpha, &alphaIsDevice);
+    if (locRet != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE(OP_TAG, "alpha pointer location query failed, st=%d", static_cast<int>(locRet));
+        return locRet;
+    }
+    locRet = CheckPtrLocation(beta, &betaIsDevice);
+    if (locRet != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE(OP_TAG, "beta pointer location query failed, st=%d", static_cast<int>(locRet));
+        return locRet;
+    }
+    if (alphaIsDevice != betaIsDevice) {
+        OP_LOGE(OP_TAG, "alpha and beta must be both host or both device pointers");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (alphaIsDevice) {
+        aclblasStatus_t readRet = ReadCherkScalarsFromDevice(alpha, beta, alphaVal, betaVal, stream);
+        if (readRet != ACLBLAS_STATUS_SUCCESS) {
+            return readRet;
+        }
+    } else {
+        alphaVal = *alpha;
+        betaVal = *beta;
     }
 
     isAlphaZero = (alphaVal == 0.0f);
@@ -211,8 +224,9 @@ static aclblasStatus_t PrepareCherkParams(
     isBetaZero = (betaVal == 0.0f);
     skipTemp = isAlphaZero || isKZero;
 
-    OP_LOGD(OP_TAG, "alpha=%.6f beta=%.6f isAlphaZero=%d isKZero=%d isBetaZero=%d",
-        alphaVal, betaVal, isAlphaZero, isKZero, isBetaZero);
+    OP_LOGD(
+        OP_TAG, "alpha=%.6f beta=%.6f isAlphaZero=%d isKZero=%d isBetaZero=%d", alphaVal, betaVal, isAlphaZero, isKZero,
+        isBetaZero);
 
     return ACLBLAS_STATUS_SUCCESS;
 }
@@ -221,10 +235,8 @@ static aclblasStatus_t PrepareCherkParams(
 //  PrepareCherkWorkspace — compute workspace size and ensure allocation
 // ==========================================================================
 static aclblasStatus_t PrepareCherkWorkspace(
-    _aclblas_handle* h, uint32_t n, uint32_t k,
-    aclblasOperation_t trans, bool skipTemp,
-    uint32_t& aicCoreNum, uint32_t& aivCoreNum, uint32_t& usedAivCoreNum,
-    uint32_t& tempLdc, uint32_t& logicalRows, uint32_t& physColsA,
+    _aclblas_handle* h, uint32_t n, uint32_t k, aclblasOperation_t trans, bool skipTemp, uint32_t& aicCoreNum,
+    uint32_t& aivCoreNum, uint32_t& usedAivCoreNum, uint32_t& tempLdc, uint32_t& logicalRows, uint32_t& physColsA,
     size_t& arBytes, size_t& tempBytes)
 {
     // Get core counts
@@ -245,7 +257,7 @@ static aclblasStatus_t PrepareCherkWorkspace(
     // Compute workspace size: dAr/dAi (logicalRows×physCols×4B) + dT1..4 (tempLdc×n×4B)
     uint32_t physRowsA = (trans == ACLBLAS_OP_N) ? n : k;
     physColsA = (trans == ACLBLAS_OP_N) ? k : n;
-    logicalRows = physRowsA;  // no transpose in deinterleave
+    logicalRows = physRowsA; // no transpose in deinterleave
     arBytes = static_cast<size_t>(logicalRows) * physColsA * sizeof(float);
     tempBytes = static_cast<size_t>(tempLdc) * n * sizeof(float);
     size_t workspaceNeed = 0;
@@ -269,13 +281,9 @@ static aclblasStatus_t PrepareCherkWorkspace(
 //  RunCherkGemmPhase — Phase 0+1: AIV deinterleave + 4 GEMM launches
 // ==========================================================================
 static aclblasStatus_t RunCherkGemmPhase(
-    _aclblas_handle* h, const aclblasComplex* A, uint32_t lda,
-    uint32_t physColsA, uint32_t logicalRows,
-    size_t arBytes,
-    uint32_t n, uint32_t k,
-    aclblasOperation_t trans, uint32_t aicCoreNum, uint32_t aivCoreNum, uint32_t tempLdc,
-    uint8_t* wsBase, size_t tempBytes,
-    uint8_t* dT1, uint8_t* dT2, uint8_t* dT3, uint8_t* dT4)
+    _aclblas_handle* h, const aclblasComplex* A, uint32_t lda, uint32_t physColsA, uint32_t logicalRows, size_t arBytes,
+    uint32_t n, uint32_t k, aclblasOperation_t trans, uint32_t aicCoreNum, uint32_t aivCoreNum, uint32_t tempLdc,
+    uint8_t* wsBase, size_t tempBytes, uint8_t* dT1, uint8_t* dT2, uint8_t* dT3, uint8_t* dT4)
 {
     aclrtStream stream = h->stream;
 
@@ -293,16 +301,14 @@ static aclblasStatus_t RunCherkGemmPhase(
 
     OP_LOGI(OP_TAG, "launching deinterleave kernel: aivBlocks=%u", deintBlocks);
     cherk_deinterleave_kernel_do(
-        reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(A)),
-        reinterpret_cast<GM_ADDR>(dAr),
+        reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(A)), reinterpret_cast<GM_ADDR>(dAr),
         reinterpret_cast<GM_ADDR>(dAi), deintTiling, deintBlocks, stream);
 
     // Phase 1: 4 real GEMM launches (transa/transb derived from HERK trans)
     aclblasOperation_t transaGemm = (trans == ACLBLAS_OP_N) ? ACLBLAS_OP_N : ACLBLAS_OP_T;
     aclblasOperation_t transbGemm = (trans == ACLBLAS_OP_N) ? ACLBLAS_OP_T : ACLBLAS_OP_N;
 
-    GemmTilingData cubeTiling = CalCherkGemmTilingData(
-        n, k, logicalRows, logicalRows, tempLdc, transaGemm, transbGemm);
+    GemmTilingData cubeTiling = CalCherkGemmTilingData(n, k, logicalRows, logicalRows, tempLdc, transaGemm, transbGemm);
     PrepareCubeTiling(cubeTiling, aicCoreNum);
     cubeTiling.ldc = static_cast<int32_t>(tempLdc);
 
@@ -315,11 +321,11 @@ static aclblasStatus_t RunCherkGemmPhase(
     gemm_kernel_do(numBlocks, stream, dAr, dAr, dT1, cubeTiling);
     gemm_kernel_do(numBlocks, stream, dAi, dAi, dT2, cubeTiling);
     if (trans == ACLBLAS_OP_N) {
-        gemm_kernel_do(numBlocks, stream, dAr, dAi, dT3, cubeTiling);  // t3=Ai·Ar^T
-        gemm_kernel_do(numBlocks, stream, dAi, dAr, dT4, cubeTiling);  // t4=Ar·Ai^T
+        gemm_kernel_do(numBlocks, stream, dAr, dAi, dT3, cubeTiling); // t3=Ai·Ar^T
+        gemm_kernel_do(numBlocks, stream, dAi, dAr, dT4, cubeTiling); // t4=Ar·Ai^T
     } else {
-        gemm_kernel_do(numBlocks, stream, dAi, dAr, dT3, cubeTiling);  // t3=Ar^T·Ai
-        gemm_kernel_do(numBlocks, stream, dAr, dAi, dT4, cubeTiling);  // t4=Ai^T·Ar
+        gemm_kernel_do(numBlocks, stream, dAi, dAr, dT3, cubeTiling); // t3=Ar^T·Ai
+        gemm_kernel_do(numBlocks, stream, dAr, dAi, dT4, cubeTiling); // t4=Ai^T·Ar
     }
 
     return ACLBLAS_STATUS_SUCCESS;
@@ -329,15 +335,13 @@ static aclblasStatus_t RunCherkGemmPhase(
 //  LaunchCherkKernel — full pipeline (orchestrates 3 sub-functions)
 // ==========================================================================
 static aclblasStatus_t LaunchCherkKernel(
-    _aclblas_handle* h, aclblasFillMode_t uplo, aclblasOperation_t trans,
-    uint32_t n, uint32_t k,
-    const float* alpha, const aclblasComplex* A, uint32_t lda,
-    const float* beta, aclblasComplex* C, uint32_t ldc)
+    _aclblas_handle* h, aclblasFillMode_t uplo, aclblasOperation_t trans, uint32_t n, uint32_t k, const float* alpha,
+    const aclblasComplex* A, uint32_t lda, const float* beta, aclblasComplex* C, uint32_t ldc)
 {
     float alphaVal, betaVal;
     bool isAlphaZero, isKZero, isBetaZero, skipTemp;
-    aclblasStatus_t st = PrepareCherkParams(h, trans, k, alpha, beta,
-        alphaVal, betaVal, isAlphaZero, isKZero, isBetaZero, skipTemp);
+    aclblasStatus_t st =
+        PrepareCherkParams(h, trans, k, alpha, beta, alphaVal, betaVal, isAlphaZero, isKZero, isBetaZero, skipTemp);
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
     }
@@ -351,9 +355,9 @@ static aclblasStatus_t LaunchCherkKernel(
 
     uint32_t aicCoreNum, aivCoreNum, usedAivCoreNum, tempLdc, logicalRows, physColsA;
     size_t arBytes, tempBytes;
-    st = PrepareCherkWorkspace(h, n, k, trans, skipTemp,
-        aicCoreNum, aivCoreNum, usedAivCoreNum, tempLdc, logicalRows, physColsA,
-        arBytes, tempBytes);
+    st = PrepareCherkWorkspace(
+        h, n, k, trans, skipTemp, aicCoreNum, aivCoreNum, usedAivCoreNum, tempLdc, logicalRows, physColsA, arBytes,
+        tempBytes);
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
     }
@@ -365,8 +369,8 @@ static aclblasStatus_t LaunchCherkKernel(
     uint8_t* dT4 = dT3 + tempBytes;
 
     if (!skipTemp) {
-        st = RunCherkGemmPhase(h, A, lda, physColsA, logicalRows, arBytes,
-            n, k, trans, aicCoreNum, aivCoreNum, tempLdc, wsBase, tempBytes,
+        st = RunCherkGemmPhase(
+            h, A, lda, physColsA, logicalRows, arBytes, n, k, trans, aicCoreNum, aivCoreNum, tempLdc, wsBase, tempBytes,
             dT1, dT2, dT3, dT4);
         if (st != ACLBLAS_STATUS_SUCCESS) {
             return st;
@@ -374,19 +378,15 @@ static aclblasStatus_t LaunchCherkKernel(
     }
 
     CherkCombineTilingData combineTiling = CalCombineTilingData(
-        usedAivCoreNum, n, ldc, tempLdc,
-        static_cast<uint8_t>(isAlphaZero ? 1 : 0),
-        static_cast<uint8_t>(isKZero ? 1 : 0),
-        static_cast<uint8_t>(isBetaZero ? 1 : 0),
-        static_cast<uint8_t>(uplo), alphaVal, betaVal);
+        usedAivCoreNum, n, ldc, tempLdc, static_cast<uint8_t>(isAlphaZero ? 1 : 0),
+        static_cast<uint8_t>(isKZero ? 1 : 0), static_cast<uint8_t>(isBetaZero ? 1 : 0), static_cast<uint8_t>(uplo),
+        alphaVal, betaVal);
 
     OP_LOGI(OP_TAG, "launching combine kernel: aivCores=%u", usedAivCoreNum);
     aclrtStream stream = h->stream;
     cherk_combine_kernel_do(
-        reinterpret_cast<GM_ADDR>(dT1), reinterpret_cast<GM_ADDR>(dT2),
-        reinterpret_cast<GM_ADDR>(dT3), reinterpret_cast<GM_ADDR>(dT4),
-        reinterpret_cast<GM_ADDR>(C),
-        combineTiling, usedAivCoreNum, stream);
+        reinterpret_cast<GM_ADDR>(dT1), reinterpret_cast<GM_ADDR>(dT2), reinterpret_cast<GM_ADDR>(dT3),
+        reinterpret_cast<GM_ADDR>(dT4), reinterpret_cast<GM_ADDR>(C), combineTiling, usedAivCoreNum, stream);
 
     return ACLBLAS_STATUS_SUCCESS;
 }
@@ -395,21 +395,15 @@ static aclblasStatus_t LaunchCherkKernel(
 //  Public API entry
 // ==========================================================================
 extern "C" aclblasStatus_t aclblasCherk(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans,
-    int n, int k, const float* alpha,
-    const aclblasComplex* A, int lda,
-    const float* beta, aclblasComplex* C, int ldc)
+    aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const float* alpha,
+    const aclblasComplex* A, int lda, const float* beta, aclblasComplex* C, int ldc)
 {
     if (handle == nullptr) {
         OP_LOGE(OP_TAG, "handle is nullptr");
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
-    CHECK_RET(n >= 0,
-        OP_LOGE(OP_TAG, "n must be >= 0, got %d", n);
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(k >= 0,
-        OP_LOGE(OP_TAG, "k must be >= 0, got %d", k);
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(n >= 0, OP_LOGE(OP_TAG, "n must be >= 0, got %d", n); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(k >= 0, OP_LOGE(OP_TAG, "k must be >= 0, got %d", k); return ACLBLAS_STATUS_INVALID_VALUE);
 
     aclblasStatus_t st = ValidateCherkParams(uplo, trans, n, k, alpha, A, lda, beta, C, ldc);
     if (st != ACLBLAS_STATUS_SUCCESS) {
@@ -423,8 +417,7 @@ extern "C" aclblasStatus_t aclblasCherk(
         return ACLBLAS_STATUS_SUCCESS;
     }
 
-    return LaunchCherkKernel(h, uplo, trans,
-        static_cast<uint32_t>(n), static_cast<uint32_t>(k),
-        alpha, A, static_cast<uint32_t>(lda),
-        beta, C, static_cast<uint32_t>(ldc));
+    return LaunchCherkKernel(
+        h, uplo, trans, static_cast<uint32_t>(n), static_cast<uint32_t>(k), alpha, A, static_cast<uint32_t>(lda), beta,
+        C, static_cast<uint32_t>(ldc));
 }

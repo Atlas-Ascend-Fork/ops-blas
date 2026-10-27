@@ -203,7 +203,7 @@ const std::array<uint32_t, 6272U>& GetCtbmvTransposeWindowOffsets(uint32_t k)
 
 const std::array<uint32_t, CTBMV_WIDE_ATOMIC_MAX_ROWS * 2U>& GetCtbmvWideAtomicInterleaveOffsets()
 {
-    static const std::array<uint32_t, CTBMV_WIDE_ATOMIC_MAX_ROWS* 2U> offsets = [] {
+    static const std::array<uint32_t, CTBMV_WIDE_ATOMIC_MAX_ROWS * 2U> offsets = [] {
         std::array<uint32_t, CTBMV_WIDE_ATOMIC_MAX_ROWS * 2U> values{};
         for (uint32_t i = 0U; i < CTBMV_WIDE_ATOMIC_MAX_ROWS; ++i) {
             values[i * 2U] = i * sizeof(float);
@@ -499,14 +499,20 @@ aclblasStatus_t LaunchCtbmv(
     aclblasHandle_t handle, const aclblasComplex* a, aclblasComplex* x, const CtbmvTilingData& tiling)
 {
     auto* h = reinterpret_cast<_aclblas_handle*>(handle);
-    auto* workspace = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
     const auto plan = MakeCtbmvWorkspace(tiling);
-    if (plan.workspaceBytes > 0U && (workspace == nullptr || plan.workspaceBytes > GetEffectiveWorkspaceSize(h))) {
-        OP_LOGE(
-            "aclblasCtbmv", "aclblasCtbmv: workspace is null or insufficient: required=%zu available=%zu",
-            plan.workspaceBytes, GetEffectiveWorkspaceSize(h));
-        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    if (plan.workspaceBytes > 0U) {
+        // Issue #629: fall back to EnsureDefaultWorkspace instead of failing
+        // outright, so a library-owned workspace can grow on demand. User-owned
+        // workspace that is still too small fails with ALLOC_FAILED.
+        const aclblasStatus_t ensureStatus = EnsureDefaultWorkspace(h, plan.workspaceBytes);
+        if (ensureStatus != ACLBLAS_STATUS_SUCCESS) {
+            OP_LOGE(
+                "aclblasCtbmv", "aclblasCtbmv: workspace is null or insufficient: required=%zu available=%zu",
+                plan.workspaceBytes, GetEffectiveWorkspaceSize(h));
+            return ensureStatus;
+        }
     }
+    auto* workspace = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
     const auto status = UploadCtbmvWorkspace(h, x, workspace, plan, tiling);
     if (status != ACLBLAS_STATUS_SUCCESS) {
         return status;
