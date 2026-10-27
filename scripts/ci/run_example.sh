@@ -101,7 +101,9 @@ while IFS= read -r filepath; do
         fi
         continue
     fi
-    if [[ !"$filepath" =~ blas* ]] && [[ !"$filepath" =~ test* ]];then
+    # issue #627: 取反符必须与操作数空格分隔（!"$filepath" 会粘成单词 "!<path>"
+    # 使取反语义丢失），blas*/test* 为子串正则而非前缀匹配，均按目录前缀锚定修正
+    if [[ ! "$filepath" =~ ^blas/ ]] && [[ ! "$filepath" =~ ^test/ ]]; then
         continue
     fi
     paths=($(echo "$filepath" | sed 's/\// /g'))
@@ -118,6 +120,13 @@ while IFS= read -r filepath; do
         op=$second_dir
     elif [[ -n "$first_dir" ]] && [[ -d "./test/$first_dir" ]]; then
         op=$first_dir
+    elif [[ "$first_dir" == "common" ]] || [[ "$second_dir" == "common" ]]; then
+        # issue #626: blas/common/**（含 blas/common/helper 共享头）与 blas/*/common
+        # 是被全部算子消费的共享代码，./test/common 不存在，此前落入 else continue
+        # 被整个丢弃，共享 helper 回归零覆盖；此处保守回退全量
+        echo "Warning: shared code changed ($filepath), fallback to run all."
+        run_all=true
+        break
     else
         continue
     fi
