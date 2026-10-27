@@ -62,8 +62,8 @@ aclblasStatus_t aclblasSger(aclblasHandle_t handle, int m, int n, const float *a
 |------|----------|
 | Ascend 950PR | 支持 |
 | Ascend 950DT | 支持 |
-| Atlas A3 训练系列产品 / Atlas A3 推理系列产品 | 不支持 |
-| Atlas A2 训练系列产品 / Atlas A2 推理系列产品 | 不支持 |
+| Atlas A3 训练系列产品 / Atlas A3 推理系列产品 | 支持 |
+| Atlas A2 训练系列产品 / Atlas A2 推理系列产品 | 支持 |
 
 #### 函数原型
 
@@ -161,7 +161,12 @@ int main()
 
 #### 执行路径与浮点语义
 
-Host 按输入布局和动态 AIV 核数计算分块。连续布局 `incx == 1 && incy == 1 && lda == m`、
+Host 只做参数校验、负步长起点折算（`xStart/yStart`）和一维列切分：
+`colsPerCore = ceil(n / min(n, aivCoreNum))`，每核处理一段连续列；不计算行分块。
+行方向由 kernel 以固定块 `CGERU_MAX_CHUNK_ROWS = 1024` 遍历（通用路径）。
+m == 0、n == 0 或 alpha 为复零时快速返回，不 launch。
+
+Ascend 950PR/950DT（arch35，SIMT/VF 编程模型）：连续布局 `incx == 1 && incy == 1 && lda == m`、
 `m <= 4096` 且 `m * n > 32768` 时选择 RegBase 路径；其余布局在每核 tile 的行、列均不超过
 4096 时选择 SIMT Cache，否则选择 DirectGM。这些条件是布局、核内容量与工作量门槛，不依赖测试编号。
 
@@ -174,3 +179,18 @@ SIMT 路径根据 FP32 指数判断复乘的任一乘积是否可能溢出；对
 禁用 FMA；常规分支保持原有优化。
 RegBase 中 alpha 的 UB 标量写入使用 `volatile` 保留实际存储，并通过 S→V 事件建立流水线顺序，
 与上述防乘加收缩的用途不同。
+
+Atlas A2/A3（arch22，经典向量编程模型）：单 kernel，按列分核；每核内按 1024 行块处理。
+
+- **快路径**（`incx == 1 && lda == m`，且 `m*2` 为 8 的倍数、UB 预算足够）：
+  将整列 x 一次搬入 UB，构造 `xKeep = [xr, xi]` 与 `xSwap = [-xi, xr]` 两个交错向量；
+  每列 j 直接从 GM 读 y[j] 合成 `coeff = alpha * y[j]`，随后两次融合 Axpy 完成
+  `A[:, j] += cr * xKeep + ci * xSwap`；A 列按批连续搬入/搬出。快路径 UB 预算 176 KiB。
+- **通用路径**（`incx != 1` 或 `lda > m`，或快路径预算不足）：
+  x 按 1024 行块装入 UB；`incx == 1` 时整块连续 DataCopyPad，`incx != 1` 时逐元素
+  `GetValue` 折算；y 标量始终从 GM 逐元素读取（`incy` 只影响地址步长，不做突发/带隙拷贝）。
+  每列用 GatherMask 解交织 x、Gather 重交织乘积，再写回 A；UB 总预算 192 KiB，额外 GM workspace 0 字节。
+
+浮点语义：`CgeruCoeff` 刻意不做“纯实/纯虚 shortcut”，与 cblas golden 的 `0*Inf→NaN`
+保持一致（TC_FL_103）；唯一整列跳过是 `y[j] == (0, 0)`（对应 Netlib cgeru 的
+`IF (Y(J).NE.ZERO)` 守卫）。
