@@ -317,9 +317,9 @@ endif()
 # Keep the validated Chemm SIMT/Cube kernels optimized even in Debug builds.
 if("arch35" IN_LIST SOC_ARCH_DIRS)
     set_source_files_properties(
-        "${CMAKE_CURRENT_LIST_DIR}/blas/symm/arch35/chemm_kernel.cpp"
-        "${CMAKE_CURRENT_LIST_DIR}/blas/symm/arch35/chemm_cube_kernel.cpp"
-        "${CMAKE_CURRENT_LIST_DIR}/blas/symm/arch35/chemm_combine_norisk_kernel.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/blas/hemm/arch35/chemm_kernel.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/blas/hemm/arch35/chemm_cube_kernel.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/blas/hemm/arch35/chemm_combine_norisk_kernel.cpp"
         PROPERTIES COMPILE_OPTIONS "-O2"
     )
 endif()

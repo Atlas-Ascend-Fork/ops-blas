@@ -442,7 +442,7 @@ int main()
 - Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
 > 本仓库同时维护 arch35 与 arch22 两套实现：
-> - arch35：[`blas/symm/arch35/chemm_host.cpp`](arch35/chemm_host.cpp)
+> - arch35：[`blas/hemm/arch35/chemm_host.cpp`](../hemm/arch35/chemm_host.cpp)
 > - arch22：[`blas/hemm/arch22/chemm_host.cpp`](../hemm/arch22/chemm_host.cpp)
 >
 > 接口声明位于公共头文件 `include/cann_ops_blas.h`，两个产品线共用同一 API。
