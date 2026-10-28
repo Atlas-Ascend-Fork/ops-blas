@@ -86,16 +86,18 @@ static inline uint32_t PhysicalPos(uint32_t logical, uint32_t n, int64_t inc, ui
     return (inc >= 0) ? (logical * absInc) : ((n - 1U - logical) * absInc);
 }
 
-static void GenerateSymMatrix(std::vector<float>& a, uint32_t n, uint32_t lda, uint32_t seed)
+static void GenerateSymMatrix(std::vector<float>& a, uint32_t n, uint32_t lda, aclblasFillMode_t uplo, uint32_t seed)
 {
+    // 列主序契约：A(i,j) 位于 a[j*lda+i]，仅填充 uplo 引用三角；未引用三角填独立
+    // 随机值（BLAS 契约允许任意值），使 kernel 读错三角时结果偏离 golden、可被拦截
     a.assign(static_cast<size_t>(n) * lda, 0.0f);
     std::mt19937 rng(seed);
+    std::mt19937 garbageRng(seed ^ 0x5A5A5A5Au);
     std::uniform_real_distribution<float> dist(-0.5f, 0.5f);
-    for (uint32_t i = 0; i < n; ++i) {
-        for (uint32_t j = 0; j <= i; ++j) {
-            float v = dist(rng);
-            a[static_cast<size_t>(i) * lda + j] = v;
-            a[static_cast<size_t>(j) * lda + i] = v;
+    for (uint32_t col = 0; col < n; ++col) {
+        for (uint32_t row = 0; row < n; ++row) {
+            bool referenced = (uplo == ACLBLAS_UPPER) ? (row <= col) : (row >= col);
+            a[static_cast<size_t>(col) * lda + row] = dist(referenced ? rng : garbageRng);
         }
     }
 }
@@ -115,7 +117,7 @@ static void GenerateStrided(std::vector<float>& v, uint32_t n, int inc, uint32_t
 
 static void ComputeSsymvGolden(
     const std::vector<float>& a, const std::vector<float>& x, const std::vector<float>& y, uint32_t n, uint32_t lda,
-    int incx, int incy, float alpha, float beta, std::vector<float>& out)
+    aclblasFillMode_t uplo, int incx, int incy, float alpha, float beta, std::vector<float>& out)
 {
     uint32_t absIncx = static_cast<uint32_t>(std::abs(incx));
     uint32_t absIncy = static_cast<uint32_t>(std::abs(incy));
@@ -123,9 +125,12 @@ static void ComputeSsymvGolden(
     for (uint32_t row = 0; row < n; ++row) {
         float sum = 0.0f;
         for (uint32_t col = 0; col < n; ++col) {
-            uint32_t r = std::max(row, col);
-            uint32_t c = std::min(row, col);
-            sum += a[static_cast<size_t>(r) * lda + c] * x[PhysicalPos(col, n, incx, absIncx)];
+            // 列主序 A(i,j) = a[j*lda+i]；非引用三角由对称性取镜像位置的存储值
+            uint32_t hi = std::max(row, col);
+            uint32_t lo = std::min(row, col);
+            size_t aIdx = (uplo == ACLBLAS_UPPER) ? (static_cast<size_t>(hi) * lda + lo)
+                                                  : (static_cast<size_t>(lo) * lda + hi);
+            sum += a[aIdx] * x[PhysicalPos(col, n, incx, absIncx)];
         }
         uint32_t yPos = PhysicalPos(row, n, incy, absIncy);
         out[yPos] = alpha * sum + beta * y[yPos];
@@ -156,7 +161,7 @@ static int RunSsymvCase(const TestCase& tc, aclblasHandle_t handle, aclrtStream 
     uint32_t seed = static_cast<uint32_t>(tc.n + tc.lda * 100);
 
     std::vector<float> aHost;
-    GenerateSymMatrix(aHost, nU32, ldaU32, seed);
+    GenerateSymMatrix(aHost, nU32, ldaU32, tc.uplo, seed);
     std::vector<float> xHost;
     GenerateStrided(xHost, nU32, tc.incx, seed + 1);
     std::vector<float> yHost;
@@ -240,7 +245,7 @@ static int RunSsymvCase(const TestCase& tc, aclblasHandle_t handle, aclrtStream 
         return 1;
     }
     std::vector<float> yGolden;
-    ComputeSsymvGolden(aHost, xHost, yHost, nU32, ldaU32, tc.incx, tc.incy, tc.alpha, tc.beta, yGolden);
+    ComputeSsymvGolden(aHost, xHost, yHost, nU32, ldaU32, tc.uplo, tc.incx, tc.incy, tc.alpha, tc.beta, yGolden);
     aclrtFree(dA);
     aclrtFree(dX);
     aclrtFree(dY);

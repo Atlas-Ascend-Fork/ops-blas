@@ -61,6 +61,16 @@ private:
         return (incy >= 0) ? (logical * absIncy) : ((n - 1U - logical) * absIncy);
     }
 
+    // chunk 是否全程位于对角线一侧（不含对角元）：UPPER 走 [0, row]，纯三角 chunk
+    // 完全在对角线下方；LOWER 走 [row, n)，纯三角 chunk 完全在对角线上方
+    __aicore__ inline bool IsPureTriangleChunk(uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount)
+    {
+        if (uplo == ACLBLAS_UPPER) {
+            return colOffset + dataCount <= rowOffset;
+        }
+        return colOffset > rowOffset;
+    }
+
     GlobalTensor<T> aGM;
     GlobalTensor<T> xGM;
     GlobalTensor<T> yGM;
@@ -165,7 +175,7 @@ __aicore__ inline void SymvAIV<T>::ComputeV2(
     ReduceSum(LocalZ, LocalZ, LocalZ, dataCount);
     Muls(LocalZ, LocalZ, alpha, 1);
     auto scalar = LocalX2(0) * alpha;
-    if (colOffset + dataCount <= rowOffset) {
+    if (IsPureTriangleChunk(rowOffset, colOffset, dataCount)) {
         Muls(LocalZ2, LocalA, scalar, dataCount);
     } else if (dataCount > 1) {
         Muls(LocalZ2, LocalA, scalar, dataCount - 1);
@@ -194,7 +204,7 @@ __aicore__ inline void SymvAIV<T>::CopyOutV2(
 
     LocalTensor<T> z2Local = z2Queue.DeQue<T>();
     if (incy == 1) {
-        if (colOffset + dataCount <= rowOffset) {
+        if (IsPureTriangleChunk(rowOffset, colOffset, dataCount)) {
             uint8_t paddingNum2 = elementsPerBlock - dataCount % elementsPerBlock;
             DataCopyExtParams copyParams2{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
             DataCopyPadExtParams<T> padParams2{true, 0, paddingNum2, 0};
@@ -206,7 +216,7 @@ __aicore__ inline void SymvAIV<T>::CopyOutV2(
             DataCopyPad(yGM[colOffset], z2Local, copyParams2);
         }
     } else {
-        if (colOffset + dataCount <= rowOffset) {
+        if (IsPureTriangleChunk(rowOffset, colOffset, dataCount)) {
             for (uint32_t i = 0; i < dataCount; i++) {
                 uint32_t pos = YPhysicalPos(colOffset + i);
                 yGM.SetValue(pos, yGM.GetValue(pos) + z2Local.GetValue(i));
@@ -265,7 +275,7 @@ __aicore__ inline void SymvAIV<T>::ComputePadV2(
     ReduceSum(LocalZ, LocalZ, LocalZ, dataCount);
     Muls(LocalZ, LocalZ, alpha, 1);
     auto scalar = LocalX2(0) * alpha;
-    if (colOffset + dataCount <= rowOffset) {
+    if (IsPureTriangleChunk(rowOffset, colOffset, dataCount)) {
         Muls(LocalZ2, LocalA, scalar, dataCount);
     } else if (dataCount > 1) {
         Muls(LocalZ2, LocalA, scalar, dataCount - 1);
@@ -297,7 +307,7 @@ __aicore__ inline void SymvAIV<T>::CopyOutPadV2(
 
     LocalTensor<T> z2Local = z2Queue.DeQue<T>();
     if (incy == 1) {
-        if (colOffset + dataCount <= rowOffset) {
+        if (IsPureTriangleChunk(rowOffset, colOffset, dataCount)) {
             uint8_t paddingNum2 = elementsPerBlock - dataCount % elementsPerBlock;
             DataCopyExtParams copyParams2{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
             DataCopyPadExtParams<T> padParams2{true, 0, paddingNum2, 0};
@@ -309,7 +319,7 @@ __aicore__ inline void SymvAIV<T>::CopyOutPadV2(
             DataCopyPad(yGM[colOffset], z2Local, copyParams2);
         }
     } else {
-        if (colOffset + dataCount <= rowOffset) {
+        if (IsPureTriangleChunk(rowOffset, colOffset, dataCount)) {
             for (uint32_t i = 0; i < dataCount; i++) {
                 uint32_t pos = YPhysicalPos(colOffset + i);
                 yGM.SetValue(pos, yGM.GetValue(pos) + z2Local.GetValue(i));
@@ -428,19 +438,40 @@ __aicore__ inline void SymvAIV<T>::Process()
 
     for (uint32_t taskIdx = vecIdx; taskIdx < n; taskIdx += useCoreNum) {
         uint32_t row = taskIdx;
-        uint32_t colLen = row + 1;
-        for (uint32_t col = 0; col < colLen; col += maxDataCount) {
-            uint32_t dataCount = maxDataCount;
-            if (col + dataCount > colLen) {
-                dataCount = colLen - col;
-                CopyInPadV2(taskIdx, row, col, dataCount);
-                ComputePadV2(taskIdx, row, col, dataCount);
-                CopyOutPadV2(taskIdx, row, col, dataCount);
-                continue;
+        if (uplo == ACLBLAS_UPPER) {
+            uint32_t colLen = row + 1;
+            for (uint32_t col = 0; col < colLen; col += maxDataCount) {
+                uint32_t dataCount = maxDataCount;
+                if (col + dataCount > colLen) {
+                    dataCount = colLen - col;
+                    CopyInPadV2(taskIdx, row, col, dataCount);
+                    ComputePadV2(taskIdx, row, col, dataCount);
+                    CopyOutPadV2(taskIdx, row, col, dataCount);
+                    continue;
+                }
+                CopyInV2(taskIdx, row, col, dataCount);
+                ComputeV2(taskIdx, row, col, dataCount);
+                CopyOutV2(taskIdx, row, col, dataCount);
             }
-            CopyInV2(taskIdx, row, col, dataCount);
-            ComputeV2(taskIdx, row, col, dataCount);
-            CopyOutV2(taskIdx, row, col, dataCount);
+        } else {
+            // LOWER：对角元单独作 1 元素 chunk（dataCount=1 时 z2 自然为空），
+            // 其余 chunk 严格位于对角线上方，全部走纯三角路径
+            CopyInPadV2(taskIdx, row, row, 1);
+            ComputePadV2(taskIdx, row, row, 1);
+            CopyOutPadV2(taskIdx, row, row, 1);
+            for (uint32_t col = row + 1; col < n; col += maxDataCount) {
+                uint32_t dataCount = maxDataCount;
+                if (col + dataCount > n) {
+                    dataCount = n - col;
+                    CopyInPadV2(taskIdx, row, col, dataCount);
+                    ComputePadV2(taskIdx, row, col, dataCount);
+                    CopyOutPadV2(taskIdx, row, col, dataCount);
+                    continue;
+                }
+                CopyInV2(taskIdx, row, col, dataCount);
+                ComputeV2(taskIdx, row, col, dataCount);
+                CopyOutV2(taskIdx, row, col, dataCount);
+            }
         }
     }
     SetAtomicNone();
