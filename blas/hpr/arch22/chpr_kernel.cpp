@@ -311,7 +311,7 @@ __aicore__ inline void ChprKernel::LoadXIxStridedLe4096(uint32_t rowStart, uint3
     const uint32_t srcStride = static_cast<uint32_t>((static_cast<uint64_t>(incx) - 1U) * 2U);
     const uint32_t scalarSrcStride = srcStride + 1U;
 
-    // Contruct ix at ub adress [0, 8192), using [8192, 49152) as temporary buffer.
+    // Construct ix at ub address [0, 8192), using [8192, 49152) as temporary buffer.
     CopyStridedGather(xLocal, ixLocal, rowStart, count, 1U, scalarSrcStride, 0U, true);
     SetFlag<HardEvent::V_MTE2>(PIPE_EVT);
     WaitFlag<HardEvent::V_MTE2>(PIPE_EVT);
@@ -338,7 +338,7 @@ __aicore__ inline void ChprKernel::LoadXIxStridedLe8192(uint32_t rowStart, uint3
     xRemain -= xSecondCount;
     const uint32_t xThirdCount = xRemain;
 
-    // Contruct ix at ub adress [0, 16384), using [16384, 49152) as temporary buffer.
+    // Construct ix at ub address [0, 16384), using [16384, 49152) as temporary buffer.
     CopyStridedGather(xLocal, ixLocal, rowStart, firstCount, 1U, scalarSrcStride, 0U, true);
     SetFlag<HardEvent::V_MTE2>(PIPE_EVT);
     WaitFlag<HardEvent::V_MTE2>(PIPE_EVT);
