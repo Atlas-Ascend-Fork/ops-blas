@@ -69,13 +69,13 @@ check_install_path() {
     exitlog
     exit 1
   fi
+  # 先展开当前用户的 ~，避免相对路径转换把它前缀为工作目录
+  if [[ "${TARGET_INSTALL_PATH}" == "~" || "${TARGET_INSTALL_PATH}" == "~/"* ]]; then
+    TARGET_INSTALL_PATH="${TARGET_INSTALL_PATH/#\~/$HOME}"
+  fi
   # 转换为绝对路径
   if [[ "${TARGET_INSTALL_PATH}" != /* ]]; then
     TARGET_INSTALL_PATH="$(cd "${USER_PWD:-.}" && pwd)/${TARGET_INSTALL_PATH}"
-  fi
-  # 展开 ~
-  if [[ "${TARGET_INSTALL_PATH}" == ~* ]]; then
-    TARGET_INSTALL_PATH="${TARGET_INSTALL_PATH/#\~/$HOME}"
   fi
   # 若路径为软链接，解析为实际路径
   if resolved=$(readlink -f "${TARGET_INSTALL_PATH}" 2>/dev/null) && [ -n "${resolved}" ]; then
