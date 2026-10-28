@@ -126,8 +126,8 @@ int main()
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品（含 Atlas 800I A3）：支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品（含 Atlas 800I A2）：支持
 
 #### 函数原型
 
@@ -153,7 +153,7 @@ aclblasStatus_t aclblasCtbsv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 #### 约束说明
 
 - handle 为 nullptr 时返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR（最先校验）
-- uplo / trans / diag 取值非法时返回 ACLBLAS_STATUS_INVALID_ENUM
+- uplo / trans / diag 取值非法时，Atlas A2/A3（arch22）返回 ACLBLAS_STATUS_INVALID_VALUE，Ascend 950（arch35）返回 ACLBLAS_STATUS_INVALID_ENUM
 - n >= 0，k >= 0，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 - 参数校验通过后 n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS（空操作）
 - lda ≥ k+1（带状存储，不与 n 比较），否则返回 ACLBLAS_STATUS_INVALID_VALUE
@@ -163,6 +163,16 @@ aclblasStatus_t aclblasCtbsv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 - 仅引用 uplo 指定的三角带；trans=C 时按 A^H 计算
 - 不做奇异性检查；diag=NON_UNIT 时对角必须非零
 - Host 侧不做流同步，调用方需自行管理同步
+
+Atlas A2/A3 实现位于 `blas/tbsv/arch22/`。`n<=4096` 且 `k<=2048` 时使用 UB 快速路径，超过该范围时使用 GM 兜底路径；`n<=2` 使用独立 AIC kernel。算子不申请 workspace。编译和精度、性能复现步骤见 [Ctbsv 测试说明](../../test/tbsv/ctbsv/README.md)。
+
+#### Atlas A2/A3 的并行与标量路径
+
+当前接口一次求解一个右端项。对于一般的非零带宽三角系统，前代或回代的相邻步骤有数据依赖，下一步必须使用此前已求得的 x；因此使用一个计算核保留求解链，列内的带状更新和点积分别使用 `Axpy`、`MulAddDst`、`ReduceSum` 等向量接口。直接增加启动核数会使多个核重复求解并竞争原地输出；多核分块方案还需要另行设计块间数据交换和同步，不能只调整 blockDim。`k=0` 的对角系统没有这类依赖，当前仍复用单核派发和 Smith 复数除法，没有单独实现多核对角求解。
+
+连续 x 的输入使用批量搬运及 `Gather` 拆分实部、虚部。长度达到向量打包阈值时，输出通过整数向量索引和 `Gather` 交错写回；该步骤不改变浮点数的位模式。短向量保留标量打包，以避免固定的索引准备开销。
+
+仍保留标量操作的位置包括逐步求解的主元、短带/非对齐前缀、非连续步长、大规格 GM 兜底以及数值敏感的宽带 UNIT 参考顺序路径。这些路径分别用于处理串行依赖、保持 stride hole 不变或保持与 CBLAS 一致的浮点求值顺序，并非所有列内计算都采用标量实现。
 
 #### 调用示例
 

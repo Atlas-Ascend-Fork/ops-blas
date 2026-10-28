@@ -11,6 +11,7 @@
 #ifndef CTBSV_PARAM_H
 #define CTBSV_PARAM_H
 
+#include <climits>
 #include <string>
 
 #include "acl/acl.h"
@@ -28,6 +29,7 @@ struct CtbsvParam : public BlasTestParamBase {
     int incx = 1;
     BlasFillMode aFill = BlasFillMode("RANDOM_NORM_5_5");
     BlasFillMode xFill = BlasFillMode("RANDOM_NORM_5_5");
+    bool useNormalDistribution = false;
 
     CtbsvParam(const csv_map& map) : BlasTestParamBase(map)
     {
@@ -40,6 +42,7 @@ struct CtbsvParam : public BlasTestParamBase {
         incx = parseInt(ReadMap(map, "incx", "1"));
         aFill = BlasFillMode(ReadMap(map, "a_fill", "RANDOM_NORM_5_5"));
         xFill = BlasFillMode(ReadMap(map, "x_fill", "RANDOM_NORM_5_5"));
+        useNormalDistribution = ReadMap(map, "data_distribution", "UNIFORM") == "NORMAL";
     }
 };
 
