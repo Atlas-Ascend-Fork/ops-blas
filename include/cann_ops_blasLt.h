@@ -325,6 +325,96 @@ typedef enum aclblasLtMatmulAlgoConfigAttributes {
     ACLBLASLT_ALGO_CONFIG_MAX,
 } aclblasLtMatmulAlgoConfigAttributes_t;
 
+/*! \ingroup types_module
+ *  \brief Matmul algorithm capability attributes (static capability query).
+ *
+ *  \details
+ *  Values map 1:1 onto the measured authoritative values of the cuBLASLt
+ *  ``cublasLtMatmulAlgoCapAttributes_t`` subset 0~6 plus CUSTOM_OPTION_MAX = 7
+ *  and STAGES_IDS = 13 (stable across CUDA 11.0.3 ~ 13.2.0), so migration code
+ *  passing cuBLASLt numeric values keeps its assumptions. The remaining
+ *  cuBLASLt attributes (8 = MATHMODE_IMPL, 9 = GAUSSIAN_IMPL,
+ *  10 = CUSTOM_MEMORY_ORDER, 11 = POINTER_MODE_MASK, 12 = EPILOGUE_MASK,
+ *  14 = LD_NEGATIVE, 15 = NUMERICAL_IMPL_FLAGS, 16~19 = MIN_ALIGNMENT_*,
+ *  20 = ATOMIC_SYNC, 21~23 = CUDA 13.x additions) have no counterpart in this
+ *  library and are intentionally not enumerated; querying any value outside
+ *  this subset returns ``ACLBLAS_STATUS_NOT_SUPPORTED``.
+ *
+ *  ``ACLBLASLT_ALGO_CAP_MAX`` (= 14) is a repo-local sentinel (cuBLASLt has no
+ *  such sentinel); this library returns ``ACLBLAS_STATUS_NOT_SUPPORTED`` when
+ *  it is queried. The value coincides with cuBLASLt ``LD_NEGATIVE`` (14), but
+ *  this library does not offer that attribute -- note that cuBLASLt does
+ *  support LD_NEGATIVE and a query for it returns SUCCESS with a value there.
+ *
+ *  Capability values follow a mixed reporting view: implementation-capability
+ *  attributes (SPLITK_SUPPORT / REDUCTION_SCHEME_MASK / STRIDED_BATCH_SUPPORT)
+ *  report the actual implementation capabilities, while acceptance-domain
+ *  attributes (STAGES_IDS / CUSTOM_OPTION_MAX) report the Host API acceptance
+ *  domain (self-consistent with the ConfigSet/Get attribute family, matching
+ *  the respective official cuBLASLt wording). Every known divergence between
+ *  recorded configuration and effective kernel behavior is stated in the
+ *  per-enumerator comments below.
+ */
+typedef enum aclblasLtMatmulAlgoCapAttributes {
+    ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT = 0, /**< uint32_t 0/1, always 0. Implementation-capability
+                                            *  view (cuBLASLt semantics: "split-K implementation is
+                                            *  supported"): the current kernel set has no split-K
+                                            *  reduction stage and the FP32 tiling path does not
+                                            *  consume splitK. Note: ConfigSetSplitK still accepts
+                                            *  [1,255] and the algoId encoding domain is {1,2,3};
+                                            *  splitK > 1 is recorded but not executed as a real
+                                            *  split. Self-consistent with REDUCTION_SCHEME_MASK = 0
+                                            *  (no reduction scheme is implemented, hence no
+                                            *  split-K execution). */
+    ACLBLASLT_ALGO_CAP_REDUCTION_SCHEME_MASK = 1, /**< uint32_t bitmask, always 0. Mask semantics
+                                                   *  follow cuBLASLt: the value is the bitwise OR
+                                                   *  of the supported aclblasLtReductionScheme_t
+                                                   *  enumerator values, and NONE (= 0) contributes
+                                                   *  no bit; INPLACE/WORKSPACE have no
+                                                   *  implementation, so no bit is set.
+                                                   *  Self-consistent with SPLITK_SUPPORT = 0.
+                                                   *  Migration check example:
+                                                   *  (mask & ACLBLASLT_REDUCTION_SCHEME_INPLACE)
+                                                   *  == 0 means INPLACE reduction is
+                                                   *  unsupported. */
+    ACLBLASLT_ALGO_CAP_CTA_SWIZZLING_SUPPORT = 2, /**< uint32_t 0/1, always 0: this library has no
+                                                   *  CTA swizzling concept. */
+    ACLBLASLT_ALGO_CAP_STRIDED_BATCH_SUPPORT = 3, /**< uint32_t 0/1, always 0: the layout attributes
+                                                   *  BATCH_COUNT / STRIDED_BATCH_OFFSET remain storable
+                                                   *  and readable, but the aclblasLtMatmul compute path
+                                                   *  does not consume the batch fields (single matrix
+                                                   *  only). */
+    ACLBLASLT_ALGO_CAP_OUT_OF_PLACE_RESULT_SUPPORT = 4, /**< uint32_t 0/1, always 1: aclblasLtMatmul
+                                                         *  supports both in-place (C == D) and
+                                                         *  out-of-place (C != D) results. */
+    ACLBLASLT_ALGO_CAP_UPLO_SUPPORT = 5, /**< uint32_t 0/1, always 0: matmul descriptors carry no
+                                          *  uplo / triangular attribute. */
+    ACLBLASLT_ALGO_CAP_TILE_IDS = 6, /**< Ascending uint32_t array: {1,2,3,4} = every
+                                      *  aclblasLtMatmulTile_t shape (128x128 .. 256x256). Probe with
+                                      *  capAttributeSize == 0 to obtain the required byte count (16).
+                                      *  Note: the FP32 tiling path consumes only the N and K tiles
+                                      *  (ApplyAlgoTilingOverrideFp32); the M tile (the 256-row
+                                      *  shapes) is reported as part of the acceptance/encoding
+                                      *  domain but not applied. */
+    ACLBLASLT_ALGO_CAP_CUSTOM_OPTION_MAX = 7, /**< uint32_t, always 2: upper bound of the
+                                               *  ConfigSetCustomOption acceptance domain [0,2];
+                                               *  cuBLASLt official semantics: "custom option range is
+                                               *  from 0 to CUSTOM_OPTION_MAX (inclusive)"
+                                               *  (acceptance-domain view, kept under the mixed
+                                               *  reporting view). Note: the policy is decoded and
+                                               *  recorded, but the current FP32 tiling path does not
+                                               *  alter its behavior. */
+    ACLBLASLT_ALGO_CAP_STAGES_IDS = 13, /**< Ascending uint32_t array: {1,2,3,4} = the ConfigSetStages
+                                         *  acceptance domain [1,4]; cuBLASLt official semantics:
+                                         *  "stages ids possible to use" (acceptance-domain view kept).
+                                         *  Probe with capAttributeSize == 0 to obtain the required
+                                         *  byte count (16). Note: stages are decoded and recorded,
+                                         *  but not effective in the current FP32 tiling path. */
+    ACLBLASLT_ALGO_CAP_MAX, /**< Repo-local sentinel (implicit value 14 = STAGES_IDS + 1); cuBLASLt
+                             *  has no such sentinel. Querying it returns NOT_SUPPORTED like any
+                             *  other value outside the enumerated subset. */
+} aclblasLtMatmulAlgoCapAttributes_t;
+
 /*! \ingroup type_module
  *  \brief Logger callback function pointer type.
  *
@@ -795,6 +885,56 @@ aclblasStatus_t aclblasLtMatmulAlgoConfigSetAttribute(
 aclblasStatus_t aclblasLtMatmulAlgoConfigGetAttribute(
     const aclblasLtMatmulAlgo_t* algo, aclblasLtMatmulAlgoConfigAttributes_t attr, void* buf, size_t sizeInBytes,
     size_t* sizeWritten);
+
+/*! \ingroup library_module
+ *  \brief Query a static capability attribute of a matmul algorithm.
+ *
+ *  \details
+ *  Capability values are derived from the static validity domains; they are
+ *  independent of the A/B/C/D data types and of the configuration encoded
+ *  inside \p algo (the algo structure is only magic-checked to enforce the
+ *  "initialized algo" contract). Scalar attributes write one ``uint32_t``;
+ *  array attributes (TILE_IDS / STAGES_IDS) write an ascending ``uint32_t``
+ *  array. When \p capAttributeSize is 0 the call probes: \p capAttribute is
+ *  not written and the required byte count is reported via \p sizeWritten.
+ *  Values follow a mixed reporting view: implementation-capability attributes
+ *  (SPLITK_SUPPORT / REDUCTION_SCHEME_MASK / STRIDED_BATCH_SUPPORT) report the
+ *  actual implementation capabilities, while acceptance-domain attributes
+ *  (STAGES_IDS / CUSTOM_OPTION_MAX) report the Host API acceptance domain;
+ *  see aclblasLtMatmulAlgoCapAttributes_t for the per-attribute divergence
+ *  notes.
+ *
+ *  @param[in]
+ *  algo Pointer to an initialized algorithm structure (produced by
+ *  aclblasLtMatmulAlgoInit() or aclblasLtMatmulAlgoGetHeuristic()).
+ *  @param[in]
+ *  cap The capability attribute to query. See aclblasLtMatmulAlgoCapAttributes_t.
+ *  @param[out]
+ *  capAttribute Output buffer for the capability value(s). May be NULL when
+ *  \p capAttributeSize is 0 (probe mode).
+ *  @param[in]
+ *  capAttributeSize Size of \p capAttribute in bytes. 0 selects probe mode.
+ *  @param[out]
+ *  sizeWritten Number of bytes written, or required when probing / when the
+ *  buffer is too small. May be NULL only if \p capAttributeSize is not 0.
+ *
+ *  \retval ACLBLAS_STATUS_SUCCESS If the capability was retrieved successfully
+ *  (probe mode included).
+ *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p algo is NULL, the algo magic is
+ *  invalid, \p capAttributeSize is 0 while \p sizeWritten is NULL,
+ *  \p capAttributeSize is not 0 while \p capAttribute is NULL, or the buffer is
+ *  smaller than the required size (\p sizeWritten still reports the required
+ *  size in that case).
+ *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If \p cap is any value outside the
+ *  enumerated subset (8~12, 14 and above, the ACLBLASLT_ALGO_CAP_MAX sentinel
+ *  included).
+ *  \retval ACLBLAS_STATUS_INTERNAL_ERROR If the securec copy fails.
+ */
+aclblasStatus_t aclblasLtMatmulAlgoCapGetAttribute(const aclblasLtMatmulAlgo_t* algo,
+                                                   aclblasLtMatmulAlgoCapAttributes_t cap,
+                                                   void* capAttribute,
+                                                   size_t capAttributeSize,
+                                                   size_t* sizeWritten);
 
 /*! \ingroup library_module
  *  \brief Retrieve the supported algorithm IDs for a matmul configuration.

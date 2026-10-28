@@ -594,6 +594,25 @@ aclblasStatus_t aclblasLtMatmulAlgoConfigGetAttribute(const aclblasLtMatmulAlgo_
 | `ACLBLAS_STATUS_INVALID_VALUE` | 指针为空、缓冲区过小或 magic 校验失败。 |
 | `ACLBLAS_STATUS_NOT_SUPPORTED` | 属性未识别或不支持。 |
 
+#### aclblasLtMatmulAlgoCapGetAttribute()
+
+```cpp
+aclblasStatus_t aclblasLtMatmulAlgoCapGetAttribute(const aclblasLtMatmulAlgo_t* algo,
+                                                   aclblasLtMatmulAlgoCapAttributes_t cap,
+                                                   void* capAttribute,
+                                                   size_t capAttributeSize,
+                                                   size_t* sizeWritten);
+```
+
+查询算法的静态能力属性（对标 cuBLASLt `cublasLtMatmulAlgoCapGetAttribute`）。能力值由静态有效域派生，与 A/B/C/D 数据类型及 algo 内已编码配置无关（algo 仅做 magic 校验，强制「已初始化」契约）。口径 = 混合口径：实现能力类 cap 报实际实现能力（`SPLITK_SUPPORT`=0 / `REDUCTION_SCHEME_MASK`=0 / `STRIDED_BATCH_SUPPORT`=0），接受域类 cap 报 Host API 接受域（`STAGES_IDS` / `CUSTOM_OPTION_MAX`，与 `ConfigSet/GetAttribute` 自洽）。标量属性写 1 个 `uint32_t`；数组属性（`TILE_IDS` / `STAGES_IDS`）写升序 `uint32_t` 数组。`capAttributeSize=0` 时为探长：不写 `capAttribute`，仅经 `sizeWritten` 返回所需字节数（对齐 cuBLAS 探长语义）。
+
+| 返回值 | 含义 |
+|---|---|
+| `ACLBLAS_STATUS_SUCCESS` | 查询成功（含 `capAttributeSize=0` 探长）。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `algo` 为空、magic 校验失败、`capAttributeSize=0` 且 `sizeWritten` 为空、`capAttributeSize!=0` 且 `capAttribute` 为空，或缓冲区过小（此时 `sizeWritten` 仍回传所需字节数）。 |
+| `ACLBLAS_STATUS_NOT_SUPPORTED` | `cap` 为枚举子集外任意取值（8~12、14 及以上，含哨兵；不使用 `INVALID_ENUM`）。 |
+| `ACLBLAS_STATUS_INTERNAL_ERROR` | securec 拷贝失败（防御性分支，正常不可达）。 |
+
 #### aclblasLtMatmulAlgoGetIds()
 
 ```cpp
@@ -1162,6 +1181,22 @@ SplitK 归约方案枚举。映射到 `PackedAlgo.flags` 低 2 位。用于 `ACL
 | `ACLBLASLT_ALGO_CONFIG_REDUCTION_SCHEME` (4) | SplitK 归约方案，见 `aclblasLtReductionScheme_t`。 | `uint32_t` | `NONE` |
 | `ACLBLASLT_ALGO_CONFIG_CUSTOM_OPTION` (5) | dispatch policy（0=sync, 1=pingpong, 2=multi_stage）。 | `uint32_t` | 0 |
 | `ACLBLASLT_ALGO_CONFIG_INNER_SHAPE_ID` (6) | 内部 MMA 形状（当前不支持，Set/Get 返回 `NOT_SUPPORTED`）。 | `uint16_t` | — |
+
+### aclblasLtMatmulAlgoCapAttributes_t
+
+矩阵乘法算法能力查询属性枚举，用于 `aclblasLtMatmulAlgoCapGetAttribute`。数值与 cuBLASLt `cublasLtMatmulAlgoCapAttributes_t` 实测权威值一一对应（0~6 + `CUSTOM_OPTION_MAX`=7 + `STAGES_IDS`=13，跨 CUDA 11.0.3~13.2.0 稳定，迁移友好）；cuBLASLt 其余属性（8~12、14~23：`MATHMODE_IMPL`/`GAUSSIAN_IMPL`/`CUSTOM_MEMORY_ORDER`/`POINTER_MODE_MASK`/`EPILOGUE_MASK`/`LD_NEGATIVE`/`NUMERICAL_IMPL_FLAGS`/`MIN_ALIGNMENT_*`/`ATOMIC_SYNC`/13.x 新增）无仓内对应物、不纳入枚举，子集外任何取值查询一律返回 `NOT_SUPPORTED`。`ACLBLASLT_ALGO_CAP_MAX`(=14) 为 repo-local 哨兵（cuBLASLt 无此哨兵）；本库对 14 返回 `NOT_SUPPORTED`。该数值与 cuBLASLt `LD_NEGATIVE`(14) 重合，但本库不提供该属性（cuBLASLt 中该属性受支持、查询返回 `SUCCESS`）。能力值口径 = 混合口径：实现能力类 cap（`SPLITK_SUPPORT`/`REDUCTION_SCHEME_MASK`/`STRIDED_BATCH_SUPPORT`）报实际实现能力；接受域类 cap（`STAGES_IDS`/`CUSTOM_OPTION_MAX`）报 Host API 接受域（与 `ConfigSet/GetAttribute` 自洽，对齐各自 cuBLASLt 官方措辞）；记录配置与 kernel 生效行为的已知差异逐项注记如下。
+
+| 取值 | 含义 | 数据类型 | 能力值 |
+|---|---|---|---|
+| `ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT` (0) | 是否支持 split-K。口径 = 实现能力（cuBLASLt 官方语义 "split-K implementation is supported"）：当前 kernel 集无 split-K reduction stage、FP32 tiling 路径不消费 splitK，故恒 0；与 `REDUCTION_SCHEME_MASK`=0 自洽（无归约实现即无 split-K 执行）。注：`ConfigSetSplitK` 仍接受 [1,255]、algoId 编码域 {1,2,3}，splitK>1 被记录但不以真实 split 执行。 | `uint32_t` | `0` |
+| `ACLBLASLT_ALGO_CAP_REDUCTION_SCHEME_MASK` (1) | 支持的归约方案位掩码，语义对齐 cuBLASLt = 受支持的 `aclblasLtReductionScheme_t` 枚举值按位或（NONE=0 不占位）；INPLACE/WORKSPACE 无实现、不支持，故恒 0；与 SPLITK_SUPPORT=0 自洽（无归约实现即无 split-K 执行）。迁移检查示例：`mask & ACLBLASLT_REDUCTION_SCHEME_INPLACE == 0` → INPLACE 不支持。 | `uint32_t` | `0` |
+| `ACLBLASLT_ALGO_CAP_CTA_SWIZZLING_SUPPORT` (2) | CTA swizzling 支持。本库无 CTA swizzling 概念。 | `uint32_t` | `0` |
+| `ACLBLASLT_ALGO_CAP_STRIDED_BATCH_SUPPORT` (3) | strided batch 支持。layout 的 `BATCH_COUNT`/`STRIDED_BATCH_OFFSET` 属性可存取，但 `aclblasLtMatmul` 计算路径不消费 batch 字段（仅单矩阵），故为 0。 | `uint32_t` | `0` |
+| `ACLBLASLT_ALGO_CAP_OUT_OF_PLACE_RESULT_SUPPORT` (4) | out-of-place 结果支持：`aclblasLtMatmul` 支持 in-place（C==D）与 out-of-place（C!=D）。 | `uint32_t` | `1` |
+| `ACLBLASLT_ALGO_CAP_UPLO_SUPPORT` (5) | uplo/三角属性支持。matmul 描述符无 uplo/三角属性。 | `uint32_t` | `0` |
+| `ACLBLASLT_ALGO_CAP_TILE_IDS` (6) | 全部支持的 L1 tile 形状 id（升序），即 `aclblasLtMatmulTile_t` 全量（128×128..256×256）。探长（`capAttributeSize=0`）可得所需字节数 16。注：FP32 tiling 路径仅消费 N/K tile、不消费 M tile（`ApplyAlgoTilingOverrideFp32`），256 M tile 仅按接受域/编码域上报。 | `uint32_t` 数组 | `{1,2,3,4}`（16 字节） |
+| `ACLBLASLT_ALGO_CAP_CUSTOM_OPTION_MAX` (7) | `ConfigSetCustomOption` 接受域上界。 | `uint32_t` | `2` |
+| `ACLBLASLT_ALGO_CAP_STAGES_IDS` (13) | 全部支持的流水级数（升序）= `ConfigSetStages` 接受域 [1,4]。注：stages 解码记录，但当前 FP32 tiling 路径不生效。 | `uint32_t` 数组 | `{1,2,3,4}`（16 字节） |
 
 ## aclBLASLt Function Reference
 

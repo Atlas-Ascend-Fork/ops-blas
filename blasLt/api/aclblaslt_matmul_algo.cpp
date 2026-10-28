@@ -26,6 +26,24 @@
 
 namespace {
 
+// ---- Gate-off MX feature alignment (single source for the three query entries below) ----
+// With the MXFP8/MXFP4 subtrees excluded from this build (ENABLE_BLASLT_MXFP8 undefined or 0),
+// a well-formed MX request must be rejected at the query entries with the same NOT_SUPPORTED that
+// the engine fallback (matmul_engine.cpp) reports at execution time, instead of advertising algos
+// that can never execute. The pair condition mirrors the engine dispatch checks (E4M3/E5M2 pair,
+// E2M1 pair). In gate-on builds this helper is constant-false, so every call site keeps its
+// pre-gate behavior exactly (the MX rejection becomes a dead branch).
+inline bool IsGatedOffMxPair(aclDataType typeA, aclDataType typeB)
+{
+#if defined(ENABLE_BLASLT_MXFP8) && (ENABLE_BLASLT_MXFP8)
+    (void)typeA;
+    (void)typeB;
+    return false;
+#else
+    return (IsMxfp8Type(typeA) && IsMxfp8Type(typeB)) || (IsMxfp4Type(typeA) && IsMxfp4Type(typeB));
+#endif
+}
+
 // ---- AlgoInit helpers ----
 
 aclblasStatus_t ValidateAlgoInitArgs(
@@ -38,7 +56,7 @@ aclblasStatus_t ValidateAlgoInitArgs(
     if (algoId < 0) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (!CheckComputeTypeCompatibility(computeType, Atype, Btype)) {
+    if (!CheckComputeTypeCompatibility(computeType, Atype, Btype) || IsGatedOffMxPair(Atype, Btype)) {
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
     if (Ctype != Dtype) {
@@ -457,6 +475,39 @@ aclblasStatus_t aclblasLtMatmulAlgoConfigGetAttribute(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+aclblasStatus_t aclblasLtMatmulAlgoCapGetAttribute(
+    const aclblasLtMatmulAlgo_t* algo, aclblasLtMatmulAlgoCapAttributes_t cap, void* capAttribute,
+    size_t capAttributeSize, size_t* sizeWritten)
+{
+    if (algo == nullptr) { // error-code matrix row 1
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (capAttributeSize == 0 && sizeWritten == nullptr) { // error-code matrix row 2
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (capAttributeSize != 0 && capAttribute == nullptr) { // error-code matrix row 3
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+
+    PackedAlgo packed;
+    if (!DecodeAlgo(*algo, &packed)) { // error-code matrix row 4
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    // Capability values are the full static validity domains (dtype/algo independent): packed only
+    // carries the "initialized algo" contract check (magic); its decoded fields never participate
+    // in the capability value derivation below.
+
+    uint32_t values[ALGO_CAP_MAX_ELEMS] = {0};
+    const size_t requiredSize = ResolveAlgoCapValue(cap, values); // internal-layer table lookup
+    if (requiredSize == 0) { // error-code matrix row 5
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
+    // Error-code matrix rows 6~9 (probe / undersized buffer / copy / memcpy_s failure) are all
+    // handled by the shared GetAttribute tail; sizeWritten reports the required size even when the
+    // caller buffer is too small.
+    return CopyAttributeOut(capAttribute, capAttributeSize, values, requiredSize, sizeWritten);
+}
+
 aclblasStatus_t aclblasLtMatmulAlgoGetIds(
     aclblasLtHandle_t lightHandle, aclblasComputeType_t computeType, aclDataType scaleType, aclDataType Atype,
     aclDataType Btype, aclDataType Ctype, aclDataType Dtype, int* algoIdsArray, int algoIdsArrayLength, int* numAlgoIds)
@@ -473,7 +524,7 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(
     if (algoIdsArray == nullptr || algoIdsArrayLength <= 0) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (!CheckComputeTypeCompatibility(computeType, Atype, Btype)) {
+    if (!CheckComputeTypeCompatibility(computeType, Atype, Btype) || IsGatedOffMxPair(Atype, Btype)) {
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
     if (Ctype != Dtype) {
@@ -533,6 +584,11 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(
     if (!CheckComputeTypeCompatibility(desc->computeType, A->type, B->type)) {
         heuristicResultsArray[0].state = ACLBLAS_STATUS_INVALID_VALUE;
         return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    // Gate-off MX rejection (see IsGatedOffMxPair): must not return MX candidates that
+    // MatmulLaunch would refuse to execute; NOT_SUPPORTED matches the engine fallback code.
+    if (IsGatedOffMxPair(A->type, B->type)) {
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
 
     // Materialize ranked tiling candidates into serializable algo blobs. Each returned

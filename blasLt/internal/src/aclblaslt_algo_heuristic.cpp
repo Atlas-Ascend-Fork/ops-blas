@@ -83,6 +83,64 @@ void AppendAlgoIdsForPolicy(uint8_t p, std::vector<int>& ids)
     }
 }
 
+// ---- Algo capability value derivation (aclblasLtMatmulAlgoCapGetAttribute) ----
+// Capability values are the full static validity domains declared above; they never depend on the
+// packed algo fields. Each helper materializes one ascending uint32_t array (capacity bounded by
+// ALGO_CAP_MAX_ELEMS) and returns the required byte count (elementCount * sizeof(uint32_t)).
+
+// Anti-silent-truncation guards: the helpers below materialize into a caller buffer of
+// ALGO_CAP_MAX_ELEMS elements. Growing the tile domains or the stages range beyond that capacity
+// must fail the build here instead of silently under-reporting the arrays (the runtime
+// `count >= ALGO_CAP_MAX_ELEMS` guards stay as defense in depth).
+static_assert(sizeof(VALID_L1_M) / sizeof(VALID_L1_M[0]) * (sizeof(VALID_L1_N) / sizeof(VALID_L1_N[0])) <=
+                  ALGO_CAP_MAX_ELEMS,
+              "TILE_IDS domain (VALID_L1_M x VALID_L1_N) exceeds ALGO_CAP_MAX_ELEMS: raise the capacity");
+static_assert(static_cast<uint32_t>(ACLBLASLT_MATMUL_STAGES_4) - static_cast<uint32_t>(ACLBLASLT_MATMUL_STAGES_1) +
+                      1u <= ALGO_CAP_MAX_ELEMS,
+              "STAGES_IDS domain (STAGES_1..STAGES_4) exceeds ALGO_CAP_MAX_ELEMS: raise the capacity");
+
+// TILE_IDS: every VALID_L1_M x VALID_L1_N combination mapped through L1MNToTileId (UNDEFINED
+// filtered out), ascending and deduplicated. The current domains {128,256} x {128,256} derive to
+// {1,2,3,4}.
+size_t FillCapTileIds(uint32_t* outValues)
+{
+    size_t count = 0;
+    for (uint32_t m : VALID_L1_M) {
+        for (uint32_t n : VALID_L1_N) {
+            const uint32_t tileId = L1MNToTileId(m, n);
+            if (tileId == ACLBLASLT_MATMUL_TILE_UNDEFINED || count >= ALGO_CAP_MAX_ELEMS) {
+                continue;
+            }
+            outValues[count] = tileId;
+            ++count;
+        }
+    }
+    std::sort(outValues, outValues + count);
+    // Deduplicate: distinct (m, n) pairs may map onto the same tile id if the tile table ever
+    // gains aliases; the reported array must stay a strictly ascending id set.
+    count = static_cast<size_t>(std::unique(outValues, outValues + count) - outValues);
+    return count * sizeof(uint32_t);
+}
+
+// STAGES_IDS: the ConfigSetStages acceptance domain [1,4] (enforced in the api layer), materialized
+// from the public ACLBLASLT_MATMUL_STAGES_1.._4 enumerators as the single source of truth here.
+// Assumes STAGES_1..STAGES_4 are contiguous enum values (currently 1..4; the static_assert above
+// bounds the range). If a non-contiguous stages set is ever introduced, replace the loop with an
+// explicit table of the supported enumerators.
+size_t FillCapStagesIds(uint32_t* outValues)
+{
+    size_t count = 0;
+    for (uint32_t stages = ACLBLASLT_MATMUL_STAGES_1; stages <= static_cast<uint32_t>(ACLBLASLT_MATMUL_STAGES_4);
+         ++stages) {
+        if (count >= ALGO_CAP_MAX_ELEMS) {
+            break;
+        }
+        outValues[count] = stages;
+        ++count;
+    }
+    return count * sizeof(uint32_t);
+}
+
 } // namespace
 
 uint8_t EncodeL1KToFlags(uint8_t flags, uint32_t l1k)
@@ -221,6 +279,71 @@ std::vector<int> EnumerateValidAlgoIds()
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
     return ids;
+}
+
+// Resolve one capability attribute of aclblasLtMatmulAlgoCapGetAttribute from the static validity
+// domains (array-valued caps are derived by the Fill* helpers in the anonymous namespace above).
+// Returns the required byte count, or 0 for unknown / unsupported caps; callers map 0 to
+// ACLBLAS_STATUS_NOT_SUPPORTED. No side effects, no heap allocation, reentrant; outValues is left
+// untouched whenever 0 is returned.
+size_t ResolveAlgoCapValue(aclblasLtMatmulAlgoCapAttributes_t cap, uint32_t* outValues)
+{
+    if (outValues == nullptr) {
+        return 0;
+    }
+    switch (cap) {
+        case ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT:
+            // Implementation-capability view (cuBLASLt semantics: "split-K implementation is
+            // supported"): the current kernel set has no split-K reduction stage (see the api-layer
+            // note in BuildRankedCandidates) and the FP32 tiling path does not consume splitK.
+            // ConfigSetSplitK still accepts [1,255] and the algoId encoding domain is {1,2,3}:
+            // splitK > 1 is recorded but not executed as a real split. Self-consistent with
+            // REDUCTION_SCHEME_MASK = 0 (no reduction scheme is implemented).
+            outValues[0] = 0u;
+            return sizeof(uint32_t);
+        case ACLBLASLT_ALGO_CAP_REDUCTION_SCHEME_MASK:
+            // Mask semantics aligned with cuBLASLt: the value is the bitwise OR of the supported
+            // aclblasLtReductionScheme_t enumerator values, and NONE (= 0) contributes no bit.
+            // INPLACE / WORKSPACE have no implementation and are unsupported, so the mask is 0.
+            // Self-consistent with SPLITK_SUPPORT = 0 (no reduction implementation implies no
+            // split-K execution).
+            outValues[0] = 0u;
+            return sizeof(uint32_t);
+        case ACLBLASLT_ALGO_CAP_CTA_SWIZZLING_SUPPORT:
+            // This library has no CTA swizzling concept.
+            outValues[0] = 0u;
+            return sizeof(uint32_t);
+        case ACLBLASLT_ALGO_CAP_STRIDED_BATCH_SUPPORT:
+            // The layout attributes BATCH_COUNT / STRIDED_BATCH_OFFSET are storable and readable,
+            // but the aclblasLtMatmul compute path never consumes the batch fields (single matrix
+            // only), so strided batching is reported as unsupported.
+            outValues[0] = 0u;
+            return sizeof(uint32_t);
+        case ACLBLASLT_ALGO_CAP_OUT_OF_PLACE_RESULT_SUPPORT:
+            // aclblasLtMatmul supports both in-place (C == D) and out-of-place (C != D) results.
+            outValues[0] = 1u;
+            return sizeof(uint32_t);
+        case ACLBLASLT_ALGO_CAP_UPLO_SUPPORT:
+            // Matmul descriptors carry no uplo / triangular attribute.
+            outValues[0] = 0u;
+            return sizeof(uint32_t);
+        case ACLBLASLT_ALGO_CAP_TILE_IDS:
+            return FillCapTileIds(outValues);
+        case ACLBLASLT_ALGO_CAP_CUSTOM_OPTION_MAX: {
+            const uint8_t* policiesEnd = VALID_POLICIES + sizeof(VALID_POLICIES) / sizeof(VALID_POLICIES[0]);
+            outValues[0] = static_cast<uint32_t>(*std::max_element(VALID_POLICIES, policiesEnd));
+            return sizeof(uint32_t);
+        }
+        case ACLBLASLT_ALGO_CAP_STAGES_IDS:
+            return FillCapStagesIds(outValues);
+        case ACLBLASLT_ALGO_CAP_MAX:
+        default:
+            // Values outside the enumerated subset (cuBLASLt 8~12 MATHMODE_IMPL/GAUSSIAN_IMPL/
+            // CUSTOM_MEMORY_ORDER/POINTER_MODE_MASK/EPILOGUE_MASK, 14~23 LD_NEGATIVE/
+            // NUMERICAL_IMPL_FLAGS/MIN_ALIGNMENT_*/ATOMIC_SYNC/CUDA 13.x additions, the MAX
+            // sentinel, or any out-of-range int passed through the C ABI) are unsupported.
+            return 0;
+    }
 }
 
 // Return lightweight default hardware caps until real device queries are wired up.

@@ -190,6 +190,13 @@ target_include_directories(${OPS_BLASLT} PRIVATE
 target_compile_definitions(${OPS_BLASLT} PRIVATE
   ASC_DEVKIT_MAJOR=${ASC_DEVKIT_MAJOR}
   ASC_DEVKIT_MINOR=${ASC_DEVKIT_MINOR})
+# The MXFP8/MXFP4 subtrees are compiled only when ENABLE_BLASLT_MXFP8 is on (blasLt/CMakeLists.txt
+# excludes them otherwise). Mirror the gate into a compile definition so the engine call sites in
+# blasLt/matmul/engine/matmul_engine.cpp are excluded in lockstep with the definitions; without it
+# the shared library carries undefined matmul_mxfp8/mxfp4 symbols and every consumer fails to link.
+if(ENABLE_BLASLT_MXFP8)
+  target_compile_definitions(${OPS_BLASLT} PRIVATE ENABLE_BLASLT_MXFP8=1)
+endif()
 target_compile_features(${OPS_BLASLT} PRIVATE cxx_std_17)
 
 set(ASC_WARN_SUPPRESS "-Wno-#pragma-messages" "-Wno-deprecated-declarations" "-Wno-c++20-extensions")

@@ -109,6 +109,17 @@ bool DecodeAlgoIdFields(
     uint32_t algoId, uint8_t* policy, uint16_t* l1mDiv16, uint16_t* l1nDiv16, uint32_t* l1k, uint8_t* splitK);
 std::vector<int> EnumerateValidAlgoIds();
 
+// ---- Algo capability query (aclblasLtMatmulAlgoCapGetAttribute) ----
+// Maximum element count of any supported array-valued cap (TILE_IDS / STAGES_IDS: 4 elements each).
+constexpr size_t ALGO_CAP_MAX_ELEMS = 4;
+
+// Resolve the capability value of cap from the static validity domains: returns the required byte
+// count (scalar 4 / array elementCount * 4) and writes the value(s) into outValues (capacity >=
+// ALGO_CAP_MAX_ELEMS). Returns 0 for any cap outside the enumerated subset (8~12, 14+, the MAX
+// sentinel, or any out-of-range int) without writing outValues; the caller maps 0 to
+// ACLBLAS_STATUS_NOT_SUPPORTED.
+size_t ResolveAlgoCapValue(aclblasLtMatmulAlgoCapAttributes_t cap, uint32_t* outValues);
+
 // ---- heuristic scoring helpers ----
 void GetAscendHardwareCaps(int32_t deviceId, AscendHardwareCaps* caps);
 void SelectL0TileShape(

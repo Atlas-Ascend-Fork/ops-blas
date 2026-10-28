@@ -22,10 +22,17 @@
 #include "matmul_fp32_host.h"
 #include "matmul_fp32_kernel.h"
 #include "matmul_fp32_tiling_data.h"
+// The MXFP8/MXFP4 subtrees are compiled into libops_blasLt.so only when the CMake capability
+// gate ENABLE_BLASLT_MXFP8 is on (blasLt/CMakeLists.txt excludes the whole subtrees otherwise);
+// the top-level CMakeLists mirrors that gate into a same-named compile definition. Keep the
+// includes and the call sites below behind the same macro so this translation unit never
+// references definitions that were excluded from the library (undefined symbols at link time).
+#if defined(ENABLE_BLASLT_MXFP8) && (ENABLE_BLASLT_MXFP8)
 #include "matmul_mxfp4_host.h"
 #include "matmul_mxfp8_host.h"
 #include "matmul_mxfp8_kernel.h"
 #include "quant_matmul_tiling_data.h"
+#endif // ENABLE_BLASLT_MXFP8
 
 #include <cstdint>
 
@@ -45,7 +52,9 @@ aclblasStatus_t LaunchMmadKernel(
     const aclrtStream stream = problem.stream;
     const aclDataType dtypeA = problem.dtypeA;
     const aclDataType dtypeB = problem.dtypeB;
-    const aclDataType dtypeD = problem.dtypeD;
+#if defined(ENABLE_BLASLT_MXFP8) && (ENABLE_BLASLT_MXFP8)
+    const aclDataType dtypeD = problem.dtypeD; // consumed by the MXFP4 launch entry only
+#endif // ENABLE_BLASLT_MXFP8
     const bool transA = problem.transA;
     const bool transB = problem.transB;
 
@@ -59,6 +68,10 @@ aclblasStatus_t LaunchMmadKernel(
             AsBytes(problem.A), AsBytes(problem.B), static_cast<uint8_t*>(dRawAddr), fp32Tiling, numBlocks, stream);
         return ACLBLAS_STATUS_SUCCESS;
     }
+    // MXFP8/MXFP4 call sites are compiled only together with their definitions (see the include
+    // guard note above). With the gate off, well-formed MX requests fall through to the
+    // NOT_SUPPORTED return below, matching the unsupported-dtype fallback semantics.
+#if defined(ENABLE_BLASLT_MXFP8) && (ENABLE_BLASLT_MXFP8)
     if (IsMxfp8Type(dtypeA) && IsMxfp8Type(dtypeB)) {
         if (problem.scaleA == nullptr || problem.scaleB == nullptr) {
             return ACLBLAS_STATUS_INVALID_VALUE;
@@ -83,6 +96,7 @@ aclblasStatus_t LaunchMmadKernel(
             transA, transB, stream);
         return ACLBLAS_STATUS_SUCCESS;
     }
+#endif // ENABLE_BLASLT_MXFP8
     return ACLBLAS_STATUS_NOT_SUPPORTED;
 }
 
