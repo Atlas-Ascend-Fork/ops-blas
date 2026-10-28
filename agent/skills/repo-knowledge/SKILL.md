@@ -221,94 +221,69 @@ BLAS 标准中，标量参数（`alpha`, `beta`）的传递方式：
 
 ## 3. ops-blas 接口映射
 
-### 3.1 命名映射规则
+前面的 CBLAS 说明是背景知识。本仓公开 ABI 以 [`include/cann_ops_blas.h`](../../../include/cann_ops_blas.h) 和 [`include/cann_ops_blas_common.h`](../../../include/cann_ops_blas_common.h) 为准，不能只重命名 CBLAS 函数并保留原实参列表。
 
-将 CBLAS 接口映射到 ops-blas 时，遵循以下规则：
+### 3.1 命名与调用方式
 
+`cblas_sgemm`、`cblas_sgemv`、`cblas_scopy` 可分别对应本仓 `aclblasSgemm`、`aclblasSgemv`、`aclblasScopy` 的计算功能；可用接口及具体声明需查公共头。
+
+- 本仓这些接口的首参为 `aclblasHandle_t`。
+- `alpha`、`beta` 等标量在这些接口中通过指针传递，不是 CBLAS 的标量值参数。
+- 返回值为 `aclblasStatus_t`；例如 `aclblasSdot` 将数值结果写到 `result`，不直接返回点积值。
+- 没有 CBLAS `order` 对应参数。矩阵布局应遵循具体接口文档，不能自行添加 `aclblasOrder_t`。
+
+### 3.2 枚举类型对应
+
+| CBLAS 概念 | 本仓公共类型 |
+| --- | --- |
+| transpose | `aclblasOperation_t` |
+| uplo | `aclblasFillMode_t` |
+| diag | `aclblasDiagType_t` |
+| side | `aclblasSideMode_t` |
+
+上述实际定义位于 `cann_ops_blas_common.h`；不要使用并未定义的 `aclblasTranspose_t`、`aclblasUplo_t`、`aclblasDiag_t` 或 `aclblasSide_t`。
+
+### 3.3 真实声明示例
+
+以下声明逐字取自公共头，用于说明实参合同，不表示接口在所有芯片上均有实现或已经执行验证。
+
+```cpp
+aclblasStatus_t aclblasSgemm(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb,
+    int m, int n, int k, const float* alpha, const float* A, int lda,
+    const float* B, int ldb, const float* beta, float* C, int ldc);
+
+aclblasStatus_t aclblasSgemv(
+    aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, const float* alpha, const float* A, int lda,
+    const float* x, int incx, const float* beta, float* y, int incy);
+
+aclblasStatus_t aclblasSdot(
+    aclblasHandle_t handle, int n, const float* x, int incx, const float* y, int incy, float* result);
 ```
-cblas_<op> → aclblas<Op>
-```
-
-示例：
-- `cblas_sgemm` → `aclblasSgemm`
-- `cblas_dgemv` → `aclblasDgemv`
-- `cblas_caxpy` → `aclblasCaxpy`
-
-### 3.2 枚举类型映射
-
-```c
-// CBLAS
-enum CBLAS_ORDER → aclblasOrder_t
-enum CBLAS_TRANSPOSE → aclblasTranspose_t
-enum CBLAS_UPLO → aclblasUplo_t
-enum CBLAS_DIAG → aclblasDiag_t
-enum CBLAS_SIDE → aclblasSide_t
-```
-
-### 3.3 参数顺序保持一致
-
-ops-blas 接口应保持与 CBLAS 相同的参数顺序，确保用户迁移成本最低。
 
 ## 4. 常见错误与规范检查
 
 ### 4.1 命名错误
 
-❌ 错误示例：
-- `aclblas_gemm`（使用下划线）
-- `aclblasGEMM`（全大写）
-- `aclblasgemm`（缺少精度前缀）
+❌ 错误示例：`aclblas_gemm`、`aclblasGEMM`、`aclblasgemm`。
 
-✅ 正确示例：
-- `aclblasSgemm`
-- `aclblasDgemm`
-- `aclblasCgemm`
+✅ 正确示例：`aclblasSgemm`、`aclblasCgemv`、`aclblasScopy`；仍需核对接口是否已声明及支持范围。
 
-### 4.2 参数顺序错误
+### 4.2 ABI 实参错误
 
-❌ 错误示例：
-```c
-// 维度参数放在枚举参数之前
-aclblasStatus_t aclblasSgemm(int m, int n, int k, 
-                             aclblasTranspose_t transA, ...);
+不要把 CBLAS 的 `order` 作为本仓首参，不要省略 `handle`，也不要把真实指针标量改成值传参。参数顺序必须与具体公共声明一致，不能要求所有接口沿用 CBLAS 原实参列表。
+
+### 4.3 const 与输入输出检查
+
+新接口应按输入/输出语义考虑 `const`；使用既有接口时保留其真实 ABI，不自行改写公共签名。比如本仓只读 Scopy 输入与可写输出声明为：
+
+```cpp
+aclblasStatus_t aclblasScopy(aclblasHandle_t handle, int n, const float* x, int incx, float* y, int incy);
 ```
 
-✅ 正确示例：
-```c
-// 枚举参数在前，维度参数在后
-aclblasStatus_t aclblasSgemm(aclblasOrder_t order,
-                             aclblasTranspose_t transA,
-                             aclblasTranspose_t transB,
-                             int m, int n, int k, ...);
-```
+### 4.4 步长参数检查
 
-### 4.3 const 修饰错误
-
-❌ 错误示例：
-```c
-// 输入数组缺少 const
-aclblasStatus_t aclblasSaxpy(int n, float alpha, float *x, int incx, ...);
-```
-
-✅ 正确示例：
-```c
-// 输入数组使用 const
-aclblasStatus_t aclblasSaxpy(int n, float alpha, const float *x, int incx, ...);
-```
-
-### 4.4 步长参数遗漏
-
-❌ 错误示例：
-```c
-// 缺少 leading dimension
-aclblasStatus_t aclblasSgemm(..., const float *A, const float *B, ...);
-```
-
-✅ 正确示例：
-```c
-// 包含 leading dimension
-aclblasStatus_t aclblasSgemm(..., const float *A, int lda, 
-                             const float *B, int ldb, ...);
-```
+按真实声明保留 `lda`、`ldb`、`ldc`、`incx`、`incy` 等相关参数。适用维度、布局和合法取值按具体接口文档与实现检查，不能仅依据通用命名猜测签名。
 
 ## 5. 参考资源
 
