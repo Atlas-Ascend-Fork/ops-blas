@@ -149,6 +149,7 @@ docker run --name cann_container --device /dev/davinci0 --device /dev/davinci_ma
 
     ```bash
     git clone -b ${tag_version} https://gitcode.com/cann/ops-blas.git
+    cd ops-blas
     ```
     
 2. 安装依赖。
