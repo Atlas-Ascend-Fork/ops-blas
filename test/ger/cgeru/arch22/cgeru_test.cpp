@@ -86,6 +86,15 @@ TEST_F(CgeruTest, ZeroYColumnSkipsInfAndNanX)
     EXPECT_EQ(matrix[0].imag, original[0].imag);
     EXPECT_EQ(matrix[1].real, original[1].real);
     EXPECT_EQ(matrix[1].imag, original[1].imag);
+
+    // Column 1 (matrix[2]/matrix[3]) must be updated normally (issue #645):
+    // alpha=1, y[1]={1,0}; x[0]={inf,0} contributes {inf, NaN} (inf*0 in the
+    // imaginary part), x[1]={NaN,1} contributes {NaN, NaN}. A lost write-back
+    // would leave the original {5,6}/{7,8} in place and fail these checks.
+    EXPECT_TRUE(std::isinf(matrix[2].real) && matrix[2].real > 0.0f);
+    EXPECT_TRUE(std::isnan(matrix[2].imag));
+    EXPECT_TRUE(std::isnan(matrix[3].real));
+    EXPECT_TRUE(std::isnan(matrix[3].imag));
 }
 
 TEST_F(CgeruTest, NoConjugationAndIntMinStride)

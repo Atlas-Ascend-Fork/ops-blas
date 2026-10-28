@@ -11,6 +11,28 @@
 #pragma once
 #include "csv_loader.h"
 
+// Required numeric columns must fail with the column name in the message
+// (issue #643) instead of a bare std::invalid_argument from std::stoi("").
+inline int ParseIntColumn(const csv_map& row, const char* key, const std::string& def = std::string())
+{
+    const std::string raw = ReadMap(row, key, def);
+    try {
+        return std::stoi(raw);
+    } catch (const std::exception&) {
+        throw std::runtime_error(std::string("column '") + key + "' is missing, empty or non-numeric: '" + raw + "'");
+    }
+}
+
+inline float ParseFloatColumn(const csv_map& row, const char* key, const std::string& def = std::string())
+{
+    const std::string raw = ReadMap(row, key, def);
+    try {
+        return std::stof(raw);
+    } catch (const std::exception&) {
+        throw std::runtime_error(std::string("column '") + key + "' is missing, empty or non-numeric: '" + raw + "'");
+    }
+}
+
 struct CtrsmBatchedParam : BlasTestParamBase {
     aclblasSideMode_t side;
     aclblasFillMode_t uplo;
@@ -26,13 +48,16 @@ struct CtrsmBatchedParam : BlasTestParamBase {
         uplo = parseFillMode(ReadMap(row, "uplo"));
         trans = parseOpTrans(ReadMap(row, "trans"));
         diag = parseDiagType(ReadMap(row, "diag"));
-        m = std::stoi(ReadMap(row, "m"));
-        n = std::stoi(ReadMap(row, "n"));
-        lda = std::stoi(ReadMap(row, "lda", std::to_string(std::max(1, side == ACLBLAS_SIDE_LEFT ? m : n))));
-        ldb = std::stoi(ReadMap(row, "ldb", std::to_string(std::max(1, m))));
-        batchCount = std::stoi(ReadMap(row, "batchCount"));
+        m = ParseIntColumn(row, "m");
+        n = ParseIntColumn(row, "n");
+        lda = ParseIntColumn(row, "lda", std::to_string(std::max(1, side == ACLBLAS_SIDE_LEFT ? m : n)));
+        ldb = ParseIntColumn(row, "ldb", std::to_string(std::max(1, m)));
+        batchCount = ParseIntColumn(row, "batchCount");
         nullAlpha = ReadMap(row, "alpha_real") == "null";
-        alpha = {nullAlpha ? 0.0f : std::stof(ReadMap(row, "alpha_real")), std::stof(ReadMap(row, "alpha_imag"))};
+        // alpha_real=="null" skips both components: an empty alpha_imag must not
+        // terminate construction for rows that never use alpha.
+        alpha = nullAlpha ? aclblasComplex{0.0f, 0.0f} :
+                            aclblasComplex{ParseFloatColumn(row, "alpha_real"), ParseFloatColumn(row, "alpha_imag")};
         aFill = ReadMap(row, "a");
         bFill = ReadMap(row, "b");
     }

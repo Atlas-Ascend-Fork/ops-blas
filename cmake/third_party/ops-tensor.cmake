@@ -17,15 +17,51 @@ set(OPTENSOR_TAG_ID c1326e7a7fb30536dc3517ac40e06935aba5e88d)
 if(EXISTS "${CANN_3RD_LIB_PATH}/ops-tensor")
   get_filename_component(OPTENSOR_SOURCE_PATH ${CANN_3RD_LIB_PATH}/ops-tensor REALPATH)
   message(STATUS "Find ops-tensor source dir: ${OPTENSOR_SOURCE_PATH}")
+  # Idempotent handling of an existing clone (issue #648): skip when HEAD already
+  # matches the pinned SHA; otherwise only touch a clean worktree and give clear
+  # guidance for a dirty one instead of force-checking-out user state.
   execute_process(
-    COMMAND git checkout ${OPTENSOR_TAG_ID}
+    COMMAND git rev-parse HEAD
     WORKING_DIRECTORY ${OPTENSOR_SOURCE_PATH}
-    RESULT_VARIABLE EXEC_RESULT
-    OUTPUT_VARIABLE EXEC_INFO
-    ERROR_VARIABLE EXEC_ERROR
+    OUTPUT_VARIABLE OPTENSOR_HEAD_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE OPTENSOR_HEAD_RESULT
   )
-  if(NOT "${EXEC_RESULT}" STREQUAL "0")
-    message(FATAL_ERROR "Git checkout failed! result: ${EXEC_RESULT}, error: ${EXEC_ERROR}")
+  if(NOT OPTENSOR_HEAD_RESULT EQUAL 0)
+    message(FATAL_ERROR "ops-tensor: cannot read HEAD of the existing clone at ${OPTENSOR_SOURCE_PATH}")
+  endif()
+  if("${OPTENSOR_HEAD_SHA}" STREQUAL "${OPTENSOR_TAG_ID}")
+    message(STATUS "ops-tensor already at ${OPTENSOR_TAG_ID}")
+  else()
+    execute_process(
+      COMMAND git status --porcelain --untracked-files=no
+      WORKING_DIRECTORY ${OPTENSOR_SOURCE_PATH}
+      OUTPUT_VARIABLE OPTENSOR_DIRTY
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+      RESULT_VARIABLE OPTENSOR_STATUS_RESULT
+    )
+    if(NOT OPTENSOR_STATUS_RESULT EQUAL 0)
+      message(FATAL_ERROR "ops-tensor: git status failed on ${OPTENSOR_SOURCE_PATH}")
+    endif()
+    if(NOT "${OPTENSOR_DIRTY}" STREQUAL "")
+      message(WARNING
+        "ops-tensor: ${OPTENSOR_SOURCE_PATH} is at ${OPTENSOR_HEAD_SHA} (expected ${OPTENSOR_TAG_ID}) "
+        "and has uncommitted changes; leaving it untouched. Commit or stash the changes, "
+        "or check out ${OPTENSOR_TAG_ID} manually, then re-run cmake.")
+    else()
+      execute_process(
+        COMMAND git checkout ${OPTENSOR_TAG_ID}
+        WORKING_DIRECTORY ${OPTENSOR_SOURCE_PATH}
+        RESULT_VARIABLE EXEC_RESULT
+        OUTPUT_VARIABLE EXEC_INFO
+        ERROR_VARIABLE EXEC_ERROR
+      )
+      if(NOT "${EXEC_RESULT}" STREQUAL "0")
+        message(FATAL_ERROR "Git checkout failed! result: ${EXEC_RESULT}, error: ${EXEC_ERROR}")
+      endif()
+    endif()
   endif()
 
   # Submodule: try local cache first (offline-friendly), fall back to network

@@ -91,7 +91,9 @@ inline std::vector<T> GetCasesFromCsv(const std::string& csvPath)
 
     std::vector<T> cases;
     std::string line;
+    size_t lineNo = 0;
     while (std::getline(ifs, line)) {
+        lineNo++;
         // skip empty and comment lines
         auto trimmed = line;
         size_t ns = trimmed.find_first_not_of(" \t\r\n");
@@ -115,7 +117,14 @@ inline std::vector<T> GetCasesFromCsv(const std::string& csvPath)
                 row[keys[i]] = values[i];
             }
         }
-        cases.emplace_back(row);
+        try {
+            cases.emplace_back(row);
+        } catch (const std::exception& e) {
+            // issue #643: 参数构造期抛出的异常（如必填列缺失时 stoi("")）不得
+            // 终止整个测试二进制——报告行号与原因后跳过该行，其余用例继续执行
+            ADD_FAILURE() << "csv row at line " << lineNo << " failed to construct a test case: " << e.what()
+                          << ", case dropped";
+        }
     }
     return cases;
 }
@@ -175,7 +184,7 @@ inline uint32_t parseUint(const std::string& s, uint32_t def = 0)
     }
 }
 
-// ── Generic enum parser: map lookup → numeric fallback → default ──
+// ── Generic enum parser: map lookup → validated numeric fallback → default ──
 template <typename EnumT>
 inline EnumT parseEnum(const std::string& s, const std::unordered_map<std::string, EnumT>& table, EnumT defaultVal)
 {
@@ -185,7 +194,23 @@ inline EnumT parseEnum(const std::string& s, const std::unordered_map<std::strin
     if (it != table.end())
         return it->second;
     try {
-        return static_cast<EnumT>(std::stoi(s));
+        // Out-of-range numeric enums are a deliberate negative-injection channel
+        // used by many existing CSV suites (e.g. trans=999 expecting
+        // INVALID_ENUM), so the value is passed through as before (!723 review).
+        // The notice only makes the fallback visible (issue #644).
+        const int v = std::stoi(s);
+        bool legal = false;
+        for (const auto& kv : table) {
+            if (static_cast<int>(kv.second) == v) {
+                legal = true;
+                break;
+            }
+        }
+        if (!legal) {
+            std::cout << "[csv_loader] numeric enum fallback '" << s << "' is not in the legal value set of "
+                      << "this enum (negative-injection row?)\n";
+        }
+        return static_cast<EnumT>(v);
     } catch (...) {
         return defaultVal;
     }

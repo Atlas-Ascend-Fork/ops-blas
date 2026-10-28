@@ -57,7 +57,11 @@ message(STATUS "SOC_ARCH_DIRS=${SOC_ARCH_DIRS}")
 # 定义所有支持的架构特定目录（全局唯一定义）
 set(ARCH_SPECIFIC_DIRS arch35 arch22 arch20 CACHE INTERNAL "Architecture specific directories")
 
-set(ASCEND_CANN_PACKAGE_PATH $ENV{ASCEND_HOME_PATH})
+# Respect an explicit -DASCEND_CANN_PACKAGE_PATH from the command line; fall
+# back to the environment when the caller did not provide one.
+if(NOT ASCEND_CANN_PACKAGE_PATH)
+  set(ASCEND_CANN_PACKAGE_PATH $ENV{ASCEND_HOME_PATH})
+endif()
 
 include(cmake/asc_devkit_version.cmake)
 ops_blas_detect_asc_devkit_version()

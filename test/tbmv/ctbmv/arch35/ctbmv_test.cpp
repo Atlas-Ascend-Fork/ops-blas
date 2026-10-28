@@ -118,6 +118,10 @@ struct CtbmvPerformanceCase {
     double limitUs;
 };
 
+// Budget factor applied to the gpu_baseline.csv reference in the CSV performance
+// path, matching the hardcoded limits above (e.g. 17.48us vs a 6.992us baseline).
+constexpr double kPerfThresholdFactor = 2.5;
+
 constexpr CtbmvPerformanceCase kCtbmvPerformanceCases[] = {
     {512, 8, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 17.48},
     {1024, 16, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 27.47},
@@ -137,8 +141,9 @@ bool AllFinite(const std::vector<aclblasComplex>& values)
 
 // Builds one case banded matrix and input vector. The seeds are offset by the
 // shape so every case gets its own data while staying reproducible across runs.
-void BuildPerformanceInputs(int n, int k, aclblasFillMode_t uplo, int lda, int incx, unsigned seed,
-    std::vector<aclblasComplex>& a, std::vector<aclblasComplex>& x)
+void BuildPerformanceInputs(
+    int n, int k, aclblasFillMode_t uplo, int lda, int incx, unsigned seed, std::vector<aclblasComplex>& a,
+    std::vector<aclblasComplex>& x)
 {
     const int kl = (uplo == ACLBLAS_UPPER) ? 0 : k;
     const int ku = (uplo == ACLBLAS_UPPER) ? k : 0;
@@ -273,8 +278,9 @@ bool MeasureTotalUs(
 // Checks every staged output - the warmup slices included - for finiteness and
 // against the CPU reference, and emits the summary line the self-test logs
 // quote. Returns whether all of them passed.
-bool VerifyFinitePerformanceOutputs(const std::vector<aclblasComplex>& batchX,
-    const std::vector<aclblasComplex>& golden, const CtbmvPerformanceCase& p, int vectorCount)
+bool VerifyFinitePerformanceOutputs(
+    const std::vector<aclblasComplex>& batchX, const std::vector<aclblasComplex>& golden, const CtbmvPerformanceCase& p,
+    int vectorCount)
 {
     bool accuracyPassed = true;
     for (int i = 0; i < vectorCount; ++i) {
@@ -294,14 +300,15 @@ bool VerifyFinitePerformanceOutputs(const std::vector<aclblasComplex>& batchX,
 // untouched, aSpecial has only the stored diagonal replaced, and x/golden start
 // from the same vector. Every off-diagonal operand stays finite, so a
 // non-finite output can only come from reading the diagonal despite diag=UNIT.
-void BuildUnitDiagonalInputs(float special, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k,
-    int lda, std::vector<aclblasComplex>& aFinite, std::vector<aclblasComplex>& aSpecial,
-    std::vector<aclblasComplex>& x, std::vector<aclblasComplex>& golden)
+void BuildUnitDiagonalInputs(
+    float special, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, int lda,
+    std::vector<aclblasComplex>& aFinite, std::vector<aclblasComplex>& aSpecial, std::vector<aclblasComplex>& x,
+    std::vector<aclblasComplex>& golden)
 {
     const int kl = uplo == ACLBLAS_UPPER ? 0 : k;
     const int ku = uplo == ACLBLAS_UPPER ? k : 0;
-    aFinite = makeCtbmvComplexBanded(n, n, kl, ku, lda, "RANDOM_NORM_5_5",
-        62000U + static_cast<unsigned>(uplo) + static_cast<unsigned>(trans));
+    aFinite = makeCtbmvComplexBanded(
+        n, n, kl, ku, lda, "RANDOM_NORM_5_5", 62000U + static_cast<unsigned>(uplo) + static_cast<unsigned>(trans));
     aSpecial = aFinite;
     x = makeCtbmvComplexStrided(n, 1, "RANDOM_NORM_5_5", 63000U);
     golden = x;
@@ -314,11 +321,11 @@ void BuildUnitDiagonalInputs(float special, aclblasFillMode_t uplo, aclblasOpera
 } // namespace
 
 INSTANTIATE_TEST_SUITE_P(
-    Ctbmv, CtbmvArch35Test,
-    ::testing::ValuesIn(GetCasesFromCsv<CtbmvParam>(ReplaceFileExtension2Csv(__FILE__))),
+    Ctbmv, CtbmvArch35Test, ::testing::ValuesIn(GetCasesFromCsv<CtbmvParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<CtbmvParam>);
 
-TEST_P(CtbmvArch35Test, CsvDriven) {
+TEST_P(CtbmvArch35Test, CsvDriven)
+{
     const auto& p = GetParam();
 
     int kl = (p.uplo == ACLBLAS_UPPER) ? 0 : p.k;
@@ -335,9 +342,8 @@ TEST_P(CtbmvArch35Test, CsvDriven) {
     aclblasComplex* xPtr = x.empty() ? nullptr : x.data();
     aclblasComplex* goldPtr = golden.empty() ? nullptr : golden.data();
 
-    aclblasStatus_t ret = aclblasCtbmv_npu(
-        CtbmvArch35Test::handle_, p.uplo, p.trans, p.diag, p.n, p.k,
-        aPtr, p.lda, xPtr, p.incx);
+    aclblasStatus_t ret =
+        aclblasCtbmv_npu(CtbmvArch35Test::handle_, p.uplo, p.trans, p.diag, p.n, p.k, aPtr, p.lda, xPtr, p.incx);
 
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
         EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
@@ -345,9 +351,8 @@ TEST_P(CtbmvArch35Test, CsvDriven) {
     }
     ASSERT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
 
-    aclblasStatus_t goldRet = aclblasCtbmv_cpu(
-        CtbmvArch35Test::handle_, p.uplo, p.trans, p.diag, p.n, p.k,
-        aPtr, p.lda, goldPtr, p.incx);
+    aclblasStatus_t goldRet =
+        aclblasCtbmv_cpu(CtbmvArch35Test::handle_, p.uplo, p.trans, p.diag, p.n, p.k, aPtr, p.lda, goldPtr, p.incx);
     ASSERT_EQ(goldRet, ACLBLAS_STATUS_SUCCESS);
 
     EXPECT_TRUE(VerifyCtbmvComplexVector(x, golden, p.n, p.incx, p.caseName));
@@ -362,9 +367,9 @@ TEST_F(CtbmvArch35Test, TransposeUbBoundaries)
             for (auto uplo : {ACLBLAS_UPPER, ACLBLAS_LOWER}) {
                 for (auto trans : {ACLBLAS_OP_T, ACLBLAS_OP_C}) {
                     for (auto diag : {ACLBLAS_NON_UNIT, ACLBLAS_UNIT}) {
-                        const std::string caseId = "TransposeUb_n" + std::to_string(n) + "_k" +
-                            std::to_string(k) + "_u" + std::to_string(uplo) + "_t" +
-                            std::to_string(trans) + "_d" + std::to_string(diag);
+                        const std::string caseId = "TransposeUb_n" + std::to_string(n) + "_k" + std::to_string(k) +
+                                                   "_u" + std::to_string(uplo) + "_t" + std::to_string(trans) + "_d" +
+                                                   std::to_string(diag);
                         SCOPED_TRACE(caseId);
                         const int lda = k + 3;
                         const int kl = uplo == ACLBLAS_UPPER ? 0 : k;
@@ -382,10 +387,12 @@ TEST_F(CtbmvArch35Test, TransposeUbBoundaries)
                             }
                         }
                         auto golden = x;
-                        ASSERT_EQ(aclblasCtbmv_cpu(handle_, uplo, trans, diag, n, k,
-                            a.data(), lda, golden.data(), 1), ACLBLAS_STATUS_SUCCESS);
-                        ASSERT_EQ(aclblasCtbmv_npu(handle_, uplo, trans, diag, n, k,
-                            a.data(), lda, x.data(), 1), ACLBLAS_STATUS_SUCCESS);
+                        ASSERT_EQ(
+                            aclblasCtbmv_cpu(handle_, uplo, trans, diag, n, k, a.data(), lda, golden.data(), 1),
+                            ACLBLAS_STATUS_SUCCESS);
+                        ASSERT_EQ(
+                            aclblasCtbmv_npu(handle_, uplo, trans, diag, n, k, a.data(), lda, x.data(), 1),
+                            ACLBLAS_STATUS_SUCCESS);
                         // These poisoned locations are not operands; matching NaNs must not pass.
                         for (int row = 0; row < n; ++row) {
                             ASSERT_TRUE(std::isfinite(golden[row].real) && std::isfinite(golden[row].imag)) << row;
@@ -414,8 +421,9 @@ TEST_F(CtbmvArch35Test, UnitDiagonalSpecialValue)
         for (auto uplo : {ACLBLAS_UPPER, ACLBLAS_LOWER}) {
             for (auto trans : {ACLBLAS_OP_N, ACLBLAS_OP_T, ACLBLAS_OP_C}) {
                 const std::string valueName = std::isnan(special) ? "NaN" : "Inf";
-                const std::string caseId = "UnitDiag_" + valueName + "_n" + std::to_string(n) +
-                    "_k" + std::to_string(k) + "_u" + std::to_string(uplo) + "_t" + std::to_string(trans);
+                const std::string caseId = "UnitDiag_" + valueName + "_n" + std::to_string(n) + "_k" +
+                                           std::to_string(k) + "_u" + std::to_string(uplo) + "_t" +
+                                           std::to_string(trans);
                 SCOPED_TRACE(caseId);
 
                 std::vector<aclblasComplex> aFinite, aSpecial, x, golden;
@@ -423,10 +431,12 @@ TEST_F(CtbmvArch35Test, UnitDiagonalSpecialValue)
                 ASSERT_TRUE(AllFinite(aFinite));
                 ASSERT_TRUE(AllFinite(x));
 
-                ASSERT_EQ(aclblasCtbmv_cpu(handle_, uplo, trans, ACLBLAS_UNIT, n, k, aFinite.data(), lda,
-                    golden.data(), 1), ACLBLAS_STATUS_SUCCESS);
-                ASSERT_EQ(aclblasCtbmv_npu(handle_, uplo, trans, ACLBLAS_UNIT, n, k, aSpecial.data(), lda, x.data(),
-                    1), ACLBLAS_STATUS_SUCCESS);
+                ASSERT_EQ(
+                    aclblasCtbmv_cpu(handle_, uplo, trans, ACLBLAS_UNIT, n, k, aFinite.data(), lda, golden.data(), 1),
+                    ACLBLAS_STATUS_SUCCESS);
+                ASSERT_EQ(
+                    aclblasCtbmv_npu(handle_, uplo, trans, ACLBLAS_UNIT, n, k, aSpecial.data(), lda, x.data(), 1),
+                    ACLBLAS_STATUS_SUCCESS);
                 ASSERT_TRUE(AllFinite(golden));
                 ASSERT_TRUE(AllFinite(x));
                 ASSERT_TRUE(VerifyCtbmvComplexVector(x, golden, n, 1, caseId));
@@ -434,8 +444,8 @@ TEST_F(CtbmvArch35Test, UnitDiagonalSpecialValue)
             }
         }
     }
-    std::cout << "[SPECIAL][ctbmv] UnitDiagonalSpecialValue cases=" << passedCases
-              << " finite=true accuracy=PASS" << std::endl;
+    std::cout << "[SPECIAL][ctbmv] UnitDiagonalSpecialValue cases=" << passedCases << " finite=true accuracy=PASS"
+              << std::endl;
 }
 
 // A zero entry of x must still take part in the multiply-add. The reference
@@ -457,8 +467,9 @@ TEST_F(CtbmvArch35Test, ZeroOperandSpecialValues)
             auto a = makeCtbmvComplexBanded(n, n, kl, ku, lda, "VALUE_NORM_INF", 64000U + static_cast<unsigned>(incx));
             auto x = makeCtbmvComplexStrided(n, incx, "VALUE_NORM_0", 64001U);
 
-            ASSERT_EQ(aclblasCtbmv_npu(handle_, uplo, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, n, k, a.data(), lda,
-                x.data(), incx), ACLBLAS_STATUS_SUCCESS);
+            ASSERT_EQ(
+                aclblasCtbmv_npu(handle_, uplo, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, n, k, a.data(), lda, x.data(), incx),
+                ACLBLAS_STATUS_SUCCESS);
 
             // Every element keeps meeting an Inf diagonal or an Inf coefficient
             // through a zero operand, so none of them may stay finite.
@@ -497,7 +508,8 @@ void CtbmvArch35Test::RunPerformanceCases(bool independentInputs)
             ASSERT_TRUE(AllFinite(a));
             ASSERT_TRUE(AllFinite(x));
             golden = x;
-            ASSERT_EQ(aclblasCtbmv_cpu(handle_, p.uplo, p.trans, p.diag, p.n, p.k, a.data(), lda, golden.data(), 1),
+            ASSERT_EQ(
+                aclblasCtbmv_cpu(handle_, p.uplo, p.trans, p.diag, p.n, p.k, a.data(), lda, golden.data(), 1),
                 ACLBLAS_STATUS_SUCCESS);
             ASSERT_TRUE(AllFinite(golden));
         }
@@ -558,23 +570,25 @@ void CtbmvArch35Test::RunCsvPerformanceCases()
         const double averageUs = totalUs / timedIterations;
 
         const double gpuUs = p.gpuMs * 1000.0;
+        const bool perfPass = averageUs <= gpuUs * kPerfThresholdFactor;
         std::cout << "[PERF_CSV][ctbmv] id=" << p.id << " n=" << p.n << " k=" << p.k << " gpu_ms=" << p.gpuMs
-                  << " gpu_us=" << gpuUs << " average_us=" << averageUs << " execution=PASS" << std::endl;
+                  << " gpu_us=" << gpuUs << " average_us=" << averageUs << " execution=" << (perfPass ? "PASS" : "FAIL")
+                  << std::endl;
+        // The 2.5x budget is calibrated on the four task-book shapes (the
+        // ctbmv-base-* rows, matching the hardcoded limits above, measured with
+        // the same host wall-clock style). Small-n rows are dominated by
+        // per-call host launch overhead and are not asserted until budgets are
+        // validated per size class on the target device (!723 review); they
+        // keep the truthful diagnostic output above.
+        if (p.id.rfind("ctbmv-base-", 0) == 0) {
+            EXPECT_LE(averageUs, gpuUs * kPerfThresholdFactor);
+        }
         ASSERT_TRUE(stage.Release());
     }
 }
 
-TEST_F(CtbmvArch35Test, PerformanceTaskCases)
-{
-    RunPerformanceCases(false);
-}
+TEST_F(CtbmvArch35Test, PerformanceTaskCases) { RunPerformanceCases(false); }
 
-TEST_F(CtbmvArch35Test, PerformanceFiniteInputCases)
-{
-    RunPerformanceCases(true);
-}
+TEST_F(CtbmvArch35Test, PerformanceFiniteInputCases) { RunPerformanceCases(true); }
 
-TEST_F(CtbmvArch35Test, PerformanceCsvCases)
-{
-    RunCsvPerformanceCases();
-}
+TEST_F(CtbmvArch35Test, PerformanceCsvCases) { RunCsvPerformanceCases(); }
