@@ -8,7 +8,18 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
-# C owns an offline CPU Golden/metric test so it can run before an NPU Kernel exists.
-# The arch35 directory is used for the unit-test source so it follows the repository test layout.
-ops_blas_add_gtest_tests(${OPS_BLAS} csyr2_golden_test)
+if("arch35" IN_LIST SOC_ARCH_DIRS)
+  ops_blas_add_gtest_tests(${OPS_BLAS} csyr2_golden_test)
+endif()
 ops_blas_add_gtest_tests(${OPS_BLAS} csyr2_test)
+
+if(TARGET csyr2_test AND "arch22" IN_LIST SOC_ARCH_DIRS)
+  target_include_directories(csyr2_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/blas/syr2/arch22
+    ${ASCEND_CANN_PACKAGE_PATH}/pkg_inc
+    ${ASCEND_CANN_PACKAGE_PATH}/include
+    $ENV{INC_INCLUDE_PATH}
+    $ENV{ASCEND_OPP_PATH}/include
+    $ENV{ASCEND_OPP_PATH}/built-in/op_proto/inc
+  )
+endif()

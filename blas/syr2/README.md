@@ -217,6 +217,8 @@ int main()
 | 产品 | 支持情况 |
 | --- | --- |
 | Ascend 950PR | 支持 |
+| Atlas A3 训练系列产品 / Atlas A3 推理系列产品 | 支持 |
+| Atlas A2 训练系列产品 / Atlas A2 推理系列产品 | 支持 |
 
 #### 函数原型
 
@@ -227,7 +229,7 @@ aclblasStatus_t aclblasCsyr2(
     const aclblasComplex* y, int incy, aclblasComplex* A, int lda);
 ```
 
-接口声明位于 `include/cann_ops_blas.h`，供其他产品线调用；实现位于 `blas/syr2/arch35/`。
+接口声明位于 `include/cann_ops_blas.h`。Atlas A2/A3 实现位于 `blas/syr2/arch22/`，Ascend 950PR 实现位于 `blas/syr2/arch35/`。
 
 #### 参数与约束
 
@@ -243,7 +245,7 @@ aclblasStatus_t aclblasCsyr2(
 
 计算公式为 `A += alpha*x*y^T + alpha*y*x^T`。本接口为普通转置，不对 x 或 y 做共轭；只读写 `uplo` 指定的三角区域，另一三角及 `lda` padding 保持不变。`n=0` 或 `alpha=(0,0)` 时返回成功且不访问 x、y、A。
 
-Host 侧不对 stream 同步。连续布局 `incx=incy=1` 且 `1 <= n <= 4096` 使用 AIV 优化路径，其他合法布局使用通用 SIMT 路径。
+Host 侧不对 stream 同步。Ascend 950PR 上，连续布局 `incx=incy=1` 且 `1 <= n <= 4096` 使用 AIV 优化路径，其他合法布局使用通用 SIMT 路径。
 
 #### 调用示例
 

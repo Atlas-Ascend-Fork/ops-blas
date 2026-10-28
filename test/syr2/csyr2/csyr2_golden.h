@@ -297,3 +297,15 @@ inline bool CasePass(const ComplexAccuracy& stats, const AccuracyConfig& cfg = {
 }
 
 } // namespace csyr2_test
+
+namespace csyr2_arch22_test {
+
+void Csyr2Golden(
+    aclblasFillMode_t uplo,
+    int n,
+    aclblasComplex alpha,
+    const aclblasComplex* x, int incx,
+    const aclblasComplex* y, int incy,
+    aclblasComplex* A, int lda);
+
+}  // namespace csyr2_arch22_test
