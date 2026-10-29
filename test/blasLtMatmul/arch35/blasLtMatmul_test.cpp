@@ -348,6 +348,80 @@ TEST_F(LtMatmulArch35Test, NullComputeDesc)
     EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_VALUE);
 }
 
+// ── TEST_F: transform desc GetAttribute 探测模式（issue #664）──
+TEST_F(LtMatmulArch35Test, TransformDescGetAttributeProbeMode)
+{
+    aclblasLtMatrixTransformDesc_t desc = nullptr;
+    ASSERT_EQ(aclblasLtMatrixTransformDescCreate(&desc, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+
+    // 探测模式：buf=null、sizeInBytes=0 → SUCCESS 且 sizeWritten 回写属性宽度
+    size_t sizeWritten = 0;
+    EXPECT_EQ(
+        aclblasLtMatrixTransformDescGetAttribute(
+            desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_SCALE_TYPE, nullptr, 0, &sizeWritten),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(sizeWritten, sizeof(int32_t));
+
+    // 常规取值：默认 scaleType 回读
+    aclDataType scaleType = ACL_DT_UNDEFINED;
+    EXPECT_EQ(
+        aclblasLtMatrixTransformDescGetAttribute(
+            desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_SCALE_TYPE, &scaleType, sizeof(scaleType), &sizeWritten),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(scaleType, ACL_FLOAT);
+
+    // Set 后回读一致（确认 Get 拆分未破坏既有语义）
+    const int32_t pointerMode = 1;
+    EXPECT_EQ(
+        aclblasLtMatrixTransformDescSetAttribute(
+            desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE, &pointerMode, sizeof(pointerMode)),
+        ACLBLAS_STATUS_SUCCESS);
+    int32_t modeOut = 0;
+    EXPECT_EQ(
+        aclblasLtMatrixTransformDescGetAttribute(
+            desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE, &modeOut, sizeof(modeOut), &sizeWritten),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(modeOut, pointerMode);
+
+    // buf 非空但尺寸不足仍拒绝（语义不变）
+    int16_t small = 0;
+    EXPECT_EQ(
+        aclblasLtMatrixTransformDescGetAttribute(
+            desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_SCALE_TYPE, &small, sizeof(small), &sizeWritten),
+        ACLBLAS_STATUS_INVALID_VALUE);
+
+    aclblasLtMatrixTransformDescDestroy(desc);
+}
+
+// ── TEST_F: 启发式入口拒绝超界维度（issue #665）──
+TEST_F(LtMatmulArch35Test, HeuristicRejectsOversizedDimensions)
+{
+    aclblasLtMatmulDesc_t computeDesc = nullptr;
+    ASSERT_EQ(aclblasLtMatmulDescCreate(&computeDesc, ACLBLAS_COMPUTE_32F, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+
+    const uint64_t hugeRows = 0x100000000ULL; // 2^32，超 uint32 表示范围
+    aclblasLtMatrixLayout_t aLayout = nullptr;
+    aclblasLtMatrixLayout_t bLayout = nullptr;
+    aclblasLtMatrixLayout_t dLayout = nullptr;
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&aLayout, ACL_FLOAT, hugeRows, 16, hugeRows), ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&bLayout, ACL_FLOAT, 16, 16, 16), ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&dLayout, ACL_FLOAT, hugeRows, 16, hugeRows), ACLBLAS_STATUS_SUCCESS);
+
+    aclblasLtMatmulHeuristicResult_t heuristicResult[1];
+    int returnCount = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetHeuristic(
+            LtMatmulArch35Test::ltHandle_, computeDesc, aLayout, bLayout, dLayout, dLayout, nullptr, 1, heuristicResult,
+            &returnCount),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(returnCount, 0);
+
+    aclblasLtMatrixLayoutDestroy(aLayout);
+    aclblasLtMatrixLayoutDestroy(bLayout);
+    aclblasLtMatrixLayoutDestroy(dLayout);
+    aclblasLtMatmulDescDestroy(computeDesc);
+}
+
 TEST_F(LtMatmulArch35Test, RejectsMismatchedContractionDimension)
 {
     MatmulLayoutTestData layouts;

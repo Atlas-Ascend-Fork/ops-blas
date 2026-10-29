@@ -560,11 +560,16 @@ HeuristicPreference ReadHeuristicPreference(const aclblasLtMatmulPreference_t pr
     return pref;
 }
 
-// issue #748: 类型对校验提取为 helper，控制 GetHeuristic 函数规模
+// issue #748: 类型对与维度校验提取为 helper，控制 GetHeuristic 函数规模。
+// 维度超 uint32 表示范围时拒绝（与 matmul 执行路径的 IsRepresentableAsUint32 同口径）。
 aclblasStatus_t ValidateHeuristicTypePair(
     aclblasLtMatmulHeuristicResult_t* heuristicResultsArray, const aclblasLtMatrixLayoutImpl* A,
-    const aclblasLtMatrixLayoutImpl* B, const aclblasLtMatmulDescImpl* desc)
+    const aclblasLtMatrixLayoutImpl* B, const aclblasLtMatrixLayoutImpl* D, const aclblasLtMatmulDescImpl* desc)
 {
+    constexpr uint64_t kUint32Max = 0xFFFFFFFFULL;
+    if (D->rows > kUint32Max || D->cols > kUint32Max) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     if (!CheckComputeTypeCompatibility(desc->computeType, A->type, B->type)) {
         heuristicResultsArray[0].state = ACLBLAS_STATUS_INVALID_VALUE;
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -606,7 +611,7 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(
     const uint64_t m = D->rows;
     const uint64_t n = D->cols;
 
-    const aclblasStatus_t typeStatus = ValidateHeuristicTypePair(heuristicResultsArray, A, B, desc);
+    const aclblasStatus_t typeStatus = ValidateHeuristicTypePair(heuristicResultsArray, A, B, D, desc);
     if (typeStatus != ACLBLAS_STATUS_SUCCESS) {
         return typeStatus;
     }

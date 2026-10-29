@@ -25,11 +25,13 @@
 namespace {
 
 // Shared Set/Get prologue: reject null args, copy the capsule into a stack impl, and reject a
-// corrupted / foreign descriptor via the magic check.
+// corrupted / foreign descriptor via the magic check. Get 路径不要求 buf 非空——探测模式
+// （sizeInBytes==0、buf 为空、sizeWritten 回写所需大小）由 CopyAttributeOut 统一处理（issue #664）。
 aclblasStatus_t UnpackTransformDesc(
-    const aclblasLtMatrixTransformDesc_t transformDesc, const void* buf, aclblasLtMatrixTransformDescImpl& impl)
+    const aclblasLtMatrixTransformDesc_t transformDesc, const void* buf, aclblasLtMatrixTransformDescImpl& impl,
+    bool requireBuf)
 {
-    if (transformDesc == nullptr || buf == nullptr) {
+    if (transformDesc == nullptr || (requireBuf && buf == nullptr)) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     aclblasStatus_t copyStatus = CheckedMemcpyS(&impl, sizeof(impl), transformDesc, sizeof(impl));
@@ -87,7 +89,7 @@ aclblasStatus_t aclblasLtMatrixTransformDescSetAttribute(
     size_t sizeInBytes)
 {
     aclblasLtMatrixTransformDescImpl impl;
-    aclblasStatus_t copyStatus = UnpackTransformDesc(transformDesc, buf, impl);
+    aclblasStatus_t copyStatus = UnpackTransformDesc(transformDesc, buf, impl, true);
     if (copyStatus != ACLBLAS_STATUS_SUCCESS) {
         return copyStatus;
     }
@@ -125,7 +127,7 @@ aclblasStatus_t aclblasLtMatrixTransformDescGetAttribute(
     size_t sizeInBytes, size_t* sizeWritten)
 {
     aclblasLtMatrixTransformDescImpl impl;
-    aclblasStatus_t copyStatus = UnpackTransformDesc(transformDesc, buf, impl);
+    aclblasStatus_t copyStatus = UnpackTransformDesc(transformDesc, buf, impl, false);
     if (copyStatus != ACLBLAS_STATUS_SUCCESS) {
         return copyStatus;
     }
