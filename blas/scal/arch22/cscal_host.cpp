@@ -23,8 +23,8 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
-void cscal_kernel_do(uint8_t* x, uint8_t* maskBuf, uint8_t* workSpace, uint8_t* tilingGm,
-                     uint32_t numBlocks, void *stream);
+void cscal_kernel_do(
+    uint8_t* x, uint8_t* maskBuf, uint8_t* workSpace, uint8_t* tilingGm, uint32_t numBlocks, void* stream);
 
 constexpr uint32_t MAX_LENG_PER_UB_PROC = 6144;
 constexpr uint32_t ELEMENTS_EACH_COMPLEX64 = 2;
@@ -35,14 +35,16 @@ constexpr uint32_t COMPLEX_DATA_NUM_PER_BLOCK = 4;
 
 struct CscalTilingData {
     int32_t n;
+    int32_t incx;
     float alphaReal;
     float alphaImag;
 };
 
-CscalTilingData CalTilingData(int32_t n, float alphaReal, float alphaImag)
+CscalTilingData CalTilingData(int32_t n, int32_t incx, float alphaReal, float alphaImag)
 {
     CscalTilingData tilingData;
     tilingData.n = n;
+    tilingData.incx = incx;
     tilingData.alphaReal = alphaReal;
     tilingData.alphaImag = alphaImag;
     return tilingData;
@@ -61,11 +63,23 @@ void CreateMaskData(uint32_t* maskData)
     }
 }
 
-aclblasStatus_t aclblasCscal(
-    aclblasHandle_t handle, int n, const aclblasComplex* alpha, aclblasComplex* x, int incx)
+aclblasStatus_t aclblasCscal(aclblasHandle_t handle, int n, const aclblasComplex* alpha, aclblasComplex* x, int incx)
 {
-    if (alpha == nullptr) {
+    if (handle == nullptr) {
+        LOG_PRINT("aclblasCscal: handle is nullptr\n");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    if (alpha == nullptr || x == nullptr) {
+        LOG_PRINT("aclblasCscal: alpha and x must not be nullptr\n");
         return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (n <= 0) {
+        // README 契约：n<=0 为 no-op（同时消除 kernel 侧 n=0 除零的源头）
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (incx <= 0) {
+        // README 契约：incx<=0 为 no-op
+        return ACLBLAS_STATUS_SUCCESS;
     }
     auto* h = handle;
     aclrtStream useStream = h->stream;
@@ -75,7 +89,7 @@ aclblasStatus_t aclblasCscal(
     float alphaReal = alpha->real;
     float alphaImag = alpha->imag;
 
-    CscalTilingData tiling = CalTilingData(static_cast<int32_t>(n), alphaReal, alphaImag);
+    CscalTilingData tiling = CalTilingData(static_cast<int32_t>(n), incx, alphaReal, alphaImag);
 
     uint8_t* tilingDevice = nullptr;
     uint8_t* maskDevice = nullptr;
@@ -84,35 +98,30 @@ aclblasStatus_t aclblasCscal(
     CreateMaskData(maskHost);
 
     aclError aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(CscalTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); delete[] maskHost;
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); delete[] maskHost;
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet = aclrtMalloc(
         (void**)&maskDevice, MAX_LENG_PER_UB_PROC * ELEMENTS_EACH_COMPLEX64 * sizeof(uint32_t),
         ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        delete[] maskHost; return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
+              delete[] maskHost; return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet =
         aclrtMemcpy(tilingDevice, sizeof(CscalTilingData), &tiling, sizeof(CscalTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(maskDevice);
-        aclrtFree(tilingDevice); delete[] maskHost; return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(maskDevice);
+              aclrtFree(tilingDevice); delete[] maskHost; return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclRet = aclrtMemcpy(
         maskDevice, MAX_LENG_PER_UB_PROC * ELEMENTS_EACH_COMPLEX64 * sizeof(uint32_t), maskHost,
         MAX_LENG_PER_UB_PROC * ELEMENTS_EACH_COMPLEX64 * sizeof(uint32_t), ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(maskDevice);
-        aclrtFree(tilingDevice); delete[] maskHost; return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(maskDevice);
+              aclrtFree(tilingDevice); delete[] maskHost; return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     cscal_kernel_do(reinterpret_cast<uint8_t*>(x), maskDevice, nullptr, tilingDevice, numBlocks, useStream);
     aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(maskDevice);
-        aclrtFree(tilingDevice); delete[] maskHost; return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(maskDevice); aclrtFree(tilingDevice); delete[] maskHost; return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclrtFree(tilingDevice);
     aclrtFree(maskDevice);
