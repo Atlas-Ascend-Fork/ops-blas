@@ -24,6 +24,7 @@
 
 constexpr uint32_t ACLBLASLT_LAYOUT_MAGIC = 0xACBB1234;
 constexpr uint32_t ACLBLASLT_DESC_MAGIC = 0xACBC1234;
+constexpr uint32_t ACLBLASLT_PREFERENCE_MAGIC = 0xACBD1234;
 
 constexpr size_t DEFAULT_WORKSPACE_SIZE = 32 * 1024 * 1024;
 constexpr size_t BIAS_PTR_STORAGE_BYTES = sizeof(void*);
@@ -64,7 +65,7 @@ static_assert(
     "Impl of aclblasLtMatmulDesc must fit in capsule!");
 
 struct aclblasLtMatmulPreferenceImpl {
-    uint32_t magic;
+    uint32_t magic = ACLBLASLT_PREFERENCE_MAGIC;
     uint32_t searchMode = 0;
     size_t maxWorkspaceBytes = DEFAULT_WORKSPACE_SIZE;
     int32_t maxResults = 3;
