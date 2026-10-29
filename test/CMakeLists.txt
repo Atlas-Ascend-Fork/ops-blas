@@ -12,6 +12,8 @@ if(BUILD_TEST)
         set(TEST_DIR "")
         if(TEST_NAME STREQUAL "chemm" AND "arch35" IN_LIST SOC_ARCH_DIRS)
             set(TEST_DIR "symm/chemm")
+        elseif(TEST_NAME STREQUAL "cgemm_strided_batched" AND "arch35" IN_LIST SOC_ARCH_DIRS)
+            set(TEST_DIR "gemm_strided_batched/cgemm_strided_batched")
         elseif(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${TEST_NAME})
             set(TEST_DIR "${TEST_NAME}")
         else()
@@ -133,4 +135,8 @@ if(BUILD_TEST)
     # 为单一 blas_all_test 可执行，suite 初始化（aclInit 等）在 suite 间复用，
     # 80 次 aclInit 降为 1 次。独立 per-op 目标仍按原样构建（回退与单算子场景用）。
     _ops_blas_register_all_runner(${OPS_BLAS})
+    if("arch22" IN_LIST SOC_ARCH_DIRS AND TARGET cgemm_strided_batched_test AND TARGET blas_all_test)
+        # The CGEMM Netlib reference loader is also compiled into the combined runner.
+        target_link_libraries(blas_all_test PRIVATE ${CMAKE_DL_LIBS})
+    endif()
 endif()

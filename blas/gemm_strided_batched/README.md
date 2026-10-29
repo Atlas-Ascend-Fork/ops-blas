@@ -295,9 +295,9 @@ int main()
 
 #### 产品支持情况
 
-- Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Ascend 950PR / Ascend 950DT：支持（arch35）
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持（arch22）
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持（arch22）
 
 > Ascend 950PR/Ascend 950DT 上的 aclblasCgemmStridedBatched 依赖 CANN asc-devkit >= 9.1（`ASC_DEVKIT_MAJOR >= 9 && ASC_DEVKIT_MINOR >= 1`），低于该版本时编译与运行将跳过此算子。
 
@@ -330,7 +330,7 @@ aclblasStatus_t aclblasCgemmStridedBatched(aclblasHandle_t handle, aclblasOperat
 | strideC | 输入 | int64_t | 相邻两 batch 的 C 起始元素偏移（以复数元素个数计，非字节），Host 内存 |
 | batchCount | 输入 | int | batch 数量，batchCount >= 0，Host 内存 |
 
-#### 约束说明
+#### Ascend 950PR / 950DT（arch35）约束说明
 
 - handle 不可为 nullptr，否则返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`
 - transA、transB 必须属于 {ACLBLAS_OP_N, ACLBLAS_OP_T, ACLBLAS_OP_C}
@@ -349,7 +349,27 @@ aclblasStatus_t aclblasCgemmStridedBatched(aclblasHandle_t handle, aclblasOperat
 - beta == (0, 0) 时不读取原 C，调用方无需初始化逻辑输出区域
 - kernel 在句柄 stream 上异步执行，读取结果前需同步 stream
 
-#### 精度验证
+#### Atlas A2/A3（arch22）约束说明
+
+各矩阵按列主序存储，stride 以复数元素计。第 `i` 批使用 `A + i*strideA`、
+`B + i*strideB` 和 `C + i*strideC`。`N`、`T`、`C` 分别表示不转置、转置、
+共轭转置；每批执行 `C = alpha*op(A)*op(B) + beta*C`。
+
+`strideA`、`strideB` 可为 0，以便复用输入矩阵。`strideC=0` 且 `batchCount>1`
+时各批按顺序更新同一 C（beta 非零时读取前一批结果）。调用方必须保证矩阵及步长对应的显存范围有效，
+且 `C` 不与 `A` 或 `B` 重叠。
+
+`m`、`n`、`k` 或 `batchCount` 为 0 时合法并直接返回成功；`alpha=0` 时
+不读取 `A`、`B`；`beta=0` 时不读取原 `C`。`alpha`、`beta` 始终需要有效的
+Host 指针，非空计算需要有效的 Device `C` 指针。无效枚举、负维度及不满足
+`lda >= max(1, transa==N ? m : k)`、`ldb >= max(1, transb==N ? k : n)`、
+`ldc >= max(1,m)` 的参数返回 `ACLBLAS_STATUS_INVALID_VALUE`。
+
+接口异步提交到通过 `aclblasSetStream` 绑定的 stream；读取输出前应同步该 stream。
+大矩阵使用 handle 的工作空间，库管理的工作空间按需扩容；若调用方提供的
+工作空间不足，则返回 `ACLBLAS_STATUS_ALLOC_FAILED`。
+
+#### Ascend 950PR / 950DT（arch35）精度验证
 
 实部和虚部分别采用 `MIXED_TOLERANCE` 混合容差策略：
 
