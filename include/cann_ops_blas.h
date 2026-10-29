@@ -463,6 +463,11 @@ aclblasStatus_t aclblasCgemm(
     const aclblasComplex* alpha, const aclblasComplex* A, int lda, const aclblasComplex* B, int ldb,
     const aclblasComplex* beta, aclblasComplex* C, int ldc);
 
+aclblasStatus_t aclblasCgemmEx(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
+    const aclblasComplex* alpha, const void* A, int typeA, int lda, const void* B, int typeB, int ldb,
+    const aclblasComplex* beta, void* C, int typeC, int ldc);
+
 aclblasStatus_t aclblasChemm(
     aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, int64_t m, int64_t n,
     const aclblasComplex* alpha, const aclblasComplex* A, int64_t lda, const aclblasComplex* B, int64_t ldb,
