@@ -362,3 +362,55 @@ A[0,1] = (-11,12)
 A[1,1] = (-13,-4)
 PASS: complex symmetric UPPER update; lower element preserved
 ```
+
+
+### aclblasCher2
+
+#### 产品支持情况
+
+| 产品 | 支持情况 |
+| --- | --- |
+| Ascend 950PR（arch35，CANN 9.1.0） | 支持 |
+
+#### 接口与计算
+
+```cpp
+aclblasStatus_t aclblasCher2(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, const int n,
+    const aclblasComplex* alpha,
+    const aclblasComplex* x, const int incx,
+    const aclblasComplex* y, const int incy,
+    aclblasComplex* A, const int lda);
+```
+
+`A := alpha * x * y^H + conj(alpha) * y * x^H + A`。alpha 是 Host 内存中的
+complex64 标量；x、y 和 A 是 Device 内存中的 complex64 数据。A 按列主序存储，
+元素 `(i,j)` 的地址为 `A[j * lda + i]`。仅引用及更新 uplo 指定的三角，
+未引用三角及 lda padding 保持原样。更新时不读取对角虚部，并将其写为 0。
+
+x、y 的物理长度分别至少为 `1 + (n-1)*abs(incx)`、`1 + (n-1)*abs(incy)`。
+负步长按 Netlib 规则从 `(n-1)*abs(inc)` 位置开始反向遍历。索引运算使用宽整数，
+输入/输出满足 `aclblasComplex` 的 4 字节对齐即可。
+
+#### 校验与执行语义
+
+按以下顺序校验：handle、n、uplo、lda/incx/incy/alpha 指针。
+handle 为空返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`；n<0 返回
+`ACLBLAS_STATUS_INVALID_VALUE`；非法 uplo 返回 `ACLBLAS_STATUS_INVALID_ENUM`。
+要求 `lda >= max(1,n)`、incx/incy 非零、alpha 指针非空。当前按随任务提供的测试
+约束将 `INT_MIN` 步长判为 `ACLBLAS_STATUS_INVALID_VALUE`。
+
+结构校验通过后，n=0 或 alpha=(0,0) 返回成功，不访问 x/y/A、不修改矩阵（包括对角虚部）。
+因此 n=0 并不会绕过结构校验。其余情况要求 x/y/A 非空，空指针返回
+`ACLBLAS_STATUS_INVALID_VALUE`。
+
+通过 `aclblasSetStream` 绑定的 stream 异步启动一个 Ascend C AIV kernel；无临时
+Device workspace、无 Host 侧 stream 同步。调用方读回结果前须同步 stream。
+无法获取 AIV 核数时返回 `ACLBLAS_STATUS_EXECUTION_FAILED`。
+
+连续向量、8 字节对齐且 `1024 <= n <= 4096` 时使用 SIMD 双缓冲路径：
+预计算共轭系数，重叠下一列的读取与当前列的计算/写回，每核使用 199680 字节 UB。
+其他尺寸、步长或对齐方式使用 64×64 三角分块 SIMT 路径；可证明安全的连续布局
+使用 32 位索引，其他布局保留 64 位地址计算。
+
+测试方法见 [Cher2 测试说明](../../test/syr2/cher2/README.md)。

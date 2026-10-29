@@ -918,6 +918,7 @@ Level 2 接口在矩阵与向量之间进行运算，典型操作包括通用矩
 | [aclblasCsyr](../../blas/syr/README.md) | 单精度复数对称秩-1 更新（不共轭） |
 | [aclblasSsyr2](../../blas/syr2/README.md) | 单精度对称秩-2 更新 |
 | [aclblasCsyr2](../../blas/syr2/README.md) | 单精度复数对称秩-2 更新（不共轭） |
+| [aclblasCher2](../../blas/syr2/README.md) | 单精度复数 Hermitian 秩-2 更新 |
 
 ## aclBLAS Level 3 Function Reference
 
