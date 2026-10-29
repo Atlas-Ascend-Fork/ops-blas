@@ -68,6 +68,71 @@ uint32_t VerifyResult(
     return 0;
 }
 
+// negative checks (issue #635): null handle, invalid n, null x/y
+static int32_t RunSswapNegativeChecks(aclblasHandle_t handle)
+{
+    float sx = 1.0f;
+    float sy = 2.0f;
+    int32_t negativeResult = 0;
+    if (aclblasSswap(nullptr, 8, &sx, 1, &sy, 1) != ACLBLAS_STATUS_HANDLE_IS_NULLPTR) {
+        std::cout << "[Failed] sswap null handle not rejected" << std::endl;
+        negativeResult = 1;
+    }
+    if (aclblasSswap(handle, -1, &sx, 1, &sy, 1) != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[Failed] sswap negative n not rejected" << std::endl;
+        negativeResult = 1;
+    }
+    if (aclblasSswap(handle, 0, &sx, 1, &sy, 1) != ACLBLAS_STATUS_SUCCESS) {
+        std::cout << "[Failed] sswap zero n not fast-returned" << std::endl;
+        negativeResult = 1;
+    }
+    if (aclblasSswap(handle, 8, nullptr, 1, &sy, 1) != ACLBLAS_STATUS_INVALID_VALUE ||
+        aclblasSswap(handle, 8, &sx, 1, nullptr, 1) != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[Failed] sswap null x/y not rejected" << std::endl;
+        negativeResult = 1;
+    }
+    if (negativeResult == 0) {
+        std::cout << "[Success] sswap negative checks passed." << std::endl;
+    }
+    return negativeResult;
+}
+
+// Basic unit-stride functional case: swap two full vectors and verify.
+static int32_t RunSswapBasicCase(
+    aclblasHandle_t handle, aclrtStream stream, uint32_t totalLength, std::vector<float>& x, std::vector<float>& y)
+{
+    float* xDevice = nullptr;
+    float* yDevice = nullptr;
+    size_t totalByteSize = totalLength * sizeof(float);
+    aclError aclRet = aclrtMalloc((void**)&xDevice, totalByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc xDevice failed. ERROR: %d\n", aclRet); return aclRet);
+    aclRet = aclrtMalloc((void**)&yDevice, totalByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc yDevice failed. ERROR: %d\n", aclRet); return aclRet);
+    aclRet = aclrtMemcpy(xDevice, totalByteSize, x.data(), totalByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); return aclRet);
+    aclRet = aclrtMemcpy(yDevice, totalByteSize, y.data(), totalByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy yDevice failed. ERROR: %d\n", aclRet); return aclRet);
+
+    const aclblasStatus_t ret = aclblasSswap(handle, static_cast<int>(totalLength), xDevice, 1, yDevice, 1);
+    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSswap failed. ERROR: %d\n", ret); return ret);
+
+    aclRet = aclrtSynchronizeStream(stream);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); return aclRet);
+    aclRet = aclrtMemcpy(x.data(), totalByteSize, xDevice, totalByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy x failed. ERROR: %d\n", aclRet); return aclRet);
+    aclRet = aclrtMemcpy(y.data(), totalByteSize, yDevice, totalByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy y failed. ERROR: %d\n", aclRet); return aclRet);
+
+    aclrtFree(xDevice);
+    aclrtFree(yDevice);
+
+    const float valueX = 1.5f;
+    const float valueY = 2.5f;
+    std::vector<float> goldenX(totalLength, valueY);
+    std::vector<float> goldenY(totalLength, valueX);
+    return VerifyResult(x, y, goldenX, goldenY);
+}
+
 int32_t main(int32_t argc, char* argv[])
 {
     int32_t deviceId = 0;
@@ -77,8 +142,6 @@ int32_t main(int32_t argc, char* argv[])
     constexpr float valueY = 2.5f;
     std::vector<float> x(totalLength, valueX);
     std::vector<float> y(totalLength, valueY);
-    int incx = 1;
-    int incy = 1;
 
     aclInit(nullptr);
     aclrtSetDevice(deviceId);
@@ -92,36 +155,16 @@ int32_t main(int32_t argc, char* argv[])
     ret = aclblasSetStream(handle, stream);
     CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", ret); return ret);
 
-    float* xDevice = nullptr;
-    float* yDevice = nullptr;
-    size_t totalByteSize = totalLength * sizeof(float);
-    aclError aclRet = aclrtMalloc((void**)&xDevice, totalByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc xDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMalloc((void**)&yDevice, totalByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc yDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(xDevice, totalByteSize, x.data(), totalByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(yDevice, totalByteSize, y.data(), totalByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy yDevice failed. ERROR: %d\n", aclRet); return aclRet);
+    const int32_t negativeResult = RunSswapNegativeChecks(handle);
+    const int32_t basicResult = RunSswapBasicCase(handle, stream, totalLength, x, y);
 
-    ret = aclblasSswap(handle, static_cast<int>(totalLength), xDevice, incx, yDevice, incy);
-    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSswap failed. ERROR: %d\n", ret); return ret);
-
-    aclRet = aclrtSynchronizeStream(stream);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(x.data(), totalByteSize, xDevice, totalByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy x failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(y.data(), totalByteSize, yDevice, totalByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy y failed. ERROR: %d\n", aclRet); return aclRet);
-
-    aclrtFree(xDevice);
-    aclrtFree(yDevice);
     aclblasDestroy(handle);
     aclrtDestroyStream(stream);
     aclrtResetDevice(deviceId);
     aclFinalize();
 
-    std::vector<float> goldenX(totalLength, valueY);
-    std::vector<float> goldenY(totalLength, valueX);
-    return VerifyResult(x, y, goldenX, goldenY);
+    if (basicResult != 0) {
+        return basicResult;
+    }
+    return negativeResult;
 }

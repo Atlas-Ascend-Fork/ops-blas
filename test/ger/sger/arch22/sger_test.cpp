@@ -4,7 +4,7 @@
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
  * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
- * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
@@ -25,6 +25,48 @@ TEST_F(SgerArch22Test, NullHandle)
 {
     aclblasStatus_t ret = aclblasSger_npu(nullptr, 4, 4, nullptr, nullptr, 1, nullptr, 1, nullptr, 4);
     EXPECT_EQ(ret, ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
+}
+
+// Calls the public API directly (the npu wrapper pre-validates lda itself) to
+// verify the host-side rejection of lda < max(1, m) (issue #634).
+TEST_F(SgerArch22Test, InvalidLdaRejected)
+{
+    const float alpha = 1.0f;
+    const std::vector<float> x(4, 1.0f);
+    const std::vector<float> y(4, 1.0f);
+    std::vector<float> a(16, 0.0f);
+    void* dX = nullptr;
+    void* dY = nullptr;
+    void* dA = nullptr;
+    ASSERT_EQ(AllocCopyH2D(dX, x.data(), x.size() * sizeof(float)), ACL_SUCCESS);
+    ASSERT_EQ(AllocCopyH2D(dY, y.data(), y.size() * sizeof(float)), ACL_SUCCESS);
+    ASSERT_EQ(AllocCopyH2D(dA, a.data(), a.size() * sizeof(float)), ACL_SUCCESS);
+
+    EXPECT_EQ(
+        aclblasSger(
+            handle_, 4, 4, &alpha, static_cast<const float*>(dX), 1, static_cast<float*>(dY), 1,
+            static_cast<float*>(dA), 0),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasSger(
+            handle_, 4, 4, &alpha, static_cast<const float*>(dX), 1, static_cast<float*>(dY), 1,
+            static_cast<float*>(dA), -1),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasSger(
+            handle_, 4, 4, &alpha, static_cast<const float*>(dX), 1, static_cast<float*>(dY), 1,
+            static_cast<float*>(dA), 2),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasSger(
+            handle_, 4, 4, &alpha, static_cast<const float*>(dX), 1, static_cast<float*>(dY), 1,
+            static_cast<float*>(dA), 4),
+        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclrtSynchronizeStream(stream_), ACL_SUCCESS);
+
+    aclrtFree(dX);
+    aclrtFree(dY);
+    aclrtFree(dA);
 }
 
 INSTANTIATE_TEST_SUITE_P(

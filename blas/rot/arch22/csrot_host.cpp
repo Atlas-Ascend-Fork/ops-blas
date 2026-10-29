@@ -13,6 +13,7 @@
  * \brief Complex vector rotation host implementation
  */
 
+#include <climits>
 #include <cstdint>
 #include <iostream>
 #include <vector>
@@ -30,14 +31,51 @@ struct RotTilingData {
     int32_t elementCount;
     float cosValue;
     float sinValue;
+    int32_t incx;
+    int32_t incy;
 };
+
+static aclblasStatus_t ValidateCsrotInputs(
+    aclblasHandle_t handle, int n, const aclblasComplex* x, const aclblasComplex* y, const float* c, const float* s,
+    int incx, int incy)
+{
+    if (handle == nullptr) {
+        LOG_PRINT("aclblasCsrot: handle is nullptr\n");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    if (n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (x == nullptr || y == nullptr) {
+        LOG_PRINT("aclblasCsrot: x and y must not be nullptr\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (n < 0) {
+        LOG_PRINT("aclblasCsrot: n must be non-negative, got n=%d\n", n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (c == nullptr || s == nullptr) {
+        LOG_PRINT("aclblasCsrot: c and s must not be nullptr\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (incx == 0 || incx == INT_MIN || incy == 0 || incy == INT_MIN) {
+        LOG_PRINT("aclblasCsrot: incx and incy must be non-zero and not INT_MIN, got incx=%d, incy=%d\n", incx, incy);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
 
 aclblasStatus_t aclblasCsrot(
     aclblasHandle_t handle, int n, aclblasComplex* x, int incx, aclblasComplex* y, int incy, const float* c,
     const float* s)
 {
-    if (c == nullptr || s == nullptr) {
-        return ACLBLAS_STATUS_INVALID_VALUE;
+    const aclblasStatus_t inputStatus = ValidateCsrotInputs(handle, n, x, y, c, s, incx, incy);
+    if (inputStatus != ACLBLAS_STATUS_SUCCESS) {
+        return inputStatus;
+    }
+    if (n == 0) {
+        // 快速返回语义与原实现一致：n==0 时不做任何分配与下发
+        return ACLBLAS_STATUS_SUCCESS;
     }
     auto* h = handle;
     aclrtStream useStream = h->stream;
@@ -52,6 +90,8 @@ aclblasStatus_t aclblasCsrot(
     tiling.elementCount = static_cast<int32_t>(n) * 2;
     tiling.cosValue = *c;
     tiling.sinValue = *s;
+    tiling.incx = incx;
+    tiling.incy = incy;
 
     uint8_t* workSpaceDevice = nullptr;
     uint8_t* tilingDevice = nullptr;

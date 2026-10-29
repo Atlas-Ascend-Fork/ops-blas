@@ -82,6 +82,127 @@ uint32_t VerifyResult(
     }
 }
 
+static int32_t RunCsrotNegativeChecks(aclblasHandle_t handle)
+{
+    aclblasComplex sx{1.0f, 0.0f};
+    aclblasComplex sy{2.0f, 0.0f};
+    const float cs = 0.7071067811865476f;
+    const float sn = 0.7071067811865476f;
+    if (aclblasCsrot(nullptr, 4, &sx, 1, &sy, 1, &cs, &sn) != ACLBLAS_STATUS_HANDLE_IS_NULLPTR) {
+        std::cout << "[Failed] csrot null handle not rejected" << std::endl;
+        return 1;
+    }
+    if (aclblasCsrot(handle, -1, &sx, 1, &sy, 1, &cs, &sn) != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[Failed] csrot negative n not rejected" << std::endl;
+        return 1;
+    }
+    if (aclblasCsrot(handle, 0, &sx, 1, &sy, 1, &cs, &sn) != ACLBLAS_STATUS_SUCCESS) {
+        std::cout << "[Failed] csrot zero n not fast-returned" << std::endl;
+        return 1;
+    }
+    if (aclblasCsrot(handle, 4, nullptr, 1, &sy, 1, &cs, &sn) != ACLBLAS_STATUS_INVALID_VALUE ||
+        aclblasCsrot(handle, 4, &sx, 1, nullptr, 1, &cs, &sn) != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[Failed] csrot null x/y not rejected" << std::endl;
+        return 1;
+    }
+    if (aclblasCsrot(handle, 4, &sx, 0, &sy, 1, &cs, &sn) != ACLBLAS_STATUS_INVALID_VALUE ||
+        aclblasCsrot(handle, 4, &sx, 1, &sy, 0, &cs, &sn) != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[Failed] csrot zero stride not rejected" << std::endl;
+        return 1;
+    }
+    std::cout << "[Success] csrot negative checks passed." << std::endl;
+    return 0;
+}
+
+// Stride regression (issue #638): positive/negative/mixed strides against a
+// host-side golden, with sentinel slots that must stay untouched. The last
+// case uses n > cores*pass-cap so the strided kernel's multi-element and
+// multi-pass splitting is actually exercised (!720 review).
+
+// Values stay bounded and the x/y ranges are separated so no rotated
+// component cancels towards zero (the shared 1e-5 relative epsilon has no
+// absolute floor); periodicity 90 keeps neighbouring slots distinguishable.
+static void BuildCsrotStrideGolden(
+    int nElems, int incx, int incy, std::vector<aclblasComplex>& xHost, std::vector<aclblasComplex>& yHost,
+    std::vector<aclblasComplex>& goldenX, std::vector<aclblasComplex>& goldenY)
+{
+    constexpr float cs = 0.7071067811865476f;
+    constexpr float sn = 0.7071067811865476f;
+    auto physIdx = [](int i, int inc, int n) -> int { return inc > 0 ? i * inc : (n - 1 - i) * (-inc); };
+    for (size_t j = 0; j < xHost.size(); j++) {
+        xHost[j] = aclblasComplex{10.0f + static_cast<float>(j % 90), 10.0f + static_cast<float>(j % 90)};
+    }
+    for (size_t j = 0; j < yHost.size(); j++) {
+        yHost[j] = aclblasComplex{110.0f + static_cast<float>(j % 90), 110.0f + static_cast<float>(j % 90)};
+    }
+    goldenX = xHost;
+    goldenY = yHost;
+    for (int i = 0; i < nElems; i++) {
+        const int px = physIdx(i, incx, nElems);
+        const int py = physIdx(i, incy, nElems);
+        goldenX[px].real = cs * xHost[px].real + sn * yHost[py].real;
+        goldenX[px].imag = cs * xHost[px].imag + sn * yHost[py].imag;
+        goldenY[py].real = cs * yHost[py].real - sn * xHost[px].real;
+        goldenY[py].imag = cs * yHost[py].imag - sn * xHost[px].imag;
+    }
+}
+
+static int32_t RunCsrotStrideCase(
+    aclblasHandle_t handle, aclrtStream stream, int nElems, int incx, int incy, std::vector<aclblasComplex>& xHost,
+    std::vector<aclblasComplex>& goldenX, std::vector<aclblasComplex>& yHost, std::vector<aclblasComplex>& goldenY)
+{
+    constexpr float cs = 0.7071067811865476f;
+    constexpr float sn = 0.7071067811865476f;
+    try {
+        DeviceBuffer xDev(xHost.size() * sizeof(aclblasComplex));
+        DeviceBuffer yDev(yHost.size() * sizeof(aclblasComplex));
+        xDev.copyFromHost(xHost.data(), xDev.size());
+        yDev.copyFromHost(yHost.data(), yDev.size());
+        const aclblasStatus_t callRet = aclblasCsrot(
+            handle, nElems, static_cast<aclblasComplex*>(xDev.ptr()), incx, static_cast<aclblasComplex*>(yDev.ptr()),
+            incy, &cs, &sn);
+        if (callRet != ACLBLAS_STATUS_SUCCESS) {
+            std::cout << "[Failed] csrot stride case incx=" << incx << " incy=" << incy << " n=" << nElems
+                      << " call ret=" << callRet << std::endl;
+            return 1;
+        }
+        CHECK_RET(aclrtSynchronizeStream(stream) == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed\n");
+                  return 1);
+        xDev.copyToHost(xHost.data(), xDev.size());
+        yDev.copyToHost(yHost.data(), yDev.size());
+        if (VerifyResult(xHost, yHost, goldenX, goldenY) != 0) {
+            std::cout << "[Failed] csrot stride case incx=" << incx << " incy=" << incy << " n=" << nElems << std::endl;
+            return 1;
+        }
+    } catch (const std::exception& e) {
+        std::cout << "[Failed] device memory operation failed: " << e.what() << std::endl;
+        return 1;
+    }
+    return 0;
+}
+
+static int32_t RunCsrotStrideCases(aclblasHandle_t handle, aclrtStream stream)
+{
+    const int caseShapes[][3] = {{2, 1, 4}, {2, -2, 4}, {-1, -1, 4}, {1, -2, 4}, {2, -2, 25000}};
+    for (const auto& shape : caseShapes) {
+        const int incx = shape[0];
+        const int incy = shape[1];
+        const int nElems = shape[2];
+        const size_t xSlots = static_cast<size_t>((nElems - 1) * (incx < 0 ? -incx : incx) + 1);
+        const size_t ySlots = static_cast<size_t>((nElems - 1) * (incy < 0 ? -incy : incy) + 1);
+        std::vector<aclblasComplex> xHost(xSlots);
+        std::vector<aclblasComplex> yHost(ySlots);
+        std::vector<aclblasComplex> goldenX;
+        std::vector<aclblasComplex> goldenY;
+        BuildCsrotStrideGolden(nElems, incx, incy, xHost, yHost, goldenX, goldenY);
+        if (RunCsrotStrideCase(handle, stream, nElems, incx, incy, xHost, goldenX, yHost, goldenY) != 0) {
+            return 1;
+        }
+    }
+    std::cout << "[Success] csrot stride cases passed." << std::endl;
+    return 0;
+}
+
 int32_t main(int32_t argc, char* argv[])
 {
     int32_t deviceId = 0;
@@ -153,6 +274,13 @@ int32_t main(int32_t argc, char* argv[])
         }
 
         ret = static_cast<int32_t>(VerifyResult(x, y, goldenX, goldenY));
+    }
+
+    if (ret == 0) {
+        ret = RunCsrotNegativeChecks(handle);
+    }
+    if (ret == 0) {
+        ret = RunCsrotStrideCases(handle, stream);
     }
 
 cleanup:

@@ -13,6 +13,7 @@
  * \brief
  */
 
+#include <climits>
 #include <cstdint>
 #include <iostream>
 #include <vector>
@@ -23,8 +24,7 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
-void sswap_kernel_do(uint8_t* x, uint8_t* y, uint8_t* workSpace, uint8_t* tilingGm,
-                     uint32_t numBlocks, void *stream);
+void sswap_kernel_do(uint8_t* x, uint8_t* y, uint8_t* workSpace, uint8_t* tilingGm, uint32_t numBlocks, void* stream);
 
 constexpr uint64_t DEFAULT_VECTOR_CNT = 40;
 
@@ -80,6 +80,26 @@ static SswapTilingData CalSswapTilingData(uint32_t n, uint32_t vecCoreNum)
 
 aclblasStatus_t aclblasSswap(aclblasHandle_t handle, int n, float* x, int incx, float* y, int incy)
 {
+    if (handle == nullptr) {
+        LOG_PRINT("aclblasSswap: handle is nullptr\n");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    if (n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (x == nullptr || y == nullptr) {
+        LOG_PRINT("aclblasSswap: x and y must not be nullptr\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (n < 0) {
+        LOG_PRINT("aclblasSswap: n must be non-negative, got n=%d\n", n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (incx == 0 || incx == INT_MIN || incy == 0 || incy == INT_MIN) {
+        LOG_PRINT("aclblasSswap: incx and incy must be non-zero and not INT_MIN, got incx=%d, incy=%d\n", incx, incy);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+
     auto* h = handle;
     aclrtStream useStream = h->stream;
 
@@ -89,22 +109,19 @@ aclblasStatus_t aclblasSswap(aclblasHandle_t handle, int n, float* x, int incx, 
 
     uint8_t* tilingDevice = nullptr;
     aclError aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(SswapTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet =
         aclrtMemcpy(tilingDevice, sizeof(SswapTilingData), &tiling, sizeof(SswapTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     sswap_kernel_do(
         reinterpret_cast<uint8_t*>(x), reinterpret_cast<uint8_t*>(y), nullptr, tilingDevice, numBlocks, useStream);
     aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(tilingDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclrtFree(tilingDevice);
 

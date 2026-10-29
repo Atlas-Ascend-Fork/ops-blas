@@ -46,7 +46,7 @@ aclblasStatus_t aclblasSswap(aclblasHandle_t handle, int n, float* x, int incx, 
 
 #### 约束说明
 
-- n <= 0 时直接返回成功，不执行任何操作
+- n == 0 时直接返回成功，不执行任何操作；n < 0 返回 ACLBLAS_STATUS_INVALID_VALUE
 - handle 不可为 nullptr
 - x、y 不可为 nullptr
 - incx != 0, incy != 0
@@ -225,7 +225,7 @@ aclblasStatus_t aclblasCswap(aclblasHandle_t handle, int n, aclblasComplex* x, i
 
 #### 约束说明
 
-- n <= 0 时直接返回成功，不执行任何操作
+- n == 0 时直接返回成功，不执行任何操作；n < 0 返回 ACLBLAS_STATUS_INVALID_VALUE
 - n > 0 时 handle、x、y 均不可为 nullptr
 - incx != 0, incy != 0
 - 负步长按 Netlib BLAS 语义从物理向量尾部开始访问
