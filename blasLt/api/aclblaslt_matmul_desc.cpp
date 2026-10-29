@@ -135,8 +135,9 @@ aclblasStatus_t ApplyMatmulDescSetAttr(
         case ACLBLASLT_MATMUL_DESC_POINTER_MODE:
             return SetDescPointerMode(impl, buf, sizeInBytes);
         case ACLBLASLT_MATMUL_DESC_A_SCALE_MODE:
+            return SetDescEnumFromI32(impl.aScaleMode, buf, sizeInBytes);
         case ACLBLASLT_MATMUL_DESC_B_SCALE_MODE:
-            return ACLBLAS_STATUS_SUCCESS;
+            return SetDescEnumFromI32(impl.bScaleMode, buf, sizeInBytes);
         default:
             return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
@@ -210,22 +211,11 @@ aclblasStatus_t aclblasLtMatmulDescSetAttribute(
     return PackImplIntoCapsule(desc, sizeof(*desc), &impl, sizeof(impl));
 }
 
-aclblasStatus_t aclblasLtMatmulDescGetAttribute(
-    aclblasLtMatmulDesc_t desc, aclblasLtMatmulDescAttribute_t attr, void* buf, size_t sizeInBytes, size_t* sizeWritten)
+// Resolve the storage for an attribute read: returns NOT_SUPPORTED for unknown
+// attributes, otherwise points srcPtr at the impl field and sets requiredSize.
+static aclblasStatus_t ResolveMatmulDescGetSource(
+    const aclblasLtMatmulDescImpl& impl, aclblasLtMatmulDescAttribute_t attr, size_t& requiredSize, const void*& srcPtr)
 {
-    if (desc == nullptr) {
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-
-    aclblasLtMatmulDescImpl impl;
-    aclblasStatus_t copyStatus = CheckedMemcpyS(&impl, sizeof(impl), desc, sizeof(impl));
-    if (copyStatus != ACLBLAS_STATUS_SUCCESS) {
-        return copyStatus;
-    }
-
-    size_t requiredSize = 0;
-    const void* srcPtr = nullptr;
-
     switch (attr) {
         case ACLBLASLT_MATMUL_DESC_EPILOGUE:
             requiredSize = sizeof(impl.epilogue);
@@ -267,8 +257,40 @@ aclblasStatus_t aclblasLtMatmulDescGetAttribute(
             srcPtr = &impl.pointerMode;
             break;
 
+        case ACLBLASLT_MATMUL_DESC_A_SCALE_MODE:
+            requiredSize = sizeof(impl.aScaleMode);
+            srcPtr = &impl.aScaleMode;
+            break;
+
+        case ACLBLASLT_MATMUL_DESC_B_SCALE_MODE:
+            requiredSize = sizeof(impl.bScaleMode);
+            srcPtr = &impl.bScaleMode;
+            break;
+
         default:
             return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+aclblasStatus_t aclblasLtMatmulDescGetAttribute(
+    aclblasLtMatmulDesc_t desc, aclblasLtMatmulDescAttribute_t attr, void* buf, size_t sizeInBytes, size_t* sizeWritten)
+{
+    if (desc == nullptr) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+
+    aclblasLtMatmulDescImpl impl;
+    aclblasStatus_t copyStatus = CheckedMemcpyS(&impl, sizeof(impl), desc, sizeof(impl));
+    if (copyStatus != ACLBLAS_STATUS_SUCCESS) {
+        return copyStatus;
+    }
+
+    size_t requiredSize = 0;
+    const void* srcPtr = nullptr;
+    const aclblasStatus_t resolveStatus = ResolveMatmulDescGetSource(impl, attr, requiredSize, srcPtr);
+    if (resolveStatus != ACLBLAS_STATUS_SUCCESS) {
+        return resolveStatus;
     }
 
     return CopyAttributeOut(buf, sizeInBytes, srcPtr, requiredSize, sizeWritten);

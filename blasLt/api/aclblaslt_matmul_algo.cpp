@@ -274,16 +274,15 @@ aclblasStatus_t ValidateHeuristicArgs(
 // Score a single L1 tile: blends multi-core load balance, L1 utilization and the caller's L0 tile
 // preference. Higher is better.
 float ScoreTileCandidate(
-    uint64_t m, uint64_t n, uint32_t cm, uint32_t cn, uint32_t ck, uint32_t prefL0M, uint32_t prefL0N,
-    uint32_t prefL0K, const AscendHardwareCaps& caps)
+    uint64_t m, uint64_t n, uint32_t cm, uint32_t cn, uint32_t ck, uint32_t prefL0M, uint32_t prefL0N, uint32_t prefL0K,
+    const AscendHardwareCaps& caps)
 {
     const uint32_t tilesM = CeilDiv<uint32_t>(m, cm);
     const uint32_t tilesN = CeilDiv<uint32_t>(n, cn);
     const uint32_t totalTiles = tilesM * tilesN;
     const float balanceScore =
         1.0f - static_cast<float>(totalTiles % std::max(1u, caps.numAICores)) / std::max(1u, caps.numAICores);
-    const size_t l1Usage =
-        static_cast<size_t>(cm) * ck * sizeof(float) + static_cast<size_t>(cn) * ck * sizeof(float);
+    const size_t l1Usage = static_cast<size_t>(cm) * ck * sizeof(float) + static_cast<size_t>(cn) * ck * sizeof(float);
     const float l1Util = static_cast<float>(l1Usage) / static_cast<float>(L1_SIZE);
     float l0Match = 0.0f;
     if (prefL0M > 0 && cm % prefL0M == 0) {
@@ -300,10 +299,10 @@ float ScoreTileCandidate(
 
 std::vector<RankedCandidate> BuildRankedCandidates(
     uint64_t m, uint64_t n, const aclblasLtMatrixLayoutImpl* A, const aclblasLtMatrixLayoutImpl* B,
-    const aclblasLtMatmulDescImpl* desc, uint32_t prefL0M, uint32_t prefL0N, uint32_t prefL0K)
+    const aclblasLtMatmulDescImpl* desc, uint32_t prefL0M, uint32_t prefL0N, uint32_t prefL0K, int32_t deviceId)
 {
     AscendHardwareCaps caps;
-    GetAscendHardwareCaps(0, &caps);
+    GetAscendHardwareCaps(deviceId, &caps);
 
     // L1 tile candidates (M, N, K); mirrors the heuristic search space.
     const uint32_t tileCandidates[][3] = {
@@ -499,7 +498,7 @@ aclblasStatus_t aclblasLtMatmulAlgoCapGetAttribute(
 
     uint32_t values[ALGO_CAP_MAX_ELEMS] = {0};
     const size_t requiredSize = ResolveAlgoCapValue(cap, values); // internal-layer table lookup
-    if (requiredSize == 0) { // error-code matrix row 5
+    if (requiredSize == 0) {                                      // error-code matrix row 5
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
     // Error-code matrix rows 6~9 (probe / undersized buffer / copy / memcpy_s failure) are all
@@ -540,6 +539,42 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// issue #748: preference 读取提取为 helper，控制 GetHeuristic 函数规模
+struct HeuristicPreference {
+    size_t maxWorkspace = 0;
+    uint32_t prefL0M = 0;
+    uint32_t prefL0N = 0;
+    uint32_t prefL0K = 0;
+};
+
+HeuristicPreference ReadHeuristicPreference(const aclblasLtMatmulPreference_t preference)
+{
+    HeuristicPreference pref;
+    if (preference != nullptr) {
+        auto* p = reinterpret_cast<aclblasLtMatmulPreferenceImpl*>(preference);
+        pref.maxWorkspace = p->maxWorkspaceBytes;
+        pref.prefL0M = p->preferredL0M;
+        pref.prefL0N = p->preferredL0N;
+        pref.prefL0K = p->preferredL0K;
+    }
+    return pref;
+}
+
+// issue #748: 类型对校验提取为 helper，控制 GetHeuristic 函数规模
+aclblasStatus_t ValidateHeuristicTypePair(
+    aclblasLtMatmulHeuristicResult_t* heuristicResultsArray, const aclblasLtMatrixLayoutImpl* A,
+    const aclblasLtMatrixLayoutImpl* B, const aclblasLtMatmulDescImpl* desc)
+{
+    if (!CheckComputeTypeCompatibility(desc->computeType, A->type, B->type)) {
+        heuristicResultsArray[0].state = ACLBLAS_STATUS_INVALID_VALUE;
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (IsGatedOffMxPair(A->type, B->type)) {
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(
     aclblasLtHandle_t lightHandle, aclblasLtMatmulDesc_t computeDesc, aclblasLtMatrixLayout_t Adesc,
     aclblasLtMatrixLayout_t Bdesc, aclblasLtMatrixLayout_t Cdesc, aclblasLtMatrixLayout_t Ddesc,
@@ -559,17 +594,8 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(
     }
 
     // Read the caller's workspace budget and preferred L0 tile shape (all optional).
-    size_t maxWorkspace = 0;
-    uint32_t prefL0M = 0;
-    uint32_t prefL0N = 0;
-    uint32_t prefL0K = 0;
-    if (preference != nullptr) {
-        auto* p = reinterpret_cast<aclblasLtMatmulPreferenceImpl*>(preference);
-        maxWorkspace = p->maxWorkspaceBytes;
-        prefL0M = p->preferredL0M;
-        prefL0N = p->preferredL0N;
-        prefL0K = p->preferredL0K;
-    }
+    const HeuristicPreference pref = ReadHeuristicPreference(preference);
+    const size_t maxWorkspace = pref.maxWorkspace;
 
     // Get matrix dimensions for GEMM D = A * B + C (A: m x k, B: k x n, C/D: m x n).
     auto* A = reinterpret_cast<aclblasLtMatrixLayoutImpl*>(Adesc);
@@ -580,22 +606,17 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(
     const uint64_t m = D->rows;
     const uint64_t n = D->cols;
 
-    // Basic validation
-    if (!CheckComputeTypeCompatibility(desc->computeType, A->type, B->type)) {
-        heuristicResultsArray[0].state = ACLBLAS_STATUS_INVALID_VALUE;
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    // Gate-off MX rejection (see IsGatedOffMxPair): must not return MX candidates that
-    // MatmulLaunch would refuse to execute; NOT_SUPPORTED matches the engine fallback code.
-    if (IsGatedOffMxPair(A->type, B->type)) {
-        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    const aclblasStatus_t typeStatus = ValidateHeuristicTypePair(heuristicResultsArray, A, B, desc);
+    if (typeStatus != ACLBLAS_STATUS_SUCCESS) {
+        return typeStatus;
     }
 
     // Materialize ranked tiling candidates into serializable algo blobs. Each returned
     // aclblasLtMatmulAlgo_t carries a valid PackedAlgo (magic + tile + K index in flags), so
     // aclblasLtMatmul() can DecodeAlgo() it and honor the selected tiling.
+    auto* ltHandle = reinterpret_cast<const _aclblaslt_handle*>(lightHandle);
     const std::vector<RankedCandidate> ranked =
-        BuildRankedCandidates(m, n, A, B, desc, prefL0M, prefL0N, prefL0K);
+        BuildRankedCandidates(m, n, A, B, desc, pref.prefL0M, pref.prefL0N, pref.prefL0K, ltHandle->deviceId);
 
     int filled = 0;
     const aclblasStatus_t fillStatus =

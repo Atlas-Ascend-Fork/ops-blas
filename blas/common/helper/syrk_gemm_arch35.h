@@ -1,10 +1,10 @@
 /**
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
- * This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
  * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
- * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
@@ -397,6 +397,22 @@ struct SyrkGemmTileRange {
     uint32_t nEnd;
 };
 
+// Zero tiling parameters would explode the tile count (CeilDiv yields T_MAX,
+// not 0, for a zero divisor), so every tile-loop entry must validate them.
+// Shared tile-loop setup for the syrk kernel impls: resolves the M/N split and
+// the total tile count, returning 0 (and leaving divM/divN untouched) when the
+// tiling parameters are invalid.
+template <typename TilingData>
+__aicore__ inline uint64_t SyrkGemmTotalTiles(uint32_t n, const TilingData& tiling, uint32_t& divM, uint32_t& divN)
+{
+    if (n == 0 || tiling.singleCoreM == 0 || tiling.singleCoreN == 0 || tiling.tileM == 0 || tiling.tileN == 0) {
+        return 0;
+    }
+    divM = CeilDiv<uint32_t>(n, tiling.singleCoreM);
+    divN = CeilDiv<uint32_t>(n, tiling.singleCoreN);
+    return static_cast<uint64_t>(divM) * divN;
+}
+
 template <typename TilingData>
 __aicore__ inline SyrkGemmTileRange DecodeSyrkGemmTile(
     uint64_t tileIdx, uint32_t divN, uint32_t n, const TilingData& tiling)
@@ -406,9 +422,7 @@ __aicore__ inline SyrkGemmTileRange DecodeSyrkGemmTile(
     }
     uint64_t coreIdxM = tileIdx / divN;
     uint64_t coreIdxN = tileIdx % divN;
-    if ((coreIdxM & 1U) != 0) {
-        coreIdxN = divN - 1 - coreIdxN;
-    }
+    coreIdxN = ((coreIdxM & 1U) != 0) ? (divN - 1 - coreIdxN) : coreIdxN;
     uint32_t mStart = coreIdxM * tiling.singleCoreM;
     uint32_t nStart = coreIdxN * tiling.singleCoreN;
     return {
@@ -417,22 +431,66 @@ __aicore__ inline SyrkGemmTileRange DecodeSyrkGemmTile(
 
 __aicore__ inline void SyrkGemmInitEvents()
 {
-    AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(0);
-    AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(1);
-    AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(0);
-    AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(1);
-    AscendC::SetFlag<AscendC::HardEvent::FIX_M>(0);
-    AscendC::SetFlag<AscendC::HardEvent::FIX_M>(1);
+    for (int32_t flagId = 0; flagId < 2; flagId++) {
+        AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(flagId);
+        AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(flagId);
+        AscendC::SetFlag<AscendC::HardEvent::FIX_M>(flagId);
+    }
 }
 
 __aicore__ inline void SyrkGemmFinalizeEvents()
 {
-    AscendC::WaitFlag<AscendC::HardEvent::MTE1_MTE2>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::MTE1_MTE2>(1);
-    AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(1);
-    AscendC::WaitFlag<AscendC::HardEvent::FIX_M>(0);
-    AscendC::WaitFlag<AscendC::HardEvent::FIX_M>(1);
+    for (int32_t flagId = 0; flagId < 2; flagId++) {
+        AscendC::WaitFlag<AscendC::HardEvent::MTE1_MTE2>(flagId);
+        AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(flagId);
+        AscendC::WaitFlag<AscendC::HardEvent::FIX_M>(flagId);
+    }
+}
+
+// Shared tile-loop context for the syrk kernel impls: validates the tiling,
+// resolves the M/N split and total tile count, and decodes per-tile ranges.
+template <typename TilingData>
+struct SyrkGemmTileLoopCtx {
+    const TilingData* tiling = nullptr;
+    uint32_t n = 0;
+    uint32_t divM = 0;
+    uint32_t divN = 0;
+    uint64_t totalTiles = 0;
+    uint64_t blockNum = 0;
+    uint64_t l0PingPong = 0;
+    uint64_t l0cPingPong = 0;
+    uint64_t abL1LoopCnt = 0;
+
+    __aicore__ inline bool Init(const TilingData& t)
+    {
+        tiling = &t;
+        n = t.n;
+        totalTiles = SyrkGemmTotalTiles(n, t, divM, divN);
+        blockNum = AscendC::GetBlockNum();
+        return totalTiles != 0;
+    }
+    __aicore__ inline SyrkGemmTileRange Decode(uint64_t tileIdx) const
+    {
+        return DecodeSyrkGemmTile(tileIdx, divN, n, *tiling);
+    }
+};
+
+// Shared tile-loop driver: init/context/events and the grid-stride tile loop are
+// defined once; the per-tile body is injected as a functor that receives the
+// decoded range and the three loop-carried counters by reference.
+template <typename TilingData, typename ProcessTileFn>
+__aicore__ inline void SyrkGemmRunTileLoop(const TilingData& tiling, ProcessTileFn processTile)
+{
+    SyrkGemmTileLoopCtx<TilingData> ctx;
+    if (!ctx.Init(tiling)) {
+        return;
+    }
+    SyrkGemmInitEvents();
+    for (uint64_t tileIdx = AscendC::GetBlockIdx(); tileIdx < ctx.totalTiles; tileIdx += ctx.blockNum) {
+        SyrkGemmTileRange range = ctx.Decode(tileIdx);
+        processTile(range, ctx.abL1LoopCnt, ctx.l0PingPong, ctx.l0cPingPong);
+    }
+    SyrkGemmFinalizeEvents();
 }
 
 template <
@@ -443,23 +501,28 @@ __aicore__ inline void SyrkGemmResidualKernelImpl(
     TensorLeftHigh gmLeftHigh, TensorLeftLow gmLeftLow, TensorRightHigh gmRightHigh, TensorRightLow gmRightLow,
     TensorTemp gmTempTensor, const TilingData& tiling, uint32_t baseK, uint32_t l1BufNum, int64_t l1Size)
 {
-    uint32_t n = tiling.n;
-    uint32_t divM = CeilDiv<uint32_t>(n, tiling.singleCoreM);
-    uint32_t divN = CeilDiv<uint32_t>(n, tiling.singleCoreN);
-    uint64_t totalTiles = static_cast<uint64_t>(divM) * divN;
-    SyrkGemmInitEvents();
-    uint64_t l0PingPong = 0;
-    uint64_t l0cPingPong = 0;
-    uint64_t abL1LoopCnt = 0;
-    uint64_t blockNum = AscendC::GetBlockNum();
-    for (uint64_t tileIdx = AscendC::GetBlockIdx(); tileIdx < totalTiles; tileIdx += blockNum) {
-        SyrkGemmTileRange range = DecodeSyrkGemmTile(tileIdx, divN, n, tiling);
-        SyrkGemmProcessResidualTile<T, C0, INCLUDE_LOW_LOW>(
-            gmLeftHigh, gmLeftLow, gmRightHigh, gmRightLow, gmTempTensor, tiling.k, tiling.tileKChunk, baseK,
-            range.mStart, range.mEnd, range.nStart, range.nEnd, tiling.tileM, tiling.tileN, abL1LoopCnt, l0PingPong,
-            l0cPingPong, l1BufNum, l1Size);
-    }
-    SyrkGemmFinalizeEvents();
+    struct ProcessTileFn {
+        TensorLeftHigh gmLeftHigh;
+        TensorLeftLow gmLeftLow;
+        TensorRightHigh gmRightHigh;
+        TensorRightLow gmRightLow;
+        TensorTemp gmTempTensor;
+        const TilingData* tiling;
+        uint32_t baseK;
+        uint32_t l1BufNum;
+        int64_t l1Size;
+        __aicore__ inline void operator()(
+            const SyrkGemmTileRange& range, uint64_t& abL1LoopCnt, uint64_t& l0PingPong, uint64_t& l0cPingPong) const
+        {
+            SyrkGemmProcessResidualTile<T, C0, INCLUDE_LOW_LOW>(
+                gmLeftHigh, gmLeftLow, gmRightHigh, gmRightLow, gmTempTensor, tiling->k, tiling->tileKChunk, baseK,
+                range.mStart, range.mEnd, range.nStart, range.nEnd, tiling->tileM, tiling->tileN, abL1LoopCnt,
+                l0PingPong, l0cPingPong, l1BufNum, l1Size);
+        }
+    };
+    SyrkGemmRunTileLoop(
+        tiling,
+        ProcessTileFn{gmLeftHigh, gmLeftLow, gmRightHigh, gmRightLow, gmTempTensor, &tiling, baseK, l1BufNum, l1Size});
 }
 
 template <typename TensorA, typename TensorB, typename TensorTemp, typename TilingData>
@@ -467,26 +530,24 @@ __aicore__ inline void SyrkGemmKernelImpl(
     TensorA gmLeftTensor, TensorB gmRightTensor, TensorTemp gmTempTensor, const TilingData& tiling, uint32_t baseK,
     uint32_t l1BufNum, int64_t l1Size)
 {
-    uint32_t n = tiling.n;
-    uint32_t K = tiling.k;
-
-    uint32_t divM = CeilDiv<uint32_t>(n, tiling.singleCoreM);
-    uint32_t divN = CeilDiv<uint32_t>(n, tiling.singleCoreN);
-    uint64_t totalTiles = static_cast<uint64_t>(divM) * static_cast<uint64_t>(divN);
-
-    SyrkGemmInitEvents();
-
-    uint64_t l0PingPong = 0;
-    uint64_t l0cPingPong = 0;
-    uint64_t abL1LoopCnt = 0;
-    uint64_t blockNum = AscendC::GetBlockNum();
-
-    for (uint64_t tileIdx = AscendC::GetBlockIdx(); tileIdx < totalTiles; tileIdx += blockNum) {
-        SyrkGemmTileRange range = DecodeSyrkGemmTile(tileIdx, divN, n, tiling);
-        SyrkGemmProcessTile(
-            gmLeftTensor, gmRightTensor, gmTempTensor, K, tiling.tileKChunk, baseK, range.mStart, range.mEnd,
-            range.nStart, range.nEnd, tiling.tileM, tiling.tileN, abL1LoopCnt, l0PingPong, l0cPingPong, l1BufNum,
-            l1Size);
-    }
-    SyrkGemmFinalizeEvents();
+    struct ProcessTileFn {
+        TensorA gmLeftTensor;
+        TensorB gmRightTensor;
+        TensorTemp gmTempTensor;
+        const TilingData* tiling;
+        uint32_t K;
+        uint32_t baseK;
+        uint32_t l1BufNum;
+        int64_t l1Size;
+        __aicore__ inline void operator()(
+            const SyrkGemmTileRange& range, uint64_t& abL1LoopCnt, uint64_t& l0PingPong, uint64_t& l0cPingPong) const
+        {
+            SyrkGemmProcessTile(
+                gmLeftTensor, gmRightTensor, gmTempTensor, K, tiling->tileKChunk, baseK, range.mStart, range.mEnd,
+                range.nStart, range.nEnd, tiling->tileM, tiling->tileN, abL1LoopCnt, l0PingPong, l0cPingPong, l1BufNum,
+                l1Size);
+        }
+    };
+    SyrkGemmRunTileLoop(
+        tiling, ProcessTileFn{gmLeftTensor, gmRightTensor, gmTempTensor, &tiling, tiling.k, baseK, l1BufNum, l1Size});
 }

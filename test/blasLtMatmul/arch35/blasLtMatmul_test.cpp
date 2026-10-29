@@ -294,6 +294,50 @@ TEST_F(LtMatmulArch35Test, NullHandle)
     EXPECT_EQ(ret, ACLBLAS_STATUS_NOT_INITIALIZED);
 }
 
+// ── TEST_F: A/B_SCALE_MODE Set/Get roundtrip (issue #639) ──
+TEST_F(LtMatmulArch35Test, ScaleModeAttributesRoundTrip)
+{
+    aclblasLtMatmulDesc_t desc = nullptr;
+    ASSERT_EQ(aclblasLtMatmulDescCreate(&desc, ACLBLAS_COMPUTE_32F, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+
+    // default read-back succeeds and yields 0 instead of NOT_SUPPORTED
+    int32_t out = -1;
+    size_t sizeWritten = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulDescGetAttribute(desc, ACLBLASLT_MATMUL_DESC_A_SCALE_MODE, &out, sizeof(out), &sizeWritten),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(out, 0);
+    EXPECT_EQ(sizeWritten, sizeof(out));
+
+    const int32_t modeA = 1;
+    const int32_t modeB = 2;
+    EXPECT_EQ(
+        aclblasLtMatmulDescSetAttribute(desc, ACLBLASLT_MATMUL_DESC_A_SCALE_MODE, &modeA, sizeof(modeA)),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(
+        aclblasLtMatmulDescSetAttribute(desc, ACLBLASLT_MATMUL_DESC_B_SCALE_MODE, &modeB, sizeof(modeB)),
+        ACLBLAS_STATUS_SUCCESS);
+
+    out = -1;
+    EXPECT_EQ(
+        aclblasLtMatmulDescGetAttribute(desc, ACLBLASLT_MATMUL_DESC_A_SCALE_MODE, &out, sizeof(out), &sizeWritten),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(out, modeA);
+    out = -1;
+    EXPECT_EQ(
+        aclblasLtMatmulDescGetAttribute(desc, ACLBLASLT_MATMUL_DESC_B_SCALE_MODE, &out, sizeof(out), &sizeWritten),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(out, modeB);
+
+    // payload size other than int32_t is rejected
+    const int16_t small = 1;
+    EXPECT_EQ(
+        aclblasLtMatmulDescSetAttribute(desc, ACLBLASLT_MATMUL_DESC_A_SCALE_MODE, &small, sizeof(small)),
+        ACLBLAS_STATUS_INVALID_VALUE);
+
+    aclblasLtMatmulDescDestroy(desc);
+}
+
 // ── TEST_F: null computeDesc (TC_L0_26) ──
 TEST_F(LtMatmulArch35Test, NullComputeDesc)
 {

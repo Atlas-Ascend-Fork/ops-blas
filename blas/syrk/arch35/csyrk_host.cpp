@@ -80,10 +80,38 @@ static aclblasStatus_t ValidateCsyrkParams(
 // ==========================================================================
 static aclblasStatus_t ReadComplexScalarsFromDevice(
     const aclblasComplex* alpha, const aclblasComplex* beta, float& alphaReal, float& alphaImag, float& betaReal,
-    float& betaImag, aclrtStream stream)
+    float& betaImag, bool& scalarsOnDevice, aclrtStream stream)
 {
     aclblasComplex hostAlpha{};
     aclblasComplex hostBeta{};
+    // Resolve pointer locations first: host scalars are dereferenced directly,
+    // device scalars go through D2H, and mixing host/device is rejected — the
+    // same contract as cherkx (issue #642). Previously the D2H copy was issued
+    // unconditionally, so host-scalar callers got a misleading INTERNAL_ERROR.
+    bool alphaIsDevice = false;
+    bool betaIsDevice = false;
+    aclblasStatus_t locRet = CheckPtrLocation(alpha, &alphaIsDevice);
+    if (locRet != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE(OP_TAG, "alpha pointer location query failed, st=%d", static_cast<int>(locRet));
+        return locRet;
+    }
+    locRet = CheckPtrLocation(beta, &betaIsDevice);
+    if (locRet != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE(OP_TAG, "beta pointer location query failed, st=%d", static_cast<int>(locRet));
+        return locRet;
+    }
+    if (alphaIsDevice != betaIsDevice) {
+        OP_LOGE(OP_TAG, "alpha and beta must be both host or both device pointers");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    scalarsOnDevice = alphaIsDevice;
+    if (!alphaIsDevice) {
+        alphaReal = alpha->real;
+        alphaImag = alpha->imag;
+        betaReal = beta->real;
+        betaImag = beta->imag;
+        return ACLBLAS_STATUS_SUCCESS;
+    }
     aclError ret = aclrtMemcpyAsync(
         &hostAlpha, sizeof(aclblasComplex), alpha, sizeof(aclblasComplex), ACL_MEMCPY_DEVICE_TO_HOST, stream);
     if (ret != ACL_SUCCESS) {
@@ -111,7 +139,7 @@ static aclblasStatus_t ReadComplexScalarsFromDevice(
 static aclblasStatus_t PrepareCsyrkParams(
     _aclblas_handle* h, aclblasOperation_t& trans, uint32_t k, const aclblasComplex* alpha, const aclblasComplex* beta,
     float& alphaReal, float& alphaImag, float& betaReal, float& betaImag, bool& isAlphaZero, bool& isKZero,
-    bool& isBetaZero, bool& skipTemp)
+    bool& isBetaZero, bool& skipTemp, bool& scalarsOnDevice)
 {
     // csyrk: OP_C maps to OP_T (plain transpose, no conjugation)
     if (trans == ACLBLAS_OP_C) {
@@ -119,7 +147,7 @@ static aclblasStatus_t PrepareCsyrkParams(
     }
 
     aclblasStatus_t ret =
-        ReadComplexScalarsFromDevice(alpha, beta, alphaReal, alphaImag, betaReal, betaImag, h->stream);
+        ReadComplexScalarsFromDevice(alpha, beta, alphaReal, alphaImag, betaReal, betaImag, scalarsOnDevice, h->stream);
     if (ret != ACLBLAS_STATUS_SUCCESS) {
         OP_LOGE(OP_TAG, "read alpha/beta D2H failed, ret=%d", static_cast<int>(ret));
         return ret;
@@ -487,10 +515,11 @@ static bool CsyrkPrelude(
     _aclblas_handle* h, aclblasFillMode_t uplo, aclblasOperation_t trans, uint32_t n, uint32_t k, uint32_t lda,
     uint32_t ldc, const aclblasComplex* alpha, const aclblasComplex* A, const aclblasComplex* beta, aclblasComplex* C,
     float& alphaReal, float& alphaImag, float& betaReal, float& betaImag, bool& isAlphaZero, bool& isKZero,
-    bool& isBetaZero, bool& skipTemp, aclblasStatus_t& status)
+    bool& isBetaZero, bool& skipTemp, bool& scalarsOnDevice, aclblasStatus_t& status)
 {
     aclblasStatus_t st = PrepareCsyrkParams(
-        h, trans, k, alpha, beta, alphaReal, alphaImag, betaReal, betaImag, isAlphaZero, isKZero, isBetaZero, skipTemp);
+        h, trans, k, alpha, beta, alphaReal, alphaImag, betaReal, betaImag, isAlphaZero, isKZero, isBetaZero, skipTemp,
+        scalarsOnDevice);
     if (st != ACLBLAS_STATUS_SUCCESS) {
         status = st;
         return true;
@@ -580,6 +609,9 @@ struct CsyrkGeom {
     uint32_t n, k, lda, ldc, arRows, arCols, arLdc, tempLdc;
     bool isTransN, useHf32Cube;
     bool isAlphaZero, isKZero, isBetaZero, skipTemp;
+    // alpha/beta resolved from device-resident pointers: only then may the raw
+    // pointers be handed to the direct SIMT kernel as GM addresses (!722).
+    bool scalarsOnDevice;
     float alphaReal, alphaImag, betaReal, betaImag;
 };
 
@@ -639,7 +671,7 @@ static aclblasStatus_t LaunchCsyrkKernel(
     aclblasStatus_t preStatus = ACLBLAS_STATUS_SUCCESS;
     if (CsyrkPrelude(
             h, uplo, trans, n, k, lda, ldc, alpha, A, beta, C, g.alphaReal, g.alphaImag, g.betaReal, g.betaImag,
-            g.isAlphaZero, g.isKZero, g.isBetaZero, g.skipTemp, preStatus)) {
+            g.isAlphaZero, g.isKZero, g.isBetaZero, g.skipTemp, g.scalarsOnDevice, preStatus)) {
         return preStatus;
     }
     uint32_t aivCoreNum = GetAivCoreCount();
@@ -649,7 +681,10 @@ static aclblasStatus_t LaunchCsyrkKernel(
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
     g.isTransN = (trans == ACLBLAS_OP_N);
-    if (CsyrkTryLaunchDirect(h, uplo, n, k, lda, ldc, g.isTransN, aivCoreNum, alpha, A, beta, C)) {
+    // The direct kernel reads alpha/beta from GM addresses (!722 review): host
+    // scalars must not be handed down as pointers, so only the device-scalar
+    // case may take it; host scalars go through the tiling-carrying paths below.
+    if (g.scalarsOnDevice && CsyrkTryLaunchDirect(h, uplo, n, k, lda, ldc, g.isTransN, aivCoreNum, alpha, A, beta, C)) {
         return ACLBLAS_STATUS_SUCCESS;
     }
     // HF32x3 (compensated HF32 cube) is the large-n cube path; small n/k keep

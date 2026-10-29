@@ -129,6 +129,107 @@ TEST_F(CsyrkTest, NullHandle)
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_HANDLE_IS_NULLPTR));
 }
 
+// ── TEST_F: host-scalar alpha/beta accepted (issue #642) ──
+// The npu wrapper uploads scalars to device, so this calls the public API
+// directly with host-side alpha/beta addresses: they must be dereferenced
+// instead of receiving a misleading INTERNAL_ERROR from a failed D2H copy.
+// Shapes cover both the n<=64 direct path (skipped for host scalars, !722
+// review) and the n>64 deint/cube/combine path carrying scalars via tiling.
+// Host golden for the UPPER triangle: C = alpha*A*A^T + beta*C (no conjugation).
+static void BuildCsyrkHostGolden(
+    int n, int k, int lda, int ldc, const aclblasComplex& alpha, const aclblasComplex& beta,
+    const std::vector<aclblasComplex>& aHost, const std::vector<aclblasComplex>& cInit,
+    std::vector<aclblasComplex>& golden)
+{
+    golden = cInit;
+    for (int i = 0; i < n; i++) {
+        for (int j = i; j < n; j++) {
+            float accRe = 0.0f;
+            float accIm = 0.0f;
+            for (int t = 0; t < k; t++) {
+                const aclblasComplex& av = aHost[static_cast<size_t>(t) * lda + i];
+                const aclblasComplex& bv = aHost[static_cast<size_t>(t) * lda + j];
+                accRe += av.real * bv.real - av.imag * bv.imag;
+                accIm += av.real * bv.imag + av.imag * bv.real;
+            }
+            const size_t idx = static_cast<size_t>(j) * ldc + i;
+            golden[idx].real =
+                alpha.real * accRe - alpha.imag * accIm + beta.real * cInit[idx].real - beta.imag * cInit[idx].imag;
+            golden[idx].imag =
+                alpha.real * accIm + alpha.imag * accRe + beta.real * cInit[idx].imag + beta.imag * cInit[idx].real;
+        }
+    }
+}
+
+static void VerifyCsyrkHostScalarOutput(
+    int n, int ldc, const std::vector<aclblasComplex>& golden, const std::vector<aclblasComplex>& cOut)
+{
+    constexpr float eps = 1e-4f;
+    for (int i = 0; i < n; i++) {
+        for (int j = i; j < n; j++) {
+            const size_t idx = static_cast<size_t>(j) * ldc + i;
+            EXPECT_NEAR(cOut[idx].real, golden[idx].real, eps * (1.0f + std::abs(golden[idx].real)));
+            EXPECT_NEAR(cOut[idx].imag, golden[idx].imag, eps * (1.0f + std::abs(golden[idx].imag)));
+        }
+    }
+}
+
+static bool RunCsyrkHostScalarShape(aclblasHandle_t handle, aclrtStream stream, int n, int k, int lda, int ldc)
+{
+    const aclblasComplex alpha{2.0f, 0.0f};
+    const aclblasComplex beta{1.5f, 0.0f};
+    std::vector<aclblasComplex> aHost(static_cast<size_t>(lda) * k);
+    std::vector<aclblasComplex> cInit(static_cast<size_t>(ldc) * n);
+    for (size_t i = 0; i < aHost.size(); i++) {
+        aHost[i] = {0.5f + static_cast<float>(i), 0.25f + static_cast<float>(i)};
+    }
+    for (size_t i = 0; i < cInit.size(); i++) {
+        cInit[i] = {1.0f + static_cast<float>(i), 2.0f + static_cast<float>(i)};
+    }
+
+    std::vector<aclblasComplex> golden;
+    BuildCsyrkHostGolden(n, k, lda, ldc, alpha, beta, aHost, cInit, golden);
+
+    const size_t aBytes = aHost.size() * sizeof(aclblasComplex);
+    const size_t cBytes = cInit.size() * sizeof(aclblasComplex);
+    void* dA = nullptr;
+    void* dC = nullptr;
+    bool ok = aclrtMalloc(&dA, aBytes, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS &&
+              aclrtMalloc(&dC, cBytes, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS;
+    if (ok) {
+        ok = aclrtMemcpy(dA, aBytes, aHost.data(), aBytes, ACL_MEMCPY_HOST_TO_DEVICE) == ACL_SUCCESS &&
+             aclrtMemcpy(dC, cBytes, cInit.data(), cBytes, ACL_MEMCPY_HOST_TO_DEVICE) == ACL_SUCCESS;
+    }
+    if (ok) {
+        const aclblasStatus_t ret = aclblasCsyrk(
+            handle, ACLBLAS_UPPER, ACLBLAS_OP_N, n, k, &alpha, static_cast<const aclblasComplex*>(dA), lda, &beta,
+            static_cast<aclblasComplex*>(dC), ldc);
+        EXPECT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
+        ok = ret == ACLBLAS_STATUS_SUCCESS && aclrtSynchronizeStream(stream) == ACL_SUCCESS;
+    }
+    if (ok) {
+        std::vector<aclblasComplex> cOut(cInit.size());
+        ok = aclrtMemcpy(cOut.data(), cBytes, dC, cBytes, ACL_MEMCPY_DEVICE_TO_HOST) == ACL_SUCCESS;
+        EXPECT_TRUE(ok);
+        if (ok) {
+            VerifyCsyrkHostScalarOutput(n, ldc, golden, cOut);
+        }
+    }
+    if (dA != nullptr) {
+        aclrtFree(dA);
+    }
+    if (dC != nullptr) {
+        aclrtFree(dC);
+    }
+    return ok;
+}
+
+TEST_F(CsyrkTest, HostScalarAlphaBeta)
+{
+    ASSERT_TRUE(RunCsyrkHostScalarShape(handle_, stream_, 4, 3, 4, 4));
+    ASSERT_TRUE(RunCsyrkHostScalarShape(handle_, stream_, 72, 4, 72, 72));
+}
+
 INSTANTIATE_TEST_SUITE_P(
     Csyrk, CsyrkTest, ::testing::ValuesIn(GetCasesFromCsv<CsyrkParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<CsyrkParam>);

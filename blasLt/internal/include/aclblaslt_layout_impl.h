@@ -54,6 +54,10 @@ struct aclblasLtMatmulDescImpl {
     const void* scaleA = nullptr;
     const void* scaleB = nullptr;
     int32_t pointerMode = ACLBLASLT_POINTER_MODE_HOST;
+    // aclblasLtMatmulMatrixScale_t values (kept as raw int32 until the public
+    // enum lands in the header); persisted so GetAttributes round-trips Set.
+    int32_t aScaleMode = 0;
+    int32_t bScaleMode = 0;
 };
 static_assert(
     sizeof(aclblasLtMatmulDescImpl) <= sizeof(aclblasLtMatmulDescOpaque_t),
