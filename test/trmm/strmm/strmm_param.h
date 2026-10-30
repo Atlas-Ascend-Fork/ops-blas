@@ -8,8 +8,7 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef STRMM_PARAM_H
-#define STRMM_PARAM_H
+#pragma once
 
 #include <algorithm>
 #include <string>
@@ -24,11 +23,11 @@ struct StrmmParam : public BlasTestParamBase {
     aclblasDiagType_t diag = ACLBLAS_NON_UNIT;
     int m = 0;
     int n = 0;
-    float   alpha = 1.0f;
-    bool    nullAlpha = false;
-    bool    nullA = false;
-    bool    nullB = false;
-    bool    nullC = false;
+    float alpha = 1.0f;
+    bool nullAlpha = false;
+    bool nullA = false;
+    bool nullB = false;
+    bool nullC = false;
     int lda = 0;
     int ldb = 0;
     int ldc = 0;
@@ -37,12 +36,12 @@ struct StrmmParam : public BlasTestParamBase {
 
     explicit StrmmParam(const csv_map& map) : BlasTestParamBase(map)
     {
-        side   = parseSideMode(ReadMap(map, "side", "LEFT"));
-        uplo   = parseFillMode(ReadMap(map, "uplo", "UPPER"));
+        side = parseSideMode(ReadMap(map, "side", "LEFT"));
+        uplo = parseFillMode(ReadMap(map, "uplo", "UPPER"));
         trans = parseOpTrans(ReadMap(map, "trans", "N"));
-        diag   = parseDiagType(ReadMap(map, "diag", "NON_UNIT"));
-        m      = std::stoi(ReadMap(map, "m", "0"));
-        n      = std::stoi(ReadMap(map, "n", "0"));
+        diag = parseDiagType(ReadMap(map, "diag", "NON_UNIT"));
+        m = ParseIntColumn(map, "m", "0");
+        n = ParseIntColumn(map, "n", "0");
 
         std::string alphaStr = ReadMap(map, "alpha", "1.0");
         nullAlpha = (alphaStr == "null" || alphaStr == "nullptr");
@@ -56,12 +55,10 @@ struct StrmmParam : public BlasTestParamBase {
         const std::string ldaText = ReadMap(map, "lda", "");
         const std::string ldbText = ReadMap(map, "ldb", "");
         const std::string ldcText = ReadMap(map, "ldc", "");
-        lda = ldaText.empty() ? std::max(1, side == ACLBLAS_SIDE_LEFT ? m : n) : std::stoi(ldaText);
-        ldb = ldbText.empty() ? std::max(1, m) : std::stoi(ldbText);
-        ldc = ldcText.empty() ? std::max(1, m) : std::stoi(ldcText);
+        lda = ldaText.empty() ? std::max(1, side == ACLBLAS_SIDE_LEFT ? m : n) : ParseIntColumn(map, "lda");
+        ldb = ldbText.empty() ? std::max(1, m) : ParseIntColumn(map, "ldb");
+        ldc = ldcText.empty() ? std::max(1, m) : ParseIntColumn(map, "ldc");
         aFill = parseFill(ReadMap(map, "a_fill", "RANDOM_NORM_5_5"));
         bFill = parseFill(ReadMap(map, "b_fill", "RANDOM_NORM_5_5"));
     }
 };
-
-#endif // STRMM_PARAM_H

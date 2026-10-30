@@ -8,8 +8,7 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef SSYR2K_PARAM_H
-#define SSYR2K_PARAM_H
+#pragma once
 
 #include <string>
 #include "cann_ops_blas.h"
@@ -36,10 +35,10 @@ struct Ssyr2kParam : public BlasTestParamBase {
 
     explicit Ssyr2kParam(const csv_map& map) : BlasTestParamBase(map)
     {
-        uplo   = parseFillMode(ReadMap(map, "uplo", "UPPER"));
-        trans  = parseOpTrans(ReadMap(map, "trans", "N"));
-        n      = std::stoi(ReadMap(map, "n", "0"));
-        k      = std::stoi(ReadMap(map, "k", "0"));
+        uplo = parseFillMode(ReadMap(map, "uplo", "UPPER"));
+        trans = parseOpTrans(ReadMap(map, "trans", "N"));
+        n = ParseIntColumn(map, "n", "0");
+        k = ParseIntColumn(map, "k", "0");
 
         std::string alphaStr = ReadMap(map, "alpha", "1.0");
         nullAlpha = (alphaStr == "null" || alphaStr == "nullptr");
@@ -53,14 +52,12 @@ struct Ssyr2kParam : public BlasTestParamBase {
         nullB = (ReadMap(map, "nullB", "0") == "1");
         nullC = (ReadMap(map, "nullC", "0") == "1");
 
-        lda = std::stoi(ReadMap(map, "lda", "0"));
-        ldb = std::stoi(ReadMap(map, "ldb", "0"));
-        ldc = std::stoi(ReadMap(map, "ldc", "0"));
+        lda = ParseIntColumn(map, "lda", "0");
+        ldb = ParseIntColumn(map, "ldb", "0");
+        ldc = ParseIntColumn(map, "ldc", "0");
 
         fillA = BlasFillMode(ReadMap(map, "fillA", "RANDOM_P1_P1"));
         fillB = BlasFillMode(ReadMap(map, "fillB", "RANDOM_P1_P1"));
         fillC = BlasFillMode(ReadMap(map, "fillC", "RANDOM_P1_P1"));
     }
 };
-
-#endif // SSYR2K_PARAM_H

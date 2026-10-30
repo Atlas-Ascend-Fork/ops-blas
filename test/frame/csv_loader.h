@@ -139,6 +139,27 @@ inline std::string ReplaceFileExtension2Csv(const std::string& filePath)
     return p + ".csv";
 }
 
+// issue #643/#654: required numeric column parse failure with column name
+inline int ParseIntColumn(const csv_map& row, const char* key, const std::string& def = std::string())
+{
+    const std::string raw = ReadMap(row, key, def);
+    try {
+        return std::stoi(raw);
+    } catch (const std::exception&) {
+        throw std::runtime_error(std::string("column '") + key + "' is missing, empty or non-numeric: '" + raw + "'");
+    }
+}
+
+inline float ParseFloatColumn(const csv_map& row, const char* key, const std::string& def = std::string())
+{
+    const std::string raw = ReadMap(row, key, def);
+    try {
+        return std::stof(raw);
+    } catch (const std::exception&) {
+        throw std::runtime_error(std::string("column '") + key + "' is missing, empty or non-numeric: '" + raw + "'");
+    }
+}
+
 // ── Safe numeric parsers ──
 inline int parseInt(const std::string& s, int def = 0)
 {
@@ -212,6 +233,7 @@ inline EnumT parseEnum(const std::string& s, const std::unordered_map<std::strin
         }
         return static_cast<EnumT>(v);
     } catch (...) {
+        std::cout << "[csv_loader] unknown enum string '" << s << "', using default" << std::endl;
         return defaultVal;
     }
 }

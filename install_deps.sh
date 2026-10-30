@@ -335,7 +335,8 @@ install_pigz() {
         fi
     fi
 
-    read -p "Install pigz? [Y/n] " -n 1 -r
+    # issue #653: EOF or non-interactive read triggers set -e abort; use fallback + timeout
+    read -t 1 -p "Install pigz? [Y/n] " -n 1 -r || REPLY="Y"
     echo
     if [[ -n "$REPLY" && ! $REPLY =~ ^[Yy]$ ]]; then
         echo "Skipping pigz installation"
