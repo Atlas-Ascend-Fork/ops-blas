@@ -90,6 +90,7 @@ arch35（Ascend 950）实现：
 - C 指针口径：当 n > 0 且 beta != 0 时 C 不可为 nullptr；当 n > 0 且 beta = 0 时 C 允许为 nullptr（返回 SUCCESS 且不发生任何写出）；n = 0 时 C 可为 nullptr
 - n <= 8 走 K4 SIMT 融合直算路径（无 workspace）；n > 8 走 Cube+AIV 三阶段通用管线
 - 通用管线（n > 8）需约 16·n·k + 16·n² 字节库工作区（A/B 实/虚拆分缓存 4×4·n·k 与 4 份 GEMM 中间结果 4×4·n²；n 按 16 元素向上对齐、总量按 512 字节取整；skipTemp 即 alpha=0 或 k=0 时为 0）；当超出 `ACLBLAS_MAX_WORKSPACE_SIZE`（2 GiB）时返回 ACLBLAS_STATUS_ALLOC_FAILED
+- 通用管线的 K2f 融合核在 fallback 形状（baseM=32，即 n<64 或 CHER2K_L1_SHAPE 强制 32×16 档）且 k > tileKChunk 时启用 SEG 分段累加（StreamK 式）：每个 k-chunk 为一段（S=ceil(k/tileKChunk)），段内 L0C 累加、段尾折出至 UB 乒乓槽，AIV 以 fp32 UB 累加器做段间顺序归约后执行既有折叠输出——将 k 深度单链 fp32 顺序舍入链截短为段级短链，收敛大 k 深度累加的舍入噪声（2^-13 精度标准下 TC_EX_0604 类小 n 深 k 用例达标：ratio 98.69% → 100%，maxAbsErr 2.63e-3 → 3.55e-4）；n≥64 主形状（baseM=64）与 k≤tileKChunk（S=1）不启用，n≥64 主路径输出与启用前逐位一致；环境变量 `CHER2K_SEG_K` 默认开，置 0 回退单链旧行为（A/B 对照与现场回退，无需重编）
 - 输出 C 满足 Hermitian 性质：C[i][j] = conj(C[j][i])，对角线元素虚部精确为零（代数相消），非 uplo 三角与 ldc padding 字节保持不变
 - 异步执行：多个 kernel 全部下发至 handle 绑定的同一 stream，按流语义自动排序，算子内部无需显式同步；调用方读回结果前须自行同步所绑定的 stream（如 `aclrtSynchronizeStream(stream)`，见下方调用示例第 5 步）
 
@@ -123,11 +124,11 @@ arch35（Ascend 950）实现：
 
 #### 精度验证
 
-采用 `MIXED_TOLERANCE` 混合容差策略（对齐[生态算子开源精度标准](https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/experimental_standard.md) §2.1），complex64 输出按实部/虚部拆分后分别按 FP32 口径校验：
+采用 `MIXED_TOLERANCE` 混合容差策略（对齐[生态算子开源精度标准](https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/experimental_standard.md) §2.1 的 2026-09-17 修订口径），complex64 输出按实部/虚部拆分后分别按 FP32 口径校验：
 
 | 数据类型 | rtol | atol | required_matched_ratio | max_abs_error_limit |
 |----------|------|------|----------------------|-------------------|
-| COMPLEX64（实部/虚部分别按 FP32 口径） | 2^-10 (9.77e-4) | 2^-16 (1.53e-5) | 0.99 | 1e-2 或 32·ULP |
+| COMPLEX64（实部/虚部分别按 FP32 口径） | 2^-13 (1.22e-4) | 2^-13 (1.22e-4) | 0.99 | 1e-2 或 32·ULP |
 
 其中，ULP（Unit in the Last Place，末位单位）表示给定浮点数与相邻可表示值之间的间距。
 `max_abs_error_limit` 按输出元素逐个计算：第`i`个元素的误差上限为

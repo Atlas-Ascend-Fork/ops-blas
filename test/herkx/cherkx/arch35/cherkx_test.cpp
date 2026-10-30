@@ -28,8 +28,10 @@
 #include "cherkx_npu_wrapper.h"
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 精度判定口径（**唯一取值处 = 测试方案 §2.3 精度判定口径表**；权威源 = 需求文档 §2.6，O5 决议
-// ← .opencode/skills/ops-precision-standard/references/float_compute.md §3 FLOAT32 行）
+// 精度判定口径（**唯一取值处 = 测试方案 §2.3 精度判定口径表**；权威源 = 需求文档 §2.6）
+//   精度判定以框架 verify.h 为唯一权威（2026-10-29 用户决策移除本地镜像常量与溯源自检，取代原
+//   「O5 决议：本地镜像+溯源自检」约定，与其余 6 算子对齐；框架 FLOAT32 混合容差阈值对齐
+//   mixed_tolerance_standard.md 2026-09-17 修订版，ops-blas 488f1cc，issue #292）。
 //   区域① C uplo 三角（正常路径 α≠0 且 k>0）：混合容差逐元素 |actual−golden| ≤ atol+rtol·|golden|，
 //        且 matched_ratio ≥ 0.99、max_abs_error ≤ 1e-2（框架实现为逐元素 max(1e-2, 32×ULP)）
 //        → VerifyUploPrecision + applyMixedTolerance(cfg, ACL_FLOAT)（既有保持）
@@ -40,17 +42,14 @@
 //   区域⑤ C ldc padding 区（ldc>n，含 sentinel 预填）：与 host 预填快照 bit-exact →
 //        VerifyLdcPaddingExact（本次新增，覆盖「memset 破坏 padding」既有缺陷，AL_21/22 依赖）
 //   返回值：aclblasStatus_t 整数相等 → EXPECT_EQ（逐用例 expect_result）+ TEST_F 断言
-// 下方常量为口径表取值的**本地镜像**，仅用于台账「阈值」列与溯源自检；判定实现一律走框架
-// applyMixedTolerance(ACL_FLOAT) / PrecisionMode::EXACT，不另立第二套口径（O5 决议：辅助交叉核对为「无」）。
+// 判定实现一律走框架 applyMixedTolerance(ACL_FLOAT) / PrecisionMode::EXACT，不在测试文件内复制
+// 框架阈值做一致性对账（2026-10-29 用户决策：去除本地镜像+溯源自检，框架 verify.h 为唯一权威）。
 // ═══════════════════════════════════════════════════════════════════════════════
-static constexpr double kSpecRtol = 0.0009765625;              // 2^-10 = 9.77e-4
-static constexpr double kSpecAtol = 1.52587890625e-5;          // 2^-16 = 1.53e-5
-static constexpr double kSpecMatchedRatio = 0.99;
-static constexpr double kSpecMaxAbsErr = 1e-2;
-static constexpr double kSpecDiagImagAtol = 1.52587890625e-5;  // 2^-16（区域③）
+static constexpr double kSpecDiagImagAtol = 1.52587890625e-5;  // 2^-16（区域③真实判定阈值，非框架镜像）
 
 static const char* const kSpecSrcRegion1 =
-    "测试方案§2.3区域①←需求§2.6←ops-precision-standard/float_compute.md§3(FLOAT32)";
+    "测试方案§2.3区域①←需求§2.6;精度判定以框架verify.h为唯一权威"
+    "(2026-10-29决策移除本地镜像自检;框架阈值见mixed_tolerance_standard.md 2026-09-17修订版,issue #292)";
 static const char* const kSpecSrcRegion2 = "测试方案§2.3区域②←需求§2.6";
 static const char* const kSpecSrcRegion3 = "测试方案§2.3区域③←需求§2.6";
 static const char* const kSpecSrcRegion4 = "测试方案§2.3区域④←需求§2.6";
@@ -156,14 +155,13 @@ static void CherkxLedgerSkip(const std::string& caseName, const std::string& rea
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 实测值度量（台账「实测值」列）：与 verify.h MixedToleranceStrategy / ExactStrategy 同式，
-// 仅用于留痕与口径溯源自检；**通过依据**仍是 Verifier::verifyVector 的硬断言返回值。
+// 仅用于留痕；**通过依据**仍是 Verifier::verifyVector 的硬断言返回值。
 // ═══════════════════════════════════════════════════════════════════════════════
 struct CherkxRegionMetrics {
     size_t count = 0;
     size_t failCount = 0;
     double matchedRatio = 1.0;
     double maxAbsErr = 0.0;
-    bool specOk = true; // 按口径表阈值独立评估的结论（与框架判定不一致时在台账标注分叉）
 };
 
 static CherkxRegionMetrics CherkxMeasureMixed(
@@ -171,7 +169,6 @@ static CherkxRegionMetrics CherkxMeasureMixed(
 {
     CherkxRegionMetrics m;
     m.count = out.size();
-    bool limitFailed = false;
     for (size_t i = 0; i < out.size(); i++) {
         const float o = out[i];
         const float g = gold[i];
@@ -180,7 +177,6 @@ static CherkxRegionMetrics CherkxMeasureMixed(
         }
         if (std::isnan(o) || std::isnan(g) || std::isinf(o) || std::isinf(g)) {
             m.failCount++;
-            limitFailed = true;
             continue;
         }
         const double diff = std::abs(static_cast<double>(o) - static_cast<double>(g));
@@ -189,14 +185,8 @@ static CherkxRegionMetrics CherkxMeasureMixed(
         if (diff > cfg.mixedAtol + cfg.mixedRtol * goldAbs) {
             m.failCount++;
         }
-        const double ulpLimit = std::max(cfg.mixedMaxAbsErrorLimit,
-            32.0 * getUlpsAt(goldAbs, cfg.mixedMantissaBits, cfg.mixedEmin));
-        if (diff > ulpLimit) {
-            limitFailed = true;
-        }
     }
     m.matchedRatio = (m.count > 0) ? static_cast<double>(m.count - m.failCount) / static_cast<double>(m.count) : 1.0;
-    m.specOk = (m.matchedRatio >= cfg.mixedRequiredMatchedRatio) && !limitFailed;
     return m;
 }
 
@@ -215,7 +205,6 @@ static CherkxRegionMetrics CherkxMeasureExact(const std::vector<float>& out, con
         }
     }
     m.matchedRatio = (m.count > 0) ? static_cast<double>(m.count - m.failCount) / static_cast<double>(m.count) : 1.0;
-    m.specOk = (m.failCount == 0);
     return m;
 }
 
@@ -235,33 +224,6 @@ static std::string CherkxFmtExact(const CherkxRegionMetrics& m)
     oss << "mismatch=" << m.failCount << "/" << m.count
         << ";max_abs_diff=" << std::scientific << std::setprecision(6) << m.maxAbsErr;
     return oss.str();
-}
-
-// 口径表溯源自检：框架 applyMixedTolerance(ACL_FLOAT) 的取值必须与口径表区域①逐位一致。
-// 不一致即口径分叉 → 硬失败（不自行放宽、不换指标、不自行取值）。
-static void CherkxExpectSpecTolerance(const VerifyConfig& cfg, const std::string& caseName)
-{
-    const bool ok = (cfg.mode == PrecisionMode::MIXED_TOLERANCE) &&
-        (cfg.mixedRtol == kSpecRtol) && (cfg.mixedAtol == kSpecAtol) &&
-        (cfg.mixedRequiredMatchedRatio == kSpecMatchedRatio) &&
-        (cfg.mixedMaxAbsErrorLimit == kSpecMaxAbsErr);
-    // %.10g → defaultfloat(10)（%g 语义：有效数字、去尾零、按指数切换定点/科学）
-    std::ostringstream oss;
-    oss << std::defaultfloat << std::setprecision(10)
-        << "rtol=" << cfg.mixedRtol << ";atol=" << cfg.mixedAtol
-        << ";matched_ratio_min=" << cfg.mixedRequiredMatchedRatio
-        << ";max_abs_err_limit=" << cfg.mixedMaxAbsErrorLimit;
-    const std::string measured = oss.str();
-    CherkxLedgerRecord(caseName, "spec_traceability_region1", "框架cfg取值==口径表取值", measured,
-        "rtol==2^-10;atol==2^-16;matched_ratio_min==0.99;max_abs_err_limit==1e-2", ok, kSpecSrcRegion1,
-        ok ? "" : "口径分叉：以口径表为准，禁止放宽/换指标");
-    EXPECT_TRUE(ok) << "[" << caseName << "] 精度口径溯源自检失败（测试方案 §2.3 区域①）";
-}
-
-// 台账「结论」与独立度量结论的一致性守卫：不一致时以口径表（框架硬断言）为准并标注分叉。
-static std::string CherkxDivergenceNote(bool verdict, bool specOk)
-{
-    return (verdict == specOk) ? "" : "DIVERGENCE: 以口径表判定为准";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -327,7 +289,7 @@ static inline void CollectPaddingElements(
 }
 
 static const char* const kThresholdMixed =
-    "matched_ratio>=0.99;max_abs_err<=max(1e-2,32*ULP);per-elem |d|<=atol+rtol*|gold| (rtol=2^-10,atol=2^-16)";
+    "matched_ratio>=0.99;max_abs_err<=max(1e-2,32*ULP);per-elem |d|<=atol+rtol*|gold| (rtol=2^-13,atol=2^-13)";
 static const char* const kThresholdExact = "mismatch==0 (bit-exact)";
 static const char* const kEmptyRegionNote = "区域为空（count=0），无可判元素，vacuous pass";
 
@@ -347,12 +309,11 @@ static inline void VerifyUploPrecision(
 {
     VerifyConfig cfgRe;
     applyMixedTolerance(cfgRe, ACL_FLOAT, goldUploRe.data(), goldUploRe.size());
-    CherkxExpectSpecTolerance(cfgRe, caseName);
     const bool passRe = Verifier::verifyVector(npuUploRe.data(), goldUploRe.data(), goldUploRe.size(), 1, cfgRe,
         caseName + "_uplo_real");
     const CherkxRegionMetrics mRe = CherkxMeasureMixed(npuUploRe, goldUploRe, cfgRe);
     CherkxLedgerRecord(caseName, "C_uplo_triangle.real", "mixed_tolerance(atol+rtol*|gold|,matched_ratio,max_abs_err)",
-        CherkxFmtMixed(mRe), kThresholdMixed, passRe, kSpecSrcRegion1, CherkxDivergenceNote(passRe, mRe.specOk));
+        CherkxFmtMixed(mRe), kThresholdMixed, passRe, kSpecSrcRegion1);
     EXPECT_TRUE(passRe);
 
     VerifyConfig cfgIm;
@@ -361,7 +322,7 @@ static inline void VerifyUploPrecision(
         caseName + "_uplo_imag");
     const CherkxRegionMetrics mIm = CherkxMeasureMixed(npuUploIm, goldUploIm, cfgIm);
     CherkxLedgerRecord(caseName, "C_uplo_triangle.imag", "mixed_tolerance(atol+rtol*|gold|,matched_ratio,max_abs_err)",
-        CherkxFmtMixed(mIm), kThresholdMixed, passIm, kSpecSrcRegion1, CherkxDivergenceNote(passIm, mIm.specOk));
+        CherkxFmtMixed(mIm), kThresholdMixed, passIm, kSpecSrcRegion1);
     EXPECT_TRUE(passIm);
 }
 
@@ -378,7 +339,7 @@ static inline void VerifyUploPrecisionExact(
         caseName + "_uplo_real_fastpath_exact");
     const CherkxRegionMetrics mRe = CherkxMeasureExact(npuUploRe, goldUploRe);
     CherkxLedgerRecord(caseName, "C_uplo_triangle.real(fastpath)", "bit_exact",
-        CherkxFmtExact(mRe), kThresholdExact, passRe, kSpecSrcRegion4, CherkxDivergenceNote(passRe, mRe.specOk));
+        CherkxFmtExact(mRe), kThresholdExact, passRe, kSpecSrcRegion4);
     EXPECT_TRUE(passRe);
 
     VerifyConfig cfgIm;
@@ -387,7 +348,7 @@ static inline void VerifyUploPrecisionExact(
         caseName + "_uplo_imag_fastpath_exact");
     const CherkxRegionMetrics mIm = CherkxMeasureExact(npuUploIm, goldUploIm);
     CherkxLedgerRecord(caseName, "C_uplo_triangle.imag(fastpath)", "bit_exact",
-        CherkxFmtExact(mIm), kThresholdExact, passIm, kSpecSrcRegion4, CherkxDivergenceNote(passIm, mIm.specOk));
+        CherkxFmtExact(mIm), kThresholdExact, passIm, kSpecSrcRegion4);
     EXPECT_TRUE(passIm);
 }
 
@@ -408,7 +369,7 @@ static inline void VerifyNonUploExact(
         caseName + "_nonuplo_real");
     const CherkxRegionMetrics mRe = CherkxMeasureExact(npuNonRe, oldNonRe);
     CherkxLedgerRecord(caseName, "C_non_uplo_triangle.real", "bit_exact_vs_originalC",
-        CherkxFmtExact(mRe), kThresholdExact, passRe, kSpecSrcRegion2, CherkxDivergenceNote(passRe, mRe.specOk));
+        CherkxFmtExact(mRe), kThresholdExact, passRe, kSpecSrcRegion2);
     EXPECT_TRUE(passRe);
 
     VerifyConfig cfgNonIm;
@@ -417,7 +378,7 @@ static inline void VerifyNonUploExact(
         caseName + "_nonuplo_imag");
     const CherkxRegionMetrics mIm = CherkxMeasureExact(npuNonIm, oldNonIm);
     CherkxLedgerRecord(caseName, "C_non_uplo_triangle.imag", "bit_exact_vs_originalC",
-        CherkxFmtExact(mIm), kThresholdExact, passIm, kSpecSrcRegion2, CherkxDivergenceNote(passIm, mIm.specOk));
+        CherkxFmtExact(mIm), kThresholdExact, passIm, kSpecSrcRegion2);
     EXPECT_TRUE(passIm);
 }
 
@@ -438,14 +399,14 @@ static inline void VerifyLdcPaddingExact(
         caseName + "_ldc_padding_real");
     const CherkxRegionMetrics mRe = CherkxMeasureExact(npuPadRe, oldPadRe);
     CherkxLedgerRecord(caseName, "C_ldc_padding.real", "bit_exact_vs_host_prefill",
-        CherkxFmtExact(mRe), kThresholdExact, passRe, kSpecSrcRegion5, CherkxDivergenceNote(passRe, mRe.specOk));
+        CherkxFmtExact(mRe), kThresholdExact, passRe, kSpecSrcRegion5);
     EXPECT_TRUE(passRe);
 
     const bool passIm = Verifier::verifyVector(npuPadIm.data(), oldPadIm.data(), npuPadIm.size(), 1, cfg,
         caseName + "_ldc_padding_imag");
     const CherkxRegionMetrics mIm = CherkxMeasureExact(npuPadIm, oldPadIm);
     CherkxLedgerRecord(caseName, "C_ldc_padding.imag", "bit_exact_vs_host_prefill",
-        CherkxFmtExact(mIm), kThresholdExact, passIm, kSpecSrcRegion5, CherkxDivergenceNote(passIm, mIm.specOk));
+        CherkxFmtExact(mIm), kThresholdExact, passIm, kSpecSrcRegion5);
     EXPECT_TRUE(passIm);
 }
 

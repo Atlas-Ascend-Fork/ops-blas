@@ -28,7 +28,7 @@ test/her2k/cher2k/
     ├── cher2k_npu_wrapper.h      # Device 装载/同步/回读 wrapper
     ├── cher2k_perf.h             # TC_PF 性能分支（aclrtEvent 计时）
     ├── cher2k_test.cpp           # CSV 驱动 GTest（精度 + 性能 + Host 单测）
-    └── cher2k_test.csv           # 随任务 1200 条主用例（1000 精度 + 200 性能）
+    └── cher2k_test.csv           # 主 CSV 1203 条（1000 精度 + 3 TC_WB K4 路径锁定 + 200 性能）
 ```
 
 ## 3. 编译
@@ -98,7 +98,7 @@ python verify_accuracy.py --repo /path/to/ops-blas --soc ascend950 --skip-build 
 | TC_CV | 32 | 中等尺寸覆盖 |
 | TC_ED | 23 | 边界/负向：quick return、空指针、非法枚举、OP_T、非法 ld、负维度 |
 | TC_EX | 777 | 扩展精度采样（尺寸池×组合×标量×pad） |
-| **小计** | **1000** | 全部为精度用例，判定 golden=cblas_cher2k |
+| **小计** | **1000** | 全部为精度用例，判定 golden=cblas_zher2k（double 主判据，float cblas_cher2k 链为交叉校验） |
 
 **性能测试 case（200 条，主 CSV 中的 TC_PF 前缀）**
 
@@ -106,12 +106,18 @@ python verify_accuracy.py --repo /path/to/ops-blas --soc ascend950 --skip-build 
 |---|---|---|
 | TC_PF | 200 | 4 条任务书典型 case（UPPER/N/1024、UPPER/N/2048、LOWER/C/1024、LOWER/C/2048）+ 小尺寸 + 方阵扫描 + k 网格 + 低秩大 n + 预算内混合；判定门槛取自 `gpu_baseline.csv` 的 `gpu_ms / 0.4` |
 
-合计主 CSV 1200 条 = **精度 1000 条 + 性能 200 条**（固定随机种子，可复现）。
+**白盒锁定 case（3 条，主 CSV 中的 TC_WB 前缀，随 a5ecd9e 引入）**
 
-### 5.2 精度判定（golden = cblas_cher2k，仅比对 uplo 三角含对角）
+| 前缀 | 条数 | 内容 |
+|---|---|---|
+| TC_WB | 3 | K4 SIMT 路径（n≤8）β=0 行为锁定：β=0 时算子跳过 C_old 读取直接写零，C 中预置的 NaN/Inf（VALUE_NORM_NAN / VALUE_NORM_INF）不得传播到输出 uplo 三角，对角虚部按置 0 口径比对；判定口径同精度用例 |
+
+合计主 CSV 1203 条 = **精度 1000 条 + TC_WB 白盒锁定 3 条 + 性能 200 条**（固定随机种子，可复现）。
+
+### 5.2 精度判定（golden = cblas_zher2k 双精度主链，仅比对 uplo 三角含对角）
 
 - 实部、虚部分别按 FLOAT32 判定：`|actual - golden| ≤ atol + rtol × |golden|`
-- rtol = 2^-10、atol = 2^-16、matched_ratio ≥ 0.99、max_abs_error ≤ 1e-2 或 32 ULP
+- rtol = atol = 2^-13（1.22e-4，框架 verify.h FLOAT32 档现行口径）、matched_ratio ≥ 0.99、max_abs_error ≤ 1e-2 或 32 ULP
 - 对角虚部按强制置 0 口径参与比对；非 uplo 三角与 ldc padding 做 EXACT（逐位不变）校验
 - 返回码断言：负向用例按参数校验顺序表逐条断言（INVALID_ENUM / INVALID_VALUE / HANDLE_IS_NULLPTR）
 

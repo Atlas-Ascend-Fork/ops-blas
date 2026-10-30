@@ -91,7 +91,8 @@ static int ValidateCher2kCpuParams(
 // ~0.5ULP_f32 rounding step in the reference chain). The original float
 // cblas_cher2k chain is kept verbatim as a CSV cross-check column and does not
 // participate in the pass/fail decision.
-// All thresholds are unchanged (atol 2^-16 / rtol 2^-10 / max(1e-2,32ULP) / ratio>=0.99);
+// All thresholds are unchanged (atol 2^-13 / rtol 2^-13 / max(1e-2,32ULP) / ratio>=0.99, per the
+// frame verify.h getMixedToleranceDefaults(ACL_FLOAT) values tightened by 488f1cc);
 // complex64 real/imag are still judged as FLOAT32 (only the golden generation precision
 // changes, not the comparison precision).
 // ═══════════════════════════════════════════════════════════════════════════════

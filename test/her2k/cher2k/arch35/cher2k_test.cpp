@@ -286,7 +286,7 @@ public:
 };
 
 // Local mixed-tolerance evaluation that mirrors MixedToleranceStrategy exactly
-// (atol 2^-16, rtol 2^-10, ratio>=0.99, per-element limit max(1e-2, 32*ULP)) but
+// (atol 2^-13, rtol 2^-13, ratio>=0.99, per-element limit max(1e-2, 32*ULP)) but
 // also reports the measured max_abs_error so it can be recorded per tensor.
 // [T1 3.4 fallback] Aligned with the frame metric: the precision base class
 // PrecisionStrategy::shouldSkip (verify.h:49-56) first skips "outVal==goldVal (including
@@ -391,7 +391,7 @@ inline MixedToleranceResult EvaluateMixedTolerance(
 // [A' golden dual chain] Mixed-tolerance evaluation for the double main-criterion chain: NPU float
 // output vs double golden. The verdict dtype is still FLOAT32 (complex64 real/imag are still judged
 // as FLOAT32):
-//   - thresholds/constants are identical to the float version (atol 2^-16 / rtol 2^-10 / ratio>=0.99
+//   - thresholds/constants are identical to the float version (atol 2^-13 / rtol 2^-13 / ratio>=0.99
 //     / max(1e-2,32ULP));
 //   - ulpLimit computes ULP from the golden's float-rounded value (within 0.5ULP_f32), consistent
 //     with the "golden=float" scale, and is not relaxed because the golden was upgraded to double;
@@ -442,7 +442,7 @@ inline MixedToleranceResult EvaluateMixedToleranceDbl(
 // MereMareStrategy):
 //   near-zero golden (|gold| < threshold) is skipped -- in large-cancellation scenarios (anti-symmetric
 //   cancellation of Xi - Xi^T under high-mean Gaussian / large k) the golden is near 0, and float32's
-//   intrinsic rounding error accumulated at the ~10^3 scale (~0.01) far exceeds atol=2^-16, so strict
+//   intrinsic rounding error accumulated at the ~10^3 scale (~0.01) far exceeds atol=2^-13, so strict
 //   mixed tolerance is unreachable (even the float cblas reference chain fails it, see the
 //   *_float_xcheck columns); such cases are judged by the MERE/MARE relative-error metric preset by
 //   the task spec's companion test plan: MERE (mean relative error) < threshold and MARE (max relative
@@ -481,7 +481,7 @@ inline MixedToleranceResult EvaluateMereMareDbl(
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Complex uplo-triangle verification helpers (test plan §6.1 precision-criterion table)
-//   1. C uplo triangle, real : FLOAT32 mixed tolerance (rtol 2^-10 / atol 2^-16,
+//   1. C uplo triangle, real : FLOAT32 mixed tolerance (rtol 2^-13 / atol 2^-13,
 //                              ratio>=0.99, max_abs<=1e-2 or 32ULP) — hard assertion
 //   2. C uplo triangle, imag : same as above (independent sequence)
 //   3. diagonal imag         : max|CI_ii| <= 2^-16 (unconditional, not restricted to beta==0)
@@ -579,7 +579,7 @@ static inline void RecordFloatXcheckColumns(
 
 // Authoritative precision hard assertion (§6.1): real/imag each use the FLOAT32 mixed tolerance.
 // The metric and thresholds are all taken from the frame's ACL_FLOAT defaults
-// (rtol 2^-10=9.7656e-4, atol 2^-16=1.5259e-5, ratio>=0.99, per-element max(1e-2, 32*ULP@|gold|))
+// (rtol 2^-13=1.2207e-4, atol 2^-13=1.2207e-4, ratio>=0.99, per-element max(1e-2, 32*ULP@|gold|))
 // and are not relaxed locally. Kept after the A' upgrade for float-chain evaluation
 // (cross-check) and host white-box small-sample checks; the main entry for the CSV precision verdict
 // is VerifyUploPrecisionDbl (golden=double).
@@ -588,8 +588,8 @@ static inline void VerifyUploPrecision(
     const float* npuUploIm, const float* goldUploIm)
 {
     auto defaults = getMixedToleranceDefaults(ACL_FLOAT);
-    const double rtol = defaults.rtol; // 2^-10
-    const double atol = defaults.atol; // 2^-16
+    const double rtol = defaults.rtol; // 2^-13
+    const double atol = defaults.atol; // 2^-13
 
     MixedToleranceResult re = EvaluateMixedTolerance(
         npuUploRe, goldUploRe, uploCount, atol, rtol, defaults.maxAbsErrorLimitFixed, defaults.mantissaBits,
@@ -639,8 +639,8 @@ static inline void VerifyUploPrecisionDbl(
     double mereThreshold = 0.0, double mareMultiplier = 0.0)
 {
     auto defaults = getMixedToleranceDefaults(ACL_FLOAT);
-    const double rtol = defaults.rtol; // 2^-10
-    const double atol = defaults.atol; // 2^-16
+    const double rtol = defaults.rtol; // 2^-13
+    const double atol = defaults.atol; // 2^-13
 
     MixedToleranceResult re = EvaluateMixedToleranceDbl(
         npuUploRe, goldUploRe, uploCount, atol, rtol, defaults.maxAbsErrorLimitFixed, defaults.mantissaBits,
@@ -1795,7 +1795,7 @@ TEST_F(Cher2kArch35Test, WhiteboxLdBoundariesByTrans)
 // consistent with the golden.
 // [A' update] The original assertion EXPECT_FLOAT_EQ(C[0].real, Cg[0].real) hard-coded the float
 // chain's bit value; per the new main criterion it now compares against the double golden with the
-// FLOAT32 mixed tolerance (per-element atol 2^-16 + rtol 2^-10, same source as the CSV main criterion,
+// FLOAT32 mixed tolerance (per-element atol 2^-13 + rtol 2^-13, same source as the CSV main criterion,
 // not relaxed), and the diagonal imag==0 hard assertion is kept.
 TEST_F(Cher2kArch35Test, WhiteboxN1Degenerate)
 {

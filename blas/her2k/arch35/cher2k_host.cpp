@@ -65,6 +65,10 @@
 //    CHER2K_L1_SHAPE = 0   force the legacy 32x16 fused shape (SelectCher2kFusedShape)
 //    CHER2K_L2_TILE = 0    force the row-band combine (CalCombineTilingData)
 //    CHER2K_FUSED_GEMM = 0 fall back to the unfused 4-launch GEMM (RunCher2kGemmPhase)
+//    CHER2K_SEG_K = 0      disable the fallback-shape segmented accumulation
+//                          (Cher2kLaunchFused4: k-chunk StreamK segments + AIV
+//                          fp32 segment reduction, design 2.2 §4-R1); reverts the
+//                          small-n deep-k shapes to the single-chain L0C fold
 //  The snapshot is read-only after execve, so a runtime setenv has no effect.
 // ==========================================================================
 namespace {
@@ -1085,6 +1089,27 @@ static void Cher2kLaunchFused4(
             cubeTiling);
         return;
     }
+    // [SEG] Fallback-shape segmented accumulation (design 2.2 §4-R1/§5.2): the
+    // fallback 32x16 shape (baseM 32 — n below 64 or the CHER2K_L1_SHAPE hatch)
+    // with k beyond one tileKChunk folds every k-chunk's partial sums out to the
+    // AIV and accumulates them in fp32 UB (StreamK-style), cutting the k-deep
+    // single sequential-rounding chain in L0C down to per-segment chains —
+    // that is the TC_EX_0604 accuracy fix. Gate check is here because only this
+    // dispatch sees the selected shape; the bit rides foldMode exactly like the
+    // pair-walk bits and the kernel masks it off before picking the sink. The
+    // n >= 64 primary shapes (baseM 64) never set it, so they stay
+    // bit-identical, and k <= tileKChunk launches (S = 1) skip it too (nothing
+    // to segment). CHER2K_SEG_K = 0 in the environment keeps the single-chain
+    // behaviour (A/B and field rollback without a rebuild).
+    const uint32_t segK = static_cast<uint32_t>(cubeTiling.k);
+    const uint32_t segTkc = static_cast<uint32_t>(cubeTiling.tileKChunk);
+    // segTkc is always GEMM_TILE_K_CHUNK-derived and never zero in practice; the
+    // > 0 term is the R8 division guard for the CeilDiv below.
+    if (cubeTiling.baseM == 32 && segTkc > 0U && segK > segTkc && Cher2kTuningKnobDefaultOn("CHER2K_SEG_K")) {
+        foldMode |= CHER2K_FOLD_SEG_BIT;
+        OP_LOGD("aclblasCher2k", "[SEG_K] segmented accumulation on: k=%u tkc=%u segments=%u", segK, segTkc,
+            CeilDiv<uint32_t>(segK, segTkc));
+    }
     // [stage2 Step 3a] The combine parameter channel is threaded into the MIX
     // kernel here (stored, not yet consumed). The legacy AIC-only path above
     // takes no such parameter, so its behaviour is untouched.
@@ -1428,9 +1453,13 @@ static void Cher2kDispatchCombine(
     // sink selector, so a plain equality test against CHER2K_FOLD_PRPI is false
     // whenever the pair walk is on — which would tell the combine to fold PR and
     // PI itself even though the MIX kernel already did, and it would then read the
-    // un-written t2/t4 frames.
+    // un-written t2/t4 frames. ([SEG] the segmented-accumulation bit is stripped
+    // here too: it never leaves Cher2kLaunchFused4's by-value copy, but the same
+    // control-bits-only rule covers it defensively.)
     combineTiling.isPrPiFolded = static_cast<uint8_t>(
-        (foldMode & ~(CHER2K_FOLD_PAIRWALK_BIT | CHER2K_FOLD_LOWER_BIT)) == CHER2K_FOLD_PRPI ? 1 : 0);
+        (foldMode & ~(CHER2K_FOLD_PAIRWALK_BIT | CHER2K_FOLD_LOWER_BIT | CHER2K_FOLD_SEG_BIT)) == CHER2K_FOLD_PRPI
+            ? 1
+            : 0);
     combineTiling.isAlphaDev = static_cast<uint8_t>(isAlphaDev ? 1 : 0);
     combineTiling.isBetaDev = static_cast<uint8_t>(isBetaDev ? 1 : 0);
 

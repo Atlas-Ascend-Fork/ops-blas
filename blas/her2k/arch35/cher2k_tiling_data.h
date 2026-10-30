@@ -169,6 +169,23 @@ constexpr uint32_t CHER2K_FOLD_PAIRWALK_BIT = 0x100U;
 // qc² grid either way), so this bit only fixes the emission ORDER; it is
 // threaded through foldMode because the fused tiling has no uplo field.
 constexpr uint32_t CHER2K_FOLD_LOWER_BIT = 0x200U;
+// [SEG] Segmented-accumulation enable bit (design 2.2 §4-R1/§5.2), same
+// ride-along mechanism as the pair-walk bits above. Set only by the host for
+// the FALLBACK shape (baseM 32, i.e. n < 64 or the CHER2K_L1_SHAPE hatch) when
+// k spans more than one tileKChunk: the K2f MIX kernel then treats every
+// k-chunk as a StreamK segment — the segment's first Mmad clears L0C
+// (cmatrixInitVal), the segment's partial sums are folded out to the AIV per
+// segment, and the AIV sequentially accumulates the segments in fp32 UB before
+// running its sink (PRPI / STORE4). This cuts the k-deep single fp32
+// sequential-rounding chain in L0C down to per-segment chains (S = ceil(k /
+// tileKChunk) segments) and is what fixes the TC_EX_0604-class accuracy
+// failures on small-n deep-k shapes. The kernel masks this bit off before
+// comparing foldMode with the CHER2K_FOLD_* sink selectors, so the bit is
+// orthogonal to the sink choice. n >= 64 launches never set it, so the
+// primary-shape path stays bit-identical. Field escape hatch: CHER2K_SEG_K=0
+// in the environment keeps the single-chain behaviour (A/B and rollback
+// without a rebuild).
+constexpr uint32_t CHER2K_FOLD_SEG_BIT = 0x400U;
 
 // K4: small-n fused SIMT direct path (n up to CHER2K_ARCH35_SIMT_N_MAX, no workspace)
 struct Cher2kSimtTilingData {

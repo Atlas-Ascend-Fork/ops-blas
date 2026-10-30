@@ -1903,6 +1903,16 @@ struct FusedState {
     // [stage2 Step 2] Symmetric pair-walk descriptor; the disabled default keeps
     // the mi×ni full-grid walk below byte-for-byte unchanged.
     FusedPairWalk pairWalk;
+    // [SEG] StreamK-style segmented accumulation (design 2.2 §4-R1/§5.3-1),
+    // enabled through CHER2K_FOLD_SEG_BIT for the fallback shape with k beyond
+    // one tileKChunk. segTotal is the segment count (the ceiling of k/tkc, one
+    // k-chunk per segment); accBaseBytes is the UB base of the 4-product fp32
+    // accumulator the AIV reduces the per-segment partial sums into, placed
+    // right after the MIX_SLOT_CNT ping-pong handoff slots. When disabled every
+    // consumer below keeps the single-chain behaviour bit-for-bit.
+    bool segEnabled;
+    uint32_t segTotal;
+    uint64_t accBaseBytes;
     // [stage2 Step 3a] Combine parameter channel (C ptr / ldc / alpha / beta /
     // uplo / zero flags). PURE PIPE for now: stored but not yet consumed by the
     // AIV drain, so it cannot affect the current output. A later step fuses the
@@ -1987,6 +1997,15 @@ __aicore__ inline void FusedInitGeometry(FusedState& st)
     st.productStrideBytes = st.bm * st.bnAlign * sizeof(float);
     // 4 product slots per ping-pong half (MIX_SLOT_CNT halves).
     st.ubSlotBytes = MIX_PRODUCT_CNT * st.productStrideBytes;
+    // [SEG] Segment count and the AIV accumulator base. One segment is one
+    // k-chunk (tileKChunk); the accumulator sits right after the ping-pong
+    // handoff area (2 x ubSlotBytes), giving 24KB of UB for the fallback 32x16
+    // shape against the 248KB block budget. The tkc zero guard is defensive
+    // only (the host never sets CHER2K_FOLD_SEG_BIT with a zero tileKChunk,
+    // and the K walk itself would not advance with one either).
+    const uint32_t segTkc = static_cast<uint32_t>(st.tiling.tileKChunk);
+    st.segTotal = (segTkc > 0U) ? CeilDiv<uint32_t>(static_cast<uint32_t>(st.tiling.k), segTkc) : 1U;
+    st.accBaseBytes = static_cast<uint64_t>(MIX_SLOT_CNT) * st.ubSlotBytes;
 }
 
 // [codecheck B5] Pair-walk cursor geometry: the combine-grid size is the ceiling
@@ -2435,18 +2454,103 @@ __aicore__ inline void FusedFoldEpilogueAiv(
     AscendC::CrossCoreSetFlag<MIX_SYNC_MODE, PIPE_MTE3>(MIX_AIV2AIC_FLAG + slot);
 }
 
+// [SEG] AIV drain of ONE (mi,ni) tile in segmented mode (design 2.2 §5.3-3):
+// the AIC folds out every k-chunk segment into the ping-pong slots, so this
+// drain runs once per segment instead of once per tile — S waits/accumulates
+// — and the sink then reads the accumulator. Per segment: wait for the AIC's
+// slot-ready flag on PIPE_V (the pipe that first consumes the slot image: the
+// segment-0 copy and the segment adds are all V-pipe instructions), then
+// either seed the accumulator (segment 0 copies the whole 4-product handoff
+// slot — asc_copy_ub2ub, a PIPE_V UB-to-UB move in the tensor_api C surface,
+// the same data path the chemm kernel uses) or accumulate (segments 1..S-1
+// add the slot's 4 products into the accumulator with
+// Transform<te::Inst::Add>, the binary tensor form already proven by
+// FusedFoldPrPi), then release the slot with the AIV2AIC flag on PIPE_V (the
+// pipe of the slot's last reader — the per-segment form of the tile-level
+// release). The AIC stays at most MIX_SLOT_CNT segments ahead, exactly the
+// credit cadence the tile-level handshake had per tile. The accumulator
+// itself carries one tile-to-tile MTE3-to-V WAR pair at the top of this
+// drain: the previous tile's sink read it with MTE3 and nothing else orders
+// those reads against this tile's V writes (the slot credits were released
+// before that sink ran), so the pair must be explicit. After the last
+// segment the sinks run with the accumulator base as their source:
+// FusedFoldPrPi's in-place PR/PI fold (its own V ops and V-to-MTE3 sync cover
+// the tail) and, for the STORE4 debug sink, the same V-to-MTE3 pair before
+// its UB-to-GM copies (the accumulator is written by V ops here, so MTE3 must
+// be ordered behind them; the non-segmented STORE4 path needed no pair because
+// its wait already sat on PIPE_MTE3).
+template <typename GM_TENSOR_C>
+__aicore__ inline void FusedFoldOneTileAivSeg(
+    const FusedState& st, GM_TENSOR_C& gmC1, GM_TENSOR_C& gmC2, GM_TENSOR_C& gmC3, GM_TENSOR_C& gmC4, uint32_t mi,
+    uint32_t ni, const FusedTileGeometry& geo)
+{
+    const uint32_t curM = geo.curM;
+    const uint32_t curN = geo.curN;
+    const uint32_t cnt = curM * st.bnAlign;
+    // [SEG] WAR guard on the accumulator before its first V write of this tile.
+    // The PREVIOUS tile's sink read this same accBaseBytes region with MTE3
+    // (the UB-to-GM copies inside FusedFoldPrPi / FusedFoldStore4), and the
+    // AIC can already have folded THIS tile's segment 0: the slot credit that
+    // gates it was released two segments back, before that sink even ran, so
+    // the AIC2AIV wait below can be satisfied while those MTE3 reads are still
+    // in flight. V and MTE3 are independent pipes with no implicit ordering,
+    // so without this MTE3-to-V handshake the segment-0 seed copy (or any
+    // segment add) can retire first and clobber accumulator lanes the sink
+    // burst has not read yet — the same intermittent wrong-C failure mode the
+    // deint loop documented for its own buffers (Cher2kProcessDeintTile's
+    // MTE3_V pair): every cross-pipe producer/consumer pair needs its own
+    // flag pair. Harmless for the first tile (no prior MTE3 reads exist).
+    SetFlag<HardEvent::MTE3_V>(0);
+    WaitFlag<HardEvent::MTE3_V>(0);
+    for (uint32_t seg = 0; seg < st.segTotal; ++seg) {
+        const uint32_t segSlot = seg % MIX_SLOT_CNT;
+        const uint64_t segSlotBase = static_cast<uint64_t>(segSlot) * st.ubSlotBytes;
+        AscendC::CrossCoreWaitFlag<MIX_SYNC_MODE, PIPE_V>(MIX_AIC2AIV_FLAG + segSlot);
+        if (seg == 0U) {
+            // Segment 0 seeds the accumulator: one whole-slot UB-to-UB copy
+            // (the unwritten tail rows of a tail tile ride along and are never
+            // read by the adds or the sink).
+            auto accT = FusedMakeUb1D(st.accBaseBytes, st.ubSlotBytes / sizeof(float));
+            auto segT = FusedMakeUb1D(segSlotBase, st.ubSlotBytes / sizeof(float));
+            asc_copy_ub2ub(accT.Data().Get(), segT.Data().Get(), st.ubSlotBytes);
+        } else {
+            for (uint32_t p = 0; p < MIX_PRODUCT_CNT; ++p) {
+                const uint64_t off = static_cast<uint64_t>(p) * st.productStrideBytes;
+                auto accT = FusedMakeUb1D(st.accBaseBytes + off, cnt);
+                auto segT = FusedMakeUb1D(segSlotBase + off, cnt);
+                Transform<te::Inst::Add>(accT, accT, segT);
+            }
+        }
+        AscendC::CrossCoreSetFlag<MIX_SYNC_MODE, PIPE_V>(MIX_AIV2AIC_FLAG + segSlot);
+    }
+    if (st.foldMode == CHER2K_FOLD_PRPI) {
+        FusedFoldPrPi(st, gmC1, gmC3, gmC4, st.accBaseBytes, mi, ni, curM, curN);
+    } else {
+        PipeBarrier<PIPE_ALL>();
+        SetFlag<HardEvent::V_MTE3>(0);
+        WaitFlag<HardEvent::V_MTE3>(0);
+        FusedFoldStore4(st, gmC1, gmC2, gmC3, gmC4, st.accBaseBytes, mi, ni, curM, curN);
+    }
+}
+
 // [codecheck D1] AIV fold of ONE (mi,ni) tile: geometry + sink dispatch +
 // slot advance, extracted verbatim from the two identical copies that used to
 // live in FusedRunTileLoop's pair-walk and grid loops. The template argument
 // (PIPE_V for the PR/PI fold, PIPE_MTE3 for the plain store), the argument
 // order and the slot advance order are byte-for-byte the originals.
+// [SEG] In segmented mode the drain below is replaced by
+// FusedFoldOneTileAivSeg (S per-segment slot exchanges into the UB
+// accumulator, then the same sinks read from the accumulator base); the
+// non-segmented branches are untouched.
 template <typename GM_TENSOR_C>
 __aicore__ inline void FusedFoldOneTileAiv(
     const FusedState& st, GM_TENSOR_C& gmC1, GM_TENSOR_C& gmC2, GM_TENSOR_C& gmC3, GM_TENSOR_C& gmC4, uint32_t& slot,
     uint32_t mi, uint32_t ni)
 {
     const FusedTileGeometry geo = FusedCalcTileGeometry(st, mi, ni);
-    if (st.foldMode == CHER2K_FOLD_PRPI) {
+    if (st.segEnabled) {
+        FusedFoldOneTileAivSeg(st, gmC1, gmC2, gmC3, gmC4, mi, ni, geo);
+    } else if (st.foldMode == CHER2K_FOLD_PRPI) {
         FusedFoldEpilogueAiv<PIPE_V>(
             st, gmC1, gmC2, gmC3, gmC4, static_cast<uint64_t>(slot) * st.ubSlotBytes, slot, mi, ni, geo.curM, geo.curN);
     } else {
@@ -2456,43 +2560,74 @@ __aicore__ inline void FusedFoldOneTileAiv(
     slot = (slot + 1) % MIX_SLOT_CNT;
 }
 
-// Process one (mi,ni) output tile across the whole K range, writing all four
-// product tiles to the four GM temp areas (AIC-only legacy path) or to the UB
-// handoff slot (MIX fold path, when the mix flag is set).
-template <bool IsMix, typename GM_A, typename GM_B, typename GM_C>
-__aicore__ inline void FusedProcessTile(
-    const FusedState& st, GM_A& gmX1, GM_A& gmX2, GM_B& gmY1, GM_B& gmY2, GM_C& gmC1, GM_C& gmC2, GM_C& gmC3,
-    GM_C& gmC4, uint32_t mi, uint32_t ni, uint64_t ubSlotBaseBytes, uint32_t slot, uint64_t l1ChunkBytes,
+// [SEG] Per-segment accumulator-group bookkeeping (design 2.2 §5.3-2): in
+// segmented mode every k-chunk is a StreamK segment whose partial sums are
+// folded out independently, so the L0C accumulator group and its fix-to-matrix
+// flag follow the SEGMENT parity, not the tile parity — segment s accumulates
+// into group s mod 2 and must wait for the fix of segment s-2 (same group) to
+// drain before its first Mmad. With segEnabled false the caller's tile-level
+// group/flag come back unchanged (pure derivation, zero signal primitives).
+struct FusedSegGeometry {
+    uint32_t segSlot;  // ping-pong UB handoff slot of this segment
+    uint32_t l0cBase;  // L0C accumulator group base (group x MIX_PRODUCT_CNT)
+    uint16_t fixMFlag; // fix-to-matrix flag of this segment's group
+};
+
+__aicore__ inline FusedSegGeometry FusedCalcSegGeometry(
+    bool segEnabled, uint32_t segIdx, uint32_t tileL0cBase, uint16_t tileFixMFlag)
+{
+    FusedSegGeometry g{0U, tileL0cBase, tileFixMFlag};
+    if (segEnabled) {
+        g.segSlot = segIdx % MIX_SLOT_CNT;
+        g.l0cBase = (g.segSlot % L0C_GROUP_CNT) * MIX_PRODUCT_CNT;
+        g.fixMFlag = (g.segSlot % L0C_GROUP_CNT == 0U) ? F_ZERO_FLAG : FIX_M_GROUP_FLAG;
+    }
+    return g;
+}
+
+// [SEG / R7 split] The whole-K chunk ladder of one (mi,ni) tile: the L1 fill,
+// the bk-stepped L0/Mmad ladder, the L1 release — and, in segmented mode, the
+// per-segment FIX_M wait at the segment top and the per-segment
+// FusedFoldEpilogueAic fold-out at the segment end (design 2.2 §5.3-2). The
+// statements are the ones that used to live inline in FusedProcessTile (pure
+// code motion; the [codecheck #7] discipline stands — every Wait/Set sequence
+// below keeps its original order, an __aicore__ inline helper emits the same
+// instruction stream). SEG-mode Mmad flag semantics follow the StreamK row of
+// the tensor-api cmatrixInitVal table: the segment's FIRST Mmad re-clears L0C
+// (isFirstK on kInner == 0) and the segment's LAST Mmad closes the
+// accumulation for this segment's own fold-out (isLastK on the segment end),
+// so every segment is an independent init-accumulate-final-drain cycle on its
+// L0C group. With segEnabled false every branch below evaluates the original
+// single-chain behaviour bit-for-bit: isFirstK/isLastK on the global K offset,
+// no per-segment wait, no per-segment fold-out.
+template <typename GM_A, typename GM_B>
+__aicore__ inline void FusedWalkKChunks(
+    const FusedState& st, GM_A& gmX1, GM_A& gmX2, GM_B& gmY1, GM_B& gmY2, uint32_t mi, uint32_t ni,
+    const FusedTileGeometry& geo, uint32_t tileL0cBase, uint16_t tileFixMFlag, uint64_t l1ChunkBytes,
     uint64_t& l1PingPong, uint64_t& l0PingPong)
 {
-    // [codecheck #4] The tail shrink and layout-size derivation moved entirely to
-    // FusedCalcTileGeometry (zero signal primitives); all Set/Wait sequences and
-    // comments below stay in place and order.
-    const FusedTileGeometry geo = FusedCalcTileGeometry(st, mi, ni);
     const uint32_t curM = geo.curM;
     const uint32_t curN = geo.curN;
     const uint32_t tkc = geo.tkc;
-    const uint64_t aBytes = geo.aBytes;
-    const uint64_t bBytes = geo.bBytes;
-    const uint32_t tileStrideBytes = geo.tileStrideBytes;
-    // [perf-iter111] Which L0C accumulator group and fix-to-matrix flag this tile
-    // uses. Both follow the UB slot parity, which already alternates tile to tile.
-    const uint32_t l0cBase = (slot % L0C_GROUP_CNT) * MIX_PRODUCT_CNT;
-    const uint16_t fixMFlag = (slot % L0C_GROUP_CNT == 0U) ? F_ZERO_FLAG : FIX_M_GROUP_FLAG;
-
-    // [r2/G1 deadlock fix] See the long comment at the bottom of this function:
-    // the fixpipe must be preceded by an M-to-FIX handshake (a set then a wait on
-    // the M_FIX event) that K2f omitted. Structured exactly like the shared gemm
-    // kernel's ProcessMNTile: the fix-to-matrix wait sits at the TOP of the tile
-    // (covered for the first tile by the loop-entry set with the zero flag), and
-    // the M_FIX/FIX_M pair sits at the END, after the fixpipe issue.
-    AscendC::WaitFlag<AscendC::HardEvent::FIX_M>(fixMFlag);
-    for (uint32_t kOffset = 0; kOffset < static_cast<uint32_t>(st.tiling.k); kOffset += tkc) {
+    const uint32_t kTotal = static_cast<uint32_t>(st.tiling.k);
+    for (uint32_t kOffset = 0; kOffset < kTotal; kOffset += tkc) {
+        // [SEG] The segment's accumulator group and fix-to-matrix wait. In
+        // single-chain mode the tile-level wait in FusedProcessTile already
+        // ran; in segmented mode the wait belongs to the segment top (the
+        // group follows the segment parity, so the credit accounting stays
+        // one wait plus one set per group use). The segment index is derived
+        // from the chunk offset (one scalar division per k-chunk, negligible
+        // next to the L1 fill and the Mmad ladder it brackets).
+        const FusedSegGeometry seg =
+            FusedCalcSegGeometry(st.segEnabled, kOffset / tkc, tileL0cBase, tileFixMFlag);
+        if (st.segEnabled) {
+            AscendC::WaitFlag<AscendC::HardEvent::FIX_M>(seg.fixMFlag);
+        }
         // [codecheck #7] The K-chunk remaining width and the L1 subblock addresses
         // moved entirely to FusedCalcL1Geometry (zero signal primitives); the
         // WaitFlag<MTE1_MTE2> and all Set/Wait sequences below stay in place and order.
         auto [curKChunk, l1BufId, l1A1, l1A2, l1B1, l1B2] =
-            FusedCalcL1Geometry(st, kOffset, tkc, l1ChunkBytes, l1PingPong, aBytes, bBytes);
+            FusedCalcL1Geometry(st, kOffset, tkc, l1ChunkBytes, l1PingPong, geo.aBytes, geo.bBytes);
 
         AscendC::WaitFlag<AscendC::HardEvent::MTE1_MTE2>(l1BufId);
         FusedCopy4(st, gmX1, gmX2, gmY1, gmY2, l1A1, l1A2, l1B1, l1B2, mi, ni, kOffset, curM, curN, curKChunk);
@@ -2510,15 +2645,82 @@ __aicore__ inline void FusedProcessTile(
             AscendC::SetFlag<AscendC::HardEvent::MTE1_M>(l0BufId);
             AscendC::WaitFlag<AscendC::HardEvent::MTE1_M>(l0BufId);
 
-            uint32_t globalKOffset = kOffset + kInner;
-            bool isFirstK = (globalKOffset == 0);
-            bool isLastK = (globalKOffset + curK == static_cast<uint32_t>(st.tiling.k));
-            FusedMmad4(l0A1, l0A2, l0B1, l0B2, curM, curK, curN, isFirstK, isLastK, tileStrideBytes, l0cBase);
+            bool isFirstK;
+            bool isLastK;
+            if (st.segEnabled) {
+                // [SEG] StreamK per-segment flags: the segment's first Mmad
+                // re-clears L0C (cmatrixInitVal), its last Mmad marks this
+                // segment's accumulation FINAL so the per-segment fold-out
+                // drains a closed sum.
+                isFirstK = (kInner == 0U);
+                isLastK = (kInner + curK >= curKChunk);
+            } else {
+                uint32_t globalKOffset = kOffset + kInner;
+                isFirstK = (globalKOffset == 0);
+                isLastK = (globalKOffset + curK == kTotal);
+            }
+            FusedMmad4(l0A1, l0A2, l0B1, l0B2, curM, curK, curN, isFirstK, isLastK, geo.tileStrideBytes, seg.l0cBase);
             AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(l0BufId);
             l0PingPong++;
         }
         AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(l1BufId);
         l1PingPong++;
+        if (st.segEnabled) {
+            // [SEG] Fold this segment's partial sums out to the AIV now,
+            // reusing the tile epilogue verbatim (design 2.2 §5.3-2): the
+            // M-to-FIX handshake, the AIV slot-free wait, the CopyL0C2UB of
+            // the 4 products into the segment's ping-pong slot, the AIC2AIV
+            // notify and the group's FIX_M release. The tile-end epilogue in
+            // FusedProcessTile is then skipped — each segment has already
+            // drained its own group.
+            FusedFoldEpilogueAic(
+                st, static_cast<uint64_t>(seg.segSlot) * st.ubSlotBytes, seg.segSlot, curM, curN, geo.tileStrideBytes,
+                seg.l0cBase, seg.fixMFlag);
+        }
+    }
+}
+
+// Process one (mi,ni) output tile across the whole K range, writing all four
+// product tiles to the four GM temp areas (AIC-only legacy path) or to the UB
+// handoff slot (MIX fold path, when the mix flag is set). In segmented mode
+// ([SEG], fallback shape with k beyond one tileKChunk) the per-segment
+// fold-outs happen inside FusedWalkKChunks and the tile-end epilogue below is
+// skipped — the AIV reduces the segments into its UB accumulator and runs the
+// sink from there (see FusedFoldOneTileAivSeg).
+template <bool IsMix, typename GM_A, typename GM_B, typename GM_C>
+__aicore__ inline void FusedProcessTile(
+    const FusedState& st, GM_A& gmX1, GM_A& gmX2, GM_B& gmY1, GM_B& gmY2, GM_C& gmC1, GM_C& gmC2, GM_C& gmC3,
+    GM_C& gmC4, uint32_t mi, uint32_t ni, uint64_t ubSlotBaseBytes, uint32_t slot, uint64_t l1ChunkBytes,
+    uint64_t& l1PingPong, uint64_t& l0PingPong)
+{
+    // [codecheck #4] The tail shrink and layout-size derivation moved entirely to
+    // FusedCalcTileGeometry (zero signal primitives); all Set/Wait sequences and
+    // comments below stay in place and order.
+    const FusedTileGeometry geo = FusedCalcTileGeometry(st, mi, ni);
+    // [perf-iter111] Which L0C accumulator group and fix-to-matrix flag this tile
+    // uses. Both follow the UB slot parity, which already alternates tile to tile.
+    // ([SEG] in segmented mode these tile-level values are only the fallback
+    // that the per-segment groups in FusedWalkKChunks override.)
+    const uint32_t l0cBase = (slot % L0C_GROUP_CNT) * MIX_PRODUCT_CNT;
+    const uint16_t fixMFlag = (slot % L0C_GROUP_CNT == 0U) ? F_ZERO_FLAG : FIX_M_GROUP_FLAG;
+
+    // [r2/G1 deadlock fix] See the long comment at the bottom of this function:
+    // the fixpipe must be preceded by an M-to-FIX handshake (a set then a wait on
+    // the M_FIX event) that K2f omitted. Structured exactly like the shared gemm
+    // kernel's ProcessMNTile: the fix-to-matrix wait sits at the TOP of the tile
+    // (covered for the first tile by the loop-entry set with the zero flag), and
+    // the M_FIX/FIX_M pair sits at the END, after the fixpipe issue.
+    // ([SEG] in segmented mode the wait moves into FusedWalkKChunks, one per
+    // segment on the segment's own group — the credit accounting stays one
+    // wait plus one set per group use, so the loop-entry seeds still cover the
+    // first two segments and the epilogue drains stay balanced.)
+    if (!st.segEnabled) {
+        AscendC::WaitFlag<AscendC::HardEvent::FIX_M>(fixMFlag);
+    }
+    FusedWalkKChunks(
+        st, gmX1, gmX2, gmY1, gmY2, mi, ni, geo, l0cBase, fixMFlag, l1ChunkBytes, l1PingPong, l0PingPong);
+    if (st.segEnabled) {
+        return; // each segment already folded out inside FusedWalkKChunks
     }
 
     // [r2/G1 deadlock fix] M-to-FIX handshake before fixpipe, mirroring the shared
@@ -2527,14 +2729,14 @@ __aicore__ inline void FusedProcessTile(
     // second output tile on (order 65 hung here). Every wait must be preceded by
     // its producing set across the whole kernel.
     if constexpr (IsMix) {
-        FusedFoldEpilogueAic(st, ubSlotBaseBytes, slot, curM, curN, tileStrideBytes, l0cBase, fixMFlag);
+        FusedFoldEpilogueAic(st, ubSlotBaseBytes, slot, geo.curM, geo.curN, geo.tileStrideBytes, l0cBase, fixMFlag);
     } else {
         AscendC::SetFlag<AscendC::HardEvent::M_FIX>(F_ZERO_FLAG);
         AscendC::WaitFlag<AscendC::HardEvent::M_FIX>(F_ZERO_FLAG);
-        FusedFixpipe(st, gmC1, 0, mi, ni, curM, curN, tileStrideBytes);
-        FusedFixpipe(st, gmC2, 1, mi, ni, curM, curN, tileStrideBytes);
-        FusedFixpipe(st, gmC3, 2, mi, ni, curM, curN, tileStrideBytes);
-        FusedFixpipe(st, gmC4, 3, mi, ni, curM, curN, tileStrideBytes);
+        FusedFixpipe(st, gmC1, 0, mi, ni, geo.curM, geo.curN, geo.tileStrideBytes);
+        FusedFixpipe(st, gmC2, 1, mi, ni, geo.curM, geo.curN, geo.tileStrideBytes);
+        FusedFixpipe(st, gmC3, 2, mi, ni, geo.curM, geo.curN, geo.tileStrideBytes);
+        FusedFixpipe(st, gmC4, 3, mi, ni, geo.curM, geo.curN, geo.tileStrideBytes);
         AscendC::SetFlag<AscendC::HardEvent::FIX_M>(F_ZERO_FLAG);
     }
 }
@@ -2782,10 +2984,22 @@ __aicore__ inline void FusedKernelImpl(
             st.pairWalk.upper = (foldMode & CHER2K_FOLD_LOWER_BIT) == 0U;
         }
     }
+    // [SEG] Decode the segmented-accumulation bit the same way (MIX only: the
+    // AIC-only legacy path has no AIV to reduce the segments). The host sets
+    // the bit only for the fallback shape (baseM 32) with k beyond one
+    // tileKChunk; the kernel then walks one StreamK segment per k-chunk (see
+    // FusedWalkKChunks / FusedFoldOneTileAivSeg). The bit is orthogonal to the
+    // pair walk (which needs baseM 64) and to the sink selector.
+    st.segEnabled = false;
+    if constexpr (IsMix) {
+        if ((foldMode & CHER2K_FOLD_SEG_BIT) != 0U) {
+            st.segEnabled = true;
+        }
+    }
     if (!FusedInitState(st, tiling)) {
         return;
     }
-    st.foldMode = foldMode & ~(CHER2K_FOLD_PAIRWALK_BIT | CHER2K_FOLD_LOWER_BIT);
+    st.foldMode = foldMode & ~(CHER2K_FOLD_PAIRWALK_BIT | CHER2K_FOLD_LOWER_BIT | CHER2K_FOLD_SEG_BIT);
 
     auto gm = FusedMakeGmTensors<IsTransA, IsTransB>(st, x1, x2, y1, y2, c1, c2, c3, c4);
     FusedRunTileLoop<IsMix>(st, gm.x1, gm.x2, gm.y1, gm.y2, gm.c1, gm.c2, gm.c3, gm.c4);
