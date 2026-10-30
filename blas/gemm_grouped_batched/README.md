@@ -25,8 +25,8 @@ C[i] = alpha[g] * op(A[i]) * op(B[i]) + beta[g] * C[i]
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
 #### 函数原型
 
@@ -116,3 +116,4 @@ aclblasDestroyHandle(handle);
 aclrtResetDevice(0);
 aclFinalize();
 ```
+

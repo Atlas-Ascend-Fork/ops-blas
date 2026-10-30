@@ -10,10 +10,6 @@
 
 ops_blas_add_gtest_tests(${OPS_BLAS} gemm_grouped_batched_test)
 
-# Link OpenBLAS for golden reference (cblas_sgemm)
-find_library(OPENBLAS_LIB openblas PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu)
-if(OPENBLAS_LIB)
-    target_link_libraries(gemm_grouped_batched_test PRIVATE ${OPENBLAS_LIB})
-else()
-    message(WARNING "OpenBLAS not found; golden reference linking may fail at runtime")
+if(TARGET gemm_grouped_batched_test)
+    target_include_directories(gemm_grouped_batched_test PRIVATE "${ASCEND_CANN_PACKAGE_PATH}/include")
 endif()

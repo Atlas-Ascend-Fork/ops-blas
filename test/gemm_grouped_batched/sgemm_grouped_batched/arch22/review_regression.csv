@@ -1,0 +1,4 @@
+case_name,description,dtype,groupCount,transaArray,transbArray,mArray,nArray,kArray,alphaArray,ldaArray,ldbArray,betaArray,ldcArray,groupSizeArray,A_fill,B_fill,C_fill,Aarray_null,Barray_null,Carray_null,random_seed,expect_result,offset_floats,A_null_index,B_null_index,C_null_index,distribution
+TC_REVIEW_TN96_001,TN96_golden_and_mixed_dispatch,0,1,T,N,512,96,16,1,16,16,0,512,1,UNIFORM,UNIFORM,UNIFORM,,,,202610291,ACLBLAS_STATUS_SUCCESS,0,,,,
+TC_REVIEW_TN96_002,TN96_golden_and_mixed_dispatch,0,1,T,N,2048,96,32,1,32,32,0,2048,2,UNIFORM,UNIFORM,UNIFORM,,,,202610292,ACLBLAS_STATUS_SUCCESS,0,,,,
+TC_REVIEW_TN96_003,TN96_golden_and_mixed_dispatch,0,2,T;N,N;N,512;16,96;32,16;16,1;1,16;16,16;16,0;0,512;16,2;1,UNIFORM,UNIFORM,UNIFORM,,,,202610293,ACLBLAS_STATUS_SUCCESS,0,,,,
