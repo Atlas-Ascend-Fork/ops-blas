@@ -31,10 +31,12 @@
 │           └── ${interface}_tiling_data.h              # 可选，Tiling 数据结构定义
 ├── blasLt                                              # aclBLASLt 源码目录
 │   ├── CMakeLists.txt
-│   ├── aclblasLt.cpp                                   # BLASLt 侧入口与对外逻辑
-│   └── ${feature_dir}                                  # 能力子目录，如 matmul（核函数、工具头文件等）
-│       ├── ${feature}_kernel.cpp
-│       └── ...
+│   ├── README.md                                       # LtMatmul 总体设计与实现说明
+│   ├── api                                             # 对外接口实现（aclblaslt_*.cpp，BLASLt 侧入口与对外逻辑）
+│   ├── common                                          # 公共辅助实现与工具头文件（helper）
+│   ├── internal                                        # 内部实现（include 头文件与 src 实现源文件，如 heuristic、capsule 等）
+│   ├── matmul                                          # matmul 能力实现（engine、epilogue 及 fp32/mxfp4/mxfp8 等精度路径）
+│   └── matrix_transform                                # 矩阵布局变换实现（arch35、engine）
 ├── include                                             # 对外头文件
 │   ├── cann_ops_blas.h                                 # aclBLAS API 声明
 │   ├── cann_ops_blasLt.h                               # aclBLASLt API 声明

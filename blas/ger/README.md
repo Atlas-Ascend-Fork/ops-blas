@@ -101,7 +101,7 @@ aclblasStatus_t aclblasCgeru(aclblasHandle_t handle, int m, int n, const aclblas
 - incx != 0，incy != 0
 - 列主序矩阵的 lda >= max(1, m)，不以列数 n 作为下限
 - handle 和 alpha 不为空；非快速返回时 x、y、A 不为空
-- 额外 GM 工作区需求为 0 字节；三条执行路径均仅使用核内 UB 或寄存器作为临时存储，不分配或使用 handle 工作区
+- 额外 GM 工作区需求为 0 字节；各架构的全部执行路径均仅使用核内 UB 或寄存器作为临时存储，不分配或使用 handle 工作区
 
 #### 调用示例
 
