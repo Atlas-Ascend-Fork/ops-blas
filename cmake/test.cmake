@@ -8,6 +8,14 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
+# issue #661: 测试目标不得依赖 build.sh 专有的环境变量（LINUX_INCLUDE_PATH/EAGER_LIBRARY_PATH），
+# 否则绕过 build.sh 直连 cmake 时链接输入退化为 "/libascendcl.so"。libascendcl 优先从
+# ASCEND_CANN_PACKAGE_PATH 缓存变量解析（build.sh 场景两者指向同一目录，行为不变），环境变量作回退。
+set(BLAS_ASCENDCL_LIB "${ASCEND_CANN_PACKAGE_PATH}/lib64/libascendcl.so")
+if(NOT EXISTS "${BLAS_ASCENDCL_LIB}" AND EXISTS "$ENV{EAGER_LIBRARY_PATH}/libascendcl.so")
+    set(BLAS_ASCENDCL_LIB "$ENV{EAGER_LIBRARY_PATH}/libascendcl.so")
+endif()
+
 # 检查 blas/<op_name>/ 下是否有当前 SOC 可编译的算子实现
 function(_ops_blas_has_blas_op_sources op_name out_var)
     set(has_sources FALSE)
@@ -190,12 +198,13 @@ function(_ops_blas_register_test_target target link_lib)
         ${ASCEND_CANN_PACKAGE_PATH}/pkg_inc/base/
         ${ASCEND_CANN_PACKAGE_PATH}/pkg_inc/
         $ENV{LINUX_INCLUDE_PATH}
+        ${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/include
         ${REFBLAS_INCLUDE_DIR}
     )
     target_compile_features(${target} PRIVATE cxx_std_17)
     target_link_libraries(${target} PRIVATE
         ${link_lib}
-        $ENV{EAGER_LIBRARY_PATH}/libascendcl.so
+        ${BLAS_ASCENDCL_LIB}
         ${REFBLAS_LIB}
         ${REFLAPACK_LIB}
     )
@@ -297,6 +306,7 @@ function(_ops_blas_register_gtest_target target link_lib)
         ${CMAKE_SOURCE_DIR}/blas/common/helper
         ${_extra_includes}
         $ENV{LINUX_INCLUDE_PATH}
+        ${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/include
         ${GTEST_INCLUDE_DIR}
         ${REFBLAS_INCLUDE_DIR}
         ${ASCEND_CANN_PACKAGE_PATH}/pkg_inc/op_common/
@@ -307,7 +317,7 @@ function(_ops_blas_register_gtest_target target link_lib)
     target_link_directories(${target} PRIVATE "${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64")
     target_link_libraries(${target} PRIVATE
         ${link_lib}
-        $ENV{EAGER_LIBRARY_PATH}/libascendcl.so
+        ${BLAS_ASCENDCL_LIB}
         ${GTEST_LIB}
         ${REFBLAS_LIB}
         ${REFLAPACK_LIB}
@@ -520,6 +530,7 @@ function(_ops_blas_register_all_runner link_lib)
         ${CMAKE_SOURCE_DIR}/blas/common/helper
         ${_all_includes}
         $ENV{LINUX_INCLUDE_PATH}
+        ${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/include
         ${GTEST_INCLUDE_DIR}
         ${REFBLAS_INCLUDE_DIR}
         ${ASCEND_CANN_PACKAGE_PATH}/pkg_inc/op_common/
@@ -550,7 +561,7 @@ function(_ops_blas_register_all_runner link_lib)
     target_link_directories(blas_all_test PRIVATE "${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/lib64")
     target_link_libraries(blas_all_test PRIVATE
         ${link_lib}
-        $ENV{EAGER_LIBRARY_PATH}/libascendcl.so
+        ${BLAS_ASCENDCL_LIB}
         ${GTEST_LIB}
         ${REFBLAS_LIB}
         ${REFLAPACK_LIB}

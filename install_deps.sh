@@ -17,13 +17,16 @@ run_command() {
     local cmd="$*"
     echo "Executing command: $cmd"
 
-    if ! output=$("$@" 2>&1); then
-         local exit_code=$?
-         echo -e "\nCommand execution failed!"
-         echo -e "\nFailed command: $cmd"
-         echo -e "\nError output: $output"
-         echo -e "\nExit code: $exit_code"
-         exit $exit_code
+    # Capture the real exit code before any negation; keep the failure branch
+    # reachable under set -e so the error message is printed before exiting.
+    local exit_code=0
+    output=$("$@" 2>&1) || exit_code=$?
+    if [ "$exit_code" -ne 0 ]; then
+        echo -e "\nCommand execution failed!"
+        echo -e "\nFailed command: $cmd"
+        echo -e "\nError output: $output"
+        echo -e "\nExit code: $exit_code"
+        exit "$exit_code"
     fi
 }
 
