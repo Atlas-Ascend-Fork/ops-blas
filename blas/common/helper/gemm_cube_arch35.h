@@ -84,8 +84,8 @@ struct GemmTileState {
 };
 
 __aicore__ inline void ComputeBalancedAxis(
-    uint32_t length, uint32_t baseTile, uint32_t blockCount, uint32_t blockIdx,
-    uint64_t& elementOffset, uint32_t& actualLength)
+    uint32_t length, uint32_t baseTile, uint32_t blockCount, uint32_t blockIdx, uint64_t& elementOffset,
+    uint32_t& actualLength)
 {
     if (baseTile == 0 || blockCount == 0) {
         elementOffset = 0;
@@ -95,9 +95,16 @@ __aicore__ inline void ComputeBalancedAxis(
     uint32_t tileCount = CeilDiv(length, baseTile);
     uint32_t tilesPerBlock = tileCount / blockCount;
     uint32_t extraTileBlocks = tileCount % blockCount;
+    if (blockIdx >= blockCount) {
+        // A launch index beyond this axis' block count (possible when a fused kernel
+        // splits the launch index differently from mBlocks * nBlocks) must yield an
+        // empty slice; letting it through would wrap `remaining` below to a huge value.
+        elementOffset = 0;
+        actualLength = 0;
+        return;
+    }
     uint32_t currentTileCount = tilesPerBlock + (blockIdx < extraTileBlocks ? 1U : 0U);
-    uint32_t startTile = blockIdx * tilesPerBlock +
-        (blockIdx < extraTileBlocks ? blockIdx : extraTileBlocks);
+    uint32_t startTile = blockIdx * tilesPerBlock + (blockIdx < extraTileBlocks ? blockIdx : extraTileBlocks);
     elementOffset = static_cast<uint64_t>(startTile) * baseTile;
     uint32_t remaining = length - static_cast<uint32_t>(elementOffset);
     uint32_t assignedLength = currentTileCount * baseTile;
@@ -140,11 +147,11 @@ __aicore__ inline bool InitGemmState(GemmCubeState& st, const GemmTilingData& ti
     st.mBlockIdx = blockIdx % static_cast<uint32_t>(st.tiling.mBlocks);
     st.nBlockIdx = blockIdx / static_cast<uint32_t>(st.tiling.mBlocks);
     ComputeBalancedAxis(
-        static_cast<uint32_t>(st.tiling.m), BASE_M, static_cast<uint32_t>(st.tiling.mBlocks),
-        st.mBlockIdx, st.mOffset, st.actualM);
+        static_cast<uint32_t>(st.tiling.m), BASE_M, static_cast<uint32_t>(st.tiling.mBlocks), st.mBlockIdx, st.mOffset,
+        st.actualM);
     ComputeBalancedAxis(
-        static_cast<uint32_t>(st.tiling.n), BASE_N, static_cast<uint32_t>(st.tiling.nBlocks),
-        st.nBlockIdx, st.nOffset, st.actualN);
+        static_cast<uint32_t>(st.tiling.n), BASE_N, static_cast<uint32_t>(st.tiling.nBlocks), st.nBlockIdx, st.nOffset,
+        st.actualN);
     if (st.actualM == 0 || st.actualN == 0) {
         return false;
     }
@@ -163,15 +170,13 @@ __aicore__ inline GemmTileState MakeGemmTileState(
     const GemmCubeState& st, uint32_t mi, uint32_t ni, uint32_t mStart, uint32_t nStart)
 {
     GemmTileState tile{
-        mi, ni, mStart, nStart,
-        (mi != st.baseMCount) ? BASE_M : st.tailM,
-        (ni != st.baseNCount) ? BASE_N : st.tailN};
+        mi, ni, mStart, nStart, (mi != st.baseMCount) ? BASE_M : st.tailM, (ni != st.baseNCount) ? BASE_N : st.tailN};
     return tile;
 }
 
 __aicore__ inline void MakeGemmBlockRange(
-    const GemmCubeState& st, uint32_t mb, uint32_t nb,
-    uint32_t& mStart, uint32_t& mEnd, uint32_t& nStart, uint32_t& nEnd)
+    const GemmCubeState& st, uint32_t mb, uint32_t nb, uint32_t& mStart, uint32_t& mEnd, uint32_t& nStart,
+    uint32_t& nEnd)
 {
     mStart = mb * st.mBlockSize;
     mEnd = (mStart + st.mBlockSize < st.mLoopCount) ? mStart + st.mBlockSize : st.mLoopCount;
@@ -219,8 +224,8 @@ __aicore__ inline auto MakeGemmOperandTensors(
         te::MakeFrameLayout<LayoutGM_B>(bDim0, bDim1));
     auto gmCTensor = te::MakeTensor(
         te::MakeMemPtr<te::Location::GM>(reinterpret_cast<__gm__ T*>(c)),
-        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(st.tiling.m),
-                                                static_cast<uint64_t>(st.tiling.ldc)));
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(
+            static_cast<uint64_t>(st.tiling.m), static_cast<uint64_t>(st.tiling.ldc)));
 
     return GemmOperandTensors<decltype(gmATensor), decltype(gmBTensor), decltype(gmCTensor)>{
         gmATensor, gmBTensor, gmCTensor};
@@ -231,13 +236,12 @@ __aicore__ inline auto MakeGemmOperandTensors(
 // ============================================================================
 template <uint32_t BASE_M, uint32_t BASE_K, typename GM_TENSOR_A>
 __aicore__ inline void TensorCopyGM2L1A(
-    const GemmCubeState& st, GM_TENSOR_A& gmATensor, uint64_t l1OffsetBytes,
-    uint32_t mi, uint32_t kOffset, uint32_t curM, uint32_t curKChunk)
+    const GemmCubeState& st, GM_TENSOR_A& gmATensor, uint64_t l1OffsetBytes, uint32_t mi, uint32_t kOffset,
+    uint32_t curM, uint32_t curKChunk)
 {
     using T = float;
     uint64_t mPos = st.mOffset + static_cast<uint64_t>(mi) * BASE_M;
-    auto gmBlock = gmATensor.Slice(
-        te::MakeCoord(mPos, static_cast<uint64_t>(kOffset)), te::MakeShape(curM, curKChunk));
+    auto gmBlock = gmATensor.Slice(te::MakeCoord(mPos, static_cast<uint64_t>(kOffset)), te::MakeShape(curM, curKChunk));
     auto tensorAL1 = te::MakeTensor(
         te::MakeMemPtr<te::Location::L1, T>(l1OffsetBytes),
         te::MakeFrameLayout<te::NZLayoutPtn, AscendC::Std::Int<GEMM_FP32_C0>>(curM, curKChunk));
@@ -246,15 +250,15 @@ __aicore__ inline void TensorCopyGM2L1A(
 
 template <uint32_t BASE_M, uint32_t BASE_K>
 __aicore__ inline void TensorCopyL1ToL0A(
-    uint64_t l1OffsetBytes, uint64_t l0OffsetBytes,
-    uint32_t curM, uint32_t curKChunk, uint32_t kInnerOffset, uint32_t curK)
+    uint64_t l1OffsetBytes, uint64_t l0OffsetBytes, uint32_t curM, uint32_t curKChunk, uint32_t kInnerOffset,
+    uint32_t curK)
 {
     using T = float;
     auto tensorAL1 = te::MakeTensor(
         te::MakeMemPtr<te::Location::L1, T>(l1OffsetBytes),
         te::MakeFrameLayout<te::NZLayoutPtn, AscendC::Std::Int<GEMM_FP32_C0>>(curM, curKChunk));
-    auto tensorAL1Tile = tensorAL1.Slice(
-        te::MakeCoord(0L, static_cast<uint64_t>(kInnerOffset)), te::MakeShape(curM, curK));
+    auto tensorAL1Tile =
+        tensorAL1.Slice(te::MakeCoord(0L, static_cast<uint64_t>(kInnerOffset)), te::MakeShape(curM, curK));
     auto tensorAL0 = te::MakeTensor(
         te::MakeMemPtr<te::Location::L0A, T>(l0OffsetBytes),
         te::MakeFrameLayout<te::NZLayoutPtn, AscendC::Std::Int<GEMM_FP32_C0>>(curM, curK));
@@ -263,13 +267,12 @@ __aicore__ inline void TensorCopyL1ToL0A(
 
 template <uint32_t BASE_K, uint32_t BASE_N, typename GM_TENSOR_B>
 __aicore__ inline void TensorCopyGM2L1B(
-    const GemmCubeState& st, GM_TENSOR_B& gmBTensor, uint64_t l1OffsetBytes,
-    uint32_t ni, uint32_t kOffset, uint32_t curKChunk, uint32_t curN)
+    const GemmCubeState& st, GM_TENSOR_B& gmBTensor, uint64_t l1OffsetBytes, uint32_t ni, uint32_t kOffset,
+    uint32_t curKChunk, uint32_t curN)
 {
     using T = float;
     uint64_t nPos = st.nOffset + static_cast<uint64_t>(ni) * BASE_N;
-    auto gmBlock = gmBTensor.Slice(
-        te::MakeCoord(static_cast<uint64_t>(kOffset), nPos), te::MakeShape(curKChunk, curN));
+    auto gmBlock = gmBTensor.Slice(te::MakeCoord(static_cast<uint64_t>(kOffset), nPos), te::MakeShape(curKChunk, curN));
     auto tensorBL1 = te::MakeTensor(
         te::MakeMemPtr<te::Location::L1, T>(l1OffsetBytes),
         te::MakeFrameLayout<te::ZNLayoutPtn, AscendC::Std::Int<GEMM_FP32_C0>>(curKChunk, curN));
@@ -278,15 +281,15 @@ __aicore__ inline void TensorCopyGM2L1B(
 
 template <uint32_t BASE_K, uint32_t BASE_N>
 __aicore__ inline void TensorCopyL1ToL0B(
-    uint64_t l1OffsetBytes, uint64_t l0OffsetBytes,
-    uint32_t curKChunk, uint32_t curN, uint32_t kInnerOffset, uint32_t curK)
+    uint64_t l1OffsetBytes, uint64_t l0OffsetBytes, uint32_t curKChunk, uint32_t curN, uint32_t kInnerOffset,
+    uint32_t curK)
 {
     using T = float;
     auto tensorBL1 = te::MakeTensor(
         te::MakeMemPtr<te::Location::L1, T>(l1OffsetBytes),
         te::MakeFrameLayout<te::ZNLayoutPtn, AscendC::Std::Int<GEMM_FP32_C0>>(curKChunk, curN));
-    auto tensorBL1Tile = tensorBL1.Slice(
-        te::MakeCoord(static_cast<uint64_t>(kInnerOffset), 0L), te::MakeShape(curK, curN));
+    auto tensorBL1Tile =
+        tensorBL1.Slice(te::MakeCoord(static_cast<uint64_t>(kInnerOffset), 0L), te::MakeShape(curK, curN));
     auto tensorBL0 = te::MakeTensor(
         te::MakeMemPtr<te::Location::L0B, T>(l0OffsetBytes),
         te::MakeFrameLayout<te::ZNLayoutPtn, AscendC::Std::Int<GEMM_FP32_C0>>(curK, curN));
@@ -295,11 +298,8 @@ __aicore__ inline void TensorCopyL1ToL0B(
 
 template <uint32_t BASE_M, uint32_t BASE_N>
 __aicore__ inline void TensorMmadTile(
-    const GemmCubeState& st, uint64_t l0OffsetA, uint64_t l0OffsetB,
-    uint32_t mi, uint32_t ni,
-    uint32_t mStart, uint32_t nStart,
-    uint32_t curM, uint32_t curK, uint32_t curN,
-    bool isFirstK, bool isLastK)
+    const GemmCubeState& st, uint64_t l0OffsetA, uint64_t l0OffsetB, uint32_t mi, uint32_t ni, uint32_t mStart,
+    uint32_t nStart, uint32_t curM, uint32_t curK, uint32_t curN, bool isFirstK, bool isLastK)
 {
     using T = float;
     constexpr uint32_t C0_TILE_BYTES = BASE_M * BASE_N * sizeof(float);
@@ -318,16 +318,13 @@ __aicore__ inline void TensorMmadTile(
 
     uint8_t unitFlag = isLastK ? FINAL_ACCUMULATION : NON_FINAL_ACCUMULATION;
     te::MmadParams mmadParams{
-        static_cast<uint16_t>(curM), static_cast<uint16_t>(curN),
-        static_cast<uint16_t>(curK), unitFlag, isFirstK};
-    te::Mmad(te::MmadAtom<te::MmadTraits<te::MmadOperation>>{}.with(mmadParams),
-        tensorL0C, tensorAL0, tensorBL0);
+        static_cast<uint16_t>(curM), static_cast<uint16_t>(curN), static_cast<uint16_t>(curK), unitFlag, isFirstK};
+    te::Mmad(te::MmadAtom<te::MmadTraits<te::MmadOperation>>{}.with(mmadParams), tensorL0C, tensorAL0, tensorBL0);
 }
 
 template <uint32_t BASE_M, uint32_t BASE_N, typename GM_TENSOR_C>
 __aicore__ inline void TensorWriteFixpipeBlock(
-    const GemmCubeState& st, GM_TENSOR_C& gmCTensor,
-    uint32_t mi, uint32_t ni, uint32_t mStart, uint32_t nStart)
+    const GemmCubeState& st, GM_TENSOR_C& gmCTensor, uint32_t mi, uint32_t ni, uint32_t mStart, uint32_t nStart)
 {
     constexpr uint32_t C0_TILE_BYTES = BASE_M * BASE_N * sizeof(float);
     uint32_t curM = (mi != st.baseMCount) ? BASE_M : st.tailM;
@@ -340,8 +337,7 @@ __aicore__ inline void TensorWriteFixpipeBlock(
     auto tensorL0C = te::MakeTensor(
         te::MakeMemPtr<te::Location::L0C, float>(l0cOffset),
         te::MakeFrameLayout<te::NZLayoutPtn, AscendC::Std::Int<GEMM_L0C_C0>>(curM, curN));
-    te::MakeCopy(te::CopyL0C2GM{}).Call(gmBlockC, tensorL0C,
-        te::FixpipeParams{FINAL_ACCUMULATION});
+    te::MakeCopy(te::CopyL0C2GM{}).Call(gmBlockC, tensorL0C, te::FixpipeParams{FINAL_ACCUMULATION});
 }
 
 // One BK-sized L1->L0A/L0B stage of a K chunk plus its Mmad: both kernels run
@@ -349,26 +345,20 @@ __aicore__ inline void TensorWriteFixpipeBlock(
 // how the K axis is chopped (gemm: tileKChunk; csymm: two prefetched segments).
 template <uint32_t BM, uint32_t BK, uint32_t BN>
 __aicore__ inline void RunL1ToL0Mmad(
-    const GemmCubeState& st, const GemmTileState& tile,
-    uint64_t l1OffsetA, uint64_t l1OffsetB, uint64_t l0BufId,
-    uint32_t kInnerOffset, uint32_t curKChunk, uint32_t curK,
-    bool isFirstK, bool isLastK)
+    const GemmCubeState& st, const GemmTileState& tile, uint64_t l1OffsetA, uint64_t l1OffsetB, uint64_t l0BufId,
+    uint32_t kInnerOffset, uint32_t curKChunk, uint32_t curK, bool isFirstK, bool isLastK)
 {
-    uint64_t l0OffsetA =
-        l0BufId * (HardwareInfo<ArchType::ASCEND_V350>::l0ASize / GEMM_BUFFER_COUNT);
-    uint64_t l0OffsetB =
-        l0BufId * (HardwareInfo<ArchType::ASCEND_V350>::l0BSize / GEMM_BUFFER_COUNT);
+    uint64_t l0OffsetA = l0BufId * (HardwareInfo<ArchType::ASCEND_V350>::l0ASize / GEMM_BUFFER_COUNT);
+    uint64_t l0OffsetB = l0BufId * (HardwareInfo<ArchType::ASCEND_V350>::l0BSize / GEMM_BUFFER_COUNT);
 
     AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0BufId);
-    TensorCopyL1ToL0A<BM, BK>(
-        l1OffsetA, l0OffsetA, tile.curM, curKChunk, kInnerOffset, curK);
-    TensorCopyL1ToL0B<BK, BN>(
-        l1OffsetB, l0OffsetB, curKChunk, tile.curN, kInnerOffset, curK);
+    TensorCopyL1ToL0A<BM, BK>(l1OffsetA, l0OffsetA, tile.curM, curKChunk, kInnerOffset, curK);
+    TensorCopyL1ToL0B<BK, BN>(l1OffsetB, l0OffsetB, curKChunk, tile.curN, kInnerOffset, curK);
     AscendC::SetFlag<AscendC::HardEvent::MTE1_M>(l0BufId);
     AscendC::WaitFlag<AscendC::HardEvent::MTE1_M>(l0BufId);
 
     TensorMmadTile<BM, BN>(
-        st, l0OffsetA, l0OffsetB, tile.mi, tile.ni, tile.mStart, tile.nStart,
-        tile.curM, curK, tile.curN, isFirstK, isLastK);
+        st, l0OffsetA, l0OffsetB, tile.mi, tile.ni, tile.mStart, tile.nStart, tile.curM, curK, tile.curN, isFirstK,
+        isLastK);
     AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(l0BufId);
 }
