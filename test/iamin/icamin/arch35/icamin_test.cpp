@@ -136,8 +136,7 @@ std::vector<aclblasComplex> MakeIcaminHostX(const IcaminParam& p)
     return xHost;
 }
 
-aclblasStatus_t RunIcaminPerfCase(
-    aclblasHandle_t handle, const IcaminParam& p, const aclblasComplex* xPtr, int* result)
+aclblasStatus_t RunIcaminPerfCase(aclblasHandle_t handle, const IcaminParam& p, const aclblasComplex* xPtr, int* result)
 {
     constexpr int kWarmup = 10;
     constexpr int kIters = 100; // task: effective samples > 50
@@ -209,6 +208,9 @@ TEST_P(IcaminArch35Test, CsvDriven)
     }
 
     int golden = 0;
-    aclblasIcamin_cpu(IcaminArch35Test::handle_, p.n, xHost.data(), p.incx, &golden);
+    // issue #667: CPU 参考实现返回码必须校验——golden 失效时断言会退化为与 0 比较
+    const aclblasStatus_t goldenRet = aclblasIcamin_cpu(IcaminArch35Test::handle_, p.n, xHost.data(), p.incx, &golden);
+    EXPECT_EQ(static_cast<int>(goldenRet), static_cast<int>(ACLBLAS_STATUS_SUCCESS))
+        << "[" << p.caseName << "] CPU golden failed: " << static_cast<int>(goldenRet);
     EXPECT_EQ(result, golden) << "[" << p.caseName << "] index mismatch: NPU=" << result << " golden=" << golden;
 }

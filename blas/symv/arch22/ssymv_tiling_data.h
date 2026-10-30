@@ -23,4 +23,7 @@ struct SymvTilingData {
     float beta;
     int64_t incx;
     int64_t incy;
+    // 两阶段执行：0 = y = beta*y（覆盖写）；1 = 原子累加 alpha*A*x。
+    // 两阶段分两次 kernel 启动，由 stream 顺序保证互斥
+    uint32_t phase;
 };

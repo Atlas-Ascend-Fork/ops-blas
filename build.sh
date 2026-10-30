@@ -205,7 +205,7 @@ fi
 if [ "${RUN_TEST}" == "ON" ] && [ -z "${BUILD_OPS}" ]; then
   # 从 test 目录下查找所有包含 CMakeLists.txt 的子目录（支持家族嵌套）
   AUTO_DISCOVER_OPS=""
-  for dir in ${BASE_PATH}/test/*/; do
+  for dir in "${BASE_PATH}"/test/*/; do
     [ -d "${dir}" ] || continue
     dir_name=$(basename "${dir}")
     # 排除非算子目录

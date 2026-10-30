@@ -1,12 +1,12 @@
 /**
-* Copyright (c) 2026 Huawei Technologies Co., Ltd.
-* This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-* CANN Open Software License Agreement Version 2.0 (the "License").
-* Please refer to the License for details. You may not use this file except in compliance with the License.
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-* INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-* See LICENSE in the root of the software repository for the full text of the License.
-*/
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd.
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
 
 #pragma once
 
@@ -17,9 +17,7 @@
 #include <type_traits>
 
 __aicore__ __inline__ __attribute__((always_inline)) void copy_vec_gm2ub_float(
-    AscendC::LocalTensor<float> dst,
-    AscendC::GlobalTensor<float> src,
-    uint32_t len)
+    AscendC::LocalTensor<float> dst, AscendC::GlobalTensor<float> src, uint32_t len)
 {
     uint16_t nBurst = 1;
     uint32_t lenBurst = len * sizeof(float);
@@ -29,14 +27,12 @@ __aicore__ __inline__ __attribute__((always_inline)) void copy_vec_gm2ub_float(
     uint32_t dstGap = 0;
     gm_to_ub_align<ArchType::ASCEND_V220, float>(
         dst, src,
-        0,  // sid
+        0, // sid
         nBurst, lenBurst, leftPaddingNum, rightPaddingNum, srcGap, dstGap);
 }
 
 __aicore__ __inline__ __attribute__((always_inline)) void copy_vec_gm2ub_int(
-    AscendC::LocalTensor<uint32_t> dst,
-    AscendC::GlobalTensor<uint32_t> src,
-    uint32_t len)
+    AscendC::LocalTensor<uint32_t> dst, AscendC::GlobalTensor<uint32_t> src, uint32_t len)
 {
     uint16_t nBurst = 1;
     uint32_t lenBurst = len * sizeof(uint32_t);
@@ -46,14 +42,12 @@ __aicore__ __inline__ __attribute__((always_inline)) void copy_vec_gm2ub_int(
     uint32_t dstGap = 0;
     gm_to_ub_align<ArchType::ASCEND_V220, uint32_t>(
         dst, src,
-        0,  // sid
+        0, // sid
         nBurst, lenBurst, leftPaddingNum, rightPaddingNum, srcGap, dstGap);
 }
 
 __aicore__ __inline__ __attribute__((always_inline)) void copy_vec_ub2gm(
-    AscendC::GlobalTensor<float> dst,
-    AscendC::LocalTensor<float> src,
-    uint32_t len)
+    AscendC::GlobalTensor<float> dst, AscendC::LocalTensor<float> src, uint32_t len)
 {
     uint16_t nBurst = 1;
     uint32_t lenBurst = len * sizeof(float);
@@ -63,17 +57,14 @@ __aicore__ __inline__ __attribute__((always_inline)) void copy_vec_ub2gm(
     uint32_t dstGap = 0;
     ub_to_gm_align<ArchType::ASCEND_V220, float>(
         dst, src,
-        0,  // sid
+        0, // sid
         nBurst, lenBurst, leftPaddingNum, rightPaddingNum, srcGap, dstGap);
 }
 
-__aicore__ __inline__ __attribute__((always_inline)) void copy_seperate_c64(
-    AscendC::LocalTensor<float> ub_in,
-    AscendC::LocalTensor<float> ub_sep,
-    AscendC::GlobalTensor<float> x,
-    uint32_t len)
+__aicore__ __inline__ __attribute__((always_inline)) void copy_separate_c64(
+    AscendC::LocalTensor<float> ub_in, AscendC::LocalTensor<float> ub_sep, AscendC::GlobalTensor<float> x, uint32_t len)
 {
-    uint32_t repeatTime = (len + 63) / 64;  // 3
+    uint32_t repeatTime = (len + 63) / 64; // 3
     uint32_t real_offset = 0;
     uint32_t imag_offset = 32 * 1024 / sizeof(float) / 2;
 
@@ -100,25 +91,18 @@ __aicore__ __inline__ __attribute__((always_inline)) void copy_seperate_c64(
 
     uint32_t mask = 0;
     uint64_t rsvdCnt = 0;
-    AscendC::GatherMask<float>(ub_out_real, ub_in, 1, false, mask,
-                               {1, static_cast<uint16_t>(repeatTime), 8, 8}, rsvdCnt);
+    AscendC::GatherMask<float>(
+        ub_out_real, ub_in, 1, false, mask, {1, static_cast<uint16_t>(repeatTime), 8, 8}, rsvdCnt);
 
-    AscendC::GatherMask<float>(ub_out_imag, ub_in, 2, false, mask,
-                               {1, static_cast<uint16_t>(repeatTime), 8, 8}, rsvdCnt);
-
+    AscendC::GatherMask<float>(
+        ub_out_imag, ub_in, 2, false, mask, {1, static_cast<uint16_t>(repeatTime), 8, 8}, rsvdCnt);
 }
 
 __aicore__ __inline__ __attribute__((always_inline)) void compute(
-    AscendC::GlobalTensor<float> gm_x,
-    AscendC::GlobalTensor<float> gm_y,
-    AscendC::LocalTensor<float> ub_y,
-    AscendC::LocalTensor<uint32_t> gatherOffset,
-    AscendC::LocalTensor<float> ub_calc,
-    AscendC::LocalTensor<float> ub_out,
-    AscendC::GlobalTensor<float> A,
-    float alphaReal, float alphaImag,
-    int32_t x_id,
-    int64_t calNum,  // ????????
+    AscendC::GlobalTensor<float> gm_x, AscendC::GlobalTensor<float> gm_y, AscendC::LocalTensor<float> ub_y,
+    AscendC::LocalTensor<uint32_t> gatherOffset, AscendC::LocalTensor<float> ub_calc,
+    AscendC::LocalTensor<float> ub_out, AscendC::GlobalTensor<float> A, float alphaReal, float alphaImag, int32_t x_id,
+    int64_t calNum, // ????????
     int64_t offset, uint32_t event_id)
 {
     uint32_t real_offset = 0;
@@ -164,11 +148,9 @@ __aicore__ __inline__ __attribute__((always_inline)) void compute(
 }
 
 __aicore__ __inline__ __attribute__((always_inline)) void process(
-    AscendC::GlobalTensor<float> x,
-    AscendC::GlobalTensor<float> y,
-    AscendC::GlobalTensor<uint32_t> gatherOffset,
-    AscendC::GlobalTensor<float> A,
-    float alphaReal, float alphaImag, uint32_t m, uint32_t n, uint64_t x_offset, uint64_t x_count_num)
+    AscendC::GlobalTensor<float> x, AscendC::GlobalTensor<float> y, AscendC::GlobalTensor<uint32_t> gatherOffset,
+    AscendC::GlobalTensor<float> A, float alphaReal, float alphaImag, uint32_t m, uint32_t n, uint64_t x_offset,
+    uint64_t x_count_num)
 {
     // ub 192kb
     AsdopsBuffer<ArchType::ASCEND_V220> buf;
@@ -207,7 +189,7 @@ __aicore__ __inline__ __attribute__((always_inline)) void process(
             curr_compute_row_num = max_data_count;
 
         PIPE_BARRIER(ALL);
-        copy_seperate_c64(ub_out_ping, ub_in, y[row_block_idx * max_data_count * 2], curr_compute_row_num * 2);
+        copy_separate_c64(ub_out_ping, ub_in, y[row_block_idx * max_data_count * 2], curr_compute_row_num * 2);
         PIPE_BARRIER(ALL);
 
         uint64_t calNum = curr_compute_row_num;
@@ -223,8 +205,9 @@ __aicore__ __inline__ __attribute__((always_inline)) void process(
 
             WAIT_FLAG(MTE3, V, event_id);
 
-            compute(x, y, ub_in, ub_gather_offset, ub_calc, ub_out, A, alphaReal, alphaImag, i, calNum,
-                    i * n * 2 + offset * 2, event_id);
+            compute(
+                x, y, ub_in, ub_gather_offset, ub_calc, ub_out, A, alphaReal, alphaImag, i, calNum,
+                i * n * 2 + offset * 2, event_id);
 
             SET_FLAG(MTE3, V, event_id);
 
@@ -237,5 +220,3 @@ __aicore__ __inline__ __attribute__((always_inline)) void process(
 
     PIPE_BARRIER(ALL);
 }
-
-

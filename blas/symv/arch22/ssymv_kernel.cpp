@@ -28,6 +28,11 @@ public:
     __aicore__ inline void Process();
 
 private:
+    __aicore__ inline void CopyInY(uint32_t curOffset, uint32_t dataCount, bool needPad);
+    __aicore__ inline void ComputeYBeta(uint32_t dataCount);
+    __aicore__ inline void CopyOutYBeta(uint32_t curOffset, uint32_t dataCount, bool needPad);
+
+private:
     TPipe pipe;
 
     __aicore__ inline void CopyInV2(uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount);
@@ -95,6 +100,7 @@ private:
     uint32_t absIncx = 1;
     uint32_t absIncy = 1;
     uint32_t uplo = ACLBLAS_LOWER;
+    uint32_t tilingPhase = 1;
 
     int elementsPerRepeat = UB_BYTENUM_PER_REPEAT / BYTENUM_PER_FLOAT32;
     int elementsPerBlock = UB_BYTENUM_PER_BLOCK / BYTENUM_PER_FLOAT32;
@@ -113,6 +119,7 @@ __aicore__ inline void SymvAIV<T>::Init(GM_ADDR a, GM_ADDR x, GM_ADDR y, const S
     incx = tiling.incx;
     incy = tiling.incy;
     uplo = tiling.uplo;
+    tilingPhase = tiling.phase;
 
     if (useCoreNum == 0 || useCoreNum > SYMV_MAX_CORE_NUM) {
         useCoreNum = 1;
@@ -409,33 +416,104 @@ __aicore__ inline void SymvAIV<T>::CopyOutVec(uint32_t curOffset, uint32_t dataC
     }
 }
 
+// ---- phase 0：y = beta*y，覆盖写（非原子），单核执行 ----
+template <typename T>
+__aicore__ inline void SymvAIV<T>::CopyInY(uint32_t curOffset, uint32_t dataCount, bool needPad)
+{
+    if (incy == 1) {
+        LocalTensor<T> LocalY = xQueue.AllocTensor<T>();
+        if (!needPad) {
+            DataCopy(LocalY, yGM[curOffset], dataCount);
+        } else {
+            uint8_t paddingNum = elementsPerBlock - dataCount % elementsPerBlock;
+            DataCopyExtParams copyParams{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
+            DataCopyPadExtParams<T> padParams{true, 0, paddingNum, 0};
+            DataCopyPad(LocalY, yGM[curOffset], copyParams, padParams);
+        }
+        xQueue.EnQue<T>(LocalY);
+    } else {
+        LocalTensor<T> LocalY = xQueue.AllocTensor<T>();
+        for (uint32_t i = 0; i < dataCount; i++) {
+            LocalY.SetValue(i, yGM.GetValue(YPhysicalPos(curOffset + i)));
+        }
+        xQueue.EnQue<T>(LocalY);
+    }
+}
+
+template <typename T>
+__aicore__ inline void SymvAIV<T>::ComputeYBeta(uint32_t dataCount)
+{
+    LocalTensor<T> LocalY = xQueue.DeQue<T>();
+    LocalTensor<T> LocalZ = z2Queue.AllocTensor<T>();
+    int32_t eventIDMTE2ToV = static_cast<int32_t>(GetTPipePtr()->FetchEventID(AscendC::HardEvent::MTE2_V));
+    AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(eventIDMTE2ToV);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(eventIDMTE2ToV);
+    Muls(LocalZ, LocalY, beta, dataCount);
+    int32_t eventIDVToMTE3 = static_cast<int32_t>(GetTPipePtr()->FetchEventID(AscendC::HardEvent::V_MTE3));
+    AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(eventIDVToMTE3);
+    AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(eventIDVToMTE3);
+    z2Queue.EnQue<T>(LocalZ);
+    xQueue.FreeTensor(LocalY);
+}
+
+template <typename T>
+__aicore__ inline void SymvAIV<T>::CopyOutYBeta(uint32_t curOffset, uint32_t dataCount, bool needPad)
+{
+    if (incy == 1) {
+        LocalTensor<T> LocalZ = z2Queue.DeQue<T>();
+        if (!needPad) {
+            DataCopy(yGM[curOffset], LocalZ, dataCount);
+        } else {
+            DataCopyExtParams copyParams{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
+            DataCopyPad(yGM[curOffset], LocalZ, copyParams);
+        }
+        z2Queue.FreeTensor(LocalZ);
+    } else {
+        LocalTensor<T> LocalZ = z2Queue.DeQue<T>();
+        for (uint32_t i = 0; i < dataCount; i++) {
+            uint32_t pos = YPhysicalPos(curOffset + i);
+            yGM.SetValue(pos, LocalZ.GetValue(i));
+        }
+        z2Queue.FreeTensor(LocalZ);
+    }
+}
+
 template <typename T>
 __aicore__ inline void SymvAIV<T>::Process()
 {
-    SetAtomicAdd<T>();
-    if (vecIdx >= useCoreNum) {
-        SetAtomicNone();
-        return;
-    }
-    if (vecIdx == 0) {
+    // y = alpha*A*x + beta*y 分两次 kernel 启动执行（host 侧下发两次，同一
+    // stream 顺序保证互斥），消除原"单启动内 core0 读改写 y 与其余核原子
+    // 累加 y"的跨核竞态（n=255 UPPER 冒烟实测 diff=(beta-1)*row3 标量贡献）：
+    // phase 0：y = beta*y，core0 单核覆盖写（非原子）；
+    // phase 1：SetAtomicAdd 下各核原子累加 alpha*A*x 各元素贡献。
+    if (tilingPhase == 0) {
+        if (vecIdx != 0) {
+            return;
+        }
         uint32_t repeatTimes = n / maxDataCount;
         uint32_t remainNum = n % maxDataCount;
         uint32_t curOffset = 0;
         for (uint32_t i = 0; i < repeatTimes; i++) {
             uint32_t dataCount = maxDataCount;
-            CopyInVec(curOffset, dataCount, false);
-            ComputeVec(curOffset, dataCount);
-            CopyOutVec(curOffset, dataCount, false);
+            CopyInY(curOffset, dataCount, false);
+            ComputeYBeta(dataCount);
+            CopyOutYBeta(curOffset, dataCount, false);
             curOffset += dataCount;
         }
         if (remainNum > 0) {
             uint32_t dataCount = remainNum;
-            CopyInVec(curOffset, dataCount, true);
-            ComputeVec(curOffset, dataCount);
-            CopyOutVec(curOffset, dataCount, true);
+            CopyInY(curOffset, dataCount, true);
+            ComputeYBeta(dataCount);
+            CopyOutYBeta(curOffset, dataCount, true);
         }
+        return;
     }
 
+    SetAtomicAdd<T>();
+    if (vecIdx >= useCoreNum) {
+        SetAtomicNone();
+        return;
+    }
     for (uint32_t taskIdx = vecIdx; taskIdx < n; taskIdx += useCoreNum) {
         uint32_t row = taskIdx;
         if (uplo == ACLBLAS_UPPER) {

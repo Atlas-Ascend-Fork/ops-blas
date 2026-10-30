@@ -34,7 +34,7 @@ C = alpha * (op(A1)*op(B1) + op(A2)*op(B2) + op(A3)*op(B3)) + beta * C
 
 ```cpp
 aclblasStatus_t aclblasSgemm3m(
-    aclblasHandle handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k,
+    aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k,
     const float* alpha, const float* A, int lda,
     const float* B, int ldb,
     const float* beta, float* C, int ldc)

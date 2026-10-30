@@ -160,12 +160,19 @@ inline float ParseFloatColumn(const csv_map& row, const char* key, const std::st
     }
 }
 
-// ── Safe numeric parsers ──
+// ── Safe numeric parsers（issue #660：解析失败输出可见告警后回退默认值，
+//    不再静默吞掉——CSV 拼写错误/脏数据至少留下可检索的信号）──
+inline void ReportParseFallback(const char* parser, const std::string& s, double def)
+{
+    std::cout << "[csv_loader] " << parser << " failed for '" << s << "', using default " << def << std::endl;
+}
+
 inline int parseInt(const std::string& s, int def = 0)
 {
     try {
         return std::stoi(s);
     } catch (...) {
+        ReportParseFallback("parseInt", s, def);
         return def;
     }
 }
@@ -174,6 +181,7 @@ inline int64_t parseInt64(const std::string& s, int64_t def = 0)
     try {
         return std::stoll(s);
     } catch (...) {
+        ReportParseFallback("parseInt64", s, def);
         return def;
     }
 }
@@ -182,6 +190,7 @@ inline float parseFloat(const std::string& s, float def = 0.0f)
     try {
         return std::stof(s);
     } catch (...) {
+        ReportParseFallback("parseFloat", s, def);
         return def;
     }
 }
@@ -190,6 +199,7 @@ inline double parseDouble(const std::string& s, double def = 0.0)
     try {
         return std::stod(s);
     } catch (...) {
+        ReportParseFallback("parseDouble", s, def);
         return def;
     }
 }
@@ -197,10 +207,13 @@ inline uint32_t parseUint(const std::string& s, uint32_t def = 0)
 {
     try {
         unsigned long val = std::stoul(s);
-        if (val > UINT32_MAX)
+        if (val > UINT32_MAX) {
+            ReportParseFallback("parseUint", s, def);
             return def;
+        }
         return static_cast<uint32_t>(val);
     } catch (...) {
+        ReportParseFallback("parseUint", s, def);
         return def;
     }
 }
@@ -233,6 +246,7 @@ inline EnumT parseEnum(const std::string& s, const std::unordered_map<std::strin
         }
         return static_cast<EnumT>(v);
     } catch (...) {
+        // issue #660: 非数值且未命中符号表的字符串（拼写错误）输出可见告警
         std::cout << "[csv_loader] unknown enum string '" << s << "', using default" << std::endl;
         return defaultVal;
     }

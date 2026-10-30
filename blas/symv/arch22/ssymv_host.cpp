@@ -19,7 +19,7 @@
 
 static SymvTilingData CalSymvTilingData(
     uint32_t totalRows, uint32_t lda, uint32_t vecCoreNum, float alpha, float beta, int64_t incx, int64_t incy,
-    uint32_t uplo)
+    uint32_t uplo, uint32_t phase)
 {
     SymvTilingData tilingData{};
     tilingData.n = totalRows;
@@ -29,6 +29,7 @@ static SymvTilingData CalSymvTilingData(
     tilingData.incx = incx;
     tilingData.incy = incy;
     tilingData.uplo = uplo;
+    tilingData.phase = phase;
 
     if (incx == 1 && incy == 1) {
         uint32_t availableCoreNum = vecCoreNum == 0 ? 1U : vecCoreNum;
@@ -82,13 +83,25 @@ aclblasStatus_t aclblasSsymv(
     if (readSt != ACLBLAS_STATUS_SUCCESS) {
         return readSt;
     }
-    SymvTilingData tiling = CalSymvTilingData(
-        static_cast<uint32_t>(n), static_cast<uint32_t>(lda), numBlocks, alphaHost, betaHost, incx, incy,
-        static_cast<uint32_t>(uplo));
+    const uint8_t* aPtr = reinterpret_cast<uint8_t*>(const_cast<float*>(a));
+    const uint8_t* xPtr = reinterpret_cast<uint8_t*>(const_cast<float*>(x));
+    uint8_t* yPtr = reinterpret_cast<uint8_t*>(const_cast<float*>(y));
 
+    // y = alpha*A*x + beta*y 拆两次启动（同 stream 顺序执行，天然互斥）：
+    // phase 0 单核覆盖写 y = beta*y（beta=0 时即清零，phase 1 必须先于此执行）；
+    // phase 1 各核原子累加 alpha*A*x。
+    // 消除单启动内 core0 读改写 y 与其余核原子加 y 的跨核竞态
+    // （冒烟 n=255 UPPER 实测 diff=(beta-1)*row3 标量贡献）。
+    SymvTilingData tilingBeta = CalSymvTilingData(
+        static_cast<uint32_t>(n), static_cast<uint32_t>(lda), 1U, 1.0f, betaHost, incx, incy,
+        static_cast<uint32_t>(uplo), 0U);
+    ssymv_kernel_do(const_cast<uint8_t*>(aPtr), const_cast<uint8_t*>(xPtr), yPtr, nullptr, tilingBeta, 1U, useStream);
+
+    SymvTilingData tilingAxpy = CalSymvTilingData(
+        static_cast<uint32_t>(n), static_cast<uint32_t>(lda), numBlocks, alphaHost, 1.0f, incx, incy,
+        static_cast<uint32_t>(uplo), 1U);
     ssymv_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<float*>(a)), reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
-        reinterpret_cast<uint8_t*>(const_cast<float*>(y)), nullptr, tiling, numBlocks, useStream);
+        const_cast<uint8_t*>(aPtr), const_cast<uint8_t*>(xPtr), yPtr, nullptr, tilingAxpy, numBlocks, useStream);
 
     return ACLBLAS_STATUS_SUCCESS;
 }

@@ -562,8 +562,8 @@ aclblasStatus_t aclblasCgeam(
     int ldb, aclblasComplex* C, int ldc);
 
 aclblasStatus_t aclblasSgemm3m(
-    aclblasHandle handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k, const float* alpha,
-    const float* A, int lda, const float* B, int ldb, const float* beta, float* C, int ldc);
+    aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k,
+    const float* alpha, const float* A, int lda, const float* B, int ldb, const float* beta, float* C, int ldc);
 
 aclblasStatus_t aclblasSsyrk(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const float* alpha,
