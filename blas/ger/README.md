@@ -89,6 +89,12 @@ aclblasStatus_t aclblasCgeru(aclblasHandle_t handle, int m, int n, const aclblas
 `aclblasCgeru` 计算 `A = A + alpha * x * y^T`，不对 y 做共轭。支持正、负非零步长；
 `m == 0`、`n == 0` 或 alpha 为复零时不访问 Device 数据。
 
+负步长的基指针约定与 Netlib 折算一致：`incx < 0`（或 `incy < 0`）时，`x`/`y` 需传入物理存储
+低地址端的指针，逻辑元素 `j` 位于 `ptr[(count-1-j)*|inc|]`（x 的 count 为 m，y 的 count 为 n），
+物理存储长度需为 `1+(count-1)*|inc|` 个元素，且越界偏移不被校验。例如 `m=4、incx=-2` 时
+逻辑 `x[0]` 位于 `ptr[6]`、`x[3]` 位于 `ptr[0]`。按 C-BLAS 常见的"元素 `j` 位于 `x+j*incx`、
+允许负偏移"直觉传参会得到错误结果。
+
 #### 约束说明
 
 - m >= 0，n >= 0
@@ -157,6 +163,18 @@ int main()
     aclFinalize();
     return status == ACLBLAS_STATUS_SUCCESS ? 0 : 1;
 }
+```
+
+负步长调用时按上述约定构造物理缓冲，其余步骤与上例相同：
+
+```cpp
+// m = 4, incx = -2：逻辑 x = {x0, x1, x2, x3}
+std::vector<aclblasComplex> xbuf(1 + (m - 1) * 2);  // 物理长度 1+(m-1)*|incx| = 7
+xbuf[6] = x0;  // 逻辑 x[0] 位于 ptr[(m-1-j)*|incx|]
+xbuf[4] = x1;
+xbuf[2] = x2;
+xbuf[0] = x3;  // 逻辑 x[3] 位于 ptr[0]，即物理低地址端
+aclblasCgeru(handle, m, n, &alpha, xbuf.data(), incx, ybuf.data(), incy, deviceA, lda);
 ```
 
 #### 执行路径与浮点语义

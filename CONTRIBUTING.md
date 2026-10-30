@@ -129,7 +129,7 @@ Committer 检视通过后，将标注 `/lgtm` 标签。Maintainer 最终审核�
 
 如果您在本项目中发现某些算子文档描述错误，欢迎您新建 Issue 进行反馈和修复。
 
-您可以按照 [提交 Issue/处理 Issue 任务](https://gitcode.com/cann/community#提交Issue处理Issue任务) 指引新建 `Documentation|文档反馈` 类 Issue 指出对应文档的问题。README 文档规范参考已有算子 README（如 [blas/gemm_ex/README.md](docs/zh/develop/readme_develop_guide.md)）。
+您可以按照 [提交 Issue/处理 Issue 任务](https://gitcode.com/cann/community#提交Issue处理Issue任务) 指引新建 `Documentation|文档反馈` 类 Issue 指出对应文档的问题。README 文档规范参考已有算子 README（如 [blas/gemm_ex/README.md](blas/gemm_ex/README.md)）。
 
 ---
 
