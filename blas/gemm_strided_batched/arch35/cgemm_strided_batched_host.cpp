@@ -118,6 +118,19 @@ aclblasStatus_t ValidateLeadingDimensions(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// issue #683: negative strides would form out-of-bounds GM addresses (A + i*strideA with
+// i > 0); the FP32 sibling validates them the same way before any launch.
+aclblasStatus_t ValidateStrides(int64_t strideA, int64_t strideB, int64_t strideC)
+{
+    CHECK_RET(strideA >= 0, OP_LOGE("aclblasCgemmStridedBatched", "invalid strideA=%ld, must be >= 0", strideA);
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(strideB >= 0, OP_LOGE("aclblasCgemmStridedBatched", "invalid strideB=%ld, must be >= 0", strideB);
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(strideC >= 0, OP_LOGE("aclblasCgemmStridedBatched", "invalid strideC=%ld, must be >= 0", strideC);
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 aclblasStatus_t ValidateBasicArguments(
     aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k, int lda, int ldb,
     int ldc, int batchCount, const aclblasComplex* alpha, const aclblasComplex* beta)
@@ -454,6 +467,10 @@ aclblasStatus_t aclblasCgemmStridedBatched(
     int64_t strideB, const aclblasComplex* beta, aclblasComplex* C, int ldc, int64_t strideC, int batchCount)
 {
     auto status = ValidateBasicArguments(handle, transA, transB, m, n, k, lda, ldb, ldc, batchCount, alpha, beta);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    status = ValidateStrides(strideA, strideB, strideC);
     if (status != ACLBLAS_STATUS_SUCCESS) {
         return status;
     }

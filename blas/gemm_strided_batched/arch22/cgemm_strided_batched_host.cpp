@@ -123,6 +123,30 @@ uint32_t GroupSize(_aclblas_handle* h, const CgemmSbTiling& tiling, int batchCou
     return groupSize;
 }
 
+// README: with k == 0 the multiply is skipped and each batch applies C_i = beta * C_i.
+// The direct vector kernel already implements this: it skips the k loop and stores
+// alpha * 0 + beta * C. Launching it here avoids the cube-path k==0 tiling corner.
+aclblasStatus_t ScaleOnlyBatches(
+    _aclblas_handle* h, CgemmSbTiling tiling, int batchCount, const aclblasComplex* A, const aclblasComplex* B,
+    aclblasComplex* C)
+{
+    const uint32_t aivCores = GetAivCoreCount();
+    if (aivCores == 0) {
+        OP_LOGE(kName, "core count query failed");
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    tiling.batchCount = static_cast<uint32_t>(batchCount);
+    const bool independent = tiling.strideC >= static_cast<int64_t>(tiling.ldc) * tiling.n;
+    const bool parallelC = tiling.m % 8 == 0 && tiling.ldc % 8 == 0 && tiling.strideC % 8 == 0 &&
+                           reinterpret_cast<uintptr_t>(C) % 64U == 0U;
+    const uint32_t blocks = parallelC && independent ? aivCores : 1U;
+    cgemm_sb_direct_batched_launch(
+        reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(A)),
+        reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(B)), reinterpret_cast<GM_ADDR>(C), tiling, blocks,
+        h->stream);
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 aclblasStatus_t ExecuteCgemm(
     _aclblas_handle* h, CgemmSbTiling tiling, int batchCount, const aclblasComplex* A, const aclblasComplex* B,
     aclblasComplex* C)
@@ -167,6 +191,35 @@ aclblasStatus_t ExecuteCgemm(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// Shape/stride sign check shared by the entry validator (issue #683).
+bool ValidShape(int m, int n, int k, int batchCount, int64_t strideA, int64_t strideB, int64_t strideC)
+{
+    return m >= 0 && n >= 0 && k >= 0 && batchCount >= 0 && strideA >= 0 && strideB >= 0 && strideC >= 0;
+}
+
+aclblasStatus_t ValidateEntry(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k, int lda, int ldb,
+    int ldc, int64_t strideA, int64_t strideB, int64_t strideC, int batchCount, const aclblasComplex* alpha,
+    const aclblasComplex* beta)
+{
+    if (handle == nullptr) {
+        OP_LOGE(kName, "handle is nullptr");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    if (!ValidTrans(transa) || !ValidTrans(transb) || !ValidShape(m, n, k, batchCount, strideA, strideB, strideC)) {
+        OP_LOGE(kName, "invalid operation, dimension, batch count, stride or scalar pointer");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (alpha == nullptr || beta == nullptr) {
+        OP_LOGE(kName, "scalar pointer is nullptr");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (!ValidDimensions(transa, transb, m, n, k, lda, ldb, ldc)) {
+        OP_LOGE(kName, "invalid leading dimension");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
 } // namespace
 
 aclblasStatus_t aclblasCgemmStridedBatched(
@@ -174,21 +227,27 @@ aclblasStatus_t aclblasCgemmStridedBatched(
     const aclblasComplex* alpha, const aclblasComplex* A, int lda, int64_t strideA, const aclblasComplex* B, int ldb,
     int64_t strideB, const aclblasComplex* beta, aclblasComplex* C, int ldc, int64_t strideC, int batchCount)
 {
-    if (handle == nullptr) {
-        OP_LOGE(kName, "handle is nullptr");
-        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    const aclblasStatus_t entry = ValidateEntry(
+        handle, transa, transb, m, n, k, lda, ldb, ldc, strideA, strideB, strideC, batchCount, alpha, beta);
+    if (entry != ACLBLAS_STATUS_SUCCESS) {
+        return entry;
     }
-    if (!ValidTrans(transa) || !ValidTrans(transb) || m < 0 || n < 0 || k < 0 || batchCount < 0 || alpha == nullptr ||
-        beta == nullptr) {
-        OP_LOGE(kName, "invalid operation, dimension, batch count or scalar pointer");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (!ValidDimensions(transa, transb, m, n, k, lda, ldb, ldc)) {
-        OP_LOGE(kName, "invalid leading dimension");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (m == 0 || n == 0 || k == 0 || batchCount == 0) {
+    if (m == 0 || n == 0 || batchCount == 0) {
         return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (k == 0) {
+        // A/B are never read when k == 0, matching the arch35 entry contract.
+        if (beta->real == 1.0f && beta->imag == 0.0f) {
+            return ACLBLAS_STATUS_SUCCESS;
+        }
+        if (C == nullptr) {
+            OP_LOGE(kName, "C is nullptr");
+            return ACLBLAS_STATUS_INVALID_VALUE;
+        }
+        auto* h = reinterpret_cast<_aclblas_handle*>(handle);
+        CgemmSbTiling tiling =
+            MakeTiling(transa, transb, m, n, k, alpha, lda, strideA, ldb, strideB, beta, ldc, strideC);
+        return ScaleOnlyBatches(h, tiling, batchCount, A, B, C);
     }
     if (C == nullptr || (!IsZero(*alpha) && (A == nullptr || B == nullptr))) {
         OP_LOGE(kName, "required matrix pointer is nullptr");

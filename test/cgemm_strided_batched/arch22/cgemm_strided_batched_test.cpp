@@ -101,6 +101,46 @@ aclblasStatus_t InvokeCase(const CgemmSbParam& p, const CgemmDeviceBuffers& buff
     return status;
 }
 
+// README: with k == 0 the multiply is skipped and each batch applies C_i = beta * C_i
+// over the logical m x n region; padding (rows [m, ldc) and the stride slack) stays.
+void VerifyZeroKScaling(
+    const CgemmSbParam& p, const std::vector<float>& golden, std::vector<float>& c, aclblasComplex* C,
+    aclrtStream stream)
+{
+    ASSERT_EQ(aclrtSynchronizeStream(stream), ACL_SUCCESS);
+    ASSERT_EQ(
+        aclrtMemcpy(c.data(), c.size() * sizeof(float), C, c.size() * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST),
+        ACL_SUCCESS);
+    ASSERT_EQ(golden.size(), c.size());
+    for (int batch = 0; batch < p.batchCount; ++batch) {
+        for (int col = 0; col < p.n; ++col) {
+            for (int row = 0; row < p.m; ++row) {
+                const size_t idx = static_cast<size_t>(batch) * p.strideC + static_cast<size_t>(col) * p.ldc + row;
+                const float cr = golden[2U * idx];
+                const float ci = golden[2U * idx + 1U];
+                const float expectedReal = cr * p.beta.real - ci * p.beta.imag;
+                const float expectedImag = cr * p.beta.imag + ci * p.beta.real;
+                EXPECT_FLOAT_EQ(c[2U * idx], expectedReal)
+                    << p.caseName << " k=0 C_i=beta*C_i batch=" << batch << " col=" << col << " row=" << row;
+                EXPECT_FLOAT_EQ(c[2U * idx + 1U], expectedImag)
+                    << p.caseName << " k=0 C_i=beta*C_i batch=" << batch << " col=" << col << " row=" << row;
+            }
+        }
+    }
+}
+
+void VerifyAgainstGolden(
+    const CgemmSbParam& p, const std::vector<float>& a, const std::vector<float>& b, std::vector<float>& c,
+    std::vector<float>& golden, aclblasComplex* C, size_t cCount, aclrtStream stream)
+{
+    ASSERT_EQ(aclrtSynchronizeStream(stream), ACL_SUCCESS);
+    ASSERT_EQ(
+        aclrtMemcpy(c.data(), c.size() * sizeof(float), C, c.size() * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST),
+        ACL_SUCCESS);
+    GenerateGolden(p, a, b, golden);
+    CheckOutput(p, c, golden, cCount);
+}
+
 } // namespace
 
 TEST_P(CgemmSbArch22Test, CsvDriven)
@@ -136,19 +176,10 @@ TEST_P(CgemmSbArch22Test, CsvDriven)
               << " expected=" << static_cast<int>(p.expectResult) << '\n';
     EXPECT_EQ(status, p.expectResult) << p.caseName;
     if (status == ACLBLAS_STATUS_SUCCESS && checkZeroK) {
-        ASSERT_EQ(aclrtSynchronizeStream(stream_), ACL_SUCCESS);
-        ASSERT_EQ(
-            aclrtMemcpy(c.data(), c.size() * sizeof(float), C, c.size() * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST),
-            ACL_SUCCESS);
-        EXPECT_EQ(c, golden) << "k=0 must leave C unchanged, including beta=0";
+        VerifyZeroKScaling(p, golden, c, C, stream_);
     }
     if (status == ACLBLAS_STATUS_SUCCESS && !quick) {
-        ASSERT_EQ(aclrtSynchronizeStream(stream_), ACL_SUCCESS);
-        ASSERT_EQ(
-            aclrtMemcpy(c.data(), c.size() * sizeof(float), C, c.size() * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST),
-            ACL_SUCCESS);
-        GenerateGolden(p, a, b, golden);
-        CheckOutput(p, c, golden, cCount);
+        VerifyAgainstGolden(p, a, b, c, golden, C, cCount, stream_);
     }
     ASSERT_NO_FATAL_FAILURE(CheckOutputGuards(p, dc, c.size(), stream_));
 }
