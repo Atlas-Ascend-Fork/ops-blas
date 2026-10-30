@@ -88,8 +88,18 @@ aclblasStatus_t aclblasCsrot(
     // elementCount 必须是 float 分量数 2*n；传 n 会导致仅前一半复数元素
     // 被旋转、后一半保持原值（issue #358 测试缓冲修正后暴露）
     tiling.elementCount = static_cast<int32_t>(n) * 2;
-    tiling.cosValue = *c;
-    tiling.sinValue = *s;
+    float cHost = 0.0f;
+    float sHost = 0.0f;
+    aclblasStatus_t readSt = ReadScalarFromHostOrDevice(c, useStream, cHost);
+    if (readSt != ACLBLAS_STATUS_SUCCESS) {
+        return readSt;
+    }
+    readSt = ReadScalarFromHostOrDevice(s, useStream, sHost);
+    if (readSt != ACLBLAS_STATUS_SUCCESS) {
+        return readSt;
+    }
+    tiling.cosValue = cHost;
+    tiling.sinValue = sHost;
     tiling.incx = incx;
     tiling.incy = incy;
 

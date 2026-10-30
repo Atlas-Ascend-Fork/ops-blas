@@ -95,8 +95,21 @@ aclblasStatus_t aclblasCgemv(
     }
     // !692 检视意见修复：对齐 arch35 ValidateCgemvParams 的 Netlib 语义——alpha=(0,0) 时
     // A/x 不被引用允许为空；alpha=(0,0) 且 beta=(1,0) 时 y 也不被引用，快速返回
-    const bool alphaZero = (alpha->real == 0.0f && alpha->imag == 0.0f);
-    const bool betaOne = (beta->real == 1.0f && beta->imag == 0.0f);
+    auto* h = handle;
+    aclrtStream useStream = h->stream;
+
+    aclblasComplex alphaHost{0.0f, 0.0f};
+    aclblasComplex betaHost{1.0f, 0.0f};
+    aclblasStatus_t readSt = ReadScalarFromHostOrDevice(alpha, useStream, alphaHost);
+    if (readSt != ACLBLAS_STATUS_SUCCESS) {
+        return readSt;
+    }
+    readSt = ReadScalarFromHostOrDevice(beta, useStream, betaHost);
+    if (readSt != ACLBLAS_STATUS_SUCCESS) {
+        return readSt;
+    }
+    const bool alphaZero = (alphaHost.real == 0.0f && alphaHost.imag == 0.0f);
+    const bool betaOne = (betaHost.real == 1.0f && betaHost.imag == 0.0f);
     if (alphaZero && betaOne) {
         return ACLBLAS_STATUS_SUCCESS;
     }
@@ -108,8 +121,6 @@ aclblasStatus_t aclblasCgemv(
         LOG_PRINT("aclblasCgemv: y must not be nullptr\n");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    auto* h = handle;
-    aclrtStream useStream = h->stream;
 
     uint32_t numBlocks = 8;
 
@@ -121,10 +132,10 @@ aclblasStatus_t aclblasCgemv(
     tiling.incx = incx;
     tiling.incy = incy;
     tiling.sectionDim = 4;
-    tiling.alphaReal = alpha->real;
-    tiling.alphaImag = alpha->imag;
-    tiling.betaReal = beta->real;
-    tiling.betaImag = beta->imag;
+    tiling.alphaReal = alphaHost.real;
+    tiling.alphaImag = alphaHost.imag;
+    tiling.betaReal = betaHost.real;
+    tiling.betaImag = betaHost.imag;
 
     uint32_t* mask = CreateCgemvMask(m);
     size_t maskSize = MASK_OFFSET_BASE * 2 * sizeof(uint32_t);

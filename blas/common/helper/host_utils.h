@@ -123,8 +123,8 @@ static inline aclblasStatus_t ReadHostScalarFromDevice(
     const float* devicePtr, float& hostVal, aclrtStream stream, const char* opTag)
 {
     hostVal = 0.0f;
-    aclError aclRet = aclrtMemcpyAsync(
-        &hostVal, sizeof(float), devicePtr, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST, stream);
+    aclError aclRet =
+        aclrtMemcpyAsync(&hostVal, sizeof(float), devicePtr, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST, stream);
     if (aclRet != ACL_SUCCESS) {
         OP_LOGE(opTag, "aclrtMemcpyAsync scalar D2H failed, ret=%d", static_cast<int>(aclRet));
         return ACLBLAS_STATUS_INTERNAL_ERROR;
@@ -132,6 +132,32 @@ static inline aclblasStatus_t ReadHostScalarFromDevice(
     aclRet = aclrtSynchronizeStream(stream);
     if (aclRet != ACL_SUCCESS) {
         OP_LOGE(opTag, "aclrtSynchronizeStream for scalar D2H failed, ret=%d", static_cast<int>(aclRet));
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+// issue #652: 标量参数指针位置探测共享 helper（模板统一 float/aclblasComplex）——
+// host 指针直接解引用，device 指针异步 D2H 读取 + stream 同步
+// （与 strmm arch22 ReadAlpha 先例口径一致）
+template <typename T>
+inline aclblasStatus_t ReadScalarFromHostOrDevice(const T* ptr, aclrtStream stream, T& value)
+{
+    bool isDevice = false;
+    aclblasStatus_t st = CheckPtrLocation(ptr, &isDevice);
+    if (st != ACLBLAS_STATUS_SUCCESS) {
+        return st;
+    }
+    if (!isDevice) {
+        value = *ptr;
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    aclError ret = aclrtMemcpyAsync(&value, sizeof(T), ptr, sizeof(T), ACL_MEMCPY_DEVICE_TO_HOST, stream);
+    if (ret != ACL_SUCCESS) {
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    ret = aclrtSynchronizeStream(stream);
+    if (ret != ACL_SUCCESS) {
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
     return ACLBLAS_STATUS_SUCCESS;

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include "cann_ops_blas.h"
 #include "cann_ops_blas_common.h"
+#include "common/helper/host_utils.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "ssymv_tiling_data.h"
 #include "ssymv_kernel.h"
@@ -71,8 +72,18 @@ aclblasStatus_t aclblasSsymv(
     aclrtStream useStream = h->stream;
 
     constexpr uint32_t numBlocks = 8;
+    float alphaHost = 0.0f;
+    float betaHost = 0.0f;
+    aclblasStatus_t readSt = ReadScalarFromHostOrDevice(alpha, useStream, alphaHost);
+    if (readSt != ACLBLAS_STATUS_SUCCESS) {
+        return readSt;
+    }
+    readSt = ReadScalarFromHostOrDevice(beta, useStream, betaHost);
+    if (readSt != ACLBLAS_STATUS_SUCCESS) {
+        return readSt;
+    }
     SymvTilingData tiling = CalSymvTilingData(
-        static_cast<uint32_t>(n), static_cast<uint32_t>(lda), numBlocks, *alpha, *beta, incx, incy,
+        static_cast<uint32_t>(n), static_cast<uint32_t>(lda), numBlocks, alphaHost, betaHost, incx, incy,
         static_cast<uint32_t>(uplo));
 
     ssymv_kernel_do(

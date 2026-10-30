@@ -118,7 +118,12 @@ aclblasStatus_t aclblasSger(
 
     uint32_t numBlocks = CalSgerBlockNum(n, m);
 
-    SgerTilingData tiling = CalSgerTilingData(m, n, lda, incx, incy, numBlocks, *alpha);
+    float alphaHost = 0.0f;
+    aclblasStatus_t readSt = ReadScalarFromHostOrDevice(alpha, useStream, alphaHost);
+    if (readSt != ACLBLAS_STATUS_SUCCESS) {
+        return readSt;
+    }
+    SgerTilingData tiling = CalSgerTilingData(m, n, lda, incx, incy, numBlocks, alphaHost);
     tiling.A = reinterpret_cast<uint64_t>(A);
     tiling.x = reinterpret_cast<uint64_t>(x);
     tiling.y = reinterpret_cast<uint64_t>(y);
