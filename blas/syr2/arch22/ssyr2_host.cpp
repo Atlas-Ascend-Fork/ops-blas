@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include <algorithm>
 #include <iostream>
 #include <vector>
 #include "acl/acl.h"
@@ -37,6 +38,19 @@ aclblasStatus_t aclblasSsyr2(aclblasHandle_t handle,
                              const float *y, const int incy,
                              float *A, const int lda)
 {
+    if (handle == nullptr) {
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    if (uplo != ACLBLAS_UPPER && uplo != ACLBLAS_LOWER) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (n < 0 || lda < std::max(1, n) || incx == 0 || incy == 0 || alpha == nullptr || x == nullptr ||
+        y == nullptr || A == nullptr) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
     auto* h = handle;
     aclrtStream useStream = h->stream;
 
