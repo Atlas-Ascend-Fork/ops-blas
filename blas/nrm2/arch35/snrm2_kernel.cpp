@@ -229,6 +229,9 @@ __aicore__ inline void Snrm2AIV::WriteOut()
         return;
     }
     LocalTensor<float> accLocal = accBuf_.Get<float>();
+    // AccumulateChunk updates accBuf_ on the V pipe; wait before MTE3 reads it.
+    SetFlag<HardEvent::V_MTE3>(0);
+    WaitFlag<HardEvent::V_MTE3>(0);
     DataCopyParams copyParams{1, static_cast<uint16_t>(sizeof(float)), 0, 0};
     DataCopyPad(wsGM_, accLocal, copyParams);
 }

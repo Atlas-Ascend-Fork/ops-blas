@@ -73,6 +73,11 @@ __aicore__ inline void SswapAIV::SingleIteration(uint32_t curOffset, uint32_t da
         DataCopyPad(yLocal[alignedCount], yGM_[curOffset + alignedCount], copyParams, padParams);
     }
 
+    // DataCopy/DataCopyPad are async. The stores below read UB written by
+    // the MTE2 loads above, so wait for MTE2 before issuing MTE3.
+    SetFlag<HardEvent::MTE2_MTE3>(0);
+    WaitFlag<HardEvent::MTE2_MTE3>(0);
+
     if (alignedCount > 0) {
         DataCopy(yGM_[curOffset], xLocal, alignedCount);
         DataCopy(xGM_[curOffset], yLocal, alignedCount);
@@ -83,6 +88,11 @@ __aicore__ inline void SswapAIV::SingleIteration(uint32_t curOffset, uint32_t da
         DataCopyPad(yGM_[curOffset + alignedCount], xLocal[alignedCount], copyParams);
         DataCopyPad(xGM_[curOffset + alignedCount], yLocal[alignedCount], copyParams);
     }
+
+    // The next tile reuses xBuf_/yBuf_; wait for this tile's MTE3 stores
+    // before the next MTE2 load overwrites them.
+    SetFlag<HardEvent::MTE3_MTE2>(0);
+    WaitFlag<HardEvent::MTE3_MTE2>(0);
 }
 
 __aicore__ inline void SswapAIV::Process()

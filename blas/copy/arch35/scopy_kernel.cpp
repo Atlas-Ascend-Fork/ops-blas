@@ -25,6 +25,10 @@ private:
     __aicore__ inline void ContinuousIteration(uint32_t curOffset, uint32_t dataCount);
     __aicore__ inline void ContinuousPumpDrain();
     __aicore__ inline void DiscreteIteration(uint32_t elementOffset, uint32_t dataCount, int32_t incx, int32_t incy);
+    __aicore__ inline void DiscreteRead(
+        LocalTensor<float>& xLocal, uint32_t elementOffset, uint32_t dataCount, int32_t incx);
+    __aicore__ inline void DiscreteWrite(
+        const LocalTensor<float>& xOut, uint32_t elementOffset, uint32_t dataCount, int32_t incy);
     __aicore__ inline void DiscreteCompactRead(
         LocalTensor<float>& xLocal, uint32_t dataCount, uint32_t absIncx, uint32_t xBase);
     __aicore__ inline void DiscreteCompactWrite(
@@ -108,6 +112,10 @@ __aicore__ inline void ScopyAIV::Init(
                 srcOffset_.SetValue(i, (tiling_.tileSize - 1 - i) * sizeof(float));
             }
         }
+        // Gather reads srcOffset_ on the V pipe. When the table came from GM
+        // via DataCopy above, wait for MTE2 before the first Gather.
+        SetFlag<HardEvent::MTE2_V>(0);
+        WaitFlag<HardEvent::MTE2_V>(0);
     }
 }
 
@@ -292,7 +300,45 @@ __aicore__ inline void ScopyAIV::DiscreteIteration(
     uint32_t elementOffset, uint32_t dataCount, int32_t incx, int32_t incy)
 {
     LocalTensor<float> xLocal = inQueueX_.AllocTensor<float>();
+    DiscreteRead(xLocal, elementOffset, dataCount, incx);
 
+    inQueueX_.EnQue<float>(xLocal);
+    LocalTensor<float> xIn = inQueueX_.DeQue<float>();
+
+    if (needReorder_) {
+        // The scalar fallback in DiscreteReorder reads xIn with GetValue;
+        // make the MTE2 data visible to the scalar pipe first.
+        SetFlag<HardEvent::MTE2_S>(0);
+        WaitFlag<HardEvent::MTE2_S>(0);
+    }
+    LocalTensor<float> gatherDst = DiscreteReorder(xIn, dataCount);
+    if (needReorder_) {
+        // Gather writes tmpBuf_ on the V pipe; the MTE3 stores below must
+        // wait for it, otherwise they can read the pre-Gather contents.
+        SetFlag<HardEvent::V_MTE3>(0);
+        WaitFlag<HardEvent::V_MTE3>(0);
+        SetFlag<HardEvent::S_MTE3>(0);
+        WaitFlag<HardEvent::S_MTE3>(0);
+    }
+
+    LocalTensor<float> xOut = needReorder_ ? gatherDst : xIn;
+    DiscreteWrite(xOut, elementOffset, dataCount, incy);
+
+    if (needReorder_) {
+        // tmpBuf_ is reused by the next tile's Gather; wait for this tile's
+        // MTE3 stores before overwriting it.
+        SetFlag<HardEvent::MTE3_V>(0);
+        WaitFlag<HardEvent::MTE3_V>(0);
+        SetFlag<HardEvent::MTE3_S>(0);
+        WaitFlag<HardEvent::MTE3_S>(0);
+    }
+
+    inQueueX_.FreeTensor(xIn);
+}
+
+__aicore__ inline void ScopyAIV::DiscreteRead(
+    LocalTensor<float>& xLocal, uint32_t elementOffset, uint32_t dataCount, int32_t incx)
+{
     uint32_t absIncx = (incx > 0) ? static_cast<uint32_t>(incx) : static_cast<uint32_t>(-incx);
     uint32_t xBase = (incx < 0) ? (tiling_.totalN - elementOffset - dataCount) * absIncx : elementOffset * absIncx;
 
@@ -312,15 +358,13 @@ __aicore__ inline void ScopyAIV::DiscreteIteration(
     } else {
         DiscreteCompactRead(xLocal, dataCount, absIncx, xBase);
     }
+}
 
-    inQueueX_.EnQue<float>(xLocal);
-    LocalTensor<float> xIn = inQueueX_.DeQue<float>();
-
-    LocalTensor<float> gatherDst = DiscreteReorder(xIn, dataCount);
-
+__aicore__ inline void ScopyAIV::DiscreteWrite(
+    const LocalTensor<float>& xOut, uint32_t elementOffset, uint32_t dataCount, int32_t incy)
+{
     uint32_t absIncy = (incy > 0) ? static_cast<uint32_t>(incy) : static_cast<uint32_t>(-incy);
     uint32_t yBase = (incy < 0) ? (tiling_.totalN - elementOffset - dataCount) * absIncy : elementOffset * absIncy;
-    LocalTensor<float> xOut = needReorder_ ? gatherDst : xIn;
 
     if (absIncy == 1) {
         uint32_t alignedCount = (dataCount / ELEMENTS_PER_BLOCK) * ELEMENTS_PER_BLOCK;
@@ -336,8 +380,6 @@ __aicore__ inline void ScopyAIV::DiscreteIteration(
     } else {
         DiscreteCompactWrite(xOut, dataCount, absIncy, yBase);
     }
-
-    inQueueX_.FreeTensor(xIn);
 }
 
 __aicore__ inline void ScopyAIV::Process()

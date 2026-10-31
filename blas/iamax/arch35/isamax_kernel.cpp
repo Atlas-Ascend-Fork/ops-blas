@@ -12,6 +12,7 @@
 #include "acl/acl.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
+#include "common/helper/index_reduce_arch35.h"
 #include "common/helper/kernel_constant.h"
 #include "isamax_tiling_data.h"
 
@@ -78,12 +79,16 @@ protected:
 
             LocalTensor<float> inLocal = inBuf_.Get<float>();
             DataCopy(inLocal, inGM[currOffset], localMaxDataCount);
+            SetFlag<HardEvent::MTE2_V>(0);
+            WaitFlag<HardEvent::MTE2_V>(0);
 
             LocalTensor<float> workLocal = workBuf_.Get<float>();
             LocalTensor<float> outLocal = outBuf_.Get<float>();
 
             Abs(inLocal, inLocal, localMaxDataCount);
             ReduceMax(outLocal, inLocal, workLocal, localMaxDataCount, true);
+            SetFlag<HardEvent::V_S>(0);
+            WaitFlag<HardEvent::V_S>(0);
 
             float tileMaxVal = outLocal.GetValue(0);
             float idxFloat = outLocal.GetValue(1);
@@ -96,6 +101,8 @@ protected:
                 bestIdx = tileGlobalIdx;
                 hasValue = true;
             }
+            SetFlag<HardEvent::V_MTE2>(0);
+            WaitFlag<HardEvent::V_MTE2>(0);
         }
 
         bestVal_ = bestVal;
@@ -120,6 +127,8 @@ protected:
 
         LocalTensor<float> inLocal = inBuf_.Get<float>();
         DataCopyPad(inLocal, inGM[currOffset], copyParams, padParams);
+        SetFlag<HardEvent::MTE2_V>(0);
+        WaitFlag<HardEvent::MTE2_V>(0);
 
         uint32_t alignedRemain = ((remainNum + ELEMENTS_PER_BLOCK - 1) / ELEMENTS_PER_BLOCK) * ELEMENTS_PER_BLOCK;
 
@@ -128,6 +137,8 @@ protected:
 
         Abs(inLocal, inLocal, alignedRemain);
         ReduceMax(outLocal, inLocal, workLocal, alignedRemain, true);
+        SetFlag<HardEvent::V_S>(0);
+        WaitFlag<HardEvent::V_S>(0);
 
         float tileMaxVal = outLocal.GetValue(0);
         float idxFloat = outLocal.GetValue(1);
@@ -173,13 +184,8 @@ __aicore__ inline void IsamaxAIV::Process()
 
 __aicore__ inline void IsamaxAIV::WriteWorkspace()
 {
-    LocalTensor<float> outLocal = outBuf_.Get<float>();
-    outLocal.SetValue(0, bestVal_);
-    float idxAsFloat = *reinterpret_cast<float*>(&bestIdx_);
-    outLocal.SetValue(1, idxAsFloat);
-
-    DataCopyParams writeParams{1, static_cast<uint16_t>(2 * BYTENUM_PER_FLOAT32), 0, 0};
-    DataCopyPad(wsGM[blockIdx * 2], outLocal, writeParams);
+    WriteIndexReduceWorkspace(
+        outBuf_.Get<float>(), wsGM, static_cast<uint32_t>(blockIdx), bestVal_, bestIdx_);
 }
 
 
@@ -217,6 +223,8 @@ __aicore__ inline void IsamaxAIVSmall::WriteResult()
 
     LocalTensor<int32_t> outLocal = outBuf_.Get<int32_t>();
     Duplicate<int32_t>(outLocal, result, ELEMENTS_PER_BLOCK);
+    SetFlag<HardEvent::V_MTE3>(0);
+    WaitFlag<HardEvent::V_MTE3>(0);
 
     DataCopyParams writeParams{1, static_cast<uint16_t>(sizeof(int32_t)), 0, 0};
     DataCopyPad(resultGM[0], outLocal, writeParams);
@@ -326,6 +334,8 @@ extern "C" __global__ __aicore__ void isamax_reduce_kernel(GM_ADDR workSpace, GM
     GlobalTensor<float> wsGM;
     wsGM.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(workSpace), alignedFloats);
     DataCopy(wsData, wsGM, alignedFloats);
+    SetFlag<HardEvent::MTE2_S>(0);
+    WaitFlag<HardEvent::MTE2_S>(0);
 
     float bestVal = 0.0f;
     uint32_t bestIdx = 0;
@@ -354,6 +364,8 @@ extern "C" __global__ __aicore__ void isamax_reduce_kernel(GM_ADDR workSpace, GM
     pipe.InitBuffer(outBuf, UB_BYTENUM_PER_BLOCK);
     LocalTensor<int32_t> outLocal = outBuf.Get<int32_t>();
     Duplicate<int32_t>(outLocal, result, ELEMENTS_PER_BLOCK);
+    SetFlag<HardEvent::V_MTE3>(0);
+    WaitFlag<HardEvent::V_MTE3>(0);
 
     GlobalTensor<int32_t> outGM;
     outGM.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(resultGM), 1);
