@@ -421,6 +421,8 @@ find_cblas_header() {
     local paths=(
         "/usr/include/cblas.h"
         "/usr/local/include/cblas.h"
+        "/usr/include/openblas/cblas.h"
+        "/usr/local/include/openblas/cblas.h"
     )
     if [[ -n "${HOMEBREW_PREFIX:-}" ]]; then
         paths+=("${HOMEBREW_PREFIX}/include/cblas.h")
@@ -465,7 +467,7 @@ install_blas_lapack() {
             run_command sudo $PKG_MANAGER install -y libblas-dev liblapack-dev
             ;;
         rhel|euler)
-            run_command sudo $PKG_MANAGER install -y blas-devel lapack-devel
+            run_command sudo $PKG_MANAGER install -y openblas-devel lapack-devel
             ;;
         macos)
             run_command brew install openblas lapack

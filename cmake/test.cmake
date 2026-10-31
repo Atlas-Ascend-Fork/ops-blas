@@ -222,29 +222,28 @@ endfunction()
 
 # Locate reference BLAS (CBLAS) and LAPACK once per configure.
 function(_ops_blas_ensure_refblas_found)
-    if(NOT REFBLAS_LIB)
-        find_path(REFBLAS_INCLUDE_DIR cblas.h
-            PATHS /usr/local/include /usr/include /usr/include/x86_64-linux-gnu
-                  ${HOMEBREW_PREFIX}/include)
-        find_library(REFBLAS_LIB NAMES openblas blas
-            PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
-                  ${HOMEBREW_PREFIX}/lib
-            PATH_SUFFIXES blas)
-        find_library(REFLAPACK_LIB NAMES lapack
-            PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
-                  ${HOMEBREW_PREFIX}/lib
-            PATH_SUFFIXES lapack)
-        if(NOT REFBLAS_INCLUDE_DIR OR NOT REFBLAS_LIB)
-            message(FATAL_ERROR "Reference BLAS (cblas.h / libblas) not found. Install via:\n"
-                "  Debian/Ubuntu:         apt-get install libblas-dev\n"
-                "  RHEL/CentOS/openEuler: dnf install blas-devel (or yum install blas-devel)\n"
-                "  macOS:                 brew install openblas\n"
-                "Or run ./install_deps.sh to install dependencies automatically.")
-        endif()
-        if(NOT REFLAPACK_LIB)
-            message(WARNING "Reference LAPACK (liblapack) not found. "
-                "LAPACK-based golden tests will fail to link.")
-        endif()
+    find_path(REFBLAS_INCLUDE_DIR cblas.h
+        PATHS /usr/local/include /usr/include /usr/include/x86_64-linux-gnu
+              ${HOMEBREW_PREFIX}/include
+        PATH_SUFFIXES openblas)
+    find_library(REFBLAS_LIB NAMES openblas blas
+        PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
+              ${HOMEBREW_PREFIX}/lib
+        PATH_SUFFIXES blas)
+    find_library(REFLAPACK_LIB NAMES lapack
+        PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
+              ${HOMEBREW_PREFIX}/lib
+        PATH_SUFFIXES lapack)
+    if(NOT REFBLAS_INCLUDE_DIR OR NOT REFBLAS_LIB)
+        message(FATAL_ERROR "Reference BLAS (cblas.h / libblas) not found. Install via:\n"
+            "  Debian/Ubuntu:         apt-get install libblas-dev\n"
+            "  RHEL/CentOS/openEuler: dnf install openblas-devel (or yum install openblas-devel)\n"
+            "  macOS:                 brew install openblas\n"
+            "Or run ./install_deps.sh to install dependencies automatically.")
+    endif()
+    if(NOT REFLAPACK_LIB)
+        message(WARNING "Reference LAPACK (liblapack) not found. "
+            "LAPACK-based golden tests will fail to link.")
     endif()
 endfunction()
 
