@@ -3,7 +3,7 @@
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OR ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
@@ -92,12 +92,17 @@ __global__ __aicore__ void scasum_simt_kernel(GM_ADDR inGM, GM_ADDR outGM, GM_AD
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
 
     int32_t blockIdx = GetBlockIdx();
-    uint32_t calNum = tdata.calNum[blockIdx];
+    // R4: derive this block's range from total/perCore/remainder instead of
+    // per-core arrays serialised by the host (same distribution, see host
+    // CalcScasumTilingData derivation note).
+    const uint32_t coreIdx = static_cast<uint32_t>(blockIdx);
+    uint32_t myOffset = coreIdx * tdata.perCoreN + (coreIdx < tdata.remainder ? coreIdx : tdata.remainder);
+    uint32_t calNum = tdata.perCoreN + (coreIdx < tdata.remainder ? 1U : 0U);
 
     if (calNum > 0) {
         dim3 vfDim{tdata.nthreads, 1, 1};
         asc_vf_call<ScasumSimtCompute>(
-            vfDim, calNum, tdata.startOffset[blockIdx], static_cast<uint32_t>(tdata.incx),
+            vfDim, calNum, myOffset, static_cast<uint32_t>(tdata.incx),
             reinterpret_cast<__gm__ const aclblasComplex*>(inGM), reinterpret_cast<__gm__ float*>(workSpace) + blockIdx,
             RoundUpPow2(tdata.nthreads));
     }

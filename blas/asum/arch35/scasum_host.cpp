@@ -3,7 +3,7 @@
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OR ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
@@ -31,31 +31,24 @@ namespace {
 
 // AIV kernel handles 32B-alignment via maxDataCount tiling (float view);
 // SIMT kernel accesses elements individually — no block alignment needed.
+// R4: per-core ranges are described by total/perCore/remainder; each block
+// derives its own offset/count kernel-side (offset(i) = i * perCoreN +
+// min(i, remainder), count(i) = perCoreN + (i < remainder ? 1 : 0)),
+// which is the same distribution the host previously serialised into
+// per-core arrays.
 static ScasumTilingData CalcScasumTilingData(int64_t totalComplexNum, uint32_t vecCoreNum)
 {
     ScasumTilingData tiling;
     tiling.n = totalComplexNum;
     tiling.useCoreNum = 0;
 
-    for (uint32_t i = 0; i < SCASUM_MAX_CORE_NUM; i++) {
-        tiling.startOffset[i] = 0;
-        tiling.calNum[i] = 0;
-    }
-
     uint32_t useCoreNum = std::min(vecCoreNum, static_cast<uint32_t>(totalComplexNum));
     if (useCoreNum == 0) {
         useCoreNum = 1;
     }
     tiling.useCoreNum = useCoreNum;
-
-    uint32_t baseCount = static_cast<uint32_t>(totalComplexNum) / useCoreNum;
-    uint32_t remain = static_cast<uint32_t>(totalComplexNum) % useCoreNum;
-    uint32_t offset = 0;
-    for (uint32_t i = 0; i < useCoreNum; i++) {
-        tiling.startOffset[i] = offset;
-        tiling.calNum[i] = baseCount + (i < remain ? 1 : 0);
-        offset += tiling.calNum[i];
-    }
+    tiling.perCoreN = static_cast<uint32_t>(totalComplexNum) / useCoreNum;
+    tiling.remainder = static_cast<uint32_t>(totalComplexNum) % useCoreNum;
 
     return tiling;
 }
