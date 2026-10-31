@@ -68,17 +68,15 @@ struct aclblasLtMatmulPreferenceImpl {
     uint32_t magic = ACLBLASLT_PREFERENCE_MAGIC;
     uint32_t searchMode = 0;
     size_t maxWorkspaceBytes = DEFAULT_WORKSPACE_SIZE;
-    int32_t maxResults = 3;
-    bool allowMixedPrecision = true;
-    bool allowSplitK = true;
     // tiling
     uint32_t preferredL0M = 0;
     uint32_t preferredL0N = 0;
     uint32_t preferredL0K = 0;
-    // Scheduling
-    bool preferPingpong = false;
-    bool preferDoubleBuffer = false;
-    float minEfficiency = 0.5f;
+    // Planned capability bits (maxResults / allowMixedPrecision / allowSplitK /
+    // preferPingpong / preferDoubleBuffer / minEfficiency, issue #700): declared
+    // with defaults but unreachable through any public Set/GetAttribute channel,
+    // so they were removed. Reintroduce them together with the attribute
+    // channels when the product roadmap lands them.
 };
 static_assert(
     sizeof(aclblasLtMatmulPreferenceImpl) <= sizeof(aclblasLtMatmulPreferenceOpaque_t),

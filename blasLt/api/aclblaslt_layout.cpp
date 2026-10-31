@@ -36,17 +36,6 @@ inline aclblasStatus_t LoadLayoutField(const void* buf, size_t sizeInBytes, T& f
 }
 
 template <typename T>
-inline aclblasStatus_t StoreLayoutField(void* buf, size_t sizeInBytes, const T& field, size_t& actualSize)
-{
-    actualSize = sizeof(T);
-    if (sizeInBytes < actualSize) {
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    *reinterpret_cast<T*>(buf) = field;
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-template <typename T>
 inline aclblasStatus_t StoreLayoutFieldOut(void* buf, size_t sizeInBytes, const T& field, size_t* sizeWritten)
 {
     const size_t requiredSize = sizeof(T);

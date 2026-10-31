@@ -140,9 +140,6 @@ bool IsSupportedPointerMode(int32_t pointerMode)
 
 } // namespace
 
-// issue #492: alpha/beta pointer mode values (matching aclblasLtPointerMode_t).
-static constexpr int32_t ACLBLASLT_POINTER_MODE_DEVICE_VECTOR = 2;
-
 extern "C" {
 
 aclblasStatus_t aclblasLtMatmul(

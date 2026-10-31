@@ -421,10 +421,6 @@ aclblasStatus_t aclblasLtMatmulAlgoConfigSetAttribute(
         static_cast<DispatchPolicyType>(packed.policy), packed.l1mDiv16 * 16, packed.l1nDiv16 * 16, configL1K,
         packed.splitK);
 
-    if (packed.splitK > 1) {
-        algo->max_workspace_bytes = DEFAULT_WORKSPACE_SIZE;
-    }
-
     if (!MemcpySSucceeds(algo->data, sizeof(algo->data), &packed, sizeof(packed))) {
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
