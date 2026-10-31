@@ -97,6 +97,48 @@ TEST_F(CgeruTest, ZeroYColumnSkipsInfAndNanX)
     EXPECT_TRUE(std::isnan(matrix[3].imag));
 }
 
+TEST_F(CgeruTest, FastPathZeroYColumnGuardsInfNanX)
+{
+    // issue #694: m=8 使 m*2 分量满足 32B 对齐（快路径门槛）且 lda=m 连续，命中快路径；
+    // 组合"零 y 列 + 对应 x 行含 Inf/NaN"此前仅有通用路径（m=2）用例覆盖。若快路径
+    // 改造时丢失 y[j]==0 整列跳过守卫（如改为 coeff 乘加），0*Inf→NaN 会写穿该列。
+    const int m = 8;
+    const int n = 4;
+    const aclblasComplex alpha{1.0f, 0.0f};
+    std::vector<aclblasComplex> x(m);
+    for (int i = 0; i < m; ++i) {
+        x[i] = aclblasComplex{static_cast<float>(i + 1), -static_cast<float>(i + 1)};
+    }
+    x[1] = aclblasComplex{std::numeric_limits<float>::infinity(), 0.0f};
+    std::vector<aclblasComplex> y(n);
+    for (int j = 0; j < n; ++j) {
+        y[j] = aclblasComplex{static_cast<float>(j + 1), 0.5f * static_cast<float>(j + 1)};
+    }
+    y[1] = aclblasComplex{0.0f, -0.0f};
+    std::vector<aclblasComplex> matrix(static_cast<size_t>(m) * n);
+    for (int j = 0; j < n; ++j) {
+        for (int i = 0; i < m; ++i) {
+            const float v = static_cast<float>(i * 10 + j + 1);
+            matrix[static_cast<size_t>(j) * m + i] = aclblasComplex{v, -v};
+        }
+    }
+    const std::vector<aclblasComplex> original = matrix;
+
+    ASSERT_EQ(
+        aclblasCgeru_npu(CgeruTest::handle_, m, n, &alpha, x.data(), 1, y.data(), 1, matrix.data(), m),
+        ACLBLAS_STATUS_SUCCESS);
+
+    // y[1]==0 的整列必须逐位保持原值
+    for (int i = 0; i < m; ++i) {
+        const size_t idx = static_cast<size_t>(1) * m + i;
+        EXPECT_EQ(matrix[idx].real, original[idx].real) << "row " << i;
+        EXPECT_EQ(matrix[idx].imag, original[idx].imag) << "row " << i;
+    }
+    // 非零列正常更新：A(0,0) += alpha * x[0] * y[0] = (1.5, -0.5)
+    EXPECT_FLOAT_EQ(matrix[0].real, original[0].real + 1.5f);
+    EXPECT_FLOAT_EQ(matrix[0].imag, original[0].imag - 0.5f);
+}
+
 TEST_F(CgeruTest, NoConjugationAndIntMinStride)
 {
     const aclblasComplex alpha{1.0f, 0.0f};
@@ -111,12 +153,17 @@ TEST_F(CgeruTest, NoConjugationAndIntMinStride)
     EXPECT_FLOAT_EQ(matrix.imag, 10.0f);
 }
 
-TEST_F(CgeruTest, ContiguousRegTallNarrowAndBoundaryRows)
+TEST_F(CgeruTest, ContiguousTallNarrowAndBoundaryRows)
 {
     const aclblasComplex alpha{0.75f, -0.5f};
     const BlasFillMode fill = parseFill("RANDOM_NORM_5_5");
     for (int m : {1, 31, 33, 63, 65, 129, 4093, 4095, 4096, 4097}) {
-        for (int n : {9, 17, 31, 65, 32768 / m + 1}) {
+        // issue #695: 32768/m+1 在 m=4095/4096 时为 9，与首项重复；去重避免同一 (m,n) 跑两遍。
+        // arch22 只有快路径/通用路径，用例名不含 arch35 专属的 RegBase 字样。
+        const int tailN = 32768 / m + 1;
+        const std::vector<int> nList =
+            (tailN == 9) ? std::vector<int>{9, 17, 31, 65} : std::vector<int>{9, 17, 31, 65, tailN};
+        for (int n : nList) {
             const std::string caseName = "contiguous_m" + std::to_string(m) + "_n" + std::to_string(n);
             SCOPED_TRACE(caseName);
             const std::vector<aclblasComplex> x = MakeComplexArray(m, fill, 20260918U);

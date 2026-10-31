@@ -92,6 +92,7 @@ inline std::vector<T> GetCasesFromCsv(const std::string& csvPath)
     std::vector<T> cases;
     std::string line;
     size_t lineNo = 0;
+    size_t rowsWithEmptyCells = 0;
     while (std::getline(ifs, line)) {
         lineNo++;
         // skip empty and comment lines
@@ -110,13 +111,25 @@ inline std::vector<T> GetCasesFromCsv(const std::string& csvPath)
                           << "), case dropped";
             continue;
         }
+        if (values.size() > keys.size()) {
+            // issue #693: 行尾多敲分隔符（字段数多于表头）与缺列同属编辑失误，多余字段
+            // 不得被静默丢弃；报告行号与首个多余字段位置，行本身仍按表头前缀解析
+            ADD_FAILURE() << "malformed csv row at line " << lineNo << " (fields=" << values.size()
+                          << ", header=" << keys.size() << "), extra fields from index " << keys.size();
+        }
 
         csv_map row;
+        size_t emptyCells = 0;
         for (size_t i = 0; i < keys.size(); i++) {
-            if (!values[i].empty()) {
-                row[keys[i]] = values[i];
+            if (values[i].empty()) {
+                // issue #693: 显式留空与漏填在下游同样由默认值接管，解析结果保持不变；
+                // 此处计数并在收尾输出一次性汇总提示，便于作者核对留空是否符合意图
+                emptyCells++;
+                continue;
             }
+            row[keys[i]] = values[i];
         }
+        rowsWithEmptyCells += (emptyCells > 0 ? 1U : 0U);
         try {
             cases.emplace_back(row);
         } catch (const std::exception& e) {
@@ -125,6 +138,10 @@ inline std::vector<T> GetCasesFromCsv(const std::string& csvPath)
             ADD_FAILURE() << "csv row at line " << lineNo << " failed to construct a test case: " << e.what()
                           << ", case dropped";
         }
+    }
+    if (rowsWithEmptyCells > 0) {
+        std::cout << "[csv_loader] " << csvPath << ": " << rowsWithEmptyCells
+                  << " data row(s) contain empty cells, treated as absent (defaults apply)\n";
     }
     return cases;
 }
