@@ -80,7 +80,7 @@ aclblasStatus_t aclblasSgemmStridedBatched(aclblasHandle_t handle, aclblasOperat
 - transB=N 时 ldb >= max(1, k)；transB=T/C 时 ldb >= max(1, n)
 - ldc >= max(1, m)
 - k > 0 时（且 m>0、n>0、batchCount>0），A、B 不可为 nullptr
-- m>0、n>0、batchCount>0 时，arch22 实现要求 C 不可为 nullptr（beta=0 仅免去读取旧 C，输出仍会写入 C）；arch35 实现沿用上游校验，beta=0 时允许 C 为 nullptr
+- m>0、n>0、batchCount>0 时，arch22 实现要求 C 不可为 nullptr（beta=0 仅免去读取旧 C，输出仍会写入 C）；arch35 实现要求 k>0 时 C 不可为 nullptr（与 beta 取值无关），beta!=0 时亦不可为 nullptr，仅 k==0 且 beta==0 时允许 C 为 nullptr（此时无输出可写）
 - 所有矩阵按列主序（Column-Major）存储，lda/ldb/ldc 语义遵循 NETLIB/CBLAS BLAS 标准
 - strideA/strideB 取值无上界强制校验，允许为 0（表示对应矩阵在所有 batch 间广播复用）；调用方须保证各 batch 子矩阵在所声明的 shape/ld/stride 下不越界访问显存
 - strideC == 0 且 batchCount > 1 时各 batch 写入同一 C 区域，存在写覆盖/竞争，语义未定义，由调用方负责规避

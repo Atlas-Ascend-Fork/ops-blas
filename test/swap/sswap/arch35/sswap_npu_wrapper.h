@@ -60,8 +60,12 @@ inline aclblasStatus_t aclblasSswap_npu(aclblasHandle_t handle, int n, float* x,
         return aclblasSswap(handle, n, x, incx, y, incy);
     }
 
-    const size_t xBytes = static_cast<size_t>(n) * sizeof(float);
-    const size_t yBytes = static_cast<size_t>(n) * sizeof(float);
+    const auto storageBytes = [n](int inc) {
+        const int64_t absInc = inc < 0 ? -static_cast<int64_t>(inc) : inc;
+        return (static_cast<size_t>(1 + (n - 1) * absInc)) * sizeof(float);
+    };
+    const size_t xBytes = storageBytes(incx);
+    const size_t yBytes = storageBytes(incy);
 
     void* dX = nullptr;
     void* dY = nullptr;

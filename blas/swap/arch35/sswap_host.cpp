@@ -28,17 +28,21 @@ static aclblasStatus_t ValidateSswapParams(const float* x, const float* y, int i
         OP_LOGE("aclblasSswap", "incx and incy must not be zero");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (incx != 1 || incy != 1) {
-        OP_LOGE("aclblasSswap", "incx and incy must be 1, got incx=%d, incy=%d", incx, incy);
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static SswapTilingData CalSswapTilingData(uint32_t n, uint32_t coreNum)
+static SswapTilingData CalSswapTilingData(uint32_t n, uint32_t coreNum, int32_t incx, int32_t incy)
 {
-    SswapTilingData tiling;
+    SswapTilingData tiling{};
     tiling.totalN = n;
+    tiling.incx = incx;
+    tiling.incy = incy;
+    tiling.kx = incx < 0 ? (1LL - static_cast<int64_t>(n)) * incx : 0;
+    tiling.ky = incy < 0 ? (1LL - static_cast<int64_t>(n)) * incy : 0;
+    tiling.xLength =
+        1 + (static_cast<uint64_t>(n) - 1) * static_cast<uint64_t>(incx < 0 ? -static_cast<int64_t>(incx) : incx);
+    tiling.yLength =
+        1 + (static_cast<uint64_t>(n) - 1) * static_cast<uint64_t>(incy < 0 ? -static_cast<int64_t>(incy) : incy);
 
     constexpr uint32_t alignUnit = ELEMENTS_PER_BLOCK;
     uint32_t rawPerCore = n / coreNum;
@@ -81,7 +85,7 @@ aclblasStatus_t aclblasSswap(aclblasHandle_t handle, int n, float* x, int incx, 
     uint32_t totalN = static_cast<uint32_t>(n);
     uint32_t numBlocks = (totalN < aivCoreNum) ? totalN : aivCoreNum;
 
-    SswapTilingData tiling = CalSswapTilingData(totalN, numBlocks);
+    SswapTilingData tiling = CalSswapTilingData(totalN, numBlocks, incx, incy);
 
     OP_LOGD(
         "aclblasSswap", "tiling: totalN=%u perCoreN=%u remainder=%u tileSize=%u numBlocks=%u", tiling.totalN,

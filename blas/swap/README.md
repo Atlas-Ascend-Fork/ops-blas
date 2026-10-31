@@ -7,7 +7,9 @@ Swap 算子实现了两个向量对应元素的交换操作，属于纯数据搬
 数学表达式：
 
 ```
-x <-> y
+for i = 0 ... n-1:
+    x[kx + i * incx] <-> y[ky + i * incy]
+其中 kx = (incx < 0) ? (1 - n) * incx : 0，ky = (incy < 0) ? (1 - n) * incy : 0。
 ```
 
 包含以下接口：

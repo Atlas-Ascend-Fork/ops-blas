@@ -17,8 +17,13 @@ struct SswapTilingData {
     uint32_t perCoreN;  // elements per core, aligned down to ELEMENTS_PER_BLOCK
     uint32_t remainder; // tail elements assigned to the last core
     uint32_t tileSize;  // UB tile size, aligned to ELEMENTS_PER_BLOCK
+    int32_t incx;
+    int32_t incy;
+    int64_t kx;
+    int64_t ky;
+    uint64_t xLength;
+    uint64_t yLength;
 };
 
 // elements per 32-byte block for FP32 (= 8)
 constexpr uint32_t ELEMENTS_PER_BLOCK = 32 / sizeof(float);
-

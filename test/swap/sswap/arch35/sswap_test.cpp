@@ -38,8 +38,8 @@ TEST_P(SswapArch35Test, CsvDriven)
     const auto& p = GetParam();
 
     // Step 1: Generate host data
-    std::vector<float> xHost = makeBlasArray(p.n, p.x, p.randomSeed);
-    std::vector<float> yHost = makeBlasArray(p.n, p.y, p.randomSeed);
+    std::vector<float> xHost = makeBlasStrided(p.n, p.incx, p.x, p.randomSeed);
+    std::vector<float> yHost = makeBlasStrided(p.n, p.incy, p.y, p.randomSeed);
 
     float* xPtr = xHost.empty() ? nullptr : xHost.data();
     float* yPtr = yHost.empty() ? nullptr : yHost.data();
@@ -58,13 +58,13 @@ TEST_P(SswapArch35Test, CsvDriven)
 
     // Step 5: Compute CPU golden (swap modifies both x and y in-place)
     // We need copies of the original data for golden computation
-    std::vector<float> goldenX = makeBlasArray(p.n, p.x, p.randomSeed);
-    std::vector<float> goldenY = makeBlasArray(p.n, p.y, p.randomSeed);
+    std::vector<float> goldenX = makeBlasStrided(p.n, p.incx, p.x, p.randomSeed);
+    std::vector<float> goldenY = makeBlasStrided(p.n, p.incy, p.y, p.randomSeed);
     aclblasSswap_cpu(SswapArch35Test::handle_, p.n, goldenX.data(), p.incx, goldenY.data(), p.incy);
 
     // Step 6: Verify both outputs with EXACT precision
     VerifyConfig cfg;
     cfg.mode = PrecisionMode::EXACT;
-    EXPECT_TRUE(Verifier::verifyVector(xPtr, goldenX.data(), static_cast<size_t>(p.n), 1, cfg, p.caseName + "_x"));
-    EXPECT_TRUE(Verifier::verifyVector(yPtr, goldenY.data(), static_cast<size_t>(p.n), 1, cfg, p.caseName + "_y"));
+    EXPECT_TRUE(Verifier::verifyVector(xPtr, goldenX.data(), xHost.size(), 1, cfg, p.caseName + "_x"));
+    EXPECT_TRUE(Verifier::verifyVector(yPtr, goldenY.data(), yHost.size(), 1, cfg, p.caseName + "_y"));
 }

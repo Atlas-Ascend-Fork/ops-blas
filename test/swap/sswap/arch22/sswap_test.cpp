@@ -91,46 +91,126 @@ static int32_t RunSswapNegativeChecks(aclblasHandle_t handle)
         std::cout << "[Failed] sswap null x/y not rejected" << std::endl;
         negativeResult = 1;
     }
+    if (aclblasSswap(handle, 8, &sx, 0, &sy, 1) != ACLBLAS_STATUS_INVALID_VALUE ||
+        aclblasSswap(handle, 8, &sx, 1, &sy, 0) != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[Failed] sswap zero increment not rejected" << std::endl;
+        negativeResult = 1;
+    }
     if (negativeResult == 0) {
         std::cout << "[Success] sswap negative checks passed." << std::endl;
     }
     return negativeResult;
 }
 
+// Upload x/y, run aclblasSswap(n, incx, incy) and copy the results back into x/y.
+static aclblasStatus_t RunSswapOnDevice(
+    aclblasHandle_t handle, aclrtStream stream, int n, int incx, int incy, std::vector<float>& x, std::vector<float>& y)
+{
+    const size_t xBytes = x.size() * sizeof(float);
+    const size_t yBytes = y.size() * sizeof(float);
+    float* xDevice = nullptr;
+    float* yDevice = nullptr;
+    aclError aclRet = aclrtMalloc((void**)&xDevice, xBytes, ACL_MEM_MALLOC_HUGE_FIRST);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc xDevice failed. ERROR: %d\n", aclRet);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
+    aclRet = aclrtMalloc((void**)&yDevice, yBytes, ACL_MEM_MALLOC_HUGE_FIRST);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc yDevice failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
+    aclRet = aclrtMemcpy(xDevice, xBytes, x.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
+              aclrtFree(yDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    aclRet = aclrtMemcpy(yDevice, yBytes, y.data(), yBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy yDevice failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
+              aclrtFree(yDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+
+    const aclblasStatus_t ret = aclblasSswap(handle, n, xDevice, incx, yDevice, incy);
+    if (ret == ACLBLAS_STATUS_SUCCESS) {
+        aclRet = aclrtSynchronizeStream(stream);
+        CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+                  aclrtFree(xDevice); aclrtFree(yDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+        aclRet = aclrtMemcpy(x.data(), xBytes, xDevice, xBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+        CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy x failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
+                  aclrtFree(yDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+        aclRet = aclrtMemcpy(y.data(), yBytes, yDevice, yBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+        CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy y failed. ERROR: %d\n", aclRet); aclrtFree(xDevice);
+                  aclrtFree(yDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    }
+    aclrtFree(xDevice);
+    aclrtFree(yDevice);
+    return ret;
+}
+
 // Basic unit-stride functional case: swap two full vectors and verify.
 static int32_t RunSswapBasicCase(
     aclblasHandle_t handle, aclrtStream stream, uint32_t totalLength, std::vector<float>& x, std::vector<float>& y)
 {
-    float* xDevice = nullptr;
-    float* yDevice = nullptr;
-    size_t totalByteSize = totalLength * sizeof(float);
-    aclError aclRet = aclrtMalloc((void**)&xDevice, totalByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc xDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMalloc((void**)&yDevice, totalByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc yDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(xDevice, totalByteSize, x.data(), totalByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(yDevice, totalByteSize, y.data(), totalByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy yDevice failed. ERROR: %d\n", aclRet); return aclRet);
-
-    const aclblasStatus_t ret = aclblasSswap(handle, static_cast<int>(totalLength), xDevice, 1, yDevice, 1);
+    const aclblasStatus_t ret = RunSswapOnDevice(handle, stream, static_cast<int>(totalLength), 1, 1, x, y);
     CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSswap failed. ERROR: %d\n", ret); return ret);
-
-    aclRet = aclrtSynchronizeStream(stream);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(x.data(), totalByteSize, xDevice, totalByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy x failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(y.data(), totalByteSize, yDevice, totalByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy y failed. ERROR: %d\n", aclRet); return aclRet);
-
-    aclrtFree(xDevice);
-    aclrtFree(yDevice);
 
     const float valueX = 1.5f;
     const float valueY = 2.5f;
     std::vector<float> goldenX(totalLength, valueY);
     std::vector<float> goldenY(totalLength, valueX);
     return VerifyResult(x, y, goldenX, goldenY);
+}
+
+// Storage length of a vector holding n logical elements with stride inc.
+static size_t SswapStorageLength(int n, int inc)
+{
+    const int64_t absInc = inc < 0 ? -static_cast<int64_t>(inc) : inc;
+    return static_cast<size_t>(1 + (static_cast<int64_t>(n) - 1) * absInc);
+}
+
+// Fill the whole storage with distinct sentinel values so writes outside the
+// logical index set (stride gaps) stay visible.
+static void FillSswapSentinel(std::vector<float>& v, int base)
+{
+    for (size_t i = 0; i < v.size(); ++i) {
+        v[i] = static_cast<float>(base + static_cast<int>(i));
+    }
+}
+
+// One strided case: sentinel-filled storage, independent logical-index oracle, exact compare.
+static int32_t RunSswapStrideCase(aclblasHandle_t handle, aclrtStream stream, int n, int incx, int incy)
+{
+    std::vector<float> x(SswapStorageLength(n, incx));
+    std::vector<float> y(SswapStorageLength(n, incy));
+    FillSswapSentinel(x, 10);
+    FillSswapSentinel(y, 100);
+    std::vector<float> expectedX = x;
+    std::vector<float> expectedY = y;
+    int64_t xIndex = incx < 0 ? static_cast<int64_t>(n - 1) * -static_cast<int64_t>(incx) : 0;
+    int64_t yIndex = incy < 0 ? static_cast<int64_t>(n - 1) * -static_cast<int64_t>(incy) : 0;
+    for (int i = 0; i < n; ++i, xIndex += incx, yIndex += incy) {
+        std::swap(expectedX[xIndex], expectedY[yIndex]);
+    }
+
+    const aclblasStatus_t ret = RunSswapOnDevice(handle, stream, n, incx, incy, x, y);
+    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSswap failed. ERROR: %d\n", ret); return ret);
+    if (x != expectedX || y != expectedY) {
+        std::cout << "[Failed] strided swap mismatch (n=" << n << ", incx=" << incx << ", incy=" << incy << ")"
+                  << std::endl;
+        return 1;
+    }
+    std::cout << "[Success] strided swap passed (n=" << n << ", incx=" << incx << ", incy=" << incy << ")."
+              << std::endl;
+    return 0;
+}
+
+// Strided regression: positive, negative and mixed strides incl. a multi-pass
+// length crossing the per-pass batching boundary (issue #509).
+static int32_t RunSswapStrideCases(aclblasHandle_t handle, aclrtStream stream)
+{
+    static const int32_t cases[][3] = {{7, 2, 2},   {7, -1, 1},  {7, 1, -2},  {7, -2, 3},
+                                       {5, -1, -1}, {33, 4, -3}, {1025, 2, 2}};
+    int32_t failed = 0;
+    for (const auto& c : cases) {
+        failed |= RunSswapStrideCase(handle, stream, c[0], c[1], c[2]);
+    }
+    if (failed == 0) {
+        std::cout << "[Success] sswap stride cases passed." << std::endl;
+    }
+    return failed;
 }
 
 int32_t main(int32_t argc, char* argv[])
@@ -157,6 +237,7 @@ int32_t main(int32_t argc, char* argv[])
 
     const int32_t negativeResult = RunSswapNegativeChecks(handle);
     const int32_t basicResult = RunSswapBasicCase(handle, stream, totalLength, x, y);
+    const int32_t strideResult = RunSswapStrideCases(handle, stream);
 
     aclblasDestroy(handle);
     aclrtDestroyStream(stream);
@@ -165,6 +246,9 @@ int32_t main(int32_t argc, char* argv[])
 
     if (basicResult != 0) {
         return basicResult;
+    }
+    if (strideResult != 0) {
+        return strideResult;
     }
     return negativeResult;
 }

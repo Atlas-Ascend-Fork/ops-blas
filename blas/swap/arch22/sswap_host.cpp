@@ -33,13 +33,17 @@ struct SswapTilingData {
     uint32_t coreNum;
     uint32_t startOffset[40];
     uint32_t calNum[40];
+    int32_t incx;
+    int32_t incy;
 };
 
-static SswapTilingData CalSswapTilingData(uint32_t n, uint32_t vecCoreNum)
+static SswapTilingData CalSswapTilingData(uint32_t n, uint32_t vecCoreNum, int32_t incx, int32_t incy)
 {
     SswapTilingData tilingData;
     tilingData.n = n;
     tilingData.coreNum = 0;
+    tilingData.incx = incx;
+    tilingData.incy = incy;
 
     if (vecCoreNum == 0) {
         vecCoreNum = 1;
@@ -105,7 +109,7 @@ aclblasStatus_t aclblasSswap(aclblasHandle_t handle, int n, float* x, int incx, 
 
     uint32_t numBlocks = 8;
 
-    SswapTilingData tiling = CalSswapTilingData(static_cast<uint32_t>(n), numBlocks);
+    SswapTilingData tiling = CalSswapTilingData(static_cast<uint32_t>(n), numBlocks, incx, incy);
 
     uint8_t* tilingDevice = nullptr;
     aclError aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(SswapTilingData), ACL_MEM_MALLOC_HUGE_FIRST);

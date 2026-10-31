@@ -44,8 +44,8 @@ __aicore__ inline void SswapAIV::Init(GM_ADDR x, GM_ADDR y, const SswapTilingDat
         myCount_ += tiling_.remainder;
     }
 
-    xGM_.SetGlobalBuffer((__gm__ float*)x, tiling_.totalN);
-    yGM_.SetGlobalBuffer((__gm__ float*)y, tiling_.totalN);
+    xGM_.SetGlobalBuffer((__gm__ float*)x, tiling_.xLength);
+    yGM_.SetGlobalBuffer((__gm__ float*)y, tiling_.yLength);
 
     uint32_t bufSize = tiling_.tileSize * sizeof(float);
     pipe->InitBuffer(xBuf_, bufSize);
@@ -98,6 +98,19 @@ __aicore__ inline void SswapAIV::SingleIteration(uint32_t curOffset, uint32_t da
 __aicore__ inline void SswapAIV::Process()
 {
     if (myCount_ == 0) {
+        return;
+    }
+
+    if (tiling_.incx != 1 || tiling_.incy != 1) {
+        for (uint32_t i = 0; i < myCount_; ++i) {
+            int64_t logicalIndex = static_cast<int64_t>(myOffset_) + i;
+            int64_t xIndex = tiling_.kx + logicalIndex * tiling_.incx;
+            int64_t yIndex = tiling_.ky + logicalIndex * tiling_.incy;
+            float xValue = xGM_.GetValue(static_cast<uint64_t>(xIndex));
+            float yValue = yGM_.GetValue(static_cast<uint64_t>(yIndex));
+            xGM_.SetValue(static_cast<uint64_t>(xIndex), yValue);
+            yGM_.SetValue(static_cast<uint64_t>(yIndex), xValue);
+        }
         return;
     }
 

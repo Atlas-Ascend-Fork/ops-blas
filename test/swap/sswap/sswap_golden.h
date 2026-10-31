@@ -27,10 +27,7 @@ inline aclblasStatus_t aclblasSswap_cpu(aclblasHandle_t handle, int n, float* x,
         return ACLBLAS_STATUS_INVALID_VALUE;
     if (incx == 0 || incy == 0)
         return ACLBLAS_STATUS_INVALID_VALUE;
-    if (incx < 0 || incy < 0)
-        return ACLBLAS_STATUS_INVALID_VALUE;
 
     cblas_sswap(n, x, incx, y, incy);
     return ACLBLAS_STATUS_SUCCESS;
 }
-
