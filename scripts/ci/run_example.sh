@@ -92,6 +92,18 @@ while IFS= read -r filepath; do
                 header_ops="$header_ops,$snake"
             elif [ -f "./test/$snake/CMakeLists.txt" ]; then
                 header_ops="$header_ops,$snake"
+            else
+                # issue #713: 复数算子的测试多挂家族目录（test/symv/csymv、test/syr2/csyr2
+                # 等），顶层目录不存在时按二级子目录名匹配；仍失败则告警并回退全量，
+                # 避免家族式算子的 API 签名改动在 PreSmoke 零覆盖
+                family_dir=$(find ./test -mindepth 2 -maxdepth 2 -type d -name "$snake" 2>/dev/null | head -1)
+                if [ -n "$family_dir" ]; then
+                    header_ops="$header_ops,$snake"
+                else
+                    echo "Warning: no test directory matched API '$fn' ('$snake'), fallback to run all."
+                    run_all=true
+                    break
+                fi
             fi
         done
         if [ -z "$header_ops" ]; then

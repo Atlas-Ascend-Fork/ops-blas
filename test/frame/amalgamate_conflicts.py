@@ -72,7 +72,10 @@ def defined_names(path):
     for pat in (FUNC_DEF, VAR_DEF):
         for m in pat.finditer(text):
             mods = (m.group('mods') or '').split()
-            if 'static' in mods or 'constexpr' in mods and False:
+            # issue #720: 仅 static 修饰的符号需要 objcopy localize；constexpr 变量在
+            # C++ 中本就是内部链接、无跨文件符号冲突，无需列入清单（此前恒假子句
+            # `and False` 属调试遗留，语义失真且误导读者）
+            if 'static' in mods:
                 continue
             name = m.group('name')
             if name in WHITELIST or name in (

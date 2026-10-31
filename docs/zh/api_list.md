@@ -108,7 +108,6 @@ ops-blas 提供基于 C 的 BLAS 标准接口，以及轻量化 GEMM / 矩阵变
 ### aclblasLapackInfo_t
 
 批量 LAPACK 风格接口（如 `aclblasSgetrfBatched`、`aclblasSgeqrfBatched`）中 `info` / `infoArray` 参数的取值约定，语义对齐 LAPACK `xINFO`：
-| [aclblasCgetrfBatched](../../blas/getrf_batched/arch35/README.md) | 单精度复数批量 LU 分解（带部分主元选取） |
 
 - `info = 0`：成功退出。
 - `info < 0`：若 `info = -i`，表示第 `i` 个参数非法（不含 handle 与 info 本身）。
@@ -956,6 +955,7 @@ Level 3 接口在矩阵之间进行运算，典型操作包括对称矩阵乘法
 | [aclblasSgelsBatched](../../blas/gels_batched/README.md) | 单精度批量最小二乘/最小范数求解 |
 | [aclblasSgeqrfBatched](../../blas/geqrf_batched/README.md) | 单精度批量 QR 分解 |
 | [aclblasSgetrfBatched](../../blas/getrf_batched/README.md) | 单精度批量 LU 分解（带部分主元选取） |
+| [aclblasCgetrfBatched](../../blas/getrf_batched/arch35/README.md) | 单精度复数批量 LU 分解（带部分主元选取） |
 | [aclblasSgetriBatched](../../blas/getri_batched/README.md) | 单精度批量矩阵求逆 |
 | [aclblasCgetriBatched](../../blas/getri_batched/README.md) | 单精度复数批量矩阵求逆 |
 | [aclblasSgetrsBatched](../../blas/getrs_batched/README.md) | 单精度批量线性方程组求解 |
