@@ -24,6 +24,7 @@
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "types.h"
+#include "mixed_tolerance.h"
 
 class PrecisionStrategy {
 public:
@@ -195,10 +196,18 @@ private:
     size_t failCount_ = 0;
 };
 
+// issue #715: near-zero 豁免的逐元素绝对兜底，口径与 MixedToleranceStrategy 的 fixedLimit_
+// （getMixedToleranceDefaults(ACL_FLOAT).maxAbsErrorLimitFixed）同源。MERE/MARE 用例以 FP32
+// 为主，其他精度场景可经 MereMareStrategy 构造参数显式覆盖。
+inline constexpr double kMereMareNearZeroAbsCap = 1e-2;
+
 class MereMareStrategy : public PrecisionStrategy {
 public:
-    MereMareStrategy(double threshold, double multiplier)
-        : threshold_(threshold), multiplier_(multiplier), outlierLimit_(multiplier * threshold)
+    MereMareStrategy(double threshold, double multiplier, double nearZeroAbsCap = kMereMareNearZeroAbsCap)
+        : threshold_(threshold),
+          multiplier_(multiplier),
+          outlierLimit_(multiplier * threshold),
+          nearZeroAbsCap_(nearZeroAbsCap)
     {}
 
 protected:
@@ -217,6 +226,11 @@ protected:
         // When |golden| < threshold_, the expected precision itself is below the noise floor.
         double absGold = std::abs(static_cast<double>(goldVal));
         if (absGold < threshold_) {
+            // issue #715: 豁免不等于不设限——|out| 超过绝对兜底（默认 1e-2）的有限大错值
+            // （如未正确消相干）此前会绕过全部校验以 PASS 漏出，计入违例并参与判定
+            if (std::abs(static_cast<double>(outVal)) > nearZeroAbsCap_) {
+                nearZeroCapViolations_++;
+            }
             skippedNearZero_++;
             return;
         }
@@ -241,9 +255,13 @@ protected:
             std::cout << ", skipped " << skippedNearZero_ << " near-zero";
         if (mismatchCount_ > 0)
             std::cout << ", " << mismatchCount_ << " special-value mismatches";
+        if (nearZeroCapViolations_ > 0)
+            std::cout << ", " << nearZeroCapViolations_ << " near-zero cap violations (|out| > " << nearZeroAbsCap_
+                      << ")";
         std::cout << ")" << std::endl;
 
-        bool pass = (mismatchCount_ == 0) && (mere < threshold_) && (maxRelErr_ < outlierLimit_);
+        bool pass = (mismatchCount_ == 0) && (nearZeroCapViolations_ == 0) && (mere < threshold_) &&
+                    (maxRelErr_ < outlierLimit_);
         std::cout << "[" << caseId << "] " << (pass ? "PASSED" : "FAILED") << " (MERE < threshold && MARE < "
                   << multiplier_ << "*threshold, " << outlierCount_ << " outliers, " << mismatchCount_
                   << " mismatches out of " << count << " elements)" << std::endl;
@@ -261,50 +279,11 @@ private:
     size_t mismatchCount_ = 0;   // INF/NaN-related special-value mismatches
     size_t skippedNearZero_ = 0; // elements skipped because |golden| < threshold
     size_t validCount_ = 0;      // elements contributing to MERE/MARE statistics
+    double nearZeroAbsCap_;      // issue #715: per-element absolute cap for near-zero-golden elements
+    size_t nearZeroCapViolations_ = 0;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Helpers: MIXED_TOLERANCE thresholds (mixed_tolerance_standard.md)
-//   per-element max_abs_error_limit = max(fixed_value, 32 * ULP)
-//   ULP(x) = 2^(floor(log2|x|) - mantissaBits)  for finite x != 0
-//   ULP(0) = 2^(emin - mantissaBits)              (subnormal ULP)
-// ═══════════════════════════════════════════════════════════════════════════════
-inline double getUlpsAt(double magnitude, int mantissaBits, int emin)
-{
-    double absMag = std::abs(magnitude);
-    if (absMag == 0.0)
-        return std::pow(2.0, static_cast<double>(emin - mantissaBits));
-    int exp = 0;
-    std::frexp(absMag, &exp);
-    return std::ldexp(1.0, std::max(exp - 1, emin) - mantissaBits);
-}
-
-struct MixedToleranceDefaults {
-    double rtol;
-    double atol;
-    double maxAbsErrorLimitFixed;
-    int mantissaBits;
-    int emin;
-};
-
-inline MixedToleranceDefaults getMixedToleranceDefaults(aclDataType dtype)
-{
-    switch (dtype) {
-        case ACL_FLOAT16:
-            return {0.0009765625, 0.0009765625, 1e-1, 10, -14};
-        case ACL_BF16:
-            return {0.0078125, 0.0078125, 1e-1, 7, -126};
-        case ACL_FLOAT:
-            return {0.0001220703125, 0.0001220703125, 1e-2, 23, -126};
-        case ACL_FLOAT8_E4M3FN:
-            return {0.125, 0.125, 1.0, 3, -6};
-        case ACL_FLOAT8_E5M2:
-            return {0.25, 0.25, 1.0, 2, -14};
-        default:
-            return {0.0009765625, 0.0009765625, 1e-1, 10, -14};
-    }
-}
-
 inline void applyMixedToleranceInternal(VerifyConfig& cfg, const MixedToleranceDefaults& d)
 {
     cfg.mode = PrecisionMode::MIXED_TOLERANCE;

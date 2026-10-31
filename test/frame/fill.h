@@ -124,6 +124,18 @@ private:
         return neg ? -val : val;
     }
 
+    // issue #779: 方法默认值初始化独立成函数，控制 parse() 函数体规模
+    static void ApplyMethodDefaults(Method method, float* val1, float* val2)
+    {
+        static const std::map<Method, std::pair<float, float>> defaults = {
+            {M_INDEX, {1.0f, 1.0f}}, {M_RANDOM, {1.0f, 1.0f}}, {M_GAUSS, {5.0f, 2.0f}}, {M_VALUE, {0.0f, 0.0f}}};
+        auto dIt = defaults.find(method);
+        if (dIt != defaults.end()) {
+            *val1 = dIt->second.first;
+            *val2 = dIt->second.second;
+        }
+    }
+
     void parse(const std::string& s)
     {
         std::vector<std::string> parts;
@@ -137,20 +149,18 @@ private:
             return;
 
         auto mIt = methodMap().find(parts[0]);
-        if (mIt == methodMap().end())
+        if (mIt == methodMap().end()) {
+            // issue #714: 方法名未命中时不再静默保持默认 M_INDEX——数据分布退化会让
+            // 特例/极值覆盖无声消失；对齐 csv_loader 未知枚举的可见告警口径
+            std::cout << "[fill] unknown method '" << parts[0] << "' in fill '" << s << "', fallback to INDEX\n";
             return;
+        }
         method = mIt->second;
 
         if (method == M_NULLPTR)
             return;
 
-        static const std::map<Method, std::pair<float, float>> defaults = {
-            {M_INDEX, {1.0f, 1.0f}}, {M_RANDOM, {1.0f, 1.0f}}, {M_GAUSS, {5.0f, 2.0f}}, {M_VALUE, {0.0f, 0.0f}}};
-        auto dIt = defaults.find(method);
-        if (dIt != defaults.end()) {
-            val1 = dIt->second.first;
-            val2 = dIt->second.second;
-        }
+        ApplyMethodDefaults(method, &val1, &val2);
 
         size_t idx = 1;
         if (idx < parts.size()) {
@@ -158,6 +168,9 @@ private:
             if (pIt != patternMap().end()) {
                 pattern = pIt->second;
                 idx++;
+            } else {
+                // issue #714: 模式名未命中时不再静默保持默认 P_NORM
+                std::cout << "[fill] unknown pattern '" << parts[idx] << "' in fill '" << s << "', fallback to NORM\n";
             }
         }
 
@@ -287,7 +300,7 @@ inline std::unique_ptr<ValueGenerator> createGenerator(const BlasFillMode& mode,
                  float sigHi = (m.val2 >= 0.1f) ? m.val2 : 2.0f; // σ 上限，默认 2（σ∈[0.1,2]）
                  return std::make_unique<GaussGenerator>(r, muHi, sigHi);
              }},
-    };
+        };
 
     auto mIt = methodGens.find(mode.method);
     if (mIt != methodGens.end())
@@ -505,7 +518,7 @@ inline void FillStructuredMatrix(
                          d[i + static_cast<size_t>(j) * lda] = dist(r) * scale;
                  }
              }},
-    };
+        };
 
     auto it = layoutMap.find(pattern);
     if (it != layoutMap.end())
