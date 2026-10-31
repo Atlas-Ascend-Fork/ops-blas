@@ -93,12 +93,15 @@ while IFS= read -r filepath; do
             elif [ -f "./test/$snake/CMakeLists.txt" ]; then
                 header_ops="$header_ops,$snake"
             else
-                # issue #713: 复数算子的测试多挂家族目录（test/symv/csymv、test/syr2/csyr2
-                # 等），顶层目录不存在时按二级子目录名匹配；仍失败则告警并回退全量，
-                # 避免家族式算子的 API 签名改动在 PreSmoke 零覆盖
+                # issue #713/#419: 家族嵌套目录（test/symv/csymv、test/ger/cgeru 等
+                # 双层布局）在 test/<op> 顶层查不到；找到嵌套目录时按父家族名加入
+                # （expand_family_ops 展开为该家族下当前 SOC 有实现的具体算子，
+                # 避免直接传嵌套成员名被 build.sh 当未知算子透传给 CMake 报错），
+                # 找不到时告警并回退全量，避免嵌套式 API 签名变更让 PreSmoke 零覆盖
                 family_dir=$(find ./test -mindepth 2 -maxdepth 2 -type d -name "$snake" 2>/dev/null | head -1)
                 if [ -n "$family_dir" ]; then
-                    header_ops="$header_ops,$snake"
+                    family_name=$(echo "$family_dir" | sed -E 's|^\./test/([^/]+)/.*|\1|')
+                    header_ops="$header_ops,$family_name"
                 else
                     echo "Warning: no test directory matched API '$fn' ('$snake'), fallback to run all."
                     run_all=true
