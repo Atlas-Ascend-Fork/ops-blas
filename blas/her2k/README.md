@@ -139,6 +139,8 @@ arch35（Ascend 950）实现：
 
 附加校验（超出混合容差表的算子专属硬断言）：对角线虚部模长无条件 <= 2^-16（Hermitian 承诺）；非 uplo 三角与 ldc padding 与输入 C 旧值逐位一致（不引用即不污染）。
 
+大抵消场景的 MERE/MARE 复判：her2k 计算 M + M^H 对称叠加，在大 alpha（如 1e4）、大 k 或高均值随机输入下交叉乘抵消会使部分 golden 元素接近 0——此时 float32 在 ~10^3 量级下的固有舍入误差（约 0.01）远超 atol=2^-13，严格混合容差不可达（float cblas 参考链同样无法通过，见测试 CSV 的 *_float_xcheck 列）。因此测试在严格混合容差未通过、且用例 CSV 预置 mere_threshold/mare_multiplier 列（arch35 全量用例预置 2^-13 与 10.0）时，按 MERE/MARE 相对误差口径复判：近零 golden（|golden| < mere_threshold）跳过统计不参与相对误差，其余元素要求平均相对误差 MERE < mere_threshold 且最大相对误差 MARE < mare_multiplier × mere_threshold，判据语义与 test/frame 的 MereMareStrategy 一致，实现见 test/her2k/cher2k/arch35/cher2k_test.cpp 的 EvaluateMereMareDbl。
+
 #### 调用示例
 
 示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。
