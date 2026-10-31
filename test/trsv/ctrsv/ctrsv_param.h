@@ -17,6 +17,8 @@ struct CtrsvParam : public BlasTestParamBase {
     aclblasDiagType_t diag = ACLBLAS_NON_UNIT;
     int64_t n = 0, lda = 0, incx = 1;
     BlasFillMode A = parseFill("RANDOM"), x = parseFill("RANDOM");
+    bool normal = false;
+    bool smallWorkspace = false;
     CtrsvParam(const csv_map& m) : BlasTestParamBase(m)
     {
         uplo = parseFillMode(ReadMap(m, "uplo", "LOWER"));

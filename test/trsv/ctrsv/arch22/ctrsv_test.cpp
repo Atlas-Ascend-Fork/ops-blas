@@ -141,12 +141,13 @@ static void CheckTinyNetlibExtremeOrderCase(
     auto expected = rhs;
     aclblasCtrsv_cpu(uplo, trans, diag, n, matrix.data(), n, expected.data(), 1);
     ASSERT_EQ(aclblasCtrsv_npu(handle, uplo, trans, diag, n, matrix.data(), n, rhs.data(), 1), ACLBLAS_STATUS_SUCCESS);
-    for (int i = 0; i < n; ++i) {
-        EXPECT_TRUE(rhs[i].real == expected[i].real || (std::isnan(rhs[i].real) && std::isnan(expected[i].real)))
-            << "real index=" << i;
-        EXPECT_TRUE(rhs[i].imag == expected[i].imag || (std::isnan(rhs[i].imag) && std::isnan(expected[i].imag)))
-            << "imag index=" << i;
-    }
+    VerifyConfig cfg;
+    cfg.mode = PrecisionMode::MERE_MARE;
+    EXPECT_TRUE(Verifier::verifyMereMareComplexFloat(
+        rhs.data(), expected.data(), static_cast<size_t>(n), cfg.mereThreshold, cfg.mareMultiplier, cfg.epsilonForRel,
+        "TinyNetlibExtremeOrder n=" + std::to_string(n) + " uplo=" + std::to_string(static_cast<int>(uplo)) +
+            " trans=" + std::to_string(static_cast<int>(trans)) + " diag=" + std::to_string(static_cast<int>(diag)) +
+            " extremeMatrix=" + (extremeMatrix ? "true" : "false")));
 }
 
 TEST_F(CtrsvArch22Test, TinyNetlibExtremeOrder)

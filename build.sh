@@ -193,7 +193,9 @@ expand_family_ops() {
       fi
     fi
   done
-  echo "${expanded}"
+  # A family and an explicit member can expand to the same operator.
+  # Preserve the first occurrence so each test binary runs only once.
+  echo "${expanded}" | tr ',' '\n' | awk '!seen[$0]++' | paste -sd ',' -
 }
 
 # 展开家族名
