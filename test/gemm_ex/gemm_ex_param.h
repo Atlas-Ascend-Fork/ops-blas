@@ -20,42 +20,39 @@
 #include "csv_loader.h"
 
 // ── aclDataType parser ──
+// Symbolic tokens only (issue #699): the former private numeric aliases
+// {"0":ACL_FLOAT16, "2":ACL_FLOAT, ...} contradicted the real aclDataType
+// values, and the unbounded std::stoi fallback let out-of-range integers
+// reach the operator. Numeric input is now rejected: unknown tokens fail
+// loudly and fall back to the historical default (existing CSVs use
+// symbolic names only, so their parsing is unchanged).
 inline aclDataType parseAclDataType(const std::string& s)
 {
     static const std::unordered_map<std::string, aclDataType> m = {
         {"FP16", ACL_FLOAT16},
         {"ACL_FLOAT16", ACL_FLOAT16},
-        {"0", ACL_FLOAT16},
         {"BF16", ACL_BF16},
         {"ACL_BF16", ACL_BF16},
-        {"1", ACL_BF16},
         {"FP32", ACL_FLOAT},
         {"ACL_FLOAT", ACL_FLOAT},
-        {"2", ACL_FLOAT},
         {"INT8", ACL_INT8},
         {"ACL_INT8", ACL_INT8},
-        {"3", ACL_INT8},
         {"INT32", ACL_INT32},
         {"ACL_INT32", ACL_INT32},
-        {"4", ACL_INT32},
         {"FP8_E4M3", ACL_FLOAT8_E4M3FN},
         {"FP8_E4M3_FN", ACL_FLOAT8_E4M3FN},
         {"FP8_E4M3FN", ACL_FLOAT8_E4M3FN},
         {"ACL_FLOAT8_E4M3FN", ACL_FLOAT8_E4M3FN},
-        {"5", ACL_FLOAT8_E4M3FN},
         {"FP8_E5M2", ACL_FLOAT8_E5M2},
         {"FP8_E5M2_FN", ACL_FLOAT8_E5M2},
         {"ACL_FLOAT8_E5M2", ACL_FLOAT8_E5M2},
-        {"6", ACL_FLOAT8_E5M2},
     };
     auto it = m.find(s);
     if (it != m.end())
         return it->second;
-    try {
-        return static_cast<aclDataType>(std::stoi(s));
-    } catch (...) {
-        return ACL_FLOAT16;
-    }
+    std::cout << "[gemm_ex_param] unknown dtype token '" << s
+              << "', numeric input disabled (issue #699); defaulting to FP16" << std::endl;
+    return ACL_FLOAT16;
 }
 
 // ── Physical dimensions based on transposition (column-major) ──
