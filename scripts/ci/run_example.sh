@@ -76,6 +76,7 @@ while IFS= read -r filepath; do
         continue
     fi
     if [[ "$filepath" == include/* ]]; then
+        header_ops=""
         base_branch="origin/${TARGET_BRANCH:-master}"
         git cat-file -e "$base_branch" 2>/dev/null || base_branch="HEAD~1"
         # 从新增/修改行提取 API 函数名：aclblas<Xxx>( 形态
@@ -88,17 +89,18 @@ while IFS= read -r filepath; do
             # 驼峰转下划线（在每个大写字母前插入 _，再整体转小写）
             snake=$(echo "$op_name" | sed -E 's/([A-Z])/_\1/g; s/^_//' | tr '[:upper:]' '[:lower:]')
             if [ -d "./test/$snake" ]; then
-                include_ops="$include_ops,$snake"
+                header_ops="$header_ops,$snake"
             elif [ -f "./test/$snake/CMakeLists.txt" ]; then
-                include_ops="$include_ops,$snake"
+                header_ops="$header_ops,$snake"
             fi
         done
-        if [ -z "$include_ops" ]; then
+        if [ -z "$header_ops" ]; then
             # 头文件变更但提取不到算子（格式化/注释），保守回退全量
             echo "Warning: include changed but no API function extracted, fallback to run all."
             run_all=true
             break
         fi
+        include_ops="${include_ops}${header_ops}"
         continue
     fi
     # issue #627: 取反符必须与操作数空格分隔（!"$filepath" 会粘成单词 "!<path>"
