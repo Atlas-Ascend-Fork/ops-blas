@@ -28,6 +28,20 @@ SPEC.loader.exec_module(SELECTOR)
 
 
 class DeviceThresholdTests(unittest.TestCase):
+    def test_unusable_acl_library_reports_acl_error(self):
+        failures = (OSError("cannot load library"),
+                    AttributeError("undefined symbol: aclrtGetDeviceUtilizationRate"))
+        for failure in failures:
+            with self.subTest(failure=failure), contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(SELECTOR.os.path, "isfile", return_value=True))
+                stack.enter_context(patch.object(SELECTOR, "load_acl", side_effect=failure))
+                stdout = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                stderr = stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+                self.assertEqual(SELECTOR.main(["--lib", "/tmp/libascendcl.so"]),
+                                 SELECTOR.EXIT_ACL_ERROR)
+                self.assertEqual(stdout.getvalue(), "ACL_ERROR\n")
+                self.assertIn(str(failure), stderr.getvalue())
+
     def check_invalid_threshold(self, threshold):
         # Capture argparse's exit boundary without terminating the test process.
         with contextlib.ExitStack() as stack:

@@ -166,7 +166,7 @@ def main(argv=None):
 
     try:
         lib = load_acl(lib_path)
-    except OSError as exc:
+    except (OSError, AttributeError) as exc:
         print("ACL_ERROR")
         sys.stderr.write("[error] failed to load %s: %s\n" % (lib_path, exc))
         return EXIT_ACL_ERROR
