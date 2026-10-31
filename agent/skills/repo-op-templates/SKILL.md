@@ -149,5 +149,3 @@ blas/<operator_name>/
 | SIMT | sspmv | `blas/spmv/sspmv/arch35/` |
 | SIMT | sgemv | `blas/gemv/sgemv/arch35/` |
 | **SIMT** | **getri_batched** | **`blas/getri_batched/arch35/`**（新结构标杆算子，host.cpp/kernel.h/kernel.cpp/tiling_data.h 拆分完整） |
-
-Base directory for this skill: file:///mnt/workspace/gitCode/cann/ops-blas/agent/skills/blas-op-templates
