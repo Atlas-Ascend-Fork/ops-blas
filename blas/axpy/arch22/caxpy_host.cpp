@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <new>
 #include <vector>
 #include <algorithm>
 #include <iterator>
@@ -126,7 +127,8 @@ aclblasStatus_t aclblasCaxpy(
     auto* h = handle;
     aclrtStream useStream = h->stream;
 
-    uint32_t numBlocks = DEFAULT_VECTOR_NUM;
+    // issue #716: 核数不得硬编码
+    uint32_t numBlocks = GetAivCoreCount();
 
     float alphaReal = alpha->real;
     float alphaImag = alpha->imag;
@@ -138,7 +140,13 @@ aclblasStatus_t aclblasCaxpy(
     uint8_t* maskDevice = nullptr;
     uint8_t* tilingDevice = nullptr;
 
-    uint32_t* maskHost = new uint32_t[MAX_DATA_COUNT * COMPLEX_NUM];
+    // issue #712: 默认 new[] 失败抛出的 std::bad_alloc 会穿越 extern "C" ABI 边界，
+    // 改为 nothrow + 判空映射 ACLBLAS_STATUS_ALLOC_FAILED
+    uint32_t* maskHost = new (std::nothrow) uint32_t[MAX_DATA_COUNT * COMPLEX_NUM];
+    if (maskHost == nullptr) {
+        LOG_PRINT("aclblasCaxpy: alloc mask host buffer failed\n");
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
     GenMaskData(maskHost);
 
     aclError aclRet = aclrtMalloc((void**)&maskDevice, maskSize, ACL_MEM_MALLOC_HUGE_FIRST);

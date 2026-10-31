@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <new>
 #include <vector>
 #include <algorithm>
 #include <iterator>
@@ -94,7 +95,13 @@ aclblasStatus_t aclblasCscal(aclblasHandle_t handle, int n, const aclblasComplex
     uint8_t* tilingDevice = nullptr;
     uint8_t* maskDevice = nullptr;
 
-    uint32_t* maskHost = new uint32_t[MAX_LENG_PER_UB_PROC * ELEMENTS_EACH_COMPLEX64];
+    // issue #712: 默认 new[] 失败抛出的 std::bad_alloc 会穿越 extern "C" ABI 边界，
+    // 改为 nothrow + 判空映射 ACLBLAS_STATUS_ALLOC_FAILED
+    uint32_t* maskHost = new (std::nothrow) uint32_t[MAX_LENG_PER_UB_PROC * ELEMENTS_EACH_COMPLEX64];
+    if (maskHost == nullptr) {
+        LOG_PRINT("aclblasCscal: alloc mask host buffer failed\n");
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
     CreateMaskData(maskHost);
 
     aclError aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(CscalTilingData), ACL_MEM_MALLOC_HUGE_FIRST);

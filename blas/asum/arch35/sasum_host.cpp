@@ -62,7 +62,8 @@ static aclblasStatus_t ValidateSasumParams(aclblasHandle_t handle, int n, int in
 {
     if (handle == nullptr) {
         OP_LOGE("aclblasSasum", "handle is nullptr");
-        return ACLBLAS_STATUS_NOT_INITIALIZED;
+        // issue #722: 对齐 api_list.md 契约（docs/zh/api_list.md:40）
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
     if (result == nullptr) {
         OP_LOGE("aclblasSasum", "result must not be nullptr");

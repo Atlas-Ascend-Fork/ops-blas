@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
+#include <new>
 #include <vector>
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
@@ -37,7 +38,12 @@ struct StrmvTilingData {
 static float* CreateUploMatrix(int64_t uplo)
 {
     constexpr int64_t M0 = 128;
-    float* uploData = new float[M0 * M0];
+    // issue #712: 默认 new[] 失败抛出的 std::bad_alloc 会穿越 extern "C" ABI 边界；
+    // 改为 nothrow + 判空，由调用方映射为 ACLBLAS_STATUS_ALLOC_FAILED
+    float* uploData = new (std::nothrow) float[M0 * M0];
+    if (uploData == nullptr) {
+        return nullptr;
+    }
     for (int64_t i = 0; i < M0; i++) {
         for (int64_t j = 0; j < M0; j++) {
             if (uplo == ACLBLAS_UPPER) {
@@ -112,6 +118,10 @@ aclblasStatus_t aclblasStrmv(
     tiling.m0 = m0;
 
     float* uploMatrix = CreateUploMatrix(uplo);
+    if (uploMatrix == nullptr) {
+        LOG_PRINT("aclblasStrmv: alloc uplo matrix failed\n");
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
     size_t uploSize = 128 * 128 * sizeof(float);
     size_t wkspSize = n * sizeof(float);
 

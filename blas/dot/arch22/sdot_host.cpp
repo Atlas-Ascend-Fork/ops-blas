@@ -83,11 +83,12 @@ SdotTilingData CalSdotTilingData(uint32_t n, uint32_t vecCoreNum)
 }
 
 aclblasStatus_t aclblasSdot(
-    aclblasHandle_t handle, int n, const float* x, int incx, const float* y, int incy,
-    float* result)
+    aclblasHandle_t handle, int n, const float* x, int incx, const float* y, int incy, float* result)
 {
     if (handle == nullptr) {
-        return ACLBLAS_STATUS_NOT_INITIALIZED;
+        // issue #722: 对齐 api_list.md 契约（docs/zh/api_list.md:40），null handle 返回
+        // ACLBLAS_STATUS_HANDLE_IS_NULLPTR 而非 NOT_INITIALIZED
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
     if (result == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -107,7 +108,9 @@ aclblasStatus_t aclblasSdot(
     auto* h = handle;
     aclrtStream useStream = h->stream;
 
-    uint32_t numBlocks = 8;
+    // issue #716: 核数不得硬编码（:29 的 DEFAULT_VECTOR_NUM 原本就与字面量 8 不一致）；
+    // tiling 数组维度按 DEFAULT_VECTOR_NUM 定义，动态核数以其为上限
+    uint32_t numBlocks = std::min(GetAivCoreCount(), DEFAULT_VECTOR_NUM);
     size_t workspaceBytes = 1024;
     size_t tilingBytes = sizeof(SdotTilingData);
 
@@ -122,9 +125,8 @@ aclblasStatus_t aclblasSdot(
     SdotTilingData tiling = CalSdotTilingData(static_cast<uint32_t>(n), numBlocks);
 
     aclError aclRet = aclrtMemcpy(tilingDevice, tilingBytes, &tiling, tilingBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet);
-        return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet);
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     sdot_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float*>(x)), reinterpret_cast<uint8_t*>(const_cast<float*>(y)),

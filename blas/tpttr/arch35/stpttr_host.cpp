@@ -29,7 +29,8 @@ static aclblasStatus_t ValidateParams(
 {
     if (handle == nullptr) {
         OP_LOGE("aclblasStpttr", "handle is nullptr");
-        return ACLBLAS_STATUS_NOT_INITIALIZED;
+        // issue #722: 对齐 api_list.md 契约（docs/zh/api_list.md:40）
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
     if (n < 0) {
         OP_LOGE("aclblasStpttr", "n=%d, expected >= 0", n);

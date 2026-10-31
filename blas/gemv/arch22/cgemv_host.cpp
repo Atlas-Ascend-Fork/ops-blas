@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
+#include <new>
 #include <vector>
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
@@ -42,13 +43,20 @@ struct CgemvTilingData {
     float betaImag;
 };
 
-static uint32_t* CreateCgemvMask(int64_t m)
+// issue #721: 掩码表为定长布局（maskSize 只由 MASK_OFFSET_BASE 决定），与 m 无关；
+// 移除形参 m 使签名与实际用途一致
+static uint32_t* CreateCgemvMask()
 {
     uint32_t realOffset = 0;
     uint32_t imagOffset = MASK_OFFSET_BASE;
 
     uint32_t maskSize = imagOffset * 2;
-    uint32_t* maskData = new uint32_t[maskSize];
+    // issue #712: 默认 new[] 失败抛出的 std::bad_alloc 会穿越 extern "C" ABI 边界；
+    // 改为 nothrow + 判空，由调用方映射为 ACLBLAS_STATUS_ALLOC_FAILED
+    uint32_t* maskData = new (std::nothrow) uint32_t[maskSize];
+    if (maskData == nullptr) {
+        return nullptr;
+    }
 
     int k = 0;
     for (uint32_t i = 0; i < maskSize / 2; i++) {
@@ -122,7 +130,8 @@ aclblasStatus_t aclblasCgemv(
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
-    uint32_t numBlocks = 8;
+    // issue #716: 核数不得硬编码；MAX_CORE_CNT 为该算子掩码/工作区的既定上限
+    uint32_t numBlocks = std::min(GetAivCoreCount(), MAX_CORE_CNT);
 
     CgemvTilingData tiling;
     tiling.transA = (int64_t)trans;
@@ -137,7 +146,11 @@ aclblasStatus_t aclblasCgemv(
     tiling.betaReal = betaHost.real;
     tiling.betaImag = betaHost.imag;
 
-    uint32_t* mask = CreateCgemvMask(m);
+    uint32_t* mask = CreateCgemvMask();
+    if (mask == nullptr) {
+        LOG_PRINT("aclblasCgemv: alloc mask host buffer failed\n");
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
     size_t maskSize = MASK_OFFSET_BASE * 2 * sizeof(uint32_t);
     size_t workSpaceSize = WORKSPACE_SIZE;
 

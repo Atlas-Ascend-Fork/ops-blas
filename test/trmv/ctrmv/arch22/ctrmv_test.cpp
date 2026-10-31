@@ -34,7 +34,8 @@
     } while (0)
 
 uint32_t VerifyResult(
-    const aclblasComplex* output, const aclblasComplex* golden, size_t size, const char* test_name, float epsilon = 1e-3f)
+    const aclblasComplex* output, const aclblasComplex* golden, size_t size, const char* test_name,
+    float epsilon = 1e-3f)
 {
     std::cout << "\n========== " << test_name << " ==========" << std::endl;
     size_t printCnt = size < 8 ? size : 8;
@@ -107,6 +108,56 @@ void ComputeCtrmvGolden(
     }
 }
 
+// issue #710: handle 为空与非法参数须返回对应错误码，而非解引用崩溃或按垃圾参数下发内核
+// （对齐 #580 修复后的 strmv 负向组口径）
+static int32_t TestCtrmvNegative(aclblasHandle_t handle)
+{
+    std::cout << "Testing ctrmv negative cases:" << std::endl;
+    int32_t failed = 0;
+    aclblasComplex dummy{0.0f, 0.0f};
+
+    auto expect = [&failed](aclblasStatus_t got, aclblasStatus_t want, const char* what) {
+        if (got != want) {
+            std::cout << "[FAIL] " << what << ": expected " << static_cast<int>(want) << " got "
+                      << static_cast<int>(got) << std::endl;
+            ++failed;
+        }
+    };
+
+    expect(
+        aclblasCtrmv(nullptr, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, &dummy, 8, &dummy, 1),
+        ACLBLAS_STATUS_HANDLE_IS_NULLPTR, "null handle");
+    expect(
+        aclblasCtrmv(
+            handle, static_cast<aclblasFillMode_t>(0), ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, &dummy, 8, &dummy, 1),
+        ACLBLAS_STATUS_INVALID_VALUE, "invalid uplo");
+    expect(
+        aclblasCtrmv(
+            handle, ACLBLAS_LOWER, static_cast<aclblasOperation_t>(99), ACLBLAS_NON_UNIT, 8, &dummy, 8, &dummy, 1),
+        ACLBLAS_STATUS_INVALID_VALUE, "invalid trans");
+    expect(
+        aclblasCtrmv(handle, ACLBLAS_LOWER, ACLBLAS_OP_N, static_cast<aclblasDiagType_t>(7), 8, &dummy, 8, &dummy, 1),
+        ACLBLAS_STATUS_INVALID_VALUE, "invalid diag");
+    expect(
+        aclblasCtrmv(handle, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, -1, &dummy, 8, &dummy, 1),
+        ACLBLAS_STATUS_INVALID_VALUE, "negative n");
+    expect(
+        aclblasCtrmv(handle, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, &dummy, 4, &dummy, 1),
+        ACLBLAS_STATUS_INVALID_VALUE, "small lda");
+    expect(
+        aclblasCtrmv(handle, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, &dummy, 8, &dummy, 0),
+        ACLBLAS_STATUS_INVALID_VALUE, "zero incx");
+    expect(
+        aclblasCtrmv(handle, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, nullptr, 8, &dummy, 1),
+        ACLBLAS_STATUS_INVALID_VALUE, "null A");
+    expect(
+        aclblasCtrmv(handle, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, &dummy, 8, nullptr, 1),
+        ACLBLAS_STATUS_INVALID_VALUE, "null x");
+
+    std::cout << "ctrmv negative cases done, " << failed << " failed" << std::endl;
+    return failed;
+}
+
 int32_t main(int32_t argc, char* argv[])
 {
     int32_t deviceId = 0;
@@ -115,16 +166,18 @@ int32_t main(int32_t argc, char* argv[])
 
     aclblasHandle_t handle = nullptr;
     auto blasRet = aclblasCreate(&handle);
-    CHECK_RET(
-        blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet); return blasRet);
+    CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
+              return blasRet);
 
     aclrtStream stream = nullptr;
     aclrtCreateStream(&stream);
     blasRet = aclblasSetStream(handle, stream);
-    CHECK_RET(
-        blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet); return blasRet);
+    CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
+              return blasRet);
 
     int ret = 0;
+
+    ret += TestCtrmvNegative(handle);
 
     constexpr int n = 4;
     constexpr int lda = 4;
