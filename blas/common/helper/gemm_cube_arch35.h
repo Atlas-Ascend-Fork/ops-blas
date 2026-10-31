@@ -118,9 +118,16 @@ __aicore__ inline void Compute2DBlocking(GemmCubeState& st)
     // L0C single-buffer assumption: uses full l0CSize for tile accumulation.
     // If L0C double-buffer or multi-tile accumulation is enabled later, reserve half: l0CSize / (2 * C0_TILE_BYTES).
     constexpr uint32_t MAX_C0_TILES = HardwareInfo<ArchType::ASCEND_V350>::l0CSize / C0_TILE_BYTES;
+    // A tile configuration whose bytes exceed L0C yields MAX_C0_TILES == 0 and the
+    // halving loop below can never terminate; reject it at compile time. The check
+    // uses 64-bit arithmetic so a wrapping C0_TILE_BYTES cannot sneak through.
+    static_assert(static_cast<uint64_t>(BASE_M) * BASE_N * sizeof(float) <=
+            HardwareInfo<ArchType::ASCEND_V350>::l0CSize,
+        "Compute2DBlocking: BASE_M*BASE_N tile bytes exceed L0C size, MAX_C0_TILES would be 0");
     st.mBlockSize = st.mLoopCount;
     st.nBlockSize = st.nLoopCount;
-    while (st.mBlockSize * st.nBlockSize > MAX_C0_TILES) {
+    // 64-bit product: loop-count squares can wrap uint32_t.
+    while (static_cast<uint64_t>(st.mBlockSize) * st.nBlockSize > MAX_C0_TILES) {
         if (st.mBlockSize >= st.nBlockSize) {
             st.mBlockSize = (st.mBlockSize + 1) / 2;
         } else {
