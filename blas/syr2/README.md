@@ -370,47 +370,61 @@ PASS: complex symmetric UPPER update; lower element preserved
 
 | 产品 | 支持情况 |
 | --- | --- |
-| Ascend 950PR（arch35，CANN 9.1.0） | 支持 |
+| Ascend 950PR | 支持 |
 
-#### 接口与计算
+#### 函数原型
+
+公共声明位于 `include/cann_ops_blas.h`，使用 `cann_ops_blas_common.h` 定义的
+`aclblasComplex`（实部、虚部各一个 FLOAT32）。
 
 ```cpp
 aclblasStatus_t aclblasCher2(
     aclblasHandle_t handle, aclblasFillMode_t uplo, const int n,
-    const aclblasComplex* alpha,
-    const aclblasComplex* x, const int incx,
-    const aclblasComplex* y, const int incy,
-    aclblasComplex* A, const int lda);
+    const aclblasComplex* alpha, const aclblasComplex* x, const int incx,
+    const aclblasComplex* y, const int incy, aclblasComplex* A, const int lda);
 ```
 
-`A := alpha * x * y^H + conj(alpha) * y * x^H + A`。alpha 是 Host 内存中的
-complex64 标量；x、y 和 A 是 Device 内存中的 complex64 数据。A 按列主序存储，
-元素 `(i,j)` 的地址为 `A[j * lda + i]`。仅引用及更新 uplo 指定的三角，
-未引用三角及 lda padding 保持原样。更新时不读取对角虚部，并将其写为 0。
+计算 `A = A + alpha*x*y^H + conj(alpha)*y*x^H`，矩阵采用列主序。
 
-x、y 的物理长度分别至少为 `1 + (n-1)*abs(incx)`、`1 + (n-1)*abs(incy)`。
-负步长按 Netlib 规则从 `(n-1)*abs(inc)` 位置开始反向遍历。索引运算使用宽整数，
-输入/输出满足 `aclblasComplex` 的 4 字节对齐即可。
+#### 参数说明
 
-#### 校验与执行语义
+| 参数 | 方向与位置 | 约束 |
+| --- | --- | --- |
+| handle | 输入，Host | 有效句柄，使用 `aclblasSetStream` 绑定的 stream |
+| uplo | 输入，Host | `ACLBLAS_UPPER` 或 `ACLBLAS_LOWER` |
+| n | 输入，Host | `n >= 0`，矩阵阶数、向量逻辑长度 |
+| alpha | 输入，Host | 非空，指向 complex64 标量，Host 直接读取 |
+| x | 输入，Device，只读 | complex64，物理长度至少 `1+(n-1)*abs(incx)` |
+| incx | 输入，Host | 非零复数元素步长，支持负步长 |
+| y | 输入，Device，只读 | complex64，物理长度至少 `1+(n-1)*abs(incy)` |
+| incy | 输入，Host | 非零复数元素步长，支持负步长 |
+| A | 输入/输出，Device | complex64，`lda*n`，原地更新指定三角 |
+| lda | 输入，Host | `lda >= max(1,n)`，每列的复数元素数 |
 
-按以下顺序校验：handle、n、uplo、lda/incx/incy/alpha 指针。
-handle 为空返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`；n<0 返回
-`ACLBLAS_STATUS_INVALID_VALUE`；非法 uplo 返回 `ACLBLAS_STATUS_INVALID_ENUM`。
-要求 `lda >= max(1,n)`、incx/incy 非零、alpha 指针非空。当前按随任务提供的测试
-约束将 `INT_MIN` 步长判为 `ACLBLAS_STATUS_INVALID_VALUE`。
+#### 语义与约束
 
-结构校验通过后，n=0 或 alpha=(0,0) 返回成功，不访问 x/y/A、不修改矩阵（包括对角虚部）。
-因此 n=0 并不会绕过结构校验。其余情况要求 x/y/A 非空，空指针返回
-`ACLBLAS_STATUS_INVALID_VALUE`。
+- 仅引用、更新 `uplo` 指定的三角；另一三角与 `lda` padding 保持不变。
+- 非空更新忽略原对角虚部并将结果虚部置零。输入指定三角表示 Hermitian 矩阵。
+- 负步长传入分配区的基地址，逻辑元素 `i` 位于 `(n-1-i)*abs(inc)`。
+- 先检查结构参数，再处理 `n=0` 或 `alpha=(0,0)`：返回 SUCCESS 且不访问 x/y/A，允许这三个指针为空。
+- 非 no-op 时 x/y/A 必须非空。空 handle 返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`，
+  非法 uplo 返回 `ACLBLAS_STATUS_INVALID_ENUM`，其他非法结构参数、空数据指针返回 `ACLBLAS_STATUS_INVALID_VALUE`。
+- 与随任务 CSV 一致，`INT_MIN` 步长返回 INVALID_VALUE，避免不可表示的 int 绝对值。
+- Host 不同步 stream；调用者在读回结果前同步。没有设备 alpha 指针模式或 CPU 回退。
+- Ascend C kernel 直调实现位于 `arch35/cher2_*`。连续向量的 n=256~4096 使用 AIV SoA 路径，
+  其余尺寸、步长使用 SIMT 路径，索引采用 64 位计算，不分配外部 workspace。
+- x/y/A 满足 `aclblasComplex` 的4字节自然对齐即可。SIMT 仅在 x/y 均8字节对齐时使用
+  `float2` 加载，否则逐 `float` 读取；A 始终标量读写。
 
-通过 `aclblasSetStream` 绑定的 stream 异步启动一个 Ascend C AIV kernel；无临时
-Device workspace、无 Host 侧 stream 同步。调用方读回结果前须同步 stream。
-无法获取 AIV 核数时返回 `ACLBLAS_STATUS_EXECUTION_FAILED`。
+#### 测试与调用
 
-连续向量、8 字节对齐且 `1024 <= n <= 4096` 时使用 SIMD 双缓冲路径：
-预计算共轭系数，重叠下一列的读取与当前列的计算/写回，每核使用 199680 字节 UB。
-其他尺寸、步长或对齐方式使用 64×64 三角分块 SIMT 路径；可证明安全的连续布局
-使用 32 位索引，其他布局保留 64 位地址计算。
+完整的 API 调用、Netlib CBLAS 3.10.0 golden 和性能复现说明见
+[aclblasCher2 自测说明](../../test/syr2/cher2/README.md)。
 
-测试方法见 [Cher2 测试说明](../../test/syr2/cher2/README.md)。
+```cpp
+aclblasComplex alpha{1.0f, 0.0f};
+// dx/dy/dA 为 Device 指针，长度分别 >= n、n、lda*n。
+aclblasStatus_t status = aclblasCher2(handle, ACLBLAS_UPPER, n,
+    &alpha, dx, 1, dy, 1, dA, lda);
+// 在读取 dA 之前同步 handle 绑定的 stream。
+```

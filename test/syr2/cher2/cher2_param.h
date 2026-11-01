@@ -16,7 +16,9 @@ struct Cher2Param : BlasTestParamBase {
     int n, incx, incy, lda;
     aclblasComplex alpha;
     bool nullAlpha;
+    bool normal = false;
     std::string xFill, yFill, aFill;
+
     explicit Cher2Param(const csv_map& m) : BlasTestParamBase(m)
     {
         uplo = parseFillMode(ReadMap(m, "uplo"));
@@ -24,9 +26,9 @@ struct Cher2Param : BlasTestParamBase {
         incx = parseInt(ReadMap(m, "incx"));
         incy = parseInt(ReadMap(m, "incy"));
         lda = parseInt(ReadMap(m, "lda"));
-        nullAlpha = ReadMap(m, "alpha_real") == "null" || ReadMap(m, "alpha_imag") == "null";
-        alpha = nullAlpha ? aclblasComplex{0, 0} :
-                            aclblasComplex{parseFloat(ReadMap(m, "alpha_real")), parseFloat(ReadMap(m, "alpha_imag"))};
+        const auto ar = ReadMap(m, "alpha_real");
+        nullAlpha = ar == "null" || ar == "NULLPTR";
+        alpha = {nullAlpha ? 0.0f : parseFloat(ar), parseFloat(ReadMap(m, "alpha_imag"))};
         xFill = ReadMap(m, "x_fill");
         yFill = ReadMap(m, "y_fill");
         aFill = ReadMap(m, "a_fill");

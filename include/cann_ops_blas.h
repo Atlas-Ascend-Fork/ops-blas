@@ -380,6 +380,10 @@ aclblasStatus_t aclblasCsyr(
     aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const aclblasComplex* alpha, const aclblasComplex* x,
     const int incx, aclblasComplex* A, const int lda);
 
+/** Hermitian rank-2 update. Host alpha; column-major A, selected triangle only.
+ * Structural validation precedes n==0 / alpha==0 quick return.
+ * Negative strides use the Netlib physical-base-pointer convention.
+ */
 aclblasStatus_t aclblasCher2(
     aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const aclblasComplex* alpha, const aclblasComplex* x,
     const int incx, const aclblasComplex* y, const int incy, aclblasComplex* A, const int lda);

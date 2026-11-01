@@ -8,4 +8,6 @@
 
 if("arch35" IN_LIST SOC_ARCH_DIRS)
     ops_blas_add_gtest_tests(${OPS_BLAS} cher2_test)
+    target_sources(cher2_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/arch35/cher2_regression.cpp)
+    target_link_libraries(cher2_test PRIVATE dl)
 endif()

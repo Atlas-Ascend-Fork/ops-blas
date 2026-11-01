@@ -9,16 +9,21 @@
  */
 
 #pragma once
+
 #include <cstdint>
 
 struct Cher2TilingData {
     uint32_t n;
     uint32_t lda;
-    uint32_t upper;
+    uint32_t uplo;
+    uint32_t numThreads;
     float alphaReal;
     float alphaImag;
     int64_t incx;
     int64_t incy;
 };
 
-void cher2_kernel_do(uint8_t* x, uint8_t* y, uint8_t* a, const Cher2TilingData& tiling, uint32_t blocks, void* stream);
+void cher2_kernel_do(
+    uint8_t* x, uint8_t* y, uint8_t* a, const Cher2TilingData& tiling, uint32_t numBlocks, void* stream);
+void cher2_aiv_kernel_do(
+    uint8_t* x, uint8_t* y, uint8_t* a, const Cher2TilingData& tiling, uint32_t numBlocks, void* stream);
