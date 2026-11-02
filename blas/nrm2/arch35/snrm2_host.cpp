@@ -27,12 +27,11 @@
 
 namespace {
 
-static aclblasStatus_t ValidateSnrm2Params(aclblasHandle_t handle, int n,
-                                             int incx, const float* x, float* result)
+static aclblasStatus_t ValidateSnrm2Params(aclblasHandle_t handle, int n, int incx, const float* x, float* result)
 {
     if (handle == nullptr) {
         OP_LOGE("aclblasSnrm2", "handle is nullptr");
-        return ACLBLAS_STATUS_NOT_INITIALIZED;
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
     if (result == nullptr) {
         OP_LOGE("aclblasSnrm2", "result must not be nullptr");
@@ -45,8 +44,8 @@ static aclblasStatus_t ValidateSnrm2Params(aclblasHandle_t handle, int n,
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static aclblasStatus_t CalcSnrm2LaunchConfig(int n, int incx, uint32_t aivCoreNum,
-                                              uint32_t* numBlocks, uint32_t* nthreads)
+static aclblasStatus_t CalcSnrm2LaunchConfig(
+    int n, int incx, uint32_t aivCoreNum, uint32_t* numBlocks, uint32_t* nthreads)
 {
     *numBlocks = std::min(aivCoreNum, static_cast<uint32_t>(n));
     if (*numBlocks > SNRM2_MAX_CORE_NUM) {
@@ -63,8 +62,7 @@ static aclblasStatus_t CalcSnrm2LaunchConfig(int n, int incx, uint32_t aivCoreNu
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static Snrm2TilingData CalcSnrm2TilingData(int n, int incx,
-                                             uint32_t numBlocks, uint32_t nthreads)
+static Snrm2TilingData CalcSnrm2TilingData(int n, int incx, uint32_t numBlocks, uint32_t nthreads)
 {
     Snrm2TilingData tiling{};
     tiling.n = n;
@@ -77,27 +75,22 @@ static Snrm2TilingData CalcSnrm2TilingData(int n, int incx,
     return tiling;
 }
 
-static aclblasStatus_t Snrm2ExecuteKernel(const float* x, float* result,
-                                            uint32_t numBlocks,
-                                            const Snrm2TilingData& tiling,
-                                            void* workspace, aclrtStream stream)
+static aclblasStatus_t Snrm2ExecuteKernel(
+    const float* x, float* result, uint32_t numBlocks, const Snrm2TilingData& tiling, void* workspace,
+    aclrtStream stream)
 {
-    OP_LOGI("aclblasSnrm2", "launching kernel: blocks=%u, incx=%d, workspace=%p",
-            numBlocks, tiling.incx, workspace);
+    OP_LOGI("aclblasSnrm2", "launching kernel: blocks=%u, incx=%d, workspace=%p", numBlocks, tiling.incx, workspace);
 
     snrm2_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
-        reinterpret_cast<uint8_t*>(result),
-        reinterpret_cast<uint8_t*>(workspace),
-        tiling, numBlocks, stream);
+        reinterpret_cast<uint8_t*>(const_cast<float*>(x)), reinterpret_cast<uint8_t*>(result),
+        reinterpret_cast<uint8_t*>(workspace), tiling, numBlocks, stream);
 
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-}  // namespace
+} // namespace
 
-aclblasStatus_t aclblasSnrm2(aclblasHandle_t handle, int n,
-                               const float* x, int incx, float* result)
+aclblasStatus_t aclblasSnrm2(aclblasHandle_t handle, int n, const float* x, int incx, float* result)
 {
     OP_LOGD("aclblasSnrm2", "entry: n=%d, incx=%d", n, incx);
 
@@ -109,8 +102,7 @@ aclblasStatus_t aclblasSnrm2(aclblasHandle_t handle, int n,
     // Quick return: n <= 0 or incx <= 0 -- write 0.0f to device result
     if (n <= 0 || incx <= 0) {
         float zero = 0.0f;
-        aclError memRet = aclrtMemcpy(result, sizeof(float), &zero, sizeof(float),
-                                      ACL_MEMCPY_HOST_TO_DEVICE);
+        aclError memRet = aclrtMemcpy(result, sizeof(float), &zero, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
         if (memRet != ACL_SUCCESS) {
             OP_LOGE("aclblasSnrm2", "aclrtMemcpy for early-return zero failed: %d", memRet);
             return ACLBLAS_STATUS_EXECUTION_FAILED;
@@ -135,16 +127,17 @@ aclblasStatus_t aclblasSnrm2(aclblasHandle_t handle, int n,
 
     Snrm2TilingData tiling = CalcSnrm2TilingData(n, incx, numBlocks, nthreads);
 
-    OP_LOGD("aclblasSnrm2", "tiling: n=%d incx=%d useCoreNum=%u perCoreN=%u "
-            "remainder=%u nthreads=%u",
-            tiling.n, tiling.incx, tiling.useCoreNum,
-            tiling.perCoreN, tiling.remainder, tiling.nthreads);
+    OP_LOGD(
+        "aclblasSnrm2",
+        "tiling: n=%d incx=%d useCoreNum=%u perCoreN=%u "
+        "remainder=%u nthreads=%u",
+        tiling.n, tiling.incx, tiling.useCoreNum, tiling.perCoreN, tiling.remainder, tiling.nthreads);
 
     // Reduce rounds the partial-sum count up to one UB block; size the check to that
     // padded count so the host-side memset and the kernel's reduce reads stay within
     // the validated region.
-    uint32_t paddedCoreNum = (tiling.useCoreNum + SNRM2_WORKSPACE_ALIGN_FLOATS - 1) /
-                             SNRM2_WORKSPACE_ALIGN_FLOATS * SNRM2_WORKSPACE_ALIGN_FLOATS;
+    uint32_t paddedCoreNum = (tiling.useCoreNum + SNRM2_WORKSPACE_ALIGN_FLOATS - 1) / SNRM2_WORKSPACE_ALIGN_FLOATS *
+                             SNRM2_WORKSPACE_ALIGN_FLOATS;
     size_t requiredBytes = static_cast<size_t>(paddedCoreNum) * sizeof(float);
     CHECK_RET(requiredBytes <= GetEffectiveWorkspaceSize(h),
               OP_LOGE("aclblasSnrm2", "workspace %zu > handle %zu", requiredBytes, GetEffectiveWorkspaceSize(h));

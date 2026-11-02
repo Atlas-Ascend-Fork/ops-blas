@@ -25,7 +25,7 @@ TEST_F(Snrm2Arch35Test, NullHandle)
 {
     float result = 0.0f;
     aclblasStatus_t ret = aclblasSnrm2_npu(nullptr, 5, nullptr, 1, &result);
-    EXPECT_EQ(ret, ACLBLAS_STATUS_NOT_INITIALIZED);
+    EXPECT_EQ(ret, ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 }
 
 INSTANTIATE_TEST_SUITE_P(

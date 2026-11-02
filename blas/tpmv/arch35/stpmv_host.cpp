@@ -31,18 +31,15 @@ void stpmv_arch35_scatter_do(
 static aclblasStatus_t ValidateStpmvParams(
     aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, const float* AP, float* x, int incx)
 {
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE("aclblasStpmv", "invalid uplo=%d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
-        OP_LOGE("aclblasStpmv", "invalid trans=%d", static_cast<int>(trans));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        diag == ACLBLAS_NON_UNIT || diag == ACLBLAS_UNIT,
-        OP_LOGE("aclblasStpmv", "invalid diag=%d", static_cast<int>(diag));
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE("aclblasStpmv", "invalid uplo=%d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
+              OP_LOGE("aclblasStpmv", "invalid trans=%d", static_cast<int>(trans));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(diag == ACLBLAS_NON_UNIT || diag == ACLBLAS_UNIT,
+              OP_LOGE("aclblasStpmv", "invalid diag=%d", static_cast<int>(diag));
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasStpmv", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(AP != nullptr, OP_LOGE("aclblasStpmv", "AP must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(x != nullptr, OP_LOGE("aclblasStpmv", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
@@ -68,9 +65,8 @@ static aclblasStatus_t AllocateWorkspace(int n, uint8_t** workspaceOut)
     *workspaceOut = nullptr;
     const size_t workspaceSize = static_cast<size_t>(n) * sizeof(float);
     aclError aclRet = aclrtMalloc(reinterpret_cast<void**>(workspaceOut), workspaceSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, OP_LOGE("aclblasStpmv", "aclrtMalloc failed, ret=%d", aclRet);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, OP_LOGE("aclblasStpmv", "aclrtMalloc failed, ret=%d", aclRet);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -82,9 +78,8 @@ static aclblasStatus_t ExecuteKernel(
         stream);
 
     aclError aclRet = aclrtSynchronizeStream(stream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, OP_LOGE("aclblasStpmv", "aclrtSynchronizeStream failed, ret=%d", aclRet);
-        return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, OP_LOGE("aclblasStpmv", "aclrtSynchronizeStream failed, ret=%d", aclRet);
+              return ACLBLAS_STATUS_INTERNAL_ERROR);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -94,15 +89,14 @@ static aclblasStatus_t WriteBackResult(
     const size_t workspaceSize = static_cast<size_t>(n) * sizeof(float);
     if (incx == 1) {
         aclError aclRet = aclrtMemcpy(x, workspaceSize, workspace, workspaceSize, ACL_MEMCPY_DEVICE_TO_DEVICE);
-        CHECK_RET(
-            aclRet == ACL_SUCCESS, OP_LOGE("aclblasStpmv", "aclrtMemcpy D2D (workspace->x) failed, ret=%d", aclRet);
-            return ACLBLAS_STATUS_INTERNAL_ERROR);
+        CHECK_RET(aclRet == ACL_SUCCESS,
+                  OP_LOGE("aclblasStpmv", "aclrtMemcpy D2D (workspace->x) failed, ret=%d", aclRet);
+                  return ACLBLAS_STATUS_INTERNAL_ERROR);
     } else {
         stpmv_arch35_scatter_do(reinterpret_cast<uint8_t*>(x), workspace, tiling, numBlocks, stream);
         aclError aclRet = aclrtSynchronizeStream(stream);
-        CHECK_RET(
-            aclRet == ACL_SUCCESS, OP_LOGE("aclblasStpmv", "scatter sync failed, ret=%d", aclRet);
-            return ACLBLAS_STATUS_INTERNAL_ERROR);
+        CHECK_RET(aclRet == ACL_SUCCESS, OP_LOGE("aclblasStpmv", "scatter sync failed, ret=%d", aclRet);
+                  return ACLBLAS_STATUS_INTERNAL_ERROR);
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
@@ -115,17 +109,19 @@ aclblasStatus_t aclblasStpmv(
     CHECK_RET(h != nullptr, OP_LOGE("aclblasStpmv", "handle is nullptr"); return ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 
     CHECK_RET(n >= 0, OP_LOGE("aclblasStpmv", "invalid n=%d", n); return ACLBLAS_STATUS_INVALID_VALUE);
-    if (n == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
+    // issue #748: 校验顺序对齐 ctpmv 契约（枚举/incx 校验先于 n==0 快速返回），
+    // 使 n=0 且 incx=0 与 ctpmv 同返回 INVALID_VALUE
     aclblasStatus_t st = ValidateStpmvParams(uplo, trans, diag, AP, x, incx);
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
     }
+    if (n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
 
     uint32_t aivCoreNum = GetAivCoreCount();
-    CHECK_RET(
-        aivCoreNum > 0, OP_LOGE("aclblasStpmv", "GetAivCoreCount failed"); return ACLBLAS_STATUS_EXECUTION_FAILED);
+    CHECK_RET(aivCoreNum > 0, OP_LOGE("aclblasStpmv", "GetAivCoreCount failed");
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     uint32_t nU32 = static_cast<uint32_t>(n);
     uint32_t useNumBlocks = std::min(nU32, aivCoreNum);

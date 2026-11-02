@@ -31,7 +31,7 @@ inline aclblasStatus_t aclblasSnrm2_npu(
     aclblasHandle_t handle, const int64_t n, const float* x, const int64_t incx, float* result)
 {
     if (handle == nullptr) {
-        return ACLBLAS_STATUS_NOT_INITIALIZED;
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
     const size_t resultBytes = sizeof(float);
 

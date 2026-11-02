@@ -48,7 +48,7 @@ aclblasStatus_t aclblasScalex(aclblasHandle_t handle, int n, const void *alpha, 
 #### 约束说明
 
 - n <= 0 时为 no-op（直接返回 ACLBLAS_STATUS_SUCCESS，不修改 x）
-- incx 为整数；incx <= 0 时为 no-op（不修改 x，直接返回 ACLBLAS_STATUS_SUCCESS，对齐 aclblasSscal / 参考 BLAS cblas_sscal 的 IF (INCX.LE.0) RETURN 语义）
+- incx == 0 为非法步长，返回 ACLBLAS_STATUS_INVALID_VALUE；incx < 0 暂不支持，返回 ACLBLAS_STATUS_NOT_SUPPORTED（issue #749：不再与 n<=0 合并静默成功，后续如需负步长支持另行迭代）；n <= 0 时为 no-op（不修改 x，直接返回 ACLBLAS_STATUS_SUCCESS）
 - alphaType 固定为 ACL_FLOAT
 - executionType 固定为 ACL_FLOAT
 - xType 必须为 ACL_FLOAT、ACL_FLOAT16 或 ACL_BF16

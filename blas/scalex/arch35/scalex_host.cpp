@@ -33,7 +33,7 @@ static uint32_t GetBytePerElement(uint32_t xType)
     constexpr uint32_t kFloatSize = sizeof(float);
 
     if (xType == static_cast<uint32_t>(ACL_FLOAT)) {
-        return 2 * kFloatSize;             // inQueue + outQueue
+        return 2 * kFloatSize; // inQueue + outQueue
     }
     return 2 * kFp16Bf16Size + kFloatSize; // inQueue + outQueue + midBuf(cast to float)
 }
@@ -157,8 +157,19 @@ aclblasStatus_t aclblasScalex(
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
 
-    if (n <= 0 || incx <= 0) {
+    // issue #749: n<=0 快速返回保留；incx==0 为非法步长显式拒绝；
+    // incx<0 为合法 BLAS 语义但当前实现未支持，显式返回 NOT_SUPPORTED
+    // （不再与 n<=0 混合静默假成功）
+    if (n <= 0) {
         return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (incx == 0) {
+        OP_LOGE("aclblasScalex", "incx must not be zero");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (incx < 0) {
+        OP_LOGE("aclblasScalex", "negative incx=%d not supported", incx);
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
 
     aclblasStatus_t status = ValidateScalexParams(handle, n, alpha, alphaType, x, xType, incx, executionType);

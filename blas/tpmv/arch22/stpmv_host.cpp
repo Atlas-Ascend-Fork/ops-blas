@@ -48,6 +48,11 @@ aclblasStatus_t aclblasStpmv_legacy(
     aclblasHandle_t handle, aclblasFillMode uplo, aclblasOperation trans, aclblasDiagType diag, int64_t n,
     const float* aPacked, const float* x, float* y, int64_t incx)
 {
+    // issue #747: 校验顺序对齐 arch35/ctpmv 契约——handle → 枚举 → n<0 拒绝 →
+    // n==0 快速返回（仅 n==0 静默成功，n<0 为非法输入）
+    if (handle == nullptr) {
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
     if (uplo != ACLBLAS_UPPER && uplo != ACLBLAS_LOWER) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
@@ -57,10 +62,10 @@ aclblasStatus_t aclblasStpmv_legacy(
     if (diag != ACLBLAS_NON_UNIT && diag != ACLBLAS_UNIT) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (handle == nullptr) {
-        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    if (n < 0) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (n <= 0) {
+    if (n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }
     if (aPacked == nullptr || x == nullptr || y == nullptr) {

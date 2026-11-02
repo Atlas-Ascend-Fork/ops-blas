@@ -16,14 +16,12 @@
 
 // Reference implementation — same signature as aclblasSnrm2
 inline aclblasStatus_t aclblasSnrm2_cpu(
-    aclblasHandle_t handle,
-    const int64_t n,
-    const float* x,
-    const int64_t incx,
-    float* result)
+    aclblasHandle_t handle, const int64_t n, const float* x, const int64_t incx, float* result)
 {
-    if (handle == nullptr) return ACLBLAS_STATUS_NOT_INITIALIZED;
-    if (x == nullptr || result == nullptr) return ACLBLAS_STATUS_INVALID_VALUE;
+    if (handle == nullptr)
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    if (x == nullptr || result == nullptr)
+        return ACLBLAS_STATUS_INVALID_VALUE;
     if (n <= 0 || incx <= 0) {
         *result = 0.0f;
         return ACLBLAS_STATUS_SUCCESS;
@@ -32,5 +30,3 @@ inline aclblasStatus_t aclblasSnrm2_cpu(
     *result = cblas_snrm2(static_cast<int>(n), x, static_cast<int>(incx));
     return ACLBLAS_STATUS_SUCCESS;
 }
-
-
