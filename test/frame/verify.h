@@ -13,7 +13,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cmath>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
