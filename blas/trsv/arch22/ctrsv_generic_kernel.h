@@ -17,7 +17,7 @@
 
 namespace ctrsv_generic {
 
-template <bool TRANSPOSE, bool CONJUGATE, bool UNIT_DIAG>
+template <bool TRANSPOSE, bool CONJUGATE, bool UNIT_DIAG, bool MATRIX_RHS = false>
 class Kernel {
     using Complex = ctrsv_netlib::Complex;
     static constexpr uint32_t TILE = 64U;
@@ -26,6 +26,7 @@ class Kernel {
     AscendC::GlobalTensor<float> matrixGm_, vectorGm_;
     AscendC::LocalTensor<float> matrixAos_, vectorAos_, output_;
     AscendC::LocalTensor<float> ar_, ai_, xr_, xi_, pr_, pi_, real_, imag_, scratch_;
+    AscendC::LocalTensor<float> fmaScratch_;
     AscendC::LocalTensor<uint32_t> inputOffsets_, outputOffsets_;
     int32_t n_, lda_, incx_, uplo_;
 
@@ -171,23 +172,87 @@ class Kernel {
             return value;
         }
     }
+    // Split into non-overlapping high/low parts without changing the original inputs.
+    __aicore__ inline void SplitOperand(
+        AscendC::LocalTensor<float> hi, AscendC::LocalTensor<float> lo, AscendC::LocalTensor<float> x,
+        AscendC::LocalTensor<float> work, uint32_t count)
+    {
+        AscendC::Muls(work, x, 4097.0f, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Sub(hi, work, x, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Sub(hi, work, hi, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Sub(lo, x, hi, count);
+        AscendC::PipeBarrier<PIPE_V>();
+    }
+    // Compensate the separately rounded A2 multiply/add before the column update.
+    __aicore__ inline void RoundedFma(
+        AscendC::LocalTensor<float> dst, AscendC::LocalTensor<float> a, AscendC::LocalTensor<float> b,
+        AscendC::LocalTensor<float> c, uint32_t count)
+    {
+        auto ah = fmaScratch_, al = ah[TILE], bh = al[TILE], bl = bh[TILE], p = bl[TILE];
+        auto error = p[TILE], hi = error[TILE], z = hi[TILE], lo = z[TILE], work = lo[TILE];
+        SplitOperand(ah, al, a, work, count);
+        SplitOperand(bh, bl, b, work, count);
+        AscendC::Mul(p, a, b, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Mul(error, ah, bh, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Sub(error, error, p, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Mul(work, ah, bl, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Add(error, error, work, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Mul(work, al, bh, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Add(error, error, work, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Mul(work, al, bl, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Add(error, error, work, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Add(hi, p, c, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Sub(z, hi, p, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Sub(lo, hi, z, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Sub(lo, p, lo, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Sub(work, c, z, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Add(lo, lo, work, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Add(lo, error, lo, count);
+        AscendC::PipeBarrier<PIPE_V>();
+        AscendC::Add(dst, hi, lo, count);
+        AscendC::PipeBarrier<PIPE_V>();
+    }
     __aicore__ inline void ComputeProducts(uint32_t count)
     {
-        // Round the imaginary product before the real FMA, as in Netlib Product.
+        // Netlib CTRSM column updates use fused products and the reverse imaginary-product order.
         AscendC::Mul(pr_, ai_, xi_, count);
-        AscendC::Mul(pi_, ai_, xr_, count);
+        AscendC::Mul(pi_, MATRIX_RHS && !TRANSPOSE ? ar_ : ai_, MATRIX_RHS && !TRANSPOSE ? xi_ : xr_, count);
         AscendC::PipeBarrier<PIPE_V>();
         AscendC::Muls(pr_, pr_, -1.0f, count);
         AscendC::PipeBarrier<PIPE_V>();
-        AscendC::MulAddDst(pr_, ar_, xr_, count);
-        AscendC::MulAddDst(pi_, ar_, xi_, count);
+        if constexpr (MATRIX_RHS && !TRANSPOSE) {
+            RoundedFma(pr_, ar_, xr_, pr_, count);
+            RoundedFma(pi_, ai_, xr_, pi_, count);
+        } else {
+            AscendC::MulAddDst(pr_, ar_, xr_, count);
+            AscendC::MulAddDst(pi_, ar_, xi_, count);
+        }
         AscendC::PipeBarrier<PIPE_V>();
         SET_FLAG(V, S, EVENT_ID0);
         WAIT_FLAG(V, S, EVENT_ID0);
         for (uint32_t i = 0; i < count; ++i) {
             const Complex a{ar_.GetValue(i), ai_.GetValue(i)}, x{xr_.GetValue(i), xi_.GetValue(i)};
             if (ctrsv_netlib::NeedsSoftwareProduct(a) || ctrsv_netlib::NeedsSoftwareProduct(x)) {
-                const Complex product = ctrsv_netlib::Product(a, x);
+                const Complex product =
+                    ctrsv_netlib::Product(MATRIX_RHS && !TRANSPOSE ? x : a, MATRIX_RHS && !TRANSPOSE ? a : x);
                 pr_.SetValue(i, product.real);
                 pi_.SetValue(i, product.imag);
             }
@@ -287,6 +352,8 @@ public:
         scratch_ = imag_[TILE];
         inputOffsets_ = scratch_[TILE].template ReinterpretCast<uint32_t>();
         outputOffsets_ = inputOffsets_[TILE];
+        // Brcb expands TILE logical indices to TILE * BLOCK_FLOATS packed lanes.
+        fmaScratch_ = outputOffsets_[TILE * BLOCK_FLOATS].template ReinterpretCast<float>();
         InitializeOffsets();
     }
     __aicore__ inline void Process()

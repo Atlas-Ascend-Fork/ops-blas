@@ -18,7 +18,7 @@ side='R': X[i] * op(A[i]) = alpha * B[i]
 | 接口名 | 功能简述 |
 |--------|---------|
 | aclblasStrsmBatched | 单精度浮点批量三角求解 |
-| [aclblasCtrsmBatched](#aclblasctrsmbatchedcomplex64) | 单精度复数批量三角求解（当前实现：Atlas 950PR，arch35） |
+| [aclblasCtrsmBatched](#aclblasctrsmbatchedcomplex64) | 单精度复数批量三角求解（Atlas A2/A3：arch22；Atlas 950PR：arch35） |
 
 ## 算子执行接口
 
@@ -336,7 +336,7 @@ int main()
 }
 ```
 
-## aclblasCtrsmBatched（complex64）
+## aclblasCtrsmBatched（complex64，arch35）
 
 #### 产品支持情况
 
@@ -353,9 +353,10 @@ LEFT 求解 op(A)X=alpha B；RIGHT 求解 X op(A)=alpha B，B 原地覆写。
 
 仅访问指定三角，UNIT 不读对角；alpha=0 不读 A 和 B 的旧值，只清零逻辑 B 区域。
 B 的 padding 保留，各 batch 的 B 不可重叠。无奇异性检测，不支持设备 alpha。
-非法枚举、负维度、batchCount<1、错误前导维、空 alpha/B 返回 INVALID_VALUE；
-空 handle 返回 HANDLE_IS_NULLPTR。先验证元数据和 alpha/B，再处理 m/n=0 no-op；
-空矩阵允许未使用的 lda/ldb 为 0，非空矩阵才要求满足相应尺寸下界。
+非法枚举、负维度或负前导维、batchCount<1、空 alpha 返回 INVALID_VALUE；
+空 handle 返回 HANDLE_IS_NULLPTR。验证元数据和 alpha 非空后，m/n=0 直接成功返回；
+此时允许 A/B 为空、lda/ldb 为 0，不读取 alpha 值、数组或矩阵。
+非空矩阵要求 B 非空，前导维满足相应尺寸下界。
 非空维度且 alpha 非零要求非空 A 指针数组。B[i] 及实际需要读取的 A 元素须位于有效设备内存；alpha=0 和 UNIT 隐含对角对应的数据不被使用。
 
 实现位于 `arch35/ctrsmbatched_*`，依赖 asc-devkit >= 9.1，与实数文件共存。
@@ -394,7 +395,7 @@ L0 和 Fixpipe 保持串行，事件保证缓冲区读取完成后才可复用�
 ## Atlas A2/A3（arch22）实现与自测
 
 实现位于 `arch22/`，使用 Ascend C kernel 直调，共用上述公开接口。
-所有 kernel 提交至 handle 绑定的 stream；Host 不读取矩阵内容，除 alpha 标量与 A/B 指针数组在 Device 内存时需同步读取校验外，不在正常调用中同步设备。
+所有 kernel 提交至 handle 绑定的 stream。Host 不读取矩阵内容或 A/B 指针数组内容；Device alpha 的同步语义见下文。
 
 在安装了 Netlib BLAS、LAPACK、GTest 的 Ascend Linux 环境，从仓库根目录执行：
 
@@ -416,3 +417,70 @@ A3 使用与实际设备匹配的 `--soc=ascend910_9382` 等参数重新编译�
 设置 `GSB_FULL_TEST=1` 时加载全量任务 CSV。两种模式均保留独立接口检查；冒烟通过不能替代全量精度和性能验收。
 工作区按 `batchCount * (align16(m) * align16(n) + 8192) * sizeof(float)` 计算，受 handle 2 GiB 上限约束，超限返回 `ACLBLAS_STATUS_ALLOC_FAILED`，超大规格组合建议按 batch 分批调用。
 
+
+## aclblasCtrsmBatched：Atlas A2/A3（arch22）
+
+#### 产品支持情况
+
+| 产品 | 支持情况 |
+|------|----------|
+| Atlas A2 训练/推理系列（含 Atlas 800I A2） | 支持 |
+| Atlas A3 训练/推理系列（含 Atlas 800I A3） | 支持 |
+| Ascend 950PR / 950DT | 使用既有 arch35 实现 |
+
+接口使用 `arch22` Ascend C Kernel 直调实现。
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasCtrsmBatched(
+    aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo,
+    aclblasOperation_t trans, aclblasDiagType_t diag, int m, int n,
+    const aclblasComplex* alpha, const aclblasComplex* const A[], int lda,
+    aclblasComplex* const B[], int ldb, int batchCount);
+```
+
+矩阵采用列主序。`aclblasComplex` 的实部和虚部均为 FP32。矩阵指针数组和矩阵数据存放在 Device。
+`alpha` 支持 Host 和 Device 指针。m、n 均大于 0 时，Device alpha 的 D2H 拷贝排入 handle stream，
+随后同步该 stream，再读取 Host 标量。此前在同一 stream 上排入的 alpha 写入按序完成，调用方无需预同步。
+接口不缓存 alpha 值；仅 Device alpha 的非空调用需要这次 stream 同步。
+求解 kernel 仍异步入队，调用方同步 stream 后访问矩阵结果。Host alpha 直接读取标量。
+
+- `side=LEFT`：`op(A[i]) * X[i] = alpha * B[i]`，三角矩阵阶数为 `m`。
+- `side=RIGHT`：`X[i] * op(A[i]) = alpha * B[i]`，三角矩阵阶数为 `n`。
+- `trans=N/T/C` 分别表示不转置、转置和共轭转置。
+- `diag=UNIT` 时不读取三角矩阵的对角元素。
+- `m,n >= 0`，`batchCount >= 1`，`lda >= max(1, order)`，`ldb >= max(1, m)`。
+- `alpha=0` 时将有效 B 元素置零，不访问 A。输出保持 leading dimension 中的 padding。
+- `m=0` 或 `n=0` 时不启动 Kernel。仍校验枚举、m/n/lda/ldb 非负、batchCount 为正及 alpha 非空；
+  允许 A/B 为空，lda/ldb 可为 0，不读取 alpha 值或 A/B 数组，也不同步 stream。两种架构采用相同零维语义。
+- 结果原地覆盖 B。参数错误返回对应状态码。
+
+#### 路径设计
+
+路径选择只依赖矩阵几何、布局、标量、核数和 workspace 容量。
+小方阵按 batch 数量复用向量或混合核路径。中等矩阵采用分块求逆和 Cube 更新。
+大矩阵优先复用分块求逆路径，workspace 由 handle 管理。
+通用标量及其余几何复用 `trsv/arch22/ctrsv_generic_kernel.h` 的三角求解器，逐 RHS 执行，不需要 workspace。
+32 阶紧凑左侧非单位对角方阵在 alpha=1、trans=N 时复用成对 Mixed 实现。小 batch 的极值分支保持 Netlib 的乘法顺序及全值域除法。窄 RHS 的其余输入复用求逆路径；用户 workspace 不足时使用向量回退。
+通用回退共用 Ctrsv 求解器。编译期 `MATRIX_RHS` 在列更新中使用 FP32 高低位拆分和误差补偿，减少 A2 非融合乘加相对 Netlib CTRSM 的舍入差异，并保留其复数虚部的乘法顺序。补偿缓冲区位于完整输出索引区之后。极值仍由已有全值域算术处理；Ctrsv 默认模板行为保持不变。
+8/16 阶紧凑左侧非单位对角方阵在 alpha=1、trans=N 时共用 PlanarSquare。65～96 阶与短 panel 复用通用 Block 路径，64 阶 workspace 内部保留 32 阶对角块。
+普通与预取 Block 更新共用求解循环。高 batch 且 L1 容量允许时，32 阶分块路径预取系数并保留完整 RHS。4～64 阶右侧求逆应用共用一份 Cube 计算：batch 不超过 AIC 核数时，在求逆启动中旋转打包 RHS，随后由纯 Cube Kernel 直接写回；其余 batch 由 Cube 直接读取 B，在混合核内由 Vector 合并实部和虚部后写回。两种右侧布局共用向量变换实现，workspace 按分块数量预留打包输入或中间结果。左侧使用流水纯 Cube Kernel。
+
+`arch22` 按三个编译单元和一个共享头文件组织：
+
+| 文件 | 职责 |
+|------|------|
+| `ctrsmbatched_host.cpp` | 参数校验、标量读取、workspace 与路径选择 |
+| `ctrsmbatched_kernel.cpp` | 小方阵、成对 mixed、小阶逆应用与直接 RHS 路径及其启动函数 |
+| `ctrsmbatched_block_kernel.cpp` | 分组逆、分块 Cube 更新、通用逆应用与向量求解及其启动函数 |
+| `ctrsmbatched_kernel_common.h` | 两个 Kernel 编译单元共用的搬运/同步工具、Planar 基类与常量索引模板 |
+
+设备实现按索引配置、数据加载、Cube 计算和写回划分阶段函数。
+成对计算、分块更新和 RHS 流水分别在单个对象内共享原有缓冲区和事件编号。
+
+小阶高 batch 混合核使用 FP32 对角逆、FP32 累加和 FP32 最终输出。
+该路径的非对角 Cube 输入及 L0C 到 L1 的中间反馈使用 FP16，对角 Cube 计算启用 HF32。
+其余路径使用各自的数据布局和计算配置。小方阵与分块求逆复用常量索引表，通用回退的算术由 Ctrsv 维护。精度验证以 Netlib CBLAS 为参考。
+
+[arch22 测试说明](../../test/trsmbatched/ctrsmbatched/README.md#arch22-测试门禁)。

@@ -504,3 +504,35 @@ TEST_P(CtrsmBatchedArch35Test, Solve)
     if (p.caseName.rfind("TC_PF_", 0) == 0 && !HasFailure())
         data.Benchmark();
 }
+
+TEST_F(CtrsmBatchedArch35Test, ZeroDimensionsDoNotAccessPointers)
+{
+    const Complex alpha{1.f, 0.f};
+    for (const int rows : {0, 4}) {
+        for (const int cols : {0, 4}) {
+            if (rows != 0 && cols != 0)
+                continue;
+            for (const auto side : {ACLBLAS_SIDE_LEFT, ACLBLAS_SIDE_RIGHT})
+                EXPECT_EQ(
+                    aclblasCtrsmBatched(
+                        handle_, side, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, rows, cols, &alpha, nullptr, 0,
+                        nullptr, 0, 1),
+                    ACLBLAS_STATUS_SUCCESS);
+        }
+    }
+}
+
+TEST_F(CtrsmBatchedArch35Test, ZeroDimensionsValidateMetadata)
+{
+    const Complex alpha{1.f, 0.f};
+    for (const auto side : {ACLBLAS_SIDE_LEFT, ACLBLAS_SIDE_RIGHT}) {
+        EXPECT_EQ(
+            aclblasCtrsmBatched(
+                handle_, side, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 0, 4, &alpha, nullptr, -1, nullptr, 0, 1),
+            ACLBLAS_STATUS_INVALID_VALUE);
+        EXPECT_EQ(
+            aclblasCtrsmBatched(
+                handle_, side, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 4, 0, nullptr, nullptr, 0, nullptr, 0, 1),
+            ACLBLAS_STATUS_INVALID_VALUE);
+    }
+}

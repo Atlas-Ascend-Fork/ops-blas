@@ -152,3 +152,65 @@ CTRSM_BATCHED_WORKSPACE_BYTES=16 \
 用例名称、事件均值（us）、采样数、矩阵与指针数组申请字节数、活动 handle workspace
 容量。采样数必须为 60，内存字段表示显式申请量与活动容量，不是设备实测峰值。
 验收报告可从这些原始记录整理，但不能替代完整执行结果和上述性能断言。
+
+
+## arch22 测试门禁
+
+配置 CANN 环境后，仅构建本算子：
+
+```bash
+source <CANN安装目录>/set_env.sh
+bash build.sh --ops=ctrsmbatched --soc=ascend910b3
+```
+
+在相应 A3 设备上将 `--soc` 替换为该设备支持的 `ascend910_93` 型号。
+测试目标为 `ctrsmbatched_test`。官方 CSV 保存在 `test/trsmbatched/ctrsmbatched/arch22/`。
+精度测试使用官方非 PF 用例，性能测试使用 `TC_PF_*`，两者分开运行。
+性能使用 `msprof op` 的 `BasicInfo` 采样。每次调用的全部 Kernel 耗时求和，前 5 次预热，随后 3 次有效采样取均值。
+内存检查使用带 `--cce-enable-sanitizer` 的独立构建，并由对应版本的 mssanitizer 执行。
+
+
+### 自检与内存检查
+
+`CtrsmBatchedCsvCoverage.CsvCaseCount` 断言官方 CSV 共 1200 条，其中精度 1000 条、
+`TC_PF_*` 200 条。两份 Python 入口仅用于 arch22，使用 Python 3 标准库。
+从仓库根目录运行，先配置测试依赖并确认 `LD_LIBRARY_PATH` 指向当前算子和参考库：
+
+```bash
+python3 test/trsmbatched/ctrsmbatched/run_self_test.py \
+  --device 0 --output-dir <新的自检输出目录>
+# 只做代表验证时必须显式列出用例；摘要标记为 selected，不代表全量通过。
+python3 test/trsmbatched/ctrsmbatched/run_self_test.py \
+  --device 0 --cases TC_L0_002 TC_AB_075 --output-dir <新的代表验证目录>
+```
+
+自检核对 CSV 的唯一用例编号、1200 项官方 GTest 注册以及实际 XML 结果。
+默认执行数量断言和全部 1200 项官方用例，共 1201 项；指定 `--cases` 后仍核对完整注册，
+但只执行数量断言和选中用例。漏跑、重复、跳过、失败及非零退出均判失败。
+`self_test_summary.json` 记录范围、数量、失败数和退出码。
+其中性能用例的成功只表示调用成功；性能达标仍须按上文使用 `msprof op` 判定。
+
+内存检查使用独立构建目录，保留 Release 构建。按仓库环境配置相同的第三方依赖，
+在原有 CMake 配置参数上增加插桩参数及行号信息：
+
+```bash
+cmake -S . -B build-memcheck -DSOC_VERSION=ascend910b3 \
+  -DBUILD_TEST=ON -DTEST_NAMES=ctrsmbatched -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_ASC_FLAGS='--cce-enable-sanitizer -gline-tables-only'
+cmake --build build-memcheck --target ctrsmbatched_test -j8
+export LD_LIBRARY_PATH="$PWD/build-memcheck:$LD_LIBRARY_PATH"
+python3 test/trsmbatched/ctrsmbatched/run_memcheck.py \
+  --binary build-memcheck/test/trsmbatched/ctrsmbatched/ctrsmbatched_test \
+  --device 0 --output-dir <新的内存检查输出目录>
+```
+
+加载当前 CANN 的 `set_env.sh`，使 `mssanitizer` 来自同一版本。
+默认覆盖官方 `TC_ED_*`、`TC_L0_*` 和 `TC_AB_075`（alpha=0 清零）；
+可用 `--cases` 显式选择代表用例。脚本执行 `mssanitizer --tool=memcheck`，
+先通过 `ldd` 核对实际加载的 `libops_blas.so` 包含 CANN 插桩标记；未插桩直接失败。
+随后核对 GTest 结果、非零 kernel 扫描和扫描完成记录，汇总 `WARNING/WARN/ERROR/FATAL`。
+任一告警、错误、未完成扫描或测试失败均返回非零，不过滤寄存器恢复或工具告警。
+`memcheck_summary.json` 保存全部诊断和扫描数量；不得将选中用例通过写成全量内存检查通过。
+
+两入口均用 `ASCEND_RT_VISIBLE_DEVICES` 只暴露指定物理卡，进程内使用逻辑设备 0。
+输出目录须为新目录；其中保存运行日志、GTest XML 和 JSON 摘要，均不提交源码仓库。

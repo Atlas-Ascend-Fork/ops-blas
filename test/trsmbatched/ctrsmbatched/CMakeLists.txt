@@ -9,3 +9,10 @@
 # ----------------------------------------------------------------------------------------------------------
 
 ops_blas_add_gtest_tests("${OPS_BLAS}" ctrsmbatched_test)
+
+if("arch22" IN_LIST SOC_ARCH_DIRS)
+    set_property(SOURCE
+        ${CMAKE_CURRENT_SOURCE_DIR}/arch22/ctrsmbatched_test.cpp
+        DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/test
+        PROPERTY COMPILE_OPTIONS "-ffp-contract=off")
+endif()

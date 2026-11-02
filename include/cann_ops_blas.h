@@ -590,14 +590,21 @@ aclblasStatus_t aclblasStrsmBatched(
 /**
  * @brief Batched complex64 triangular solve, column-major, B overwritten by X.
  * LEFT: op(A) X = alpha B. RIGHT: X op(A) = alpha B.
- * A/B are device pointer arrays. alpha is a host scalar copied at dispatch.
+ * A/B are device pointer arrays. arch35 uses Host alpha; arch22 accepts Host/Device alpha.
+ * On arch22, nonempty matrices enqueue a Device alpha D2H copy on the handle
+ * stream, then synchronize that stream before reading the scalar on Host.
+ * Earlier writes on that stream are ordered; alpha values are not cached.
+ * Solve kernels are then enqueued asynchronously on the same stream.
+ * The caller must synchronize that stream before accessing matrix results.
  * Only the selected triangle is read. Unit diagonals are never read.
  * A is not accessed for zero alpha. B batches must not overlap.
  * Each B batch is overwritten at its input address; rows m..ldb-1 are unchanged.
  * For nonempty matrices, lda >= max(1, LEFT ? m : n), ldb >= max(1, m).
  * batchCount must be positive. Negative dimensions/leading dimensions are invalid.
- * Zero m/n returns success after checking modes, nonnegative dimensions, batchCount,
- * and non-null alpha/B. It does not access either device pointer array or matrix.
+ * Zero m/n returns success after checking modes, nonnegative m/n/lda/ldb,
+ * positive batchCount and non-null alpha. A/B may be null and nonnegative
+ * lda/ldb may be below active bounds. The call does not read alpha values,
+ * pointer arrays or matrices, and does not synchronize the stream.
  * For zero alpha, A may be null; logical B is cleared without reading old B.
  * An insufficient user-owned workspace is preserved and uses the vector fallback.
  * Ascend 950PR implementation requires asc-devkit >= 9.1.

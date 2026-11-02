@@ -69,15 +69,15 @@ inline aclblasStatus_t ValidateCtrsmBatched(
     const aclblasComplex* alpha, const void* a, int lda, const void* b, int ldb, int batchCount)
 {
     if (!ValidCtrsmBatchedModes(side, uplo, trans, diag) || m < 0 || n < 0 || batchCount < 1 || lda < 0 || ldb < 0 ||
-        alpha == nullptr || b == nullptr) {
+        alpha == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     // Empty matrices are no-ops; their unused leading dimensions may be zero.
-    // Validate metadata and required host pointers, but do not access A or B.
+    // Validate metadata and alpha presence, but do not access alpha, A or B.
     if (m == 0 || n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }
-    if (lda < std::max(1, side == ACLBLAS_SIDE_LEFT ? m : n) || ldb < std::max(1, m) ||
+    if (b == nullptr || lda < std::max(1, side == ACLBLAS_SIDE_LEFT ? m : n) || ldb < std::max(1, m) ||
         ((alpha->real != 0.0f || alpha->imag != 0.0f) && a == nullptr)) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }

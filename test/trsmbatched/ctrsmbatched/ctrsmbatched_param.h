@@ -11,28 +11,6 @@
 #pragma once
 #include "csv_loader.h"
 
-// Required numeric columns must fail with the column name in the message
-// (issue #643) instead of a bare std::invalid_argument from std::stoi("").
-inline int ParseIntColumn(const csv_map& row, const char* key, const std::string& def = std::string())
-{
-    const std::string raw = ReadMap(row, key, def);
-    try {
-        return std::stoi(raw);
-    } catch (const std::exception&) {
-        throw std::runtime_error(std::string("column '") + key + "' is missing, empty or non-numeric: '" + raw + "'");
-    }
-}
-
-inline float ParseFloatColumn(const csv_map& row, const char* key, const std::string& def = std::string())
-{
-    const std::string raw = ReadMap(row, key, def);
-    try {
-        return std::stof(raw);
-    } catch (const std::exception&) {
-        throw std::runtime_error(std::string("column '") + key + "' is missing, empty or non-numeric: '" + raw + "'");
-    }
-}
-
 struct CtrsmBatchedParam : BlasTestParamBase {
     aclblasSideMode_t side;
     aclblasFillMode_t uplo;
@@ -50,8 +28,8 @@ struct CtrsmBatchedParam : BlasTestParamBase {
         diag = parseDiagType(ReadMap(row, "diag"));
         m = ParseIntColumn(row, "m");
         n = ParseIntColumn(row, "n");
-        lda = ParseIntColumn(row, "lda", std::to_string(std::max(1, side == ACLBLAS_SIDE_LEFT ? m : n)));
-        ldb = ParseIntColumn(row, "ldb", std::to_string(std::max(1, m)));
+        lda = ReadMap(row, "lda").empty() ? std::max(1, side == ACLBLAS_SIDE_LEFT ? m : n) : ParseIntColumn(row, "lda");
+        ldb = ReadMap(row, "ldb").empty() ? std::max(1, m) : ParseIntColumn(row, "ldb");
         batchCount = ParseIntColumn(row, "batchCount");
         nullAlpha = ReadMap(row, "alpha_real") == "null";
         // alpha_real=="null" skips both components: an empty alpha_imag must not
