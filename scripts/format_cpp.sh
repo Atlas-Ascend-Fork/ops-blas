@@ -1,9 +1,9 @@
 #!/bin/bash
-# Copyright (c) 2025 Huawei Technologies Co., Ltd.
-# This program is free software, you can redistribute it and/or modify it under the terms and conditions of 
+# Copyright (c) 2025-2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 # CANN Open Software License Agreement Version 2.0 (the "License").
 # Please refer to the License for details. You may not use this file except in compliance with the License.
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED, 
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 # ============================================================================
@@ -14,8 +14,12 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(dirname "$SCRIPT_DIR")
 
 FORMAT_DIR="${1:-${REPO_ROOT}}"
+# issue #727: 校验失败必须显式退出——仅 echo 会继续走到下方 cd 并以 cd 的
+# 退出码间接终止，自定义提示与真实失败原因脱节
 if [[ ! -d ${FORMAT_DIR} ]]; then
-    echo "Please specify a directory."
+    echo "Error: format target '${FORMAT_DIR}' is not a directory." >&2
+    echo "Usage: $0 [directory]  (defaults to the repo root)" >&2
+    exit 1
 fi
 # 统一为物理绝对路径，避免相对路径与排除条件使用不同基准
 FORMAT_DIR=$(cd "$FORMAT_DIR" && pwd -P)
