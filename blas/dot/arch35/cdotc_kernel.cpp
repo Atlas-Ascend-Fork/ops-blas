@@ -57,8 +57,8 @@ __aicore__ inline uint32_t Align8(uint32_t value)
 template <bool FIXED_GROUP>
 __simd_callee__ inline void CdotcInterleavedGroupVf(
     __ubuf__ float* xAddr, __ubuf__ float* yAddr, Reg::RegTensor<float>& accumulator,
-    Reg::RegTensor<int32_t>& signedShiftIndex, Reg::MaskReg maskAll, Reg::MaskReg maskTwo, Reg::MaskReg mask,
-    uint32_t count)
+    Reg::RegTensor<float>& compensation, Reg::RegTensor<float>& zero, Reg::RegTensor<int32_t>& signedShiftIndex,
+    Reg::MaskReg maskAll, Reg::MaskReg maskTwo, Reg::MaskReg mask, uint32_t count)
 {
     Reg::RegTensor<float> xReal;
     Reg::RegTensor<float> xImag;
@@ -69,6 +69,8 @@ __simd_callee__ inline void CdotcInterleavedGroupVf(
     Reg::RegTensor<float> scratch;
     Reg::RegTensor<float> packed0;
     Reg::RegTensor<float> packed1;
+    Reg::RegTensor<float> updated;
+    Reg::RegTensor<float> lowBits;
     const uint32_t activeCount = FIXED_GROUP ? 8U : count;
     Reg::LoadAlign<float, Reg::LoadDist::DIST_DINTLV_B32>(xReal, xImag, xAddr);
     Reg::LoadAlign<float, Reg::LoadDist::DIST_DINTLV_B32>(yReal, yImag, yAddr);
@@ -79,9 +81,18 @@ __simd_callee__ inline void CdotcInterleavedGroupVf(
     Reg::Mul<float, Reg::MaskMergeMode::ZEROING>(scratch, xImag, yReal, mask);
     Reg::Sub<float, Reg::MaskMergeMode::ZEROING>(imagTerm, imagTerm, scratch, mask);
     Reg::Interleave<float>(packed0, packed1, realTerm, imagTerm);
+    // lane0 承载标量语义的顺序累加（Gather 左移 2 lane 逐项推进），此处对
+    // lane0 同步维护 Kahan 补偿项：comp = (t - sum) - y（保存丢失量的相反数）。
+    // 大 n 顺序累加的随机游走误差在单核 5k+ 元素时可达数十 ULP，超过
+    // 32*ULP 门限；补偿后仍保持逐元素串行舍入次序，符合 CBLAS 兼容要求。
 #pragma unroll
     for (uint32_t i = 0; i < activeCount; ++i) {
-        Reg::Add<float, Reg::MaskMergeMode::ZEROING>(accumulator, accumulator, packed0, maskTwo);
+        // 标准 Kahan 五步：y = term - c; t = sum + y; c = (t - sum) - y; sum = t
+        Reg::Sub<float, Reg::MaskMergeMode::ZEROING>(updated, packed0, compensation, maskTwo);
+        Reg::Add<float, Reg::MaskMergeMode::ZEROING>(lowBits, accumulator, updated, maskTwo);
+        Reg::Sub<float, Reg::MaskMergeMode::ZEROING>(scratch, lowBits, accumulator, maskTwo);
+        Reg::Sub<float, Reg::MaskMergeMode::ZEROING>(compensation, scratch, updated, maskTwo);
+        Reg::Add<float, Reg::MaskMergeMode::ZEROING>(accumulator, lowBits, zero, maskTwo);
         if (i + 1 < activeCount) {
             Reg::Gather<float, uint32_t>(
                 packed0, packed0, reinterpret_cast<Reg::RegTensor<uint32_t>&>(signedShiftIndex));
@@ -94,6 +105,7 @@ __simd_vf__ inline void CdotcInterleavedOrderedVf(
 {
     constexpr uint32_t GROUP = 8;
     Reg::RegTensor<float> accumulator;
+    Reg::RegTensor<float> compensation;
     Reg::RegTensor<float> previousReal;
     Reg::RegTensor<float> previousImag;
     Reg::RegTensor<float> previousPacked0;
@@ -101,6 +113,7 @@ __simd_vf__ inline void CdotcInterleavedOrderedVf(
     Reg::RegTensor<float> selected;
     Reg::RegTensor<int32_t> signedShiftIndex;
     Reg::RegTensor<uint32_t> imagIndex;
+    Reg::RegTensor<float> zero;
     auto maskAll = Reg::CreateMask<float, Reg::MaskPattern::ALL>();
     uint32_t two = 2;
     uint32_t group = GROUP;
@@ -109,6 +122,8 @@ __simd_vf__ inline void CdotcInterleavedOrderedVf(
     Reg::Arange<int32_t>(signedShiftIndex, 2);
     Reg::Duplicate<uint32_t>(imagIndex, 1U, maskAll);
     Reg::Duplicate<float>(accumulator, 0.0f, maskAll);
+    Reg::Duplicate<float>(compensation, 0.0f, maskAll);
+    Reg::Duplicate<float>(zero, 0.0f, maskAll);
     Reg::LoadAlign<float, Reg::LoadDist::DIST_BRC_B32>(previousReal, partialAddr + REGBASE_REAL_PARTIAL_OFFSET);
     Reg::LoadAlign<float, Reg::LoadDist::DIST_BRC_B32>(previousImag, partialAddr + REGBASE_IMAG_PARTIAL_OFFSET);
     Reg::Interleave<float>(previousPacked0, previousPacked1, previousReal, previousImag);
@@ -118,7 +133,8 @@ __simd_vf__ inline void CdotcInterleavedOrderedVf(
     for (uint16_t i = 0; i < fullLoopNum; ++i) {
         const uint32_t offset = static_cast<uint32_t>(i) * GROUP;
         CdotcInterleavedGroupVf<true>(
-            xAddr + 2 * offset, yAddr + 2 * offset, accumulator, signedShiftIndex, maskAll, maskTwo, maskGroup, GROUP);
+            xAddr + 2 * offset, yAddr + 2 * offset, accumulator, compensation, zero, signedShiftIndex, maskAll, maskTwo,
+            maskGroup, GROUP);
     }
     const uint32_t tail = count - static_cast<uint32_t>(fullLoopNum) * GROUP;
     if (tail > 0) {
@@ -126,8 +142,12 @@ __simd_vf__ inline void CdotcInterleavedOrderedVf(
         uint32_t tailMaskCount = tail;
         auto tailMask = Reg::UpdateMask<float>(tailMaskCount);
         CdotcInterleavedGroupVf<false>(
-            xAddr + 2 * offset, yAddr + 2 * offset, accumulator, signedShiftIndex, maskAll, maskTwo, tailMask, tail);
+            xAddr + 2 * offset, yAddr + 2 * offset, accumulator, compensation, zero, signedShiftIndex, maskAll, maskTwo,
+            tailMask, tail);
     }
+    // 收尾把 Kahan 补偿并入结果（comp 保存的是丢失量的相反数，与
+    // CdotcFinalizeKahanStateVf 的符号约定一致：sum - comp）。
+    Reg::Sub<float, Reg::MaskMergeMode::ZEROING>(accumulator, accumulator, compensation, maskTwo);
     Reg::StoreAlign<float, Reg::StoreDist::DIST_FIRST_ELEMENT_B32>(
         partialAddr + REGBASE_REAL_PARTIAL_OFFSET, accumulator, maskAll);
     Reg::Gather<float, uint32_t>(selected, accumulator, imagIndex);
@@ -205,14 +225,24 @@ __simd_callee__ inline void CdotcInitKahanStateVf(
 
 __simd_callee__ inline void CdotcFinalizeKahanStateVf(
     __ubuf__ float* partialAddr, Reg::RegTensor<float>& realAcc, Reg::RegTensor<float>& imagAcc,
-    Reg::RegTensor<float>& previousReal, Reg::RegTensor<float>& previousImag, Reg::MaskReg maskAll)
+    Reg::RegTensor<float>& realComp, Reg::RegTensor<float>& imagComp, Reg::RegTensor<float>& previousReal,
+    Reg::RegTensor<float>& previousImag, Reg::MaskReg maskAll)
 {
     Reg::ReduceSum<float>(realAcc, realAcc, maskAll);
     Reg::ReduceSum<float>(imagAcc, imagAcc, maskAll);
+    // Kahan 收尾必须把补偿项并入总和：本实现中 comp = (t - sum) - y = -lost，
+    // 即 comp 保存的是舍入丢失量的相反数（与 Neumaier 变体的 c 符号相反），
+    // 归约前各 lane 的累计丢失只存在于 comp 中，丢弃 comp 会使每个 chunk
+    // 少掉一段系统性偏低量；CBLAS 兼容路径每个 chunk 都收尾一次，大 n 时
+    // 误差线性增长并远超 32*ULP 判定门限。
+    Reg::ReduceSum<float>(realComp, realComp, maskAll);
+    Reg::ReduceSum<float>(imagComp, imagComp, maskAll);
     Reg::LoadAlign<float, Reg::LoadDist::DIST_BRC_B32>(previousReal, partialAddr + REGBASE_REAL_PARTIAL_OFFSET);
     Reg::LoadAlign<float, Reg::LoadDist::DIST_BRC_B32>(previousImag, partialAddr + REGBASE_IMAG_PARTIAL_OFFSET);
     uint32_t one = 1;
     auto maskOne = Reg::UpdateMask<float>(one);
+    Reg::Sub<float, Reg::MaskMergeMode::ZEROING>(realAcc, realAcc, realComp, maskOne);
+    Reg::Sub<float, Reg::MaskMergeMode::ZEROING>(imagAcc, imagAcc, imagComp, maskOne);
     Reg::Add<float, Reg::MaskMergeMode::ZEROING>(realAcc, realAcc, previousReal, maskOne);
     Reg::Add<float, Reg::MaskMergeMode::ZEROING>(imagAcc, imagAcc, previousImag, maskOne);
     Reg::StoreAlign<float, Reg::StoreDist::DIST_FIRST_ELEMENT_B32>(
@@ -307,7 +337,8 @@ __simd_vf__ inline void CdotcKahanVectorVf(
                 xAddr + 2 * offset, yAddr + 2 * offset, realAcc, imagAcc, realComp, imagComp, zero, maskAll, tail);
         }
     }
-    CdotcFinalizeKahanStateVf(partialAddr, realAcc, imagAcc, previousReal, previousImag, maskAll);
+    CdotcFinalizeKahanStateVf(
+        partialAddr, realAcc, imagAcc, realComp, imagComp, previousReal, previousImag, maskAll);
 }
 
 __simd_vf__ inline void CdotcPackPartialVf(__ubuf__ float* partialAddr)
@@ -499,6 +530,7 @@ private:
     GlobalTensor<float> xGM_;
     GlobalTensor<float> yGM_;
     GlobalTensor<float> workspaceGM_;
+    GlobalTensor<float> residualGM_;
     GlobalTensor<float> resultGM_;
     int64_t n_;
     bool positive_;
@@ -541,6 +573,14 @@ __aicore__ inline void CdotcRegBaseKernel::Init(
     yGM_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(y));
     workspaceGM_.SetGlobalBuffer(
         reinterpret_cast<__gm__ float*>(workSpace), static_cast<int64_t>(2) * workspaceStride_);
+    // workspace 布局：[0, 2*workspaceStride) 存 partial/prefix，[2*workspaceStride,
+    // 4*workspaceStride) 存 replay 残差。残差必须写入独立区：replay 各核会读取
+    // 邻居槽位上的 prefix 值（LoadBlockBoundary），若残差仍覆写同一槽位，跨核
+    // 之间没有任何同步，先写完的核会污染尚未读取的邻居边界（n 小、每核元素
+    // 少时窗口与计算时间同量级，表现为整轮跑挂、单跑偶尔通过的时序性错值）。
+    residualGM_.SetGlobalBuffer(
+        reinterpret_cast<__gm__ float*>(workSpace + static_cast<uint64_t>(2) * workspaceStride_ * sizeof(float)),
+        static_cast<int64_t>(2) * workspaceStride_);
     resultGM_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(result), 2);
 
     const uint32_t prefixFloats = 2 * workspaceStride_ + ELEMENTS_PER_BLOCK;
@@ -679,7 +719,7 @@ __aicore__ inline void CdotcRegBaseKernel::StoreResidual()
     SetFlag<HardEvent::S_MTE3>(sToMte3Event);
     WaitFlag<HardEvent::S_MTE3>(sToMte3Event);
     const DataCopyExtParams oneComplex{1, 2 * static_cast<uint32_t>(sizeof(float)), 0, 0, 0};
-    DataCopyPad(workspaceGM_[static_cast<int64_t>(2) * coreIdx_], partialLocal, oneComplex);
+    DataCopyPad(residualGM_[static_cast<int64_t>(2) * coreIdx_], partialLocal, oneComplex);
 }
 
 __aicore__ inline void CdotcRegBaseKernel::ProcessInitial()
@@ -726,6 +766,12 @@ public:
         useCoreNum_ = useCoreNum;
         outputOffset_ = Align8(2 * useCoreNum_);
         workspaceGM_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(workSpace), static_cast<int64_t>(2) * useCoreNum_);
+        // 与 CdotcRegBaseKernel 的 workspace 分区保持一致：残差存放在
+        // [2*Align8(useCoreNum), 4*Align8(useCoreNum)) 的独立区域。
+        const uint32_t residualBaseFloats = 2 * Align8(useCoreNum_);
+        residualGM_.SetGlobalBuffer(
+            reinterpret_cast<__gm__ float*>(workSpace + static_cast<uint64_t>(residualBaseFloats) * sizeof(float)),
+            static_cast<int64_t>(2) * useCoreNum_);
         resultGM_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(result), 2);
         pipe_->InitBuffer(localBuf_, (outputOffset_ + ELEMENTS_PER_BLOCK) * static_cast<uint32_t>(sizeof(float)));
     }
@@ -788,7 +834,7 @@ public:
         const DataCopyExtParams allResiduals{1, 2 * useCoreNum_ * static_cast<uint32_t>(sizeof(float)), 0, 0, 0};
         const DataCopyExtParams oneComplex{1, 2 * static_cast<uint32_t>(sizeof(float)), 0, 0, 0};
         const DataCopyPadExtParams<float> padParams{false, 0, 0, 0.0f};
-        DataCopyPad(local, workspaceGM_, allResiduals, padParams);
+        DataCopyPad(local, residualGM_, allResiduals, padParams);
         DataCopyPad(local[outputOffset_], resultGM_, oneComplex, padParams);
 
         event_t mte2ToSEvent = static_cast<event_t>(pipe_->FetchEventID(HardEvent::MTE2_S));
@@ -828,6 +874,7 @@ private:
     TPipe* pipe_;
     TBuf<TPosition::VECCALC> localBuf_;
     GlobalTensor<float> workspaceGM_;
+    GlobalTensor<float> residualGM_;
     GlobalTensor<float> resultGM_;
     uint32_t useCoreNum_;
     uint32_t outputOffset_;

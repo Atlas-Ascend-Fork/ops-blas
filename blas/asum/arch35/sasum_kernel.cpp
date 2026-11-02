@@ -115,11 +115,6 @@ __aicore__ inline void SasumAIV::Init(TPipe* pipe, GM_ADDR inDevice, GM_ADDR out
     // outQueue: ReduceSum produces a scalar, but MTE requires at least 32B for transfer.
     pipe_->InitBuffer(outQueue, BUFFER_NUM, UB_BYTENUM_PER_BLOCK);
 
-    // Zero-initialize output GM (required for subsequent atomic add accumulation)
-    LocalTensor<float> workLocal = workBuf.Get<float>(ELEMENTS_PER_BLOCK);
-    Duplicate<float>(workLocal, 0.0f, ELEMENTS_PER_BLOCK);
-    DataCopyParams zeroParams{1, static_cast<uint16_t>(sizeof(float)), 0, 0};
-    DataCopyPad(outGM, workLocal, zeroParams);
 }
 
 __aicore__ inline void SasumAIV::Process()
@@ -374,6 +369,13 @@ aclblasStatus_t sasum_kernel_do(
     auto aclStream = static_cast<aclrtStream>(stream);
 
     if (tiling.incx == 1) {
+        // 结果清零必须在 kernel 下发前于 host 侧完成：AIV 多 block 各自对同一 outGM
+        // 原子累加，若在 kernel 内清零，block 间无同步，晚到的清零会吞掉其他 block
+        // 已累加的部分和（表现为结果为 0 或残缺）
+        aclError memsetRet = aclrtMemsetAsync(outGM, sizeof(float), 0, sizeof(float), aclStream);
+        if (memsetRet != ACL_SUCCESS) {
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
         sasum_aiv_kernel<<<numBlocks, nullptr, aclStream>>>(inGM, outGM, tiling);
         return ACLBLAS_STATUS_SUCCESS;
     }

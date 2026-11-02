@@ -63,7 +63,10 @@ static aclblasStatus_t LaunchCdotcKernel(
     aclblasComplex* result)
 {
     const uint32_t workspaceStride = AlignWorkspace(tiling.useCoreNum);
-    const size_t workspaceNeed = static_cast<size_t>(2) * workspaceStride * sizeof(float);
+    // ordered 路径的 workspace 布局：前半 [0, 2*stride) 存 partial/prefix，
+    // 后半 [2*stride, 4*stride) 存 replay 残差（与 kernel 侧分区一致，消除
+    // replay 各核读邻居 prefix 与写残差之间的跨核读写冲突）。
+    const size_t workspaceNeed = static_cast<size_t>(4) * workspaceStride * sizeof(float);
     const size_t workspaceSize = GetEffectiveWorkspaceSize(h);
     if (workspaceNeed > workspaceSize) {
         OP_LOGE("aclblasCdotc", "workspace %zu > handle %zu", workspaceNeed, workspaceSize);

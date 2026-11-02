@@ -45,7 +45,8 @@ __aicore__ inline void SyncVToMte(TPipe& p)
 // ==========================================================================
 template <typename T>
 __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void DotexSimt(
-    uint32_t n, int32_t incx, int32_t incy, int64_t kx, int64_t ky, __gm__ float* wsGm, __gm__ T* xGm, __gm__ T* yGm)
+    uint32_t n, int32_t incx, int32_t incy, int64_t kx, int64_t ky, __gm__ float* wsGm, __gm__ T* xGm, __gm__ T* yGm,
+    __gm__ float* finalWsGm, uint32_t scratchBase)
 {
     float acc = 0.0f;
     for (uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n; idx += gridDim.x * blockDim.x) {
@@ -57,17 +58,22 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void DotexSimt(
             acc += static_cast<float>(xGm[xi]) * static_cast<float>(yGm[yi]);
         }
     }
-    // 各线程写自己的槽位，避免原子竞争；per-core 部分和位于 per-thread 区域之后
-    uint32_t base = gridDim.x * blockDim.x;
-    wsGm[blockIdx.x * blockDim.x + threadIdx.x] = acc;
+    // workspace 两区分离：final 区 [0, useCoreNum) 存 per-core 部分和（final
+    // kernel 读取），scratch 区 [useCoreNum, useCoreNum*(1+numThreads)) 存
+    // per-thread 中间值。两区必须隔离——若重叠，blockDim>1 时 block0 的
+    // thread t 写 wsGm[t] 与 block t 的 thread0 写 finalWsGm[t] 是同一地址，
+    // 跨核 WAR 竞争会把 per-thread partial 混入最终求和（结果偏大）。
+    wsGm[scratchBase + blockIdx.x * blockDim.x + threadIdx.x] = acc;
     asc_syncthreads();
 
     if (threadIdx.x == 0) {
         float sum = 0.0f;
         for (uint32_t t = 0; t < blockDim.x; ++t) {
-            sum += wsGm[blockIdx.x * blockDim.x + t];
+            sum += wsGm[scratchBase + blockIdx.x * blockDim.x + t];
         }
-        wsGm[base + blockIdx.x] = sum;
+        finalWsGm[blockIdx.x] = sum;
+        // 保证本核 GM store 对后续 final kernel（kernel 边界）可见。
+        asc_threadfence();
     }
 }
 
@@ -322,15 +328,6 @@ __aicore__ inline void DotexKernel<T>::Process()
 
     SyncVToMte(*pipe_);
     CopyOutPartial();
-    SyncAll();
-
-    if (blockIdx == 0) {
-        CopyInWorkspace(blockNum);
-        SyncMteToV(*pipe_);
-        ComputeFinalReduce(blockNum);
-        SyncVToMte(*pipe_);
-        CopyOutFinalResult();
-    }
 }
 
 // ==========================================================================
@@ -339,27 +336,32 @@ __aicore__ inline void DotexKernel<T>::Process()
 template <typename T>
 __aicore__ inline void LaunchDotexSimt(const DotexTilingData& t, GM_ADDR workspace, GM_ADDR x, GM_ADDR y)
 {
+    // workspace 布局（host 侧按 useCoreNum*(numThreads+1) floats 分配）：
+    //   [0, useCoreNum)                     per-core 部分和（final kernel 读取）
+    //   [useCoreNum, useCoreNum*(1+numThreads))  per-thread scratch
     asc_vf_call<DotexSimt<T>>(
         dim3{t.numThreads, 1, 1}, static_cast<uint32_t>(t.n), static_cast<int32_t>(t.incx),
         static_cast<int32_t>(t.incy), t.kx, t.ky, reinterpret_cast<__gm__ float*>(workspace),
-        reinterpret_cast<__gm__ T*>(x), reinterpret_cast<__gm__ T*>(y));
+        reinterpret_cast<__gm__ T*>(x), reinterpret_cast<__gm__ T*>(y), reinterpret_cast<__gm__ float*>(workspace),
+        t.useCoreNum);
 }
 
 template <typename T>
-__aicore__ inline void SimtWriteResult(GM_ADDR result, LocalTensor<float>& wsUb, TPipe& pipe)
+__simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void DotexSimtFinalWrite(
+    uint32_t blockNum, __gm__ float* wsGm, __gm__ T* resultGm)
 {
+    if (blockIdx.x != 0) {
+        return;
+    }
+    float sum = 0.0f;
+    for (uint32_t b = 0; b < blockNum; ++b) {
+        sum += wsGm[b];
+    }
+    volatile float ordered = sum;
     if constexpr (std::is_same_v<T, float>) {
-        GlobalTensor<float> g;
-        g.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(result), 1);
-        DataCopyPad(g[0], wsUb, DataCopyExtParams{1, static_cast<uint32_t>(sizeof(float)), 0, 0, 0});
+        resultGm[0] = ordered;
     } else {
-        TBuf<TPosition::VECCALC> cb;
-        pipe.InitBuffer(cb, sizeof(T));
-        LocalTensor<T> rt = cb.Get<T>();
-        Cast(rt, wsUb, RoundMode::CAST_ROUND, 1);
-        GlobalTensor<T> g;
-        g.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(result), 1);
-        DataCopyPad(g[0], rt, DataCopyExtParams{1, static_cast<uint32_t>(sizeof(T)), 0, 0, 0});
+        resultGm[0] = static_cast<T>(ordered);
     }
 }
 
@@ -389,9 +391,6 @@ __aicore__ inline void DoDotexSimd(const DotexTilingData& t, GM_ADDR x, GM_ADDR 
 // ==========================================================================
 __aicore__ inline void DoDotexSimt(const DotexTilingData& t, GM_ADDR x, GM_ADDR y, GM_ADDR result, GM_ADDR workspace)
 {
-    uint32_t blockIdx = GetBlockIdx();
-    uint32_t blockNum = GetBlockNum();
-
     if (t.srcType == DOTEX_XTYPE_FP32) {
         LaunchDotexSimt<float>(t, workspace, x, y);
     } else if (t.srcType == DOTEX_XTYPE_BF16) {
@@ -399,35 +398,33 @@ __aicore__ inline void DoDotexSimt(const DotexTilingData& t, GM_ADDR x, GM_ADDR 
     } else {
         LaunchDotexSimt<half>(t, workspace, x, y);
     }
-
-    SyncAll();
-
-    if (blockIdx == 0) {
-        TPipe pipe;
-        uint32_t aligned = ((blockNum + 7) / 8) * 8;
-        TBuf<TPosition::VECCALC> tmpBuf;
-        pipe.InitBuffer(tmpBuf, (aligned + 8) * sizeof(float));
-        uint32_t base = blockNum * t.numThreads;
-        GlobalTensor<float> wsGm;
-        wsGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(workspace) + base, blockNum);
-        LocalTensor<float> wsUb = tmpBuf.Get<float>();
-        DataCopyPad(
-            wsUb, wsGm[0], DataCopyExtParams{1, static_cast<uint32_t>(blockNum * sizeof(float)), 0, 0, 0},
-            DataCopyPadExtParams<float>{false, 0, 0, 0});
-        SyncMteToV(pipe);
-        ReduceSum<float>(wsUb, wsUb, wsUb[((blockNum + 7) / 8) * 8], static_cast<int32_t>(blockNum));
-        SyncVToMte(pipe);
-
-        if (t.srcType == DOTEX_XTYPE_FP32) {
-            SimtWriteResult<float>(result, wsUb, pipe);
-        } else if (t.srcType == DOTEX_XTYPE_BF16) {
-            SimtWriteResult<bfloat16_t>(result, wsUb, pipe);
-        } else {
-            SimtWriteResult<half>(result, wsUb, pipe);
-        }
-    }
 }
 
+// ==========================================================================
+// Final reduce entry — 单核读 workspace 求和并写 result；与 partial kernel
+// 在同一 stream 上串行下发，跨核可见性由 kernel 边界保证。单 kernel 内
+// SyncAll 方案已证实不可行：CopyOutPartial（MTE3 异步写）/DotexSimt（VF
+// GM store）与 SyncAll 后 block0 的 MTE2/标量读竞争，产生 0/部分和/stale 值。
+// ==========================================================================
+template <typename T>
+__global__ __aicore__ void dotex_final_reduce_kernel(
+    GM_ADDR x, GM_ADDR y, GM_ADDR result, const DotexTilingData t, GM_ADDR workspace)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    (void)x;
+    (void)y;
+    // final kernel 固定单核下发，部分和个数取 tiling.useCoreNum（partial kernel
+    // 的实际核数），不能用 GetBlockNum()（此处恒为 1）。求和走 VF 标量读
+    // （与 SIMT final 完全同构）：TBuf + DataCopyPad 的 MTE2 读需要 MTE2_V
+    // 事件同步，实测（MTE3_V 误配）会读到未落盘/残留数据。
+    asc_vf_call<DotexSimtFinalWrite<T>>(
+        dim3{1, 1, 1}, t.useCoreNum, reinterpret_cast<__gm__ float*>(workspace), reinterpret_cast<__gm__ T*>(result));
+}
+
+// ==========================================================================
+// SIMT final write entry — SIMT 路径的 per-core 部分和已由 DotexSimt 写好
+// （含 asc_threadfence），单核标量求和写出即可。
+// ==========================================================================
 // ==========================================================================
 // Kernel entry — dual path router
 // ==========================================================================
@@ -448,5 +445,20 @@ void dotex_kernel_do(
     uint8_t* x, uint8_t* y, uint8_t* result, const DotexTilingData& tilingData, uint8_t* workSpace, uint32_t numBlocks,
     void* stream)
 {
+    // 两段式串行下发（同 stream，kernel 边界保证跨核可见性）：
+    //   1) partial kernel：各核写 per-core 部分和到 workspace[0..blockNum)
+    //   2) final kernel  ：单核读 workspace 归约写 result
+    // 单 kernel 内 SyncAll + block0 归约的旧方案在 MTE3 异步写 / VF GM store
+    // 场景下与 SyncAll 后的读取存在竞争，产生 0 / 部分和 / stale 值，已废弃。
     dotex_kernel<<<numBlocks, nullptr, stream>>>(x, y, result, tilingData, workSpace);
+
+    // SIMD / SIMT 两路的 per-core 部分和布局一致（workspace[0..useCoreNum)），
+    // final 归约统一走 dotex_final_reduce_kernel（VF 标量读求和）。
+    if (tilingData.srcType == DOTEX_XTYPE_FP32) {
+        dotex_final_reduce_kernel<float><<<1, nullptr, stream>>>(x, y, result, tilingData, workSpace);
+    } else if (tilingData.srcType == DOTEX_XTYPE_BF16) {
+        dotex_final_reduce_kernel<bfloat16_t><<<1, nullptr, stream>>>(x, y, result, tilingData, workSpace);
+    } else {
+        dotex_final_reduce_kernel<half><<<1, nullptr, stream>>>(x, y, result, tilingData, workSpace);
+    }
 }
