@@ -21,7 +21,7 @@ RIGHT 模式：C := alpha * B * op(A)
 | 接口名 | 功能简述 |
 |--------|---------|
 | aclblasStrmm | 单精度浮点三角矩阵乘法 |
-| aclblasCtrmm | 单精度复数三角矩阵乘法 |
+| aclblasCtrmm | 单精度复数三角矩阵乘法，支持 arch22（A2/A3）和 arch35（950） |
 
 ## 算子执行接口
 
@@ -171,7 +171,7 @@ int main()
 }
 ```
 
-### aclblasCtrmm
+### aclblasCtrmm（Ascend 950PR/950DT，arch35）
 
 #### 产品支持情况
 
@@ -322,5 +322,198 @@ int main()
     aclFinalize();
 
     return 0;
+}
+```
+
+### aclblasCtrmm（Atlas A2/A3，arch22）
+
+#### 产品支持情况
+
+| 产品 | 支持 |
+| --- | --- |
+| Atlas A2 训练/推理系列，含 Atlas 800T A2、Atlas 800I A2 | 支持 |
+| Atlas A3 训练/推理系列，含 Atlas 800I A3 | 支持 |
+| Ascend 950PR / 950DT | 本实现不支持 |
+
+CANN 9.1.0；当前实机自验为 A2 910B3，A3 使用同一 arch22 实现，尚无实机结果。
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasCtrmm(aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int m, int n, const aclblasComplex* alpha, const aclblasComplex* A, int lda, const aclblasComplex* B, int ldb, aclblasComplex* C, int ldc)
+```
+
+#### 参数说明
+
+| 参数名 | 输入/输出 | 参数类型 | 说明 |
+|--------|----------|---------|------|
+| handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream 和 workspace，Host 内存 |
+| side | 输入 | aclblasSideMode_t | A 的位置：ACLBLAS_SIDE_LEFT 对应 C=alpha·op(A)·B，ACLBLAS_SIDE_RIGHT 对应 C=alpha·B·op(A)，Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | A 转置前的有效三角：ACLBLAS_UPPER（上三角）或 ACLBLAS_LOWER（下三角），Host 内存 |
+| trans | 输入 | aclblasOperation_t | 对 A 的操作：ACLBLAS_OP_N（不转置）、ACLBLAS_OP_T（转置）或 ACLBLAS_OP_C（共轭转置），Host 内存 |
+| diag | 输入 | aclblasDiagType_t | ACLBLAS_UNIT 将对角线视为 1+0i 且不读取对角元素；ACLBLAS_NON_UNIT 使用实际对角元素，Host 内存 |
+| m | 输入 | int | 矩阵 B/C 的行数，m >= 0，Host 内存 |
+| n | 输入 | int | 矩阵 B/C 的列数，n >= 0，Host 内存 |
+| alpha | 输入 | const aclblasComplex*（COMPLEX64） | 复数缩放标量，不可为 nullptr，仅支持 Host 内存 |
+| A | 输入 | const aclblasComplex*（COMPLEX64） | 列主序三角矩阵；side=LEFT 时为 m×m，side=RIGHT 时为 n×n，仅访问有效三角，Device 内存 |
+| lda | 输入 | int | A 的列跨度，以复数元素计；非零维调用时至少为 A 的阶数，Host 内存 |
+| B | 输入 | const aclblasComplex*（COMPLEX64） | m×n 列主序输入矩阵，Device 内存 |
+| ldb | 输入 | int | B 的列跨度，以复数元素计；非零维调用时 ldb >= m，Host 内存 |
+| C | 输出 | aclblasComplex*（COMPLEX64） | m×n 列主序输出矩阵，支持 B=C 的原地计算，Device 内存 |
+| ldc | 输入 | int | C 的列跨度，以复数元素计；非零维调用时 ldc >= m，Host 内存 |
+
+#### 约束说明
+
+- 数据类型为 COMPLEX64；每个 `aclblasComplex` 包含 FP32 实部 `real` 和虚部 `imag`。A/B/C 均为列主序，元素 `(row, col)` 的索引为 `col * ld + row`。
+- handle 不可为 nullptr，否则返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR。
+- side、uplo、trans、diag 必须使用参数表中的枚举值，m/n 必须非负，alpha 不可为 nullptr；任一条件不满足返回 ACLBLAS_STATUS_INVALID_VALUE。
+- 上述检查通过后，m==0 或 n==0 时返回 ACLBLAS_STATUS_SUCCESS，不读取 alpha 的值，不访问 A/B/C，也不校验 lda/ldb/ldc，允许 ld=0。
+- m>0 且 n>0 时，令 q=(side==ACLBLAS_SIDE_LEFT ? m : n)，必须满足 lda>=q、ldb>=m、ldc>=m，C 不可为 nullptr；否则返回 ACLBLAS_STATUS_INVALID_VALUE。矩阵存储范围的字节数不得溢出 size_t。
+- alpha 必须指向可读的 Host 标量，A/B/C 必须提供对应访问范围内的有效 Device 存储；输出仅写 C 的 m×n 有效区域，不修改列间 padding。
+- alpha==0+0i 时，A/B 可为 nullptr，C 的有效区域写为 0+0i；仍需满足非零维调用的 leading dimension 和 C 存储约束。
+- alpha!=0+0i 时，A/B 不可为 nullptr；C 不得与 A 的存储范围重叠，与 B 仅允许起始地址完全相同的 B=C 原地计算。B=C 时 ldb/ldc 可以不同，但共享缓冲区须同时容纳两种布局；其他 B/C 重叠返回 ACLBLAS_STATUS_INVALID_VALUE。
+- 非有效三角不参与计算；diag=ACLBLAS_UNIT 时不读取 A 的对角线，并将其视为 1+0i。
+- 算子所需 workspace 上限为 2 GiB，超过上限、用户提供的 workspace 容量不足或分配失败时返回 ACLBLAS_STATUS_ALLOC_FAILED。无法获取有效 AIV 核数时返回 ACLBLAS_STATUS_INTERNAL_ERROR。
+- 算子在 handle 绑定的 stream 上异步执行，读回 C 或释放输入输出缓冲区前需同步。默认 workspace 扩容沿用库的同步机制，提前配置足量 workspace 后的调用无需 Host 同步。
+
+#### 精度验证
+
+实部/虚部分别使用atol=rtol=2^-13、匹配比例≥0.99，且最大绝对误差≤max(0.01,32*ULP(g_low))；g_low取最大误差位置的FP32 golden。日志同时保留固定0.01的判定信息；
+NaN/Inf 类型及 Inf 符号另外检查。
+设计说明位于独立的 cann-competitions 仓库：
+`04_tasks/01_community-task-2026/tasklist/09-71-aclblasCtrmm-A2A3/Xztxzt/docs/design.md`。
+复现方法见[编译、精度及性能测试步骤](../../test/trmm/ctrmm/arch22/README.md)。
+
+#### 调用示例
+
+以下示例计算 2×2 复数矩阵的左上三角乘法。使用 `AclContext` 和 `std::unique_ptr`
+管理 ACL 上下文、stream、BLAS 句柄及 Device 内存。
+编译和执行方法见[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。
+
+```cpp
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <memory>
+
+#include "acl/acl.h"
+#include "cann_ops_blas.h"
+
+#define CHECK_RET(cond, return_expr) \
+    do {                             \
+        if (!(cond)) {               \
+            return_expr;             \
+        }                            \
+    } while (0)
+
+class AclContext {
+public:
+    explicit AclContext(int32_t deviceId) : deviceId_(deviceId) {}
+
+    ~AclContext()
+    {
+        if (stream_ != nullptr) {
+            aclrtDestroyStream(stream_);
+        }
+        if (deviceSet_) {
+            aclrtResetDevice(deviceId_);
+        }
+        if (aclInited_) {
+            aclFinalize();
+        }
+    }
+
+    int Init()
+    {
+        auto ret = aclInit(nullptr);
+        CHECK_RET(ret == ACL_SUCCESS, std::printf("aclInit failed: %d\n", ret); return ret);
+        aclInited_ = true;
+        ret = aclrtSetDevice(deviceId_);
+        CHECK_RET(ret == ACL_SUCCESS, std::printf("aclrtSetDevice failed: %d\n", ret); return ret);
+        deviceSet_ = true;
+        ret = aclrtCreateStream(&stream_);
+        CHECK_RET(ret == ACL_SUCCESS, std::printf("aclrtCreateStream failed: %d\n", ret); return ret);
+        return ACL_SUCCESS;
+    }
+
+    aclrtStream Stream() const { return stream_; }
+
+private:
+    int32_t deviceId_;
+    aclrtStream stream_ = nullptr;
+    bool aclInited_ = false;
+    bool deviceSet_ = false;
+};
+
+using DevicePtr = std::unique_ptr<void, decltype(&aclrtFree)>;
+
+int PrepareBuffer(DevicePtr& buffer, const void* source, size_t bytes)
+{
+    void* raw = nullptr;
+    auto ret = aclrtMalloc(&raw, bytes, ACL_MEM_MALLOC_HUGE_FIRST);
+    CHECK_RET(ret == ACL_SUCCESS, std::printf("aclrtMalloc failed: %d\n", ret); return ret);
+    buffer.reset(raw);
+    if (source != nullptr) {
+        ret = aclrtMemcpy(buffer.get(), bytes, source, bytes, ACL_MEMCPY_HOST_TO_DEVICE);
+        CHECK_RET(ret == ACL_SUCCESS, std::printf("aclrtMemcpy H2D failed: %d\n", ret); return ret);
+    }
+    return ACL_SUCCESS;
+}
+
+int CtrmmExample(AclContext& ctx)
+{
+    aclblasHandle_t rawHandle = nullptr;
+    auto status = aclblasCreate(&rawHandle);
+    CHECK_RET(status == ACLBLAS_STATUS_SUCCESS, std::printf("aclblasCreate failed: %d\n", status); return status);
+    std::unique_ptr<_aclblas_handle, decltype(&aclblasDestroy)> handle(rawHandle, aclblasDestroy);
+    status = aclblasSetStream(handle.get(), ctx.Stream());
+    CHECK_RET(status == ACLBLAS_STATUS_SUCCESS, std::printf("aclblasSetStream failed: %d\n", status); return status);
+
+    constexpr int m = 2;
+    constexpr int n = 2;
+    constexpr int lda = 2;
+    constexpr int ldb = 2;
+    constexpr int ldc = 2;
+    const aclblasComplex alpha{0.5f, 0.5f};
+    // 列主序：A = [[1+i, 2-i], [0, 3]]，B = [[1, 2+i], [i, 1-i]]。
+    const aclblasComplex hA[lda * m] = {{1.0f, 1.0f}, {0.0f, 0.0f}, {2.0f, -1.0f}, {3.0f, 0.0f}};
+    const aclblasComplex hB[ldb * n] = {{1.0f, 0.0f}, {0.0f, 1.0f}, {2.0f, 1.0f}, {1.0f, -1.0f}};
+    aclblasComplex hC[ldc * n]{};
+    const aclblasComplex expected[ldc * n] = {{-0.5f, 2.5f}, {-1.5f, 1.5f}, {1.0f, 1.0f}, {3.0f, 0.0f}};
+    DevicePtr dA(nullptr, aclrtFree), dB(nullptr, aclrtFree), dC(nullptr, aclrtFree);
+    auto ret = PrepareBuffer(dA, hA, sizeof(hA));
+    CHECK_RET(ret == ACL_SUCCESS, return ret);
+    ret = PrepareBuffer(dB, hB, sizeof(hB));
+    CHECK_RET(ret == ACL_SUCCESS, return ret);
+    ret = PrepareBuffer(dC, nullptr, sizeof(hC));
+    CHECK_RET(ret == ACL_SUCCESS, return ret);
+
+    status = aclblasCtrmm(handle.get(), ACLBLAS_SIDE_LEFT, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT,
+        m, n, &alpha, static_cast<const aclblasComplex*>(dA.get()), lda,
+        static_cast<const aclblasComplex*>(dB.get()), ldb, static_cast<aclblasComplex*>(dC.get()), ldc);
+    CHECK_RET(status == ACLBLAS_STATUS_SUCCESS, std::printf("aclblasCtrmm failed: %d\n", status); return status);
+    ret = aclrtSynchronizeStream(ctx.Stream());
+    CHECK_RET(ret == ACL_SUCCESS, std::printf("aclrtSynchronizeStream failed: %d\n", ret); return ret);
+    ret = aclrtMemcpy(hC, sizeof(hC), dC.get(), sizeof(hC), ACL_MEMCPY_DEVICE_TO_HOST);
+    CHECK_RET(ret == ACL_SUCCESS, std::printf("aclrtMemcpy D2H failed: %d\n", ret); return ret);
+    for (int col = 0; col < n; ++col) {
+        for (int row = 0; row < m; ++row) {
+            const int index = col * ldc + row;
+            std::printf("C(%d,%d) = %g%+gi\n", row, col, hC[index].real, hC[index].imag);
+            CHECK_RET(std::abs(hC[index].real - expected[index].real) <= 1e-6f &&
+                std::abs(hC[index].imag - expected[index].imag) <= 1e-6f,
+                std::printf("Unexpected result at (%d,%d)\n", row, col); return 1);
+        }
+    }
+    return ACL_SUCCESS;
+}
+
+int main()
+{
+    AclContext ctx(0);
+    auto ret = ctx.Init();
+    CHECK_RET(ret == ACL_SUCCESS, return ret);
+    return CtrmmExample(ctx);
 }
 ```

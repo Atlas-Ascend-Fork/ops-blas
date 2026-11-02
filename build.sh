@@ -198,6 +198,23 @@ expand_family_ops() {
   echo "${expanded}" | tr ',' '\n' | awk '!seen[$0]++' | paste -sd ',' -
 }
 
+# 家族名与成员名混用时会产生重复项，按首次出现顺序保留具体算子。
+deduplicate_ops() {
+  local ops_str="$1"
+  local op
+  local -a ops=() unique_ops=()
+  local -A seen_ops=()
+  IFS=',' read -ra ops <<< "${ops_str}"
+  for op in "${ops[@]}"; do
+    if [ -n "${op}" ] && [ -z "${seen_ops[${op}]+x}" ]; then
+      seen_ops["${op}"]=1
+      unique_ops+=("${op}")
+    fi
+  done
+  local IFS=','
+  echo "${unique_ops[*]}"
+}
+
 # 展开家族名
 if [ -n "${BUILD_OPS}" ]; then
   BUILD_OPS=$(expand_family_ops "${BUILD_OPS}")
@@ -238,6 +255,9 @@ if [ "${RUN_TEST}" == "ON" ] && [ -z "${BUILD_OPS}" ]; then
   BUILD_OPS="${AUTO_DISCOVER_OPS}"
   echo "Auto-discovered tests: ${BUILD_OPS}"
 fi
+
+# 显式参数与自动发现的列表统一去重，供编译、抽样和测试执行共同使用。
+BUILD_OPS=$(deduplicate_ops "${BUILD_OPS}")
 
 echo "BUILD_OPS=${BUILD_OPS}, RUN_TEST=${RUN_TEST}, ENABLE_PACKAGE=${ENABLE_PACKAGE}"
 

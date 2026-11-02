@@ -96,6 +96,14 @@ struct CtrmmParam : public BlasTestParamBase {
 
     bool AlphaIsZero() const { return !nullAlpha && alphaReal == 0.0f && alphaImag == 0.0f; }
 
+    aclblasComplex GetAlpha() const { return {alphaReal, alphaImag}; }
+
+    void SetAlpha(aclblasComplex alpha)
+    {
+        alphaReal = alpha.real;
+        alphaImag = alpha.imag;
+    }
+
     explicit CtrmmParam(const csv_map& map) : BlasTestParamBase(map)
     {
         side = CtrmmParseSide(ReadMap(map, "side", "LEFT"));

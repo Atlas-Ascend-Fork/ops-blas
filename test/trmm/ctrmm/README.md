@@ -1,4 +1,9 @@
-# aclblasCtrmm 测试工程说明（Ascend 950PR / arch35）
+# aclblasCtrmm 测试工程说明
+
+- Atlas A2/A3（arch22）：见 [A2/A3 测试说明](arch22/README.md)。
+- Ascend 950PR（arch35）：见下文。
+
+## Ascend 950PR / arch35
 
 本文档说明如何复现 `aclblasCtrmm`（complex64 三角矩阵-矩阵乘）的**精度自测**与**性能自测**。
 测试工程以 CSV 驱动 C++ GTest，与随任务提供的用例文件及仓内 trmm 族结构一致。

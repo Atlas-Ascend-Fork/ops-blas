@@ -10,10 +10,13 @@
 #pragma once
 
 #include <securec.h>
+#include <vector>
 
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "cblas_compat.h"
+#include "cblas_threaded.h"
+#include "ctrmm_param.h"
 
 inline CBLAS_SIDE ToCblasSide(aclblasSideMode_t side) { return (side == ACLBLAS_SIDE_LEFT) ? CblasLeft : CblasRight; }
 
@@ -133,4 +136,44 @@ inline aclblasStatus_t aclblasCtrmm_cpu(
         CblasColMajor, ToCblasSide(side), ToCblasUplo(uplo), ToCblasOp(trans), ToCblasDiag(diag), m, n,
         static_cast<const void*>(alphaCblas), static_cast<const void*>(A), lda, static_cast<void*>(C), ldc);
     return ACLBLAS_STATUS_SUCCESS;
+}
+
+// Vector-based golden preserves C padding and partitions independent output
+// columns (LEFT) or rows (RIGHT), retaining each Netlib reduction order.
+inline void CtrmmGolden(
+    const CtrmmParam& p, const std::vector<aclblasComplex>& a, const std::vector<aclblasComplex>& b,
+    std::vector<aclblasComplex>& c)
+{
+    if (p.m == 0 || p.n == 0) {
+        return;
+    }
+    const aclblasComplex alpha = p.GetAlpha();
+    const bool alphaZero = alpha.real == 0.0f && alpha.imag == 0.0f;
+    for (int j = 0; j < p.n; ++j) {
+        for (int i = 0; i < p.m; ++i) {
+            c[static_cast<size_t>(j) * p.ldc + i] =
+                alphaZero ? aclblasComplex{0, 0} : b[static_cast<size_t>(j) * p.ldb + i];
+        }
+    }
+    if (alphaZero) {
+        return;
+    }
+    const bool left = p.side == ACLBLAS_SIDE_LEFT;
+    const int span = left ? p.n : p.m;
+    const int triangularSize = left ? p.m : p.n;
+    const auto compute = [&](int start, int count) {
+        const size_t offset = left ? static_cast<size_t>(start) * p.ldc : static_cast<size_t>(start);
+        cblas_ctrmm(
+            CblasColMajor, left ? CblasLeft : CblasRight, ToCblasUplo(p.uplo), ToCblasOp(p.trans), ToCblasDiag(p.diag),
+            left ? p.m : count, left ? count : p.n, &alpha, a.data(), p.lda, c.data() + offset, p.ldc);
+    };
+    // Avoid thread creation for small workloads without overflowing the
+    // m*n*triangularSize estimate. Reuse the common CPU affinity/thread cap.
+    constexpr int64_t minParallelWork = 1LL << 22;
+    const int64_t minOutputElements = (minParallelWork + triangularSize - 1) / triangularSize;
+    if (static_cast<int64_t>(p.m) * p.n < minOutputElements) {
+        compute(0, span);
+    } else {
+        blas_test::ForEachChunk(span, compute);
+    }
 }

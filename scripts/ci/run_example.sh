@@ -12,12 +12,13 @@
 #
 # 用例级增量（issue #457）：
 #   - PR 修改某算子的 *_test.csv        → 只运行该 CSV 中被修改的用例（case_name）
-#   - PR 修改算子的 .cpp/.h（内核/tiling/测试代码）→ 运行该算子全量用例
-#   - 传入 all（或 run_all=true，公共文件变更）→ 全仓全量用例（手动回归用）
+#   - PR 修改算子的 .cpp/.h（内核/tiling/测试代码）→ 对所选算子执行冒烟抽样
+#   - 传入 all（或 run_all=true，公共文件变更）→ 全仓冒烟抽样
+#   - RUN_FLAGS=--no-smoke 关闭抽样；CSV 增量名单仍优先保留
 #
 # 用法：
 #   bash run_example.sh <pr_filelist.txt> [soc_version]           # 增量（默认）
-#   bash run_example.sh all [soc_version]                          # 全量（手动执行）
+#   RUN_FLAGS=--no-smoke bash run_example.sh all [soc_version]      # 全量回归
 ROOT_PATH=$(
     cd "$(dirname $0)"/../..
     pwd
@@ -247,7 +248,16 @@ else
         fi
     done
     export BLAS_TEST_CASES="${cases_env}"
-    echo "Case filter: ${BLAS_TEST_CASES:-<none, run all cases>}."
+    if [ -n "$cases_env" ]; then
+        # build.sh --smoke 会覆盖 BLAS_TEST_CASES，保留显式 CSV 增量名单。
+        echo "Case filter: ${cases_env}."
+    elif [[ "${RUN_FLAGS:-}" != *"--no-smoke"* ]]; then
+        # PreSmoke 的所选算子也需抽样，不能仅在全仓分支启用。
+        extra_flags="${extra_flags} --smoke"
+        echo "Case filter: smoke sampling (build.sh --smoke)."
+    else
+        echo "Case filter: <none, run all cases>."
+    fi
     if [ -n "$soc_version" ]; then
         cmd="bash build.sh --run --ops=$ops_str --soc=$soc_version ${extra_flags}"
     else
