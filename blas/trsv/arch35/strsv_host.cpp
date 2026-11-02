@@ -25,7 +25,7 @@
 
 struct StrsvTilingData;
 
-void strsv_kernel_do(uint8_t* gmAddrA, uint8_t* gmAddrX, const StrsvTilingData &tiling, void *stream);
+void strsv_kernel_do(uint8_t* gmAddrA, uint8_t* gmAddrX, const StrsvTilingData& tiling, void* stream);
 
 static constexpr uint32_t SIMT_OPTIMAL_THREADS = 128;
 
@@ -33,24 +33,29 @@ static aclblasStatus_t ValidateTrsvParams(
     aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n, int incx, int lda, const float* A,
     const float* x)
 {
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE("aclblasStrsv", "invalid uplo=%d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
-        OP_LOGE("aclblasStrsv", "invalid trans=%d", static_cast<int>(trans));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        diag == ACLBLAS_NON_UNIT || diag == ACLBLAS_UNIT,
-        OP_LOGE("aclblasStrsv", "invalid diag=%d", static_cast<int>(diag));
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE("aclblasStrsv", "invalid uplo=%d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
+              OP_LOGE("aclblasStrsv", "invalid trans=%d", static_cast<int>(trans));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(diag == ACLBLAS_NON_UNIT || diag == ACLBLAS_UNIT,
+              OP_LOGE("aclblasStrsv", "invalid diag=%d", static_cast<int>(diag));
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasStrsv", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        lda >= std::max<int>(1, n), OP_LOGE("aclblasStrsv", "invalid lda=%d, n=%d", lda, n);
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(lda >= std::max<int>(1, n), OP_LOGE("aclblasStrsv", "invalid lda=%d, n=%d", lda, n);
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(A != nullptr, OP_LOGE("aclblasStrsv", "A must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(x != nullptr, OP_LOGE("aclblasStrsv", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
+    // issue #744: 对齐同 arch ctrsv 的跨度守卫——kernel 侧偏移按 uint32 寻址，
+    // n*lda 或 (n-1)*|incx| 超出 uint32 时地址回绕产生越界读写；超界显式拒绝
+    const uint64_t stride = incx < 0 ? -static_cast<int64_t>(incx) : static_cast<int64_t>(incx);
+    const uint64_t extent = static_cast<uint64_t>(n - 1) * stride + 1;
+    const uint64_t limit = UINT32_MAX;
+    if (static_cast<uint64_t>(n) * static_cast<uint64_t>(lda) > limit || extent > limit) {
+        OP_LOGE("aclblasStrsv", "matrix or vector extent exceeds uint32 range: n=%d lda=%d incx=%d", n, lda, incx);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -88,8 +93,7 @@ aclblasStatus_t aclblasStrsv(
     OP_LOGI("aclblasStrsv", "launching kernel");
 
     strsv_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<float*>(A)),
-        reinterpret_cast<uint8_t*>(x), tiling, h->stream);
+        reinterpret_cast<uint8_t*>(const_cast<float*>(A)), reinterpret_cast<uint8_t*>(x), tiling, h->stream);
 
     return ACLBLAS_STATUS_SUCCESS;
 }

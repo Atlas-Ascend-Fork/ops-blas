@@ -49,6 +49,16 @@ static aclblasStatus_t ValidateIcamaxParams(
         OP_LOGE("aclblasIcamax", "x must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    // issue #745: 与 icamin 对齐的步长跨度守卫——kernel 按 int32 寻址复数元素，
+    // (n-1)*incx 超界时地址回绕产生越界读写
+    const int64_t lastComplex = static_cast<int64_t>(n - 1) * static_cast<int64_t>(incx);
+    if (lastComplex < 0 || lastComplex > static_cast<int64_t>(INT32_MAX) ||
+        lastComplex > (static_cast<int64_t>(INT64_MAX) / 2)) {
+        OP_LOGE(
+            "aclblasIcamax", "strided offset overflow: n=%d incx=%d lastComplex=%lld", n, incx,
+            static_cast<long long>(lastComplex));
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 

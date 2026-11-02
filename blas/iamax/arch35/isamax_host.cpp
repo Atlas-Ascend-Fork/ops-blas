@@ -43,6 +43,14 @@ static aclblasStatus_t ValidateIsamaxParams(aclblasHandle_t handle, int n, int i
         OP_LOGE("aclblasIsamax", "result must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    // issue #745: 与 icamin 对齐的步长跨度守卫——kernel 按 int32 寻址 float 元素
+    const int64_t lastElement = static_cast<int64_t>(n - 1) * static_cast<int64_t>(incx);
+    if (lastElement < 0 || lastElement > static_cast<int64_t>(INT32_MAX)) {
+        OP_LOGE(
+            "aclblasIsamax", "strided offset overflow: n=%d incx=%d lastElement=%lld", n, incx,
+            static_cast<long long>(lastElement));
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
