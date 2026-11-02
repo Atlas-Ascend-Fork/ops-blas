@@ -230,6 +230,11 @@ __aicore__ inline LocalTensor<uint32_t> CcopyKernel::ReorderComplexPairs(
     uint32_t interleaveCount =
         ((complexCount + CCOPY_LANES_PER_BLOCK - 1) / CCOPY_LANES_PER_BLOCK) * CCOPY_LANES_PER_BLOCK;
     uint32_t offsetBufferBytes = tiling_.tileSize * CCOPY_BYTES_PER_COMPLEX;
+    // reorderBuffer_ 为裸 TBuf：上一轮 tile 的 MTE3 写出(CompactWrite/CopyContiguousOut)可能
+    // 尚未读完本缓冲，本轮 V 管线(Gather/Interleave)复用前必须等待 MTE3 完成，
+    // 避免多 tile 场景下的 WAR 竞态导致数据错乱
+    SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
+    WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
     LocalTensor<uint32_t> reordered = reorderBuffer_.GetWithOffset<uint32_t>(laneCount, 0);
     LocalTensor<int32_t> offsets = reorderBuffer_.GetWithOffset<int32_t>(2 * interleaveCount, offsetBufferBytes);
     LocalTensor<int32_t> offsets1 =
@@ -252,7 +257,11 @@ __aicore__ inline LocalTensor<uint32_t> CcopyKernel::ReorderComplexPairs(
     Interleave(offsets, offsets1, evenOffsets, oddOffsets, static_cast<int32_t>(interleaveCount));
     PipeBarrier<PIPE_V>();
     Gather(reordered, input, offsets.ReinterpretCast<uint32_t>(), static_cast<uint32_t>(0), laneCount);
-    PipeBarrier<PIPE_V>();
+    // reorderBuffer_ 是裸 TBuf 缓冲，不在队列事件管理内：Gather(PIPE_V) 写入完成后必须
+    // 显式插入 V->MTE3 事件同步，否则后续 CompactWrite/CopyContiguousOut 在 MTE3 上
+    // 读到的是未就绪的 UB 残留内容（表现为 needReorder_ 场景 y 全为垃圾值）
+    SetFlag<HardEvent::V_MTE3>(EVENT_ID0);
+    WaitFlag<HardEvent::V_MTE3>(EVENT_ID0);
     return reordered;
 }
 
