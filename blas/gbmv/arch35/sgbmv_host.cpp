@@ -24,28 +24,34 @@
 #include "common/helper/kernel_constant.h"
 #include "common/helper/host_utils.h"
 
-void sgbmv_kernel_do(uint8_t* a, uint8_t* x, uint8_t* y, uint8_t* workSpace, const SgbmvTilingData &tiling,
-                      uint32_t numBlocks, void *stream);
+void sgbmv_kernel_do(
+    uint8_t* a, uint8_t* x, uint8_t* y, uint8_t* workSpace, const SgbmvTilingData& tiling, uint32_t numBlocks,
+    void* stream);
 
 static aclblasStatus_t ValidateSgbmvParams(
     aclblasOperation_t trans, int m, int n, int kl, int ku, int lda, int incx, int incy, const float* alpha,
     const float* beta, const float* A, const float* x, const float* y)
 {
-    CHECK_RET(
-        trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
-        OP_LOGE("aclblasSgbmv", "invalid trans=%d", static_cast<int>(trans));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(kl >= 0, OP_LOGE("aclblasSgbmv", "invalid kl=%d", kl); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(ku >= 0, OP_LOGE("aclblasSgbmv", "invalid ku=%d", ku); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        lda >= kl + ku + 1, OP_LOGE("aclblasSgbmv", "invalid lda=%d, kl=%d, ku=%d", lda, kl, ku);
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
+              OP_LOGE("aclblasSgbmv", "invalid trans=%d", static_cast<int>(trans));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(kl >= 0 && ku >= 0, OP_LOGE("aclblasSgbmv", "invalid kl=%d or ku=%d", kl, ku);
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    // issue #739: int 加法在 kl+ku 极大时回绕为负导致 lda 校验穿透；对齐 cgbmv 用 int64 中间量
+    CHECK_RET(static_cast<int64_t>(lda) >= static_cast<int64_t>(kl) + ku + 1,
+              OP_LOGE("aclblasSgbmv", "invalid lda=%d, kl=%d, ku=%d", lda, kl, ku);
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    // issue #739: kl/ku 超过矩阵半带宽上限时 tiling 按虚假带宽下发，kernel 访问 A 越界；
+    // 对齐 cgbmv（ValidateCgbmvParams）的上界检查
+    CHECK_RET(kl <= m - 1 && ku <= n - 1,
+              OP_LOGE("aclblasSgbmv", "kl=%d must be <= m-1=%d, ku=%d must be <= n-1=%d", kl, m - 1, ku, n - 1);
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasSgbmv", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incy != 0, OP_LOGE("aclblasSgbmv", "incy must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        alpha != nullptr, OP_LOGE("aclblasSgbmv", "alpha must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        beta != nullptr, OP_LOGE("aclblasSgbmv", "beta must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(alpha != nullptr, OP_LOGE("aclblasSgbmv", "alpha must not be nullptr");
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(beta != nullptr, OP_LOGE("aclblasSgbmv", "beta must not be nullptr");
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(A != nullptr, OP_LOGE("aclblasSgbmv", "A must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(x != nullptr, OP_LOGE("aclblasSgbmv", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(y != nullptr, OP_LOGE("aclblasSgbmv", "y must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
@@ -84,8 +90,8 @@ aclblasStatus_t aclblasSgbmv(
     auto* h = handle;
     CHECK_RET(h != nullptr, OP_LOGE("aclblasSgbmv", "handle is nullptr"); return ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 
-    CHECK_RET(
-        m >= 0 && n >= 0, OP_LOGE("aclblasSgbmv", "invalid m=%d or n=%d", m, n); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(m >= 0 && n >= 0, OP_LOGE("aclblasSgbmv", "invalid m=%d or n=%d", m, n);
+              return ACLBLAS_STATUS_INVALID_VALUE);
     if (m == 0 || n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }
@@ -111,10 +117,8 @@ aclblasStatus_t aclblasSgbmv(
     OP_LOGI("aclblasSgbmv", "launching kernel");
 
     sgbmv_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<float*>(A)),
-        reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
-        reinterpret_cast<uint8_t*>(y), nullptr, tiling,
-        useNumBlocks, h->stream);
+        reinterpret_cast<uint8_t*>(const_cast<float*>(A)), reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
+        reinterpret_cast<uint8_t*>(y), nullptr, tiling, useNumBlocks, h->stream);
 
     return ACLBLAS_STATUS_SUCCESS;
 }
