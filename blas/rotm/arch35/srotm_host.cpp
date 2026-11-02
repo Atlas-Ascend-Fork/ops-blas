@@ -8,7 +8,6 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-
 /* !
  * \file srotm_host.cpp
  * \brief Modified Givens rotation host implementation
@@ -25,10 +24,10 @@
 #include "srotm_tiling_data.h"
 
 void srotm_kernel_do_arch35(
-    uint8_t* x, uint8_t* y, const SrotmTilingData& tilingData, uint32_t numBlocks, void *stream);
+    uint8_t* x, uint8_t* y, const SrotmTilingData& tilingData, uint32_t numBlocks, void* stream);
 
-static void BuildTilingData(int n, int incx, int incy, const float *param,
-                            uint32_t numBlocks, SrotmTilingData &tilingData)
+static void BuildTilingData(
+    int n, int incx, int incy, const float* param, uint32_t numBlocks, SrotmTilingData& tilingData)
 {
     const float flag = param[0];
     float alpha1, beta1, alpha2, beta2;
@@ -50,8 +49,10 @@ static void BuildTilingData(int n, int incx, int incy, const float *param,
     }
 
     tilingData.elementCount = static_cast<int32_t>(n);
-    tilingData.alpha1 = alpha1; tilingData.beta1 = beta1;
-    tilingData.alpha2 = alpha2; tilingData.beta2 = beta2;
+    tilingData.alpha1 = alpha1;
+    tilingData.beta1 = beta1;
+    tilingData.alpha2 = alpha2;
+    tilingData.beta2 = beta2;
     tilingData.incx = static_cast<int32_t>(incx);
     tilingData.incy = static_cast<int32_t>(incy);
     tilingData.kx = (incx >= 0) ? 0 : (1LL - n) * incx;
@@ -61,14 +62,39 @@ static void BuildTilingData(int n, int incx, int incy, const float *param,
         SIMT_MAX_THREAD_NUM);
 }
 
-aclblasStatus_t aclblasSrotm(
-    aclblasHandle_t handle, int n, float *x, int incx, float *y, int incy, const float *param)
+// issue #737/#779: param 数组位置探测 + device D2H 读回（独立函数控制 aclblasSrotm 函数体规模）
+static aclblasStatus_t ResolveSrotmParam(const float* param, float (&paramHost)[5])
+{
+    bool paramDevice = false;
+    const aclblasStatus_t locStatus = CheckPtrLocation(param, &paramDevice);
+    if (locStatus != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE("aclblasSrotm", "param pointer location query failed");
+        return locStatus;
+    }
+    if (paramDevice) {
+        const aclError copyRet =
+            aclrtMemcpy(paramHost, sizeof(paramHost), param, sizeof(paramHost), ACL_MEMCPY_DEVICE_TO_HOST);
+        if (copyRet != ACL_SUCCESS) {
+            OP_LOGE("aclblasSrotm", "param D2H copy failed. ERROR: %d", static_cast<int>(copyRet));
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+    } else {
+        for (int i = 0; i < 5; ++i) {
+            paramHost[i] = param[i];
+        }
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+aclblasStatus_t aclblasSrotm(aclblasHandle_t handle, int n, float* x, int incx, float* y, int incy, const float* param)
 {
     if (handle == nullptr) {
         OP_LOGE("aclblasSrotm", "handle is nullptr");
         return ACLBLAS_STATUS_NOT_INITIALIZED;
     }
-    if (n <= 0) { return ACLBLAS_STATUS_SUCCESS; }
+    if (n <= 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
     if (x == nullptr || y == nullptr || param == nullptr) {
         OP_LOGE("aclblasSrotm", "input pointers contain a nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -78,10 +104,20 @@ aclblasStatus_t aclblasSrotm(
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
-    const float flag = param[0];
-    if (flag == -2.0f) { return ACLBLAS_STATUS_SUCCESS; }
+    // issue #737: param 数组按 rot 族惯例探测位置（srot 的 c/s 同口径），device 侧
+    // 整组 D2H 后在 host 读取控制标量，避免主机直接访问设备地址
+    float paramHost[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    const aclblasStatus_t paramStatus = ResolveSrotmParam(param, paramHost);
+    if (paramStatus != ACLBLAS_STATUS_SUCCESS) {
+        return paramStatus;
+    }
 
-    auto *h = handle;
+    const float flag = paramHost[0];
+    if (flag == -2.0f) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+
+    auto* h = handle;
 
     uint32_t numBlocks = GetAivCoreCount();
     if (numBlocks == 0) {
@@ -90,10 +126,10 @@ aclblasStatus_t aclblasSrotm(
     }
 
     SrotmTilingData tilingData;
-    BuildTilingData(n, incx, incy, param, numBlocks, tilingData);
+    BuildTilingData(n, incx, incy, paramHost, numBlocks, tilingData);
 
-    srotm_kernel_do_arch35(reinterpret_cast<uint8_t*>(x), reinterpret_cast<uint8_t*>(y),
-                    tilingData, numBlocks, h->stream);
+    srotm_kernel_do_arch35(
+        reinterpret_cast<uint8_t*>(x), reinterpret_cast<uint8_t*>(y), tilingData, numBlocks, h->stream);
 
     return ACLBLAS_STATUS_SUCCESS;
 }

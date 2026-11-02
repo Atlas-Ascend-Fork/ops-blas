@@ -16,8 +16,8 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
-void ssyr_kernel_do(uint8_t* gm_x, uint8_t* gm_A, uint8_t* workSpace, uint8_t* tilingGm,
-                    uint32_t numBlocks, void *stream);
+void ssyr_kernel_do(
+    uint8_t* gm_x, uint8_t* gm_A, uint8_t* workSpace, uint8_t* tilingGm, uint32_t numBlocks, void* stream);
 
 constexpr uint32_t DEFAULT_VECTOR_NUM = 40;
 constexpr uint32_t WORKSPACE_SIZE = 1024;
@@ -44,11 +44,14 @@ aclblasStatus_t aclblasSsyr(
     auto* h = handle;
     aclrtStream useStream = h->stream;
 
+    // issue #736: alpha 无条件 D2H 读回对 host 指针会 memcpy 失败并误报 INTERNAL_ERROR；
+    // 改用位置探测共享 helper（host 直接解引用，device 异步 D2H），对齐 csyr/#510 ssyr 口径
     float alphaVal = 0.0f;
-    aclError aclRet = aclrtMemcpy(&alphaVal, sizeof(float), alpha, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy alpha failed. ERROR: %d\n", aclRet);
-        return ACLBLAS_STATUS_INTERNAL_ERROR);
+    const aclblasStatus_t alphaStatus = ReadScalarFromHostOrDevice(alpha, useStream, alphaVal);
+    if (alphaStatus != ACLBLAS_STATUS_SUCCESS) {
+        LOG_PRINT("aclblasSsyr: resolve alpha failed. STATUS: %d\n", static_cast<int>(alphaStatus));
+        return alphaStatus;
+    }
 
     uint32_t vecCoreNum = DEFAULT_VECTOR_NUM;
 
@@ -61,30 +64,26 @@ aclblasStatus_t aclblasSsyr(
     uint8_t* workSpaceDevice = nullptr;
     uint8_t* tilingDevice = nullptr;
 
-    aclRet = aclrtMalloc((void**)&workSpaceDevice, WORKSPACE_SIZE, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    aclError aclRet = aclrtMalloc((void**)&workSpaceDevice, WORKSPACE_SIZE, ACL_MEM_MALLOC_HUGE_FIRST);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(SsyrTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(workSpaceDevice);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(workSpaceDevice);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet =
         aclrtMemcpy(tilingDevice, sizeof(SsyrTilingData), &tiling, sizeof(SsyrTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(workSpaceDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
+              aclrtFree(workSpaceDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     ssyr_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float*>(x)), reinterpret_cast<uint8_t*>(A), workSpaceDevice, tilingDevice,
         vecCoreNum, useStream);
 
     aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(workSpaceDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(tilingDevice); aclrtFree(workSpaceDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclrtFree(workSpaceDevice);
     aclrtFree(tilingDevice);

@@ -273,8 +273,38 @@ uint32_t Csyr2SelectCoreCount(aclblasFillMode_t uplo, int n, int incx, int incy,
     return used;
 }
 
+// issue #736: alpha 的 host/device 双位置支持（对齐 csyr_resolve_alpha 口径）——
+// 位置探测后 device 指针同步 D2H 读回，host 指针成员拷贝；alpha==(0,0) 置 zeroAlpha
+aclblasStatus_t Csyr2ResolveAlpha(const aclblasComplex* alpha, float& alphaReal, float& alphaImag, bool& zeroAlpha)
+{
+    bool alphaDevice = false;
+    const aclblasStatus_t locStatus = CheckPtrLocation(alpha, &alphaDevice);
+    if (locStatus != ACLBLAS_STATUS_SUCCESS) {
+        return locStatus;
+    }
+    aclblasComplex alphaHost{0.0f, 0.0f};
+    if (alphaDevice) {
+        const aclError aclRet =
+            aclrtMemcpy(&alphaHost, sizeof(alphaHost), alpha, sizeof(alphaHost), ACL_MEMCPY_DEVICE_TO_HOST);
+        if (aclRet != ACL_SUCCESS) {
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+    } else {
+        alphaHost.real = alpha->real;
+        alphaHost.imag = alpha->imag;
+    }
+    if (alphaHost.real == 0.0f && alphaHost.imag == 0.0f) {
+        zeroAlpha = true;
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    alphaReal = alphaHost.real;
+    alphaImag = alphaHost.imag;
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 void Csyr2SetInputTiling(
-    aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, int incx, int incy, int lda, Csyr2TilingData* tiling)
+    aclblasFillMode_t uplo, int n, float alphaReal, float alphaImag, int incx, int incy, int lda,
+    Csyr2TilingData* tiling)
 {
     tiling->n = n;
     tiling->lda = lda;
@@ -283,12 +313,12 @@ void Csyr2SetInputTiling(
     tiling->reservedOffsets[0] = 0;
     tiling->reservedOffsets[1] = 0;
     tiling->uplo = static_cast<int32_t>(uplo);
-    tiling->alphaReal = alpha->real;
-    tiling->alphaImag = alpha->imag;
+    tiling->alphaReal = alphaReal;
+    tiling->alphaImag = alphaImag;
 }
 
 void Csyr2SaveFillCache(
-    aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, int incx, int incy, int lda, uint64_t ubBytes,
+    aclblasFillMode_t uplo, int n, float alphaReal, float alphaImag, int incx, int incy, int lda, uint64_t ubBytes,
     uint32_t aivNum, const Csyr2TilingData* tiling)
 {
     g_fillCache.ubBytes = ubBytes;
@@ -298,20 +328,40 @@ void Csyr2SaveFillCache(
     g_fillCache.lda = lda;
     g_fillCache.incx = incx;
     g_fillCache.incy = incy;
-    g_fillCache.ar = alpha->real;
-    g_fillCache.ai = alpha->imag;
+    g_fillCache.ar = alphaReal;
+    g_fillCache.ai = alphaImag;
     g_fillCache.td = *tiling;
     g_fillCache.valid = true;
 }
 
 } // namespace
 
+aclblasStatus_t Csyr2FillTilingImpl(
+    aclblasFillMode_t uplo, int n, float alphaReal, float alphaImag, int incx, int incy, int lda,
+    Csyr2TilingData* tiling);
+
+// issue #736: 公共入口保留 alpha 指针签名（单测直调），内部位置探测后转值传递
 aclblasStatus_t Csyr2FillTiling(
     aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, int incx, int incy, int lda, Csyr2TilingData* tiling)
 {
     if (tiling == nullptr || alpha == nullptr || n <= 0) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    float alphaReal = 0.0f;
+    float alphaImag = 0.0f;
+    bool zeroAlpha = false;
+    const aclblasStatus_t resolveRet = Csyr2ResolveAlpha(alpha, alphaReal, alphaImag, zeroAlpha);
+    if (resolveRet != ACLBLAS_STATUS_SUCCESS) {
+        return resolveRet;
+    }
+    (void)zeroAlpha;
+    return Csyr2FillTilingImpl(uplo, n, alphaReal, alphaImag, incx, incy, lda, tiling);
+}
+
+aclblasStatus_t Csyr2FillTilingImpl(
+    aclblasFillMode_t uplo, int n, float alphaReal, float alphaImag, int incx, int incy, int lda,
+    Csyr2TilingData* tiling)
+{
     const uint64_t ubBytes = GetUbBytes();
     const uint32_t aivNum = GetAivCoreNum();
     const uint32_t overhead = GetCsyr2OverheadBytes();
@@ -319,13 +369,12 @@ aclblasStatus_t Csyr2FillTiling(
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
     if (g_fillCache.valid && g_fillCache.ubBytes == ubBytes && g_fillCache.aivNum == aivNum &&
-        g_fillCache.uplo == uplo && g_fillCache.n == n && g_fillCache.lda == lda &&
-        g_fillCache.incx == incx && g_fillCache.incy == incy && g_fillCache.ar == alpha->real &&
-        g_fillCache.ai == alpha->imag) {
+        g_fillCache.uplo == uplo && g_fillCache.n == n && g_fillCache.lda == lda && g_fillCache.incx == incx &&
+        g_fillCache.incy == incy && g_fillCache.ar == alphaReal && g_fillCache.ai == alphaImag) {
         *tiling = g_fillCache.td;
         return ACLBLAS_STATUS_SUCCESS;
     }
-    Csyr2SetInputTiling(uplo, n, alpha, incx, incy, lda, tiling);
+    Csyr2SetInputTiling(uplo, n, alphaReal, alphaImag, incx, incy, lda, tiling);
 
     const uint32_t genericTileRow = static_cast<uint32_t>(Csyr2ComputeTileRow(ubBytes, overhead, n));
     uint32_t tileRow = genericTileRow;
@@ -344,7 +393,7 @@ aclblasStatus_t Csyr2FillTiling(
     tiling->tileRow = tileRow;
     tiling->xyReuse = Csyr2ComputeXyReuse(
         ubBytes, overhead, n, static_cast<int32_t>(uplo), used, static_cast<int32_t>(tiling->tileRow));
-    Csyr2SaveFillCache(uplo, n, alpha, incx, incy, lda, ubBytes, aivNum, tiling);
+    Csyr2SaveFillCache(uplo, n, alphaReal, alphaImag, incx, incy, lda, ubBytes, aivNum, tiling);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -372,8 +421,19 @@ aclblasStatus_t aclblasCsyr2(
     if (lda < ldaMin) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    /* Host 解引用 alpha。n==0 或 alpha=(0,0) 不 launch，A 保持原样。 */
-    if (n == 0 || (alpha->real == 0.0f && alpha->imag == 0.0f)) {
+    /* Host 解引用 alpha。n==0 或 alpha=(0,0) 不 launch，A 保持原样。issue #736：
+     * alpha 位置探测后经 Csyr2ResolveAlpha 读回，device 标量不再被主机直接解引用 */
+    if (n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    float alphaReal = 0.0f;
+    float alphaImag = 0.0f;
+    bool zeroAlpha = false;
+    const aclblasStatus_t resolveRet = Csyr2ResolveAlpha(alpha, alphaReal, alphaImag, zeroAlpha);
+    if (resolveRet != ACLBLAS_STATUS_SUCCESS) {
+        return resolveRet;
+    }
+    if (zeroAlpha) {
         return ACLBLAS_STATUS_SUCCESS;
     }
     if (x == nullptr || y == nullptr || A == nullptr) {
@@ -381,7 +441,7 @@ aclblasStatus_t aclblasCsyr2(
     }
 
     Csyr2TilingData tiling{};
-    const aclblasStatus_t st = Csyr2FillTiling(uplo, n, alpha, incx, incy, lda, &tiling);
+    const aclblasStatus_t st = Csyr2FillTilingImpl(uplo, n, alphaReal, alphaImag, incx, incy, lda, &tiling);
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
     }

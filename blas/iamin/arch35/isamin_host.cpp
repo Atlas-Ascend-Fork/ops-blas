@@ -20,8 +20,10 @@
 
 namespace {
 
-static aclblasStatus_t ValidateIsaminParams(aclblasHandle_t handle, int n, int incx, const float* x, int* result)
+static aclblasStatus_t ValidateIsaminParams(
+    aclblasHandle_t handle, int n, int incx, const float* x, int* result, bool& quickReturn)
 {
+    quickReturn = false;
     if (handle == nullptr) {
         OP_LOGE("aclblasIsamin", "handle is nullptr");
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
@@ -29,21 +31,21 @@ static aclblasStatus_t ValidateIsaminParams(aclblasHandle_t handle, int n, int i
     if (n < 0) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    if (result == nullptr) {
+        OP_LOGE("aclblasIsamin", "result must not be nullptr");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     if (n == 0 || incx < 1) {
-        if (result != nullptr) {
-            *result = 0;
-        }
+        // issue #738: result 语义为 device 地址，快速返回按 icamin/icamax 惯例由调用方
+        // aclrtMemsetAsync 写回，不得在 host 直接解引用
+        quickReturn = true;
         return ACLBLAS_STATUS_SUCCESS;
     }
     if (x == nullptr) {
         OP_LOGE("aclblasIsamin", "x must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (result == nullptr) {
-        OP_LOGE("aclblasIsamin", "result must not be nullptr");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    // issue #745: 与 icamin 对齐的步长跨度守卫——kernel 按 int32 寻址 float 元素
+    // issue #745: 与 icamin 对齐的步长跨度守卫——kernel 以 int32 寻址 float 元素
     const int64_t lastElement = static_cast<int64_t>(n - 1) * static_cast<int64_t>(incx);
     if (lastElement < 0 || lastElement > static_cast<int64_t>(INT32_MAX)) {
         OP_LOGE(
@@ -80,8 +82,17 @@ static IsaminTilingData CalcIsaminTiling(int n, uint32_t numBlocks, int incx)
 
 static aclblasStatus_t LaunchIsaminKernel(aclblasHandle_t handle, int n, const float* x, int incx, int* result)
 {
-    aclblasStatus_t vStatus = ValidateIsaminParams(handle, n, incx, x, result);
+    bool quickReturn = false;
+    aclblasStatus_t vStatus = ValidateIsaminParams(handle, n, incx, x, result, quickReturn);
     if (vStatus != ACLBLAS_STATUS_SUCCESS || n <= 0 || incx < 1) {
+        if (quickReturn && result != nullptr) {
+            // issue #738: 快速返回按 icamin/icamax 惯例经 aclrtMemsetAsync 设备写回
+            const aclError memRet = aclrtMemsetAsync(result, sizeof(int), 0, sizeof(int), handle->stream);
+            if (memRet != ACL_SUCCESS) {
+                OP_LOGE("aclblasIsamin", "failed to write quick-return result, ret=%d", static_cast<int>(memRet));
+                return ACLBLAS_STATUS_EXECUTION_FAILED;
+            }
+        }
         return vStatus;
     }
 

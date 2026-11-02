@@ -178,8 +178,8 @@ static aclblasStatus_t ValidatePointers(
 
 static aclblasStatus_t ValidateCgemmEx(
     aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
-    const aclblasComplex* alpha, const void* A, aclblasCgemmExType_t typeA, int lda, const void* B, aclblasCgemmExType_t typeB,
-    int ldb, const aclblasComplex* beta, const void* C, aclblasCgemmExType_t typeC, int ldc)
+    const aclblasComplex* alpha, const void* A, aclblasCgemmExType_t typeA, int lda, const void* B,
+    aclblasCgemmExType_t typeB, int ldb, const aclblasComplex* beta, const void* C, aclblasCgemmExType_t typeC, int ldc)
 {
     aclblasStatus_t st = ValidateEnums(handle, transa, transb, typeA, typeB, typeC);
     if (st != ACLBLAS_STATUS_SUCCESS) {
@@ -194,7 +194,8 @@ static aclblasStatus_t ValidateCgemmEx(
 
 static aclblasStatus_t ConvertHalfToDeviceC32(
     const void* src, aclblasCgemmExType_t type, int physRows, int physCols, int ld, void** dstDev, size_t* bytesOut);
-static aclblasStatus_t ConvertC32DeviceToHalf(void* c32Dev, void* dst, aclblasCgemmExType_t type, int m, int n, int ldc);
+static aclblasStatus_t ConvertC32DeviceToHalf(
+    void* c32Dev, void* dst, aclblasCgemmExType_t type, int m, int n, int ldc);
 
 static aclblasStatus_t ScaleHalfC(
     _aclblas_handle* h, int m, int n, int ldc, const aclblasComplex* beta, void* C, aclblasCgemmExType_t typeC,
@@ -899,8 +900,8 @@ static aclblasStatus_t SyncConvertHalfC(
 
 static aclblasStatus_t LaunchHalfPath(
     aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
-    const aclblasComplex* alpha, const void* A, aclblasCgemmExType_t typeA, int lda, const void* B, aclblasCgemmExType_t typeB,
-    int ldb, const aclblasComplex* beta, void* C, aclblasCgemmExType_t typeC, int ldc)
+    const aclblasComplex* alpha, const void* A, aclblasCgemmExType_t typeA, int lda, const void* B,
+    aclblasCgemmExType_t typeB, int ldb, const aclblasComplex* beta, void* C, aclblasCgemmExType_t typeC, int ldc)
 {
     void* a32 = const_cast<void*>(A);
     void* b32 = const_cast<void*>(B);
@@ -939,8 +940,8 @@ static aclblasStatus_t LaunchHalfPath(
 
 static aclblasStatus_t LaunchMixedPromote(
     aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
-    const aclblasComplex* alpha, const void* A, aclblasCgemmExType_t typeA, int lda, const void* B, aclblasCgemmExType_t typeB,
-    int ldb, const aclblasComplex* beta, void* C, aclblasCgemmExType_t typeC, int ldc)
+    const aclblasComplex* alpha, const void* A, aclblasCgemmExType_t typeA, int lda, const void* B,
+    aclblasCgemmExType_t typeB, int ldb, const aclblasComplex* beta, void* C, aclblasCgemmExType_t typeC, int ldc)
 {
     void* aC32 = const_cast<void*>(A);
     void* bC32 = const_cast<void*>(B);
@@ -980,6 +981,29 @@ extern "C" aclblasStatus_t aclblasCgemmEx(
     const aclblasComplex* alpha, const void* A, int typeA, int lda, const void* B, int typeB, int ldb,
     const aclblasComplex* beta, void* C, int typeC, int ldc)
 {
+    // issue #735: alpha/beta 按 gbmv/cherk/strmm/ssymm/axpy_ex/srot 等惯例支持 host/device
+    // 双位置——入口统一探测并读入 host 副本，下游全部使用 host 值。原实现直接解引用
+    // device 标量指针会段错误或读到垃圾值。
+    if (handle == nullptr) {
+        OP_LOGE("aclblasCgemmEx", "handle is nullptr");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    auto* h = reinterpret_cast<_aclblas_handle*>(handle);
+    aclblasComplex alphaHost{};
+    aclblasComplex betaHost{};
+    aclblasStatus_t scalarSt = ReadScalarFromHostOrDevice(alpha, h->stream, alphaHost);
+    if (scalarSt != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE("aclblasCgemmEx", "resolve alpha failed, status=%d", static_cast<int>(scalarSt));
+        return scalarSt;
+    }
+    scalarSt = ReadScalarFromHostOrDevice(beta, h->stream, betaHost);
+    if (scalarSt != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE("aclblasCgemmEx", "resolve beta failed, status=%d", static_cast<int>(scalarSt));
+        return scalarSt;
+    }
+    alpha = &alphaHost;
+    beta = &betaHost;
+
     auto ta = static_cast<aclblasCgemmExType_t>(typeA);
     auto tb = static_cast<aclblasCgemmExType_t>(typeB);
     auto tc = static_cast<aclblasCgemmExType_t>(typeC);
