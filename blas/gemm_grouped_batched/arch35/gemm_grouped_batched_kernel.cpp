@@ -189,8 +189,10 @@ __aicore__ inline void GemmGroupedBatchedAIV::ProcessBetaOnly(
                 SetFlag<HardEvent::V_MTE3>(EVENT_ID0);
                 WaitFlag<HardEvent::V_MTE3>(EVENT_ID0);
                 CopyOutC(ldc, mOff, nOff, mCurr, nCurr, gp);
-                SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
-                WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
+                // CopyOutC (MTE3) reads bufC_; wait until the copy-out has
+                // drained before the next tile's vector writes overwrite it.
+                SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
+                WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
             }
         }
         return;
@@ -210,12 +212,18 @@ __aicore__ inline void GemmGroupedBatchedAIV::ProcessBetaOnly(
             // contiguous mCurr*nCurr misses column data when tileM_aligned != mCurr.
             Muls(cLocal, cInLocal, beta, gp->tileM_aligned * nCurr);
             PipeBarrier<PIPE_V>();
+            // The next tile's CopyInC reuses bufCIn_; wait until this tile's
+            // vector reads (Muls above) have drained before MTE2 overwrites it.
+            SetFlag<HardEvent::V_MTE2>(EVENT_ID0);
+            WaitFlag<HardEvent::V_MTE2>(EVENT_ID0);
 
             SetFlag<HardEvent::V_MTE3>(EVENT_ID0);
             WaitFlag<HardEvent::V_MTE3>(EVENT_ID0);
             CopyOutC(ldc, mOff, nOff, mCurr, nCurr, gp);
-            SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
-            WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
+            // CopyOutC (MTE3) reads bufC_; wait until the copy-out has
+            // drained before the next tile's vector writes overwrite it.
+            SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
+            WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
         }
     }
 }
@@ -253,27 +261,44 @@ __aicore__ inline void GemmGroupedBatchedAIV::ProcessGemmBatch(
             Duplicate(cLocal, 0.0f, gp->tileM_aligned * nCurr);
             PipeBarrier<PIPE_V>();
 
-            for (uint32_t kOff = 0; kOff < k; kOff += tileK) {
-                uint32_t kCurr = (kOff + tileK > k) ? (k - kOff) : tileK;
-                CopyInA(gp->lda, mOff, kOff, mCurr, kCurr, gp);
-                CopyInB(gp->ldb, kOff, nOff, kCurr, nCurr, gp);
-                SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
-                WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
-
-                if (gp->transa == 0) {
-                    ComputeColumnWise(mCurr, kCurr, nCurr, gp);
-                } else {
-                    ComputeDotProduct(mCurr, kCurr, nCurr, gp);
-                }
-            }
-
-            ApplyAlphaBeta(alpha, beta, mCurr, nCurr, gp->tileM_aligned);
-
-            SetFlag<HardEvent::V_MTE3>(EVENT_ID0);
-            WaitFlag<HardEvent::V_MTE3>(EVENT_ID0);
-            CopyOutC(ldc, mOff, nOff, mCurr, nCurr, gp);
+        for (uint32_t kOff = 0; kOff < k; kOff += tileK) {
+            uint32_t kCurr = (kOff + tileK > k) ? (k - kOff) : tileK;
+            CopyInA(gp->lda, mOff, kOff, mCurr, kCurr, gp);
+            CopyInB(gp->ldb, kOff, nOff, kCurr, nCurr, gp);
             SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
             WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
+            // ComputeColumnWise reads B scalars and ComputeDotProduct packs B
+            // columns via scalar-pipe UB accesses; the V-pipe wait above does
+            // not order the scalar pipe, so an explicit MTE2_S pair is required
+            // after the copy-in batch (same pattern as trsmbatched/strmm).
+            SetFlag<HardEvent::MTE2_S>(EVENT_ID0);
+            WaitFlag<HardEvent::MTE2_S>(EVENT_ID0);
+
+            if (gp->transa == 0) {
+                ComputeColumnWise(mCurr, kCurr, nCurr, gp);
+            } else {
+                ComputeDotProduct(mCurr, kCurr, nCurr, gp);
+            }
+
+            // The next kOff iteration re-issues CopyInA/CopyInB into the
+            // same bufA_/bufB_; wait until this iteration's vector reads
+            // AND scalar reads (bScalar / bPackedAddr pack loop) have
+            // drained before MTE2 overwrites the buffers.
+            SetFlag<HardEvent::V_MTE2>(EVENT_ID0);
+            WaitFlag<HardEvent::V_MTE2>(EVENT_ID0);
+            SetFlag<HardEvent::S_MTE2>(EVENT_ID0);
+            WaitFlag<HardEvent::S_MTE2>(EVENT_ID0);
+        }
+
+        ApplyAlphaBeta(alpha, beta, mCurr, nCurr, gp->tileM_aligned);
+
+        SetFlag<HardEvent::V_MTE3>(EVENT_ID0);
+        WaitFlag<HardEvent::V_MTE3>(EVENT_ID0);
+        CopyOutC(ldc, mOff, nOff, mCurr, nCurr, gp);
+        // CopyOutC (MTE3) reads bufC_; wait until the copy-out has
+        // drained before the next tile's vector writes overwrite it.
+        SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
+        WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
         }
     }
 }
@@ -347,6 +372,10 @@ __aicore__ inline __ubuf__ float* GemmGroupedBatchedAIV::GetDotProductBColAddr(
     for (uint32_t l = 0; l < kCurr; l++) {
         bPackedAddr[l] = *(bAddr + j + l * tileNAligned);
     }
+    // bPackedAddr is written by the scalar pipe and consumed by the vector
+    // pipe in AccumulateDotProductElem; order the two pipes explicitly.
+    SetFlag<HardEvent::S_V>(EVENT_ID0);
+    WaitFlag<HardEvent::S_V>(EVENT_ID0);
     return bPackedAddr;
 }
 
@@ -417,6 +446,12 @@ __aicore__ inline void GemmGroupedBatchedAIV::ComputeDotProduct(
                 bAddr, bPackedAddr, j, kCurr, tileKAligned, tileNAligned, gp);
             __ubuf__ float* cElem = cAddr + r + j * tileMAligned;
             AccumulateDotProductElem(aRowAddr, bColAddr, cElem, kVecNum, kTail);
+            if (gp->transb != 0) {
+                // The next j iteration rewrites bPackedAddr on the scalar pipe;
+                // wait until this iteration's vector reads have drained.
+                SetFlag<HardEvent::V_S>(EVENT_ID0);
+                WaitFlag<HardEvent::V_S>(EVENT_ID0);
+            }
         }
     }
 }
