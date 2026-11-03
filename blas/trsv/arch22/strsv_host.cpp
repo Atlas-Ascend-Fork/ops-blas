@@ -67,12 +67,34 @@ static StrsvTilingData CalStrsvTilingData(int n, int lda, uint32_t coreNum)
     return tiling;
 }
 
+static void PackStrsvVector(
+    const std::vector<float>& xHost, int n, int incx, size_t absIncx, std::vector<float>& xPacked)
+{
+    for (int i = 0; i < n; i++) {
+        const size_t offset = incx > 0 ? static_cast<size_t>(i) * absIncx : static_cast<size_t>(n - 1 - i) * absIncx;
+        xPacked[i] = xHost[offset];
+    }
+}
+
+static void ScatterStrsvVector(
+    const std::vector<float>& xPacked, int n, int incx, size_t absIncx, std::vector<float>& xHost)
+{
+    for (int i = 0; i < n; i++) {
+        const size_t offset = incx > 0 ? static_cast<size_t>(i) * absIncx : static_cast<size_t>(n - 1 - i) * absIncx;
+        xHost[offset] = xPacked[i];
+    }
+}
+
 aclblasStatus_t aclblasStrsv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
     const float* A, int lda, float* x, int incx)
 {
     if (n <= 0) {
         return ACLBLAS_STATUS_SUCCESS;
+    }
+
+    if (incx == 0) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
     if (A == nullptr || x == nullptr) {
@@ -92,38 +114,30 @@ aclblasStatus_t aclblasStrsv(
         useStream = h->stream;
     }
 
-    size_t aSize = static_cast<size_t>(n) * static_cast<size_t>(lda) * sizeof(float);
-    size_t xSize = static_cast<size_t>(n) * static_cast<size_t>(std::abs(incx)) * sizeof(float);
+    const size_t absIncx = static_cast<size_t>(incx < 0 ? -static_cast<int64_t>(incx) : incx);
+    const size_t xElements = (static_cast<size_t>(n) - 1) * absIncx + 1;
+    const size_t xSize = static_cast<size_t>(n) * sizeof(float);
+    const size_t xSpanSize = xElements * sizeof(float);
 
-    uint8_t* aDevice = nullptr;
     uint8_t* xDevice = nullptr;
-
-    aclRet = aclrtMalloc(reinterpret_cast<void**>(&aDevice), aSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        return ACLBLAS_STATUS_ALLOC_FAILED;
-    }
-
     aclRet = aclrtMalloc(reinterpret_cast<void**>(&xDevice), xSize, ACL_MEM_MALLOC_HUGE_FIRST);
     if (aclRet != ACL_SUCCESS) {
-        aclrtFree(aDevice);
         return ACLBLAS_STATUS_ALLOC_FAILED;
     }
 
-    std::vector<float> xHost(n, 0.0f);
-    for (int i = 0; i < n; i++) {
-        xHost[i] = x[i * incx];
-    }
-
-    aclRet = aclrtMemcpy(aDevice, aSize, A, aSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    // A and x are device pointers. Stage the strided x span on the host,
+    // then pack the logical vector for the contiguous Arch22 kernel.
+    std::vector<float> xHost(xElements);
+    std::vector<float> xPacked(n);
+    aclRet = aclrtMemcpy(xHost.data(), xSpanSize, x, xSpanSize, ACL_MEMCPY_DEVICE_TO_HOST);
     if (aclRet != ACL_SUCCESS) {
-        aclrtFree(aDevice);
         aclrtFree(xDevice);
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
+    PackStrsvVector(xHost, n, incx, absIncx, xPacked);
 
-    aclRet = aclrtMemcpy(xDevice, xSize, xHost.data(), xSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    aclRet = aclrtMemcpy(xDevice, xSize, xPacked.data(), xSize, ACL_MEMCPY_HOST_TO_DEVICE);
     if (aclRet != ACL_SUCCESS) {
-        aclrtFree(aDevice);
         aclrtFree(xDevice);
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
@@ -135,7 +149,6 @@ aclblasStatus_t aclblasStrsv(
     uint8_t* tilingDevice = nullptr;
     aclRet = aclrtMalloc(reinterpret_cast<void**>(&tilingDevice), sizeof(StrsvTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
     if (aclRet != ACL_SUCCESS) {
-        aclrtFree(aDevice);
         aclrtFree(xDevice);
         return ACLBLAS_STATUS_ALLOC_FAILED;
     }
@@ -143,35 +156,37 @@ aclblasStatus_t aclblasStrsv(
     aclRet =
         aclrtMemcpy(tilingDevice, sizeof(StrsvTilingData), &tiling, sizeof(StrsvTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
     if (aclRet != ACL_SUCCESS) {
-        aclrtFree(aDevice);
         aclrtFree(xDevice);
         aclrtFree(tilingDevice);
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
 
-    strsv_kernel_do(aDevice, xDevice, tilingDevice, uplo, trans, diag, n, lda, tiling.useCoreNum, useStream);
+    strsv_kernel_do(
+        reinterpret_cast<uint8_t*>(const_cast<float*>(A)), xDevice, tilingDevice, uplo, trans, diag, n, lda,
+        tiling.useCoreNum, useStream);
 
     aclRet = aclrtSynchronizeStream(useStream);
     if (aclRet != ACL_SUCCESS) {
-        aclrtFree(aDevice);
         aclrtFree(xDevice);
         aclrtFree(tilingDevice);
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
 
-    aclRet = aclrtMemcpy(xHost.data(), xSize, xDevice, xSize, ACL_MEMCPY_DEVICE_TO_HOST);
+    aclRet = aclrtMemcpy(xPacked.data(), xSize, xDevice, xSize, ACL_MEMCPY_DEVICE_TO_HOST);
     if (aclRet != ACL_SUCCESS) {
-        aclrtFree(aDevice);
         aclrtFree(xDevice);
         aclrtFree(tilingDevice);
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
 
-    for (int i = 0; i < n; i++) {
-        x[i * incx] = xHost[i];
+    ScatterStrsvVector(xPacked, n, incx, absIncx, xHost);
+    aclRet = aclrtMemcpy(x, xSpanSize, xHost.data(), xSpanSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        aclrtFree(xDevice);
+        aclrtFree(tilingDevice);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
 
-    aclrtFree(aDevice);
     aclrtFree(xDevice);
     aclrtFree(tilingDevice);
 

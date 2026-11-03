@@ -1,11 +1,11 @@
 /**
-* This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-* CANN Open Software License Agreement Version 2.0 (the "License").
-* Please refer to the License for details. You may not use this file except in compliance with the License.
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-* INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-* See LICENSE in the root of the software repository for the full text of the License.
-*/
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
 
 #ifndef STRSV_KERNEL_H
 #define STRSV_KERNEL_H
@@ -71,7 +71,7 @@ private:
 template <typename T, UploMode UPLO, TransMode TRANS, DiagMode DIAG>
 __aicore__ inline void StrsvKernel<T, UPLO, TRANS, DIAG>::ParseTilingData(GM_ADDR tilingGm)
 {
-    auto tiling = reinterpret_cast<__gm__ StrsvTilingDataDevice *>(tilingGm);
+    auto tiling = reinterpret_cast<__gm__ StrsvTilingDataDevice*>(tilingGm);
 
     this->n = tiling->n;
     this->lda = tiling->lda;
@@ -105,9 +105,9 @@ __aicore__ inline void StrsvKernel<T, UPLO, TRANS, DIAG>::CopyIn(int64_t row)
     for (int64_t col = 0; col < n; ++col) {
         int64_t aOffset;
         if constexpr (TRANS == TransMode::TRANS) {
-            aOffset = col * lda + row;
-        } else {
             aOffset = row * lda + col;
+        } else {
+            aOffset = col * lda + row;
         }
         aLocal.SetValue(col, aGM.GetValue(aOffset));
     }
@@ -260,10 +260,9 @@ __global__ __aicore__ void strsv_kernel_upper_trans_unit(GM_ADDR A, GM_ADDR x, G
     op.Process();
 }
 
-void strsv_kernel_do(GM_ADDR A, GM_ADDR x, GM_ADDR tilingGm,
-                     aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag,
-                     int n, int lda,
-                     uint32_t numBlocks, void* stream)
+void strsv_kernel_do(
+    GM_ADDR A, GM_ADDR x, GM_ADDR tilingGm, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag,
+    int n, int lda, uint32_t numBlocks, void* stream)
 {
     if (uplo == ACLBLAS_LOWER) {
         if (trans == ACLBLAS_OP_N) {
@@ -296,4 +295,4 @@ void strsv_kernel_do(GM_ADDR A, GM_ADDR x, GM_ADDR tilingGm,
     }
 }
 
-#endif  // STRSV_KERNEL_H
+#endif // STRSV_KERNEL_H

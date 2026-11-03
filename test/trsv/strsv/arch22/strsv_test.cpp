@@ -13,6 +13,7 @@
 #include "verify.h"
 #include "blas_test.h"
 #include "csv_loader.h"
+#include "device.h"
 #include "trsv_param.h"
 #include "trsv_golden.h"
 #include "strsv_npu_wrapper.h"
@@ -57,8 +58,21 @@ TEST_P(TrsvArch22Test, CsvDriven)
     // ── Step 3: Save golden copy before NPU modifies xHost in-place ──
     std::vector<float> golden = xHost;
 
-    const float* aPtr = aHost.empty() ? nullptr : aHost.data();
-    float* xPtr = xHost.empty() ? nullptr : xHost.data();
+    const bool needDevA = !aHost.empty() && p.n > 0;
+    const bool needDevX = !xHost.empty() && p.n > 0;
+    const size_t aBytes = needDevA ? aHost.size() * sizeof(float) : sizeof(float);
+    const size_t xBytes = needDevX ? xHost.size() * sizeof(float) : sizeof(float);
+    DeviceBuffer aDev(aBytes);
+    DeviceBuffer xDev(xBytes);
+    if (needDevA) {
+        aDev.copyFromHost(aHost.data(), aBytes);
+    }
+    if (needDevX) {
+        xDev.copyFromHost(xHost.data(), xBytes);
+    }
+
+    const float* aPtr = needDevA ? static_cast<const float*>(aDev.ptr()) : nullptr;
+    float* xPtr = needDevX ? static_cast<float*>(xDev.ptr()) : nullptr;
 
     // ── Step 4: Execute NPU ──
     aclblasStatus_t ret =
@@ -72,10 +86,12 @@ TEST_P(TrsvArch22Test, CsvDriven)
     ASSERT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_SUCCESS))
         << "Unexpected NPU error code: " << static_cast<int>(ret);
 
+    xDev.copyToHost(xHost.data(), xBytes);
+
     aclblasStrsv_cpu(TrsvArch22Test::handle_, p.uplo, p.trans, p.diag, p.n, aHost.data(), p.lda, golden.data(), p.incx);
 
     const int absIncx = std::abs(static_cast<int>(p.incx));
-    const float* outPtr = (p.incx < 0 && ni > 0) ? xPtr + (ni - 1) * absIncx : xPtr;
+    const float* outPtr = (p.incx < 0 && ni > 0) ? xHost.data() + (ni - 1) * absIncx : xHost.data();
     const float* goldPtr = (p.incx < 0 && ni > 0) ? golden.data() + (ni - 1) * absIncx : golden.data();
 
     VerifyConfig cfg;
