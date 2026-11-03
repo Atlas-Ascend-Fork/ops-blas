@@ -4,9 +4,9 @@
 
 本指南旨在帮助您快速上手CANN和`ops-blas`算子仓的使用。为方便快速了解算子开发全流程，将以**scopy**算子为实践对象，算子源码按芯片架构区分目录（A2/A3 平台对应 `arch22/`，Ascend 950 PR/DT 对应 `arch35/`），以下以 A2/A3 硬件平台为例，其源文件位于`ops-blas/blas/copy/arch22/`，具体操作流程如下：
 
-1. **[环境部署](zh/install/quick_install.md)**：完成软件包安装和源码下载，此处不再赘述。快速入门场景下，**推荐WebIDE或Docker环境**，安装操作简单。
+1. **[环境部署](zh/install/quick_install.md)**：完成软件包安装和源码下载，此处不再赘述。快速入门场景下，**推荐CANNLab或Docker环境**，安装操作简单。
 
-   > **说明**：当前WebIDE或Docker环境默认最新商发版CANN包；如需体验master分支最新能力，可手动安装CANN包，注意软件与源码版本配套。
+   > **说明**：当前CANNLab或Docker环境默认最新商发版CANN包；如需体验master分支最新能力，可手动安装CANN包，注意软件与源码版本配套。
 
 2. **[编译运行](#一编译运行)**：编译自定义算子包并安装，实现快速调用算子。
 
