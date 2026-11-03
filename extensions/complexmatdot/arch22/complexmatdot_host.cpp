@@ -31,17 +31,24 @@ constexpr uint32_t MAX_DATA_COUNT = 27 * 1024 / sizeof(float);
 constexpr uint32_t MUL_NUM = 2;
 
 constexpr uint32_t FOUR_NUM = 4;
+
+// issue #763: tiling 分片数组的定长容量，核数钳制上限（startOffset/calNum 各 40 项）
+constexpr uint32_t MAX_VEC_CORE_NUM = 40;
+
 struct ComplexMatDotTilingData {
     uint32_t m;
     uint32_t n;
-    uint64_t startOffset[40];
-    uint32_t calNum[40]; // num in FP32 format
+    uint64_t startOffset[MAX_VEC_CORE_NUM];
+    uint32_t calNum[MAX_VEC_CORE_NUM]; // num in FP32 format
 };
 
 static void CalTilingData(ComplexMatDotTilingData& tilingData, uint32_t m, uint32_t n, uint32_t vecCoreNum)
 {
     tilingData.m = m;
     tilingData.n = n;
+
+    // issue #763: 核数超过定长数组容量时钳制，防止 startOffset/calNum 越界写
+    vecCoreNum = std::min(vecCoreNum, MAX_VEC_CORE_NUM);
 
     if (vecCoreNum == 0) {
         vecCoreNum = 1;
@@ -53,8 +60,10 @@ static void CalTilingData(ComplexMatDotTilingData& tilingData, uint32_t m, uint3
         tilingData.calNum[i] = 0;
     }
 
-    uint32_t numEachCore = m * n / vecCoreNum; // num of complex
-    uint32_t remainNum = m * n - vecCoreNum * numEachCore;
+    // issue #763: 以 uint64 计算乘积与取模，避免 uint32 乘法回绕依赖调用方校验
+    uint64_t totalComplexNum = static_cast<uint64_t>(m) * static_cast<uint64_t>(n);
+    uint32_t numEachCore = static_cast<uint32_t>(totalComplexNum / vecCoreNum); // num of complex
+    uint32_t remainNum = static_cast<uint32_t>(totalComplexNum % vecCoreNum);
 
     if (numEachCore == 0) {
         for (uint32_t i = 0; i < remainNum; i++) {
@@ -162,7 +171,9 @@ aclblasStatus_t aclblasComplexMatDot(
     aclrtStream useStream = h->stream;
 
     // issue #716: 核数不得硬编码
-    uint32_t numBlocks = GetAivCoreCount();
+    // issue #763: 核数钳制到 tiling 定长数组容量，超核硬件上 launch 块数与 tiling 分片保持一致，
+    // 内核侧 core_idx 读 tiling 同样以 40 为界，防止越界读
+    uint32_t numBlocks = std::min(GetAivCoreCount(), MAX_VEC_CORE_NUM);
 
     ComplexMatDotTilingData tiling;
     CalTilingData(tiling, m, n, numBlocks);
