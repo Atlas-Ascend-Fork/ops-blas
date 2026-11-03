@@ -9,3 +9,10 @@
 # ----------------------------------------------------------------------------------------------------------
 
 ops_blas_add_gtest_tests(${OPS_BLAS} stbsv_test)
+
+# Frozen validation runtimes must override build-tree libraries. DT_RUNPATH,
+# unlike DT_RPATH, respects the explicitly selected LD_LIBRARY_PATH.
+if(TARGET stbsv_test AND UNIX)
+    target_link_options(stbsv_test PRIVATE "-Wl,--enable-new-dtags")
+    target_link_libraries(stbsv_test PRIVATE ${CMAKE_DL_LIBS})
+endif()

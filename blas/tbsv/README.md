@@ -26,8 +26,8 @@ op(A) * x = b    (x 原地更新为解)
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
 #### 函数原型
 
@@ -54,18 +54,19 @@ aclblasStatus_t aclblasStbsv(aclblasHandle_t handle,
 | A | 输入 | const float\*（FP32） | 带状矩阵，列主序存储，维度 (k+1)×n，Device 内存 |
 | lda | 输入 | int | A 的 leading dimension，lda > k，Host 内存 |
 | x | 输入/输出 | float\*（FP32） | 解向量，长度至少 1 + (n-1)\*\|incx\|，Device 内存 |
-| incx | 输入 | int | x 的元素间步长，incx != 0 且 incx != INT_MIN，Host 内存 |
+| incx | 输入 | int | x 的元素间步长，incx != 0 且 incx != INT_MIN；arch22 地址计算使用 64 位整数，Host 内存 |
 
 #### 约束说明
 
 - n >= 0，参数校验通过后 n == 0 时直接返回成功
 - k >= 0
 - lda > k
-- incx != 0 且 incx != INT_MIN
+- incx != 0 且 incx != INT_MIN（arch22/arch35，快速返回前同样校验）
 - k == 0 且 diag == UNIT 时直接返回成功（x 不变）
 - 算子输入 shape 为 [(k+1)×n]、[n]，输出 shape 为 [n]
 - Host 侧不做流同步，调用方需自行管理同步
 
+arch22对原整矩阵/对角缓存均不可用的NON_UNIT、incx=1紧凑窄带输入，按实际UB预算选择最多32KiB的分段列窗口。窗口仅用于有效带宽1至15且lda不超过2×(有效带宽+1)的输入；原有单核、多核和新窗口使用独立kernel入口，保持逐目标浮点运算次序及原有回退路径。
 #### 调用示例
 
 示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](https://gitcode.com/cann/ops-blas/blob/master/docs/zh/develop/compile_and_run_example.md)。

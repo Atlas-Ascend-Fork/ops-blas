@@ -8,14 +8,14 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef STBSV_PARAM_H
-#define STBSV_PARAM_H
+#pragma once
 
 #include <string>
 
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "csv_loader.h"
+#include "fill.h"
 
 struct StbsvParam : public BlasTestParamBase {
     aclblasFillMode_t uplo = ACLBLAS_LOWER;
@@ -25,6 +25,8 @@ struct StbsvParam : public BlasTestParamBase {
     int k = 0;
     int lda = 1;
     int incx = 1;
+    BlasFillMode aFill = BlasFillMode("RANDOM_NORM_5_5");
+    BlasFillMode xFill = BlasFillMode("RANDOM_NORM_5_5");
 
     StbsvParam(const csv_map& map) : BlasTestParamBase(map)
     {
@@ -35,7 +37,7 @@ struct StbsvParam : public BlasTestParamBase {
         k = parseInt(ReadMap(map, "k", "0"));
         lda = parseInt(ReadMap(map, "lda", std::to_string(k >= INT_MAX ? INT_MAX : k + 1)));
         incx = parseInt(ReadMap(map, "incx", "1"));
+        aFill = BlasFillMode(ReadMap(map, "a_fill", "RANDOM_NORM_5_5"));
+        xFill = BlasFillMode(ReadMap(map, "x_fill", "RANDOM_NORM_5_5"));
     }
 };
-
-#endif // TBSV_PARAM_H
