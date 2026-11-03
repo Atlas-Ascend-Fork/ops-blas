@@ -25,8 +25,18 @@ C[i] = alpha * op(A[i]) * op(B[i]) + beta * C[i],  for i ∈ [0, batchCount - 1]
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持（arch22，FLOAT32）
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持（arch22，FLOAT32）
+
+#### Atlas A2/A3（arch22）支持范围
+
+Atlas A2/A3 路径支持 Atype/Btype/Ctype 均为 ACL_FLOAT、computeType 为 ACLBLAS_COMPUTE_32F、algo 为 ACLBLAS_GEMM_DEFAULT。其余类型组合返回 NOT_SUPPORTED；下方 FP16/BF16/FP8 组合表属于 Ascend 950 路径。
+
+alpha/beta 支持 Host 或 Device 指针；矩阵与矩阵指针数组均位于 Device。参数校验先于 no-op；m、n 或 batchCount 为零时不发射计算，k 或 alpha 为零时仅按 beta 缩放 C。实数共轭转置与转置等价。读回结果前同步 handle 绑定的 stream。
+
+自验证平台为 Ascend910B3 / CANN9.1.0，覆盖 2609 条 CSV 精度测试及 200 条性能测试。按任务书§3.3预热5次、随后10次均值、GPU/NPU≥0.8判定，200条均通过。任务书其它章节的1.0阈值及采样口径冲突、GPU型号来源和 workspace 对比未验收单独披露，不宣称官方验收或其它款型已经实测。
+
+测试方法与范围见 [arch22 测试说明](../../test/gemm_batched_ex/arch22/README.md)。
 
 #### 函数原型
 
