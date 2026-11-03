@@ -11,6 +11,7 @@
 #pragma once
 
 #include "host_utils.h"
+#include "common/helper/aclblas_handle_internal.h"
 
 static inline uint32_t GetUsedAivCoreNum(uint32_t n, uint32_t aivCoreNum)
 {
@@ -110,6 +111,57 @@ struct SyrkLaunchCtx {
     size_t tempAligned;
 };
 
+// Overflow-checked 64-bit size math (same contract as csyrk_host.cpp): the
+// operands are caller-supplied n/k (uint32_t, unbounded above), so a plain
+// size_t multiply can wrap to a small value and slip past the 2 GiB cap —
+// EnsureDefaultWorkspace only ever sees the already-wrapped result.
+static inline bool SyrkMulU64(uint64_t a, uint64_t b, uint64_t& out)
+{
+    if (a != 0 && b > UINT64_MAX / a) {
+        return false;
+    }
+    out = a * b;
+    return true;
+}
+
+static inline bool SyrkAddU64(uint64_t a, uint64_t b, uint64_t& out)
+{
+    if (a > UINT64_MAX - b) {
+        return false;
+    }
+    out = a + b;
+    return true;
+}
+
+// Ensures the temp workspace (slabCount consecutive slabs of ctx.tempAligned
+// bytes, overflow-checked) and returns its base address through tempDevice.
+// The pure beta*C scale path (alpha == 0 or k == 0) binds no slab and yields
+// nullptr: no GEMM is launched and the scale kernel's skipTemp branch never
+// reads temp, so binding the n x align(n,8) x 4B slab there would fail large
+// valid calls on the 2 GiB cap (same contract as the csyrk combine-only path).
+static inline aclblasStatus_t SyrkEnsureTempWorkspace(
+    _aclblas_handle* h, const SyrkLaunchCtx& ctx, const char* opTag, uint64_t slabCount, uint8_t*& tempDevice)
+{
+    tempDevice = nullptr;
+    if (ctx.isAlphaZero || ctx.isKZero) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    uint64_t requiredBytes = 0;
+    if (!SyrkMulU64(ctx.tempAligned, slabCount, requiredBytes)) {
+        OP_LOGE(
+            opTag, "workspace size overflow: tempAligned=%zu slabs=%llu", ctx.tempAligned,
+            static_cast<unsigned long long>(slabCount));
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
+    aclblasStatus_t wsRet = EnsureDefaultWorkspace(h, static_cast<size_t>(requiredBytes));
+    if (wsRet != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE(opTag, "workspace ensure failed, required=%zu, ret=%d", static_cast<size_t>(requiredBytes), wsRet);
+        return wsRet;
+    }
+    tempDevice = static_cast<uint8_t*>(GetEffectiveWorkspace(h));
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 static inline aclblasStatus_t PrepareSyrkLaunch(
     aclrtStream stream, uint32_t n, uint32_t k, aclblasOperation_t& trans, const float* alpha, const float* beta,
     uint32_t baseM, uint32_t fixpipeAlign, const char* opTag, SyrkLaunchCtx& ctx)
@@ -146,7 +198,16 @@ static inline aclblasStatus_t PrepareSyrkLaunch(
 
     ctx.tempRowStride = CeilAlign<uint32_t>(n, fixpipeAlign);
     constexpr size_t GM_ALIGN = 32;
-    size_t tempSize = static_cast<size_t>(n) * static_cast<size_t>(ctx.tempRowStride) * sizeof(float);
-    ctx.tempAligned = (tempSize + GM_ALIGN - 1) / GM_ALIGN * GM_ALIGN;
+    uint64_t tempSize = 0;
+    if (!SyrkMulU64(n, ctx.tempRowStride, tempSize) || !SyrkMulU64(tempSize, sizeof(float), tempSize)) {
+        OP_LOGE(opTag, "temp workspace size overflow: n=%u rowStride=%u", n, ctx.tempRowStride);
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
+    uint64_t tempAligned = 0;
+    if (!SyrkAddU64(tempSize, GM_ALIGN - 1, tempAligned)) {
+        OP_LOGE(opTag, "temp workspace size overflow: n=%u rowStride=%u", n, ctx.tempRowStride);
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
+    ctx.tempAligned = static_cast<size_t>(tempAligned / GM_ALIGN * GM_ALIGN);
     return ACLBLAS_STATUS_SUCCESS;
 }

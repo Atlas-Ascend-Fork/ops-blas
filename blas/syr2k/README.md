@@ -94,7 +94,7 @@ aclblasStatus_t aclblasSsyr2k(
 
 workspace 说明（arch35）：
 
-- arch35 实现需约 8·n² 字节库工作区暂存 op(A)·op(B)^T 与 op(B)·op(A)^T 两份中间结果；当超出 ACLBLAS_MAX_WORKSPACE_SIZE（2 GiB）时返回 ACLBLAS_STATUS_ALLOC_FAILED
+- arch35 实现在启动矩阵乘（alpha ≠ 0 且 k ≠ 0）时需约 8·n² 字节（n 按 8 元素向上对齐、总量再向上 32 字节对齐，n 非 8 的倍数时略大）库工作区暂存 op(A)·op(B)^T 与 op(B)·op(A)^T 两份中间结果；alpha = 0 或 k = 0 的纯缩放路径不申请该工作区。任一情况超出 ACLBLAS_MAX_WORKSPACE_SIZE（2 GiB）时返回 ACLBLAS_STATUS_ALLOC_FAILED
 
 #### 精度验证
 
