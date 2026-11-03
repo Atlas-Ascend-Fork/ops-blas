@@ -184,6 +184,10 @@ struct AclrtMemDeleter {
     }
 };
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasSsyrkxTest(AclContext& ctx)
 {
     // 参数设置：trans=N, uplo=U, n=3, k=2
@@ -257,7 +261,7 @@ int aclblasSsyrkxTest(AclContext& ctx)
     aclblasHandle_t rawHandle = nullptr;
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
 
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), ctx.Stream());
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, return blasRet);

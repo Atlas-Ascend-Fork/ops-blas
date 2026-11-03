@@ -132,6 +132,10 @@ private:
     bool deviceSet_ = false;
 };
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasSgemvBatchedTest(AclContext& ctx)
 {
     aclError aclRet;
@@ -141,7 +145,7 @@ int aclblasSgemvBatchedTest(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
               return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
 
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
@@ -382,6 +386,10 @@ static float fp16_to_float(uint16_t h)
 }
 
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasHSHgemvBatchedTest(AclContext& ctx)
 {
     aclError aclRet;
@@ -391,7 +399,7 @@ int aclblasHSHgemvBatchedTest(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
               return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
 
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
@@ -613,6 +621,10 @@ private:
     bool deviceSet_ = false;
 };
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasHSSgemvBatchedTest(AclContext& ctx)
 {
     aclError aclRet;
@@ -622,7 +634,7 @@ int aclblasHSSgemvBatchedTest(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
               return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
 
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
@@ -840,6 +852,10 @@ private:
     bool deviceSet_ = false;
 };
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasCgemvBatchedTest(AclContext& ctx)
 {
     aclrtStream stream = ctx.Stream();
@@ -848,7 +864,7 @@ int aclblasCgemvBatchedTest(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
               return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
 
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
@@ -1046,6 +1062,10 @@ static float bf16_to_float(uint16_t bf)
 }
 
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasTSTgemvBatchedTest(AclContext& ctx)
 {
     aclError aclRet;
@@ -1055,7 +1075,7 @@ int aclblasTSTgemvBatchedTest(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
               return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
 
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
@@ -1277,6 +1297,10 @@ private:
     bool deviceSet_ = false;
 };
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasTSSgemvBatchedTest(AclContext& ctx)
 {
     aclError aclRet;
@@ -1286,7 +1310,7 @@ int aclblasTSSgemvBatchedTest(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
               return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
 
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);

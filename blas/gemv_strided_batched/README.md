@@ -156,6 +156,10 @@ private:
     bool deviceSet_ = false;
 };
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasSgemvStridedBatchedTest(AclContext& ctx)
 {
     aclrtStream stream = ctx.Stream();
@@ -165,7 +169,7 @@ int aclblasSgemvStridedBatchedTest(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
               return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
 
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
@@ -365,6 +369,10 @@ static float fp16_to_float(uint16_t h)
     return f;
 }
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasHSHgemvStridedBatchedTest(AclContext& ctx)
 {
     // 1. 创建 ops-blas 句柄
@@ -373,7 +381,7 @@ int aclblasHSHgemvStridedBatchedTest(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS,
               LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet); return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS,
               LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet); return blasRet);
@@ -553,6 +561,10 @@ private:
     bool aclInited_ = false, deviceSet_ = false;
 };
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasHSSgemvStridedBatchedTest(AclContext& ctx)
 {
     // 1. 创建 ops-blas 句柄
@@ -561,7 +573,7 @@ int aclblasHSSgemvStridedBatchedTest(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS,
               LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet); return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS,
               LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet); return blasRet);
@@ -749,6 +761,10 @@ static float bf16_to_float(uint16_t bf)
     return f;
 }
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasTSTgemvStridedBatchedTest(AclContext& ctx)
 {
     // 1. 创建 ops-blas 句柄
@@ -757,7 +773,7 @@ int aclblasTSTgemvStridedBatchedTest(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS,
               LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet); return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS,
               LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet); return blasRet);
@@ -937,6 +953,10 @@ private:
     bool aclInited_ = false, deviceSet_ = false;
 };
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasTSSgemvStridedBatchedTest(AclContext& ctx)
 {
     // 1. 创建 ops-blas 句柄
@@ -945,7 +965,7 @@ int aclblasTSSgemvStridedBatchedTest(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS,
               LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet); return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS,
               LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet); return blasRet);

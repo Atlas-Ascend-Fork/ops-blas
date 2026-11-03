@@ -178,6 +178,10 @@ private:
     bool deviceSet_ = false;
 };
 
+struct BlasHandleDeleter {
+    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
+};
+
 int aclblasSsyr2kTest(AclContext& ctx)
 {
     // 参数设置：n=3, k=2, trans=N, uplo=UPPER
@@ -206,7 +210,7 @@ int aclblasSsyr2kTest(AclContext& ctx)
     auto blasRet = aclblasCreate(&rawHandle);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
               return blasRet);
-    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
 
     blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), ctx.Stream());
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
