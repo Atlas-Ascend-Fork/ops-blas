@@ -85,16 +85,20 @@ uint32_t VerifyResult(
 }
 
 // Compute golden result for cgerc: A = alpha * x * conj(y^T) + A
+// issue #732: 支持步长与 lda；负步长按本仓惯例从物理向量尾端起算
 void computeGolden(
     std::vector<aclblasComplex>& A, const std::vector<aclblasComplex>& x, const std::vector<aclblasComplex>& y,
-    const aclblasComplex& alpha, int64_t m, int64_t n)
+    const aclblasComplex& alpha, int64_t m, int64_t n, int64_t incx = 1, int64_t incy = 1, int64_t lda = 0)
 {
-    // A = alpha * x * conj(y^T) + A
-    // For each element A[i][j] = alpha * x[i] * conj(y[j]) + A[i][j]
+    const int64_t ld = (lda > 0) ? lda : n;
+    const int64_t absIncx = (incx > 0) ? incx : -incx;
+    const int64_t absIncy = (incy > 0) ? incy : -incy;
     for (int64_t i = 0; i < m; i++) {
+        const int64_t xPhys = (incx > 0) ? i * absIncx : (m - 1 - i) * absIncx;
         for (int64_t j = 0; j < n; j++) {
-            aclblasComplex conjY{y[j].real, -y[j].imag};
-            A[i * n + j] = alpha * x[i] * conjY + A[i * n + j];
+            const int64_t yPhys = (incy > 0) ? j * absIncy : (n - 1 - j) * absIncy;
+            aclblasComplex conjY{y[yPhys].real, -y[yPhys].imag};
+            A[i * ld + j] = alpha * x[xPhys] * conjY + A[i * ld + j];
         }
     }
 }
@@ -170,7 +174,8 @@ uint32_t RunMinimalValidCase(aclblasHandle handle, aclrtStream stream)
         return 1;
     }
 
-    const aclblasStatus_t status = aclblasCgerc(handle, 1, 1, &alpha, buffers.xDevice, 1, buffers.yDevice, 1, buffers.ADevice, 1);
+    const aclblasStatus_t status =
+        aclblasCgerc(handle, 1, 1, &alpha, buffers.xDevice, 1, buffers.yDevice, 1, buffers.ADevice, 1);
     if (status != ACLBLAS_STATUS_SUCCESS) {
         LOG_PRINT("minimal cgerc call failed: %d\n", status);
         return buffers.Fail();
@@ -196,6 +201,197 @@ uint32_t RunMinimalValidCase(aclblasHandle handle, aclrtStream stream)
     return 0;
 }
 
+// issue #779: 步长回归提取为独立函数，控制 main() 圈复杂度
+// issue #809: 测试设备缓冲分配/拷贝/释放共享 helper
+static aclblasComplex* AllocAndCopyComplex(const std::vector<aclblasComplex>& host)
+{
+    aclblasComplex* dev = nullptr;
+    aclError ret = aclrtMalloc((void**)&dev, host.size() * sizeof(aclblasComplex), ACL_MEM_MALLOC_HUGE_FIRST);
+    if (ret != ACL_SUCCESS) {
+        return nullptr;
+    }
+    ret = aclrtMemcpy(
+        dev, host.size() * sizeof(aclblasComplex), host.data(), host.size() * sizeof(aclblasComplex),
+        ACL_MEMCPY_HOST_TO_DEVICE);
+    if (ret != ACL_SUCCESS) {
+        aclrtFree(dev);
+        return nullptr;
+    }
+    return dev;
+}
+
+static void FreeCgercDevice(aclblasComplex* sxDev, aclblasComplex* syDev, aclblasComplex* sADev)
+{
+    if (sxDev != nullptr)
+        aclrtFree(sxDev);
+    if (syDev != nullptr)
+        aclrtFree(syDev);
+    if (sADev != nullptr)
+        aclrtFree(sADev);
+}
+
+// issue #809: 单个步长用例执行独立成函数
+static uint32_t RunCgercStrideCase(
+    aclblasHandle_t handle, aclrtStream stream, const aclblasComplex& alpha, const char* name, int64_t incx,
+    int64_t incy, int64_t lda)
+{
+    constexpr int64_t m = 8;
+    constexpr int64_t n = 8;
+    const int64_t ld = (lda > 0) ? lda : m;
+    const int64_t xPhysLen = 1 + (m - 1) * ((incx > 0) ? incx : -incx);
+    const int64_t yPhysLen = 1 + (n - 1) * ((incy > 0) ? incy : -incy);
+    std::vector<aclblasComplex> sx(xPhysLen);
+    std::vector<aclblasComplex> sy(yPhysLen);
+    for (int64_t i = 0; i < xPhysLen; i++) {
+        sx[i] = aclblasComplex{i + 1.0f, i + 0.5f};
+    }
+    for (int64_t i = 0; i < yPhysLen; i++) {
+        sy[i] = aclblasComplex{i + 2.0f, i + 1.5f};
+    }
+    std::vector<aclblasComplex> sA(m * ld);
+    for (int64_t i = 0; i < m * ld; i++) {
+        sA[i] = aclblasComplex{i * 0.1f, i * 0.2f};
+    }
+    std::vector<aclblasComplex> sGolden = sA;
+    computeGolden(sGolden, sx, sy, alpha, m, n, incx, incy, ld);
+    aclblasComplex* sxDev = AllocAndCopyComplex(sx);
+    aclblasComplex* syDev = AllocAndCopyComplex(sy);
+    aclblasComplex* sADev = AllocAndCopyComplex(sA);
+    if (sxDev == nullptr || syDev == nullptr || sADev == nullptr) {
+        std::cout << "[Failed] stride case " << name << " setup failed" << std::endl;
+        FreeCgercDevice(sxDev, syDev, sADev);
+        return 1;
+    }
+    const aclblasStatus_t sStatus = aclblasCgerc(handle, m, n, &alpha, sxDev, incx, syDev, incy, sADev, ld);
+    const aclError syncRet = aclrtSynchronizeStream(stream);
+    uint32_t errors = 0;
+    if (sStatus != ACLBLAS_STATUS_SUCCESS || syncRet != ACL_SUCCESS) {
+        std::cout << "[Failed] stride case " << name << " status=" << static_cast<int>(sStatus) << std::endl;
+        errors = 1;
+    } else {
+        std::vector<aclblasComplex> sOut(m * ld);
+        aclrtMemcpy(
+            sOut.data(), sA.size() * sizeof(aclblasComplex), sADev, sA.size() * sizeof(aclblasComplex),
+            ACL_MEMCPY_DEVICE_TO_HOST);
+        errors = VerifyResult(sOut, sGolden, name);
+    }
+    FreeCgercDevice(sxDev, syDev, sADev);
+    return errors;
+}
+// issue #809: 步长回归提取为独立函数（循环调度到 RunCgercStrideCase）
+uint32_t TestCgercStrided(aclblasHandle_t handle, aclrtStream stream, const aclblasComplex& alpha)
+{
+    uint32_t strideErrors = 0;
+    strideErrors += RunCgercStrideCase(handle, stream, alpha, "incx2", 2, 1, 0);
+    strideErrors += RunCgercStrideCase(handle, stream, alpha, "negx", -2, 1, 0);
+    strideErrors += RunCgercStrideCase(handle, stream, alpha, "lda", 2, 1, 9);
+    return strideErrors;
+}
+
+// issue #779: 负向用例提取为独立函数
+uint32_t TestCgercNegative(aclblasHandle_t handle, const aclblasComplex& alpha)
+{
+    uint32_t negativeErrors = 0;
+    aclblasComplex dummy{1.0f, 1.0f};
+    struct NegCase {
+        const char* name;
+        aclblasStatus_t want;
+    };
+    const NegCase negCases[] = {
+        {"null handle", ACLBLAS_STATUS_HANDLE_IS_NULLPTR},
+        {"negative m", ACLBLAS_STATUS_INVALID_VALUE},
+        {"zero incx", ACLBLAS_STATUS_INVALID_VALUE},
+        {"small lda", ACLBLAS_STATUS_INVALID_VALUE},
+        {"null x", ACLBLAS_STATUS_INVALID_VALUE}};
+    for (const auto& nc : negCases) {
+        aclblasStatus_t got = ACLBLAS_STATUS_SUCCESS;
+        if (std::string(nc.name) == "null handle") {
+            got = aclblasCgerc(nullptr, 4, 4, &alpha, &dummy, 1, &dummy, 1, &dummy, 4);
+        } else if (std::string(nc.name) == "negative m") {
+            got = aclblasCgerc(handle, -1, 4, &alpha, &dummy, 1, &dummy, 1, &dummy, 4);
+        } else if (std::string(nc.name) == "zero incx") {
+            got = aclblasCgerc(handle, 4, 4, &alpha, &dummy, 0, &dummy, 1, &dummy, 4);
+        } else if (std::string(nc.name) == "small lda") {
+            got = aclblasCgerc(handle, 4, 4, &alpha, &dummy, 1, &dummy, 1, &dummy, 2);
+        } else {
+            got = aclblasCgerc(handle, 4, 4, &alpha, nullptr, 1, &dummy, 1, &dummy, 4);
+        }
+        if (got != nc.want) {
+            std::cout << "[Failed] negative case " << nc.name << ": expected " << static_cast<int>(nc.want) << " got "
+                      << static_cast<int>(got) << std::endl;
+            negativeErrors++;
+        }
+    }
+    return negativeErrors;
+}
+
+// issue #809: 测试数据初始化独立成函数，控制 TestCgercContiguous 规模
+static void InitCgercTestData(
+    std::vector<aclblasComplex>& xHost, std::vector<aclblasComplex>& yHost, std::vector<aclblasComplex>& AHost,
+    std::vector<aclblasComplex>& goldenHost, const aclblasComplex& alpha, int64_t m, int64_t n)
+{
+    for (int64_t i = 0; i < m; i++) {
+        xHost[i] = aclblasComplex{i + 1.0f, i + 0.5f};
+    }
+    for (int64_t i = 0; i < n; i++) {
+        yHost[i] = aclblasComplex{i + 2.0f, i + 1.5f};
+    }
+    for (int64_t i = 0; i < m * n; i++) {
+        AHost[i] = aclblasComplex{i * 0.1f, i * 0.2f};
+    }
+    goldenHost = AHost;
+    computeGolden(goldenHost, xHost, yHost, alpha, m, n);
+}
+
+// issue #779: 连续主用例提取为独立函数，控制 main() 规模
+uint32_t TestCgercContiguous(aclblasHandle_t handle, aclrtStream stream)
+{
+    constexpr int64_t m = 4;
+    constexpr int64_t n = 4;
+    constexpr int64_t incx = 1;
+    constexpr int64_t incy = 1;
+    constexpr int64_t lda = m;
+    aclblasComplex alpha{1.0f, 0.0f};
+    std::vector<aclblasComplex> xHost(m), yHost(n), AHost(m * n), goldenHost;
+    InitCgercTestData(xHost, yHost, AHost, goldenHost, alpha, m, n);
+
+    aclblasComplex* xDevice = AllocAndCopyComplex(xHost);
+    aclblasComplex* yDevice = AllocAndCopyComplex(yHost);
+    aclblasComplex* ADevice = AllocAndCopyComplex(AHost);
+    if (xDevice == nullptr || yDevice == nullptr || ADevice == nullptr) {
+        std::cout << "[Failed] device buffer setup failed" << std::endl;
+        FreeCgercDevice(xDevice, yDevice, ADevice);
+        return 1;
+    }
+
+    const aclblasStatus_t status = aclblasCgerc(handle, m, n, &alpha, xDevice, incx, yDevice, incy, ADevice, lda);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        std::cout << "[Failed] aclblasCgerc failed. ERROR: " << static_cast<int>(status) << std::endl;
+        FreeCgercDevice(xDevice, yDevice, ADevice);
+        return 1;
+    }
+
+    const aclError syncRet = aclrtSynchronizeStream(stream);
+    if (syncRet != ACL_SUCCESS) {
+        std::cout << "[Failed] aclrtSynchronizeStream failed. ERROR: " << static_cast<int>(syncRet) << std::endl;
+        FreeCgercDevice(xDevice, yDevice, ADevice);
+        return 1;
+    }
+
+    aclError aclRet = aclrtMemcpy(
+        AHost.data(), AHost.size() * sizeof(aclblasComplex), ADevice, AHost.size() * sizeof(aclblasComplex),
+        ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclRet != ACL_SUCCESS) {
+        std::cout << "[Failed] aclrtMemcpy AHost failed. ERROR: " << static_cast<int>(aclRet) << std::endl;
+        FreeCgercDevice(xDevice, yDevice, ADevice);
+        return 1;
+    }
+
+    FreeCgercDevice(xDevice, yDevice, ADevice);
+
+    return VerifyResult(AHost, goldenHost, "cgerc_test");
+}
+
 int32_t main(int32_t argc, char* argv[])
 {
     int32_t deviceId = 0;
@@ -214,66 +410,11 @@ int32_t main(int32_t argc, char* argv[])
     aclblasCreate(&handle);
     aclblasSetStream(handle, stream);
 
-    constexpr int64_t m = 4;
-    constexpr int64_t n = 4;
-    constexpr int64_t incx = 1;
-    constexpr int64_t incy = 1;
-    constexpr int64_t lda = m;
+    const aclblasComplex alpha{1.0f, 0.0f};
+    const uint32_t contiguousResult = TestCgercContiguous(handle, stream);
 
-    aclblasComplex alpha{1.0f, 0.0f};
-
-    std::vector<aclblasComplex> xHost(m);
-    for (int64_t i = 0; i < m; i++) {
-        xHost[i] = aclblasComplex{i + 1.0f, i + 0.5f};
-    }
-
-    std::vector<aclblasComplex> yHost(n);
-    for (int64_t i = 0; i < n; i++) {
-        yHost[i] = aclblasComplex{i + 2.0f, i + 1.5f};
-    }
-
-    std::vector<aclblasComplex> AHost(m * n);
-    for (int64_t i = 0; i < m * n; i++) {
-        AHost[i] = aclblasComplex{i * 0.1f, i * 0.2f};
-    }
-
-    std::vector<aclblasComplex> goldenHost = AHost;
-    computeGolden(goldenHost, xHost, yHost, alpha, m, n);
-
-    size_t xSize = m * sizeof(aclblasComplex);
-    size_t ySize = n * sizeof(aclblasComplex);
-    size_t aSize = m * n * sizeof(aclblasComplex);
-
-    aclblasComplex* xDevice = nullptr;
-    aclblasComplex* yDevice = nullptr;
-    aclblasComplex* ADevice = nullptr;
-
-    aclError aclRet = aclrtMalloc((void**)&xDevice, xSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc xDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMalloc((void**)&yDevice, ySize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc yDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMalloc((void**)&ADevice, aSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc ADevice failed. ERROR: %d\n", aclRet); return aclRet);
-
-    aclRet = aclrtMemcpy(xDevice, xSize, xHost.data(), xSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(yDevice, ySize, yHost.data(), ySize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy yDevice failed. ERROR: %d\n", aclRet); return aclRet);
-    aclRet = aclrtMemcpy(ADevice, aSize, AHost.data(), aSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy ADevice failed. ERROR: %d\n", aclRet); return aclRet);
-
-    ret = aclblasCgerc(handle, m, n, &alpha, xDevice, incx, yDevice, incy, ADevice, lda);
-    CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCgerc failed. ERROR: %d\n", ret); return ret);
-
-    aclRet = aclrtSynchronizeStream(stream);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); return aclRet);
-
-    aclRet = aclrtMemcpy(AHost.data(), aSize, ADevice, aSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy AHost failed. ERROR: %d\n", aclRet); return aclRet);
-
-    aclrtFree(xDevice);
-    aclrtFree(yDevice);
-    aclrtFree(ADevice);
+    const uint32_t strideErrors = TestCgercStrided(handle, stream, alpha);
+    const uint32_t negativeErrors = TestCgercNegative(handle, alpha);
 
     const uint32_t minimalCaseErrors = RunMinimalValidCase(handle, stream);
 
@@ -282,5 +423,5 @@ int32_t main(int32_t argc, char* argv[])
     aclrtResetDevice(deviceId);
     aclFinalize();
 
-    return VerifyResult(AHost, goldenHost, "cgerc_test") + minimalCaseErrors;
+    return contiguousResult + strideErrors + negativeErrors + minimalCaseErrors;
 }

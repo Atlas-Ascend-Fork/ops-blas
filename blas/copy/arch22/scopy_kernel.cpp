@@ -1,12 +1,12 @@
 /**
-* Copyright (c) 2026 Huawei Technologies Co., Ltd.
-* This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-* CANN Open Software License Agreement Version 2.0 (the "License").
-* Please refer to the License for details. You may not use this file except in compliance with the License.
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-* INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-* See LICENSE in the root of the software repository for the full text of the License.
-*/
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd.
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
 
 #ifndef SCOPY_KERNEL_H
 #define SCOPY_KERNEL_H
@@ -47,7 +47,7 @@ private:
     uint32_t startOffset = 0;
     uint32_t calNum = 0;
     uint32_t useCoreNum = 0;
-    uint32_t n = 0;  // total elements num(float32)
+    uint32_t n = 0; // total elements num(float32)
 
     int elementsPerRepeat = UB_BYTENUM_PER_REPEAT / BYTENUM_PER_FLOAT32;
     int elementsPerBlock = UB_BYTENUM_PER_BLOCK / BYTENUM_PER_FLOAT32;
@@ -61,10 +61,10 @@ __aicore__ inline void CopyAIV<T>::Init(GM_ADDR x, GM_ADDR y, GM_ADDR workSpace,
 
     ParseTilingData(tilingGm);
 
-    inGM.SetGlobalBuffer((__gm__ T *)x, this->n);
-    outGM.SetGlobalBuffer((__gm__ T *)y, this->n);
+    inGM.SetGlobalBuffer((__gm__ T*)x, this->n);
+    outGM.SetGlobalBuffer((__gm__ T*)y, this->n);
 
-    this->maxDataCount = 90 * 1024 / BYTENUM_PER_FLOAT32;  // 90kb / 4b
+    this->maxDataCount = 90 * 1024 / BYTENUM_PER_FLOAT32; // 90kb / 4b
 
     pipe.InitBuffer(inQueue, BUFFER_NUM, maxDataCount * sizeof(T));
 
@@ -74,14 +74,14 @@ __aicore__ inline void CopyAIV<T>::Init(GM_ADDR x, GM_ADDR y, GM_ADDR workSpace,
 template <typename T>
 __aicore__ inline void CopyAIV<T>::ParseTilingData(GM_ADDR tilingGm)
 {
-    auto tilingAddr = reinterpret_cast<__gm__ uint8_t *>(tilingGm);
+    auto tilingAddr = reinterpret_cast<__gm__ uint8_t*>(tilingGm);
 
-    this->n = (*(__gm__ uint32_t *)((__gm__ uint8_t *)tilingAddr));
-    this->useCoreNum = (*(__gm__ uint32_t *)((__gm__ uint8_t *)tilingAddr + sizeof(uint32_t)));
-    this->startOffset = (*(__gm__ uint32_t *)((__gm__ uint8_t *)tilingAddr
-                                     + sizeof(uint32_t) * this->vecIdx + 2 * sizeof(uint32_t)));
-    this->calNum = (*(__gm__ uint32_t *)((__gm__ uint8_t *)tilingAddr + this->totalVecCoreNum * sizeof(uint32_t)
-                                     + sizeof(uint32_t) * this->vecIdx + 2 * sizeof(uint32_t)));
+    this->n = (*(__gm__ uint32_t*)((__gm__ uint8_t*)tilingAddr));
+    this->useCoreNum = (*(__gm__ uint32_t*)((__gm__ uint8_t*)tilingAddr + sizeof(uint32_t)));
+    this->startOffset =
+        (*(__gm__ uint32_t*)((__gm__ uint8_t*)tilingAddr + sizeof(uint32_t) * this->vecIdx + 2 * sizeof(uint32_t)));
+    this->calNum = (*(__gm__ uint32_t*)((__gm__ uint8_t*)tilingAddr + this->totalVecCoreNum * sizeof(uint32_t) +
+                                        sizeof(uint32_t) * this->vecIdx + 2 * sizeof(uint32_t)));
 }
 
 template <typename T>
@@ -131,6 +131,7 @@ __aicore__ inline void CopyAIV<T>::Process()
         return;
     }
 
+    // 连续路径：按 float 元素分核拷贝
     uint32_t repeatTimes = this->calNum / this->maxDataCount;
     uint32_t remainNum = this->calNum % this->maxDataCount;
 
@@ -155,9 +156,8 @@ __global__ __aicore__ void scopy_kernel(GM_ADDR x, GM_ADDR y, GM_ADDR workSpace,
     op.Process();
 }
 
-void scopy_kernel_do(GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, GM_ADDR tilingGm,
-                     uint32_t numBlocks, void *stream)
+void scopy_kernel_do(GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, GM_ADDR tilingGm, uint32_t numBlocks, void* stream)
 {
     scopy_kernel<<<numBlocks, nullptr, stream>>>(x, y, nullptr, tilingGm);
 }
-#endif  // COPY_AIV_H
+#endif // COPY_AIV_H
