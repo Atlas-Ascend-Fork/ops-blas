@@ -24,6 +24,10 @@ function(ops_blas_detect_asc_devkit_version)
   # 列表驱动的 tensor_api 算子注册。
   # 格式: VAR_SUFFIX|blas_filter_regex|test_name1,test_name2
   # 使用 '|' 作为字段分隔符（CMake 列表以 ';' 分隔，字段内不能用 ';'）。
+  # 注意：第 2 段是 CMake 正则，**字段内同样不能出现 '|'**。若正则里写了交替（如
+  # "/gemm/arch35/(gemm_|hgemm_)"），该 entry 会被切成 4 段，正则与测试名双双错位，
+  # 低版本门控与测试目标注册会静默失效。需要区分多个算子时，把它们放到各自子目录、
+  # 各写一条 entry，不要用正则交替。
   # 新增算子只需在此列表中添加一行，cmake/asc_devkit_version.cmake、blas/CMakeLists.txt、
   # cmake/test.cmake、test/CMakeLists.txt 四个文件中的 foreach 会自动处理。
   set(TENSOR_API_OPS
@@ -49,6 +53,15 @@ function(ops_blas_detect_asc_devkit_version)
   # 初始化所有 tensor_api 算子为 TRUE
   foreach(entry ${TENSOR_API_OPS})
     string(REPLACE "|" ";" _fields "${entry}")
+    # 段数校验：正则里出现 '|' 会把一个 entry 切成 4 段以上，后续 list(GET) 就会拿错字段。
+    # 这里直接失败，避免低版本门控与测试注册静默失效。
+    list(LENGTH _fields _field_count)
+    if(NOT _field_count EQUAL 3)
+      message(FATAL_ERROR
+              "TENSOR_API_OPS 条目 '${entry}' 必须恰好 3 段（VAR_SUFFIX|blas_filter_regex|test_names），"
+              "实际解析出 ${_field_count} 段；第 2 段是 CMake 正则，其中不能出现 '|'，"
+              "需要区分多个算子时请改为各自子目录各写一条 entry。")
+    endif()
     list(GET _fields 0 _suffix)
     set(ENABLE_BLAS_${_suffix} TRUE)
   endforeach()
