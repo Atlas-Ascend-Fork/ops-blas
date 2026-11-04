@@ -53,19 +53,20 @@ aclblasStatus_t aclblasStrsm(aclblasHandle_t handle, aclblasSideMode_t side, acl
 
 #### 约束说明
 
-- m >= 0, n >= 0
-- side 取值必须为 ACLBLAS_SIDE_LEFT 或 ACLBLAS_SIDE_RIGHT
-- uplo 取值必须为 ACLBLAS_UPPER 或 ACLBLAS_LOWER
-- trans 取值必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C
-- diag 取值必须为 ACLBLAS_NON_UNIT 或 ACLBLAS_UNIT
-- alpha 不能为 nullptr，且仅支持 Host 指针
-- side == LEFT 时 lda >= max(1, m)；side == RIGHT 时 lda >= max(1, n)
-- ldb >= max(1, m)
-- B 不能为 nullptr；alpha != 0 时 A 不能为 nullptr（m==0 或 n==0 时按 BLAS quick-return 直接返回 SUCCESS）
+- handle 为 nullptr 时返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`
+- m >= 0, n >= 0；side 取值必须为 ACLBLAS_SIDE_LEFT 或 ACLBLAS_SIDE_RIGHT，m 或 n 为负数时返回 `ACLBLAS_STATUS_INVALID_VALUE`
+- uplo 取值必须为 ACLBLAS_UPPER 或 ACLBLAS_LOWER；trans 取值必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C；diag 取值必须为 ACLBLAS_NON_UNIT 或 ACLBLAS_UNIT，非法时返回 `ACLBLAS_STATUS_INVALID_VALUE`
+- alpha 不能为 nullptr，且仅支持 Host 指针，为 nullptr 时返回 `ACLBLAS_STATUS_INVALID_VALUE`
+- 上述检查通过后，`m == 0` 或 `n == 0` 时直接返回 `ACLBLAS_STATUS_SUCCESS`，不检查 lda / ldb / A / B
+- 非空矩阵的 B 不能为 nullptr；`alpha != 0` 时 A 不能为 nullptr；side == LEFT 时 `lda >= max(1, m)`、side == RIGHT 时 `lda >= max(1, n)`、`ldb >= max(1, m)`，不满足时返回 `ACLBLAS_STATUS_INVALID_VALUE`
+- `alpha == 0` 时不引用 A，将 B 的有效 `m * n` 区域置零
+- `diag == ACLBLAS_NON_UNIT` 时由调用方保证 A 的对角元非零，本接口不做奇异性检测
+- blocked 与 RIGHT 大 n 路径使用内部 workspace 存放转置与分块中间结果，默认 workspace 不足时自动扩展；派生矩阵字节大小与工作区大小采用 64 位计算
+- 算子在 handle 绑定的 stream 上异步执行，读回结果前需要同步 stream
 
 #### 调用示例
 
-示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。
+示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)，测试与精度验证见[测试指导](../../test/trsm/strsm/README.md)。
 
 ```cpp
 #include <cstdio>
