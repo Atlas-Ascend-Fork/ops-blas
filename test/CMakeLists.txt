@@ -134,7 +134,11 @@ if(BUILD_TEST)
     # 合并测试 Runner（issue #457 全量耗时优化）：聚合全部 gtest 目标的测试源
     # 为单一 blas_all_test 可执行，suite 初始化（aclInit 等）在 suite 间复用，
     # 80 次 aclInit 降为 1 次。独立 per-op 目标仍按原样构建（回退与单算子场景用）。
-    _ops_blas_register_all_runner(${OPS_BLAS})
+    # _ops_blas_register_all_runner 是单形参位置绑定：blas_all_test 会 GLOB 聚合
+    # blasLt/ 下的测试源，因此必须把两个库作为一个 CMake 列表（分号分隔）传入。
+    # 写成 ${OPS_BLAS} ${OPS_BLASLT} 时第二个实参落进 ARGN 被静默忽略，
+    # blas_all_test 链接不到 libops_blasLt.so → 整个 blasLt API 面未定义符号。
+    _ops_blas_register_all_runner("${OPS_BLAS};${OPS_BLASLT}")
     if("arch22" IN_LIST SOC_ARCH_DIRS AND TARGET cgemm_strided_batched_test AND TARGET blas_all_test)
         # The CGEMM Netlib reference loader is also compiled into the combined runner.
         target_link_libraries(blas_all_test PRIVATE ${CMAKE_DL_LIBS})

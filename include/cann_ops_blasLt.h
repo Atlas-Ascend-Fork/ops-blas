@@ -725,6 +725,31 @@ aclblasStatus_t aclblasLtMatmulDescGetAttribute(
 aclblasStatus_t aclblasLtMatmulPreferenceCreate(aclblasLtMatmulPreference_t* pref);
 
 /*! \ingroup library_module
+ *  \brief Initialize a caller-allocated preference descriptor capsule.
+ *
+ *  \details
+ *  This function initializes a matrix multiply heuristic search preferences
+ *  descriptor that the caller has already allocated (e.g. on the stack). Unlike
+ *  aclblasLtMatmulPreferenceCreate(), this function does not allocate heap
+ *  memory; the resulting capsule must NOT be passed to
+ *  aclblasLtMatmulPreferenceDestroy(); Destroy() rejects it with
+ *  ACLBLAS_STATUS_INVALID_VALUE (runtime provenance guard) instead of
+ *  attempting a non-heap delete.
+ *
+ *  @param[out]
+ *  pref Pointer to the caller-allocated capsule to initialize. The handle must
+ *  point to caller-allocated storage of at least
+ *  sizeof(aclblasLtMatmulPreferenceOpaque_t) (64) bytes, because this function
+ *  writes the whole capsule; the size cannot be validated at run time from an
+ *  opaque pointer. See \ref aclblasLtMatmulPreference_t.
+ *
+ *  \retval ACLBLAS_STATUS_SUCCESS If initialization was successful.
+ *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p pref is NULL.
+ *  \retval ACLBLAS_STATUS_INTERNAL_ERROR If an internal copy fails.
+ */
+aclblasStatus_t aclblasLtMatmulPreferenceInit(aclblasLtMatmulPreference_t pref);
+
+/*! \ingroup library_module
  *  \brief Destroy a preference descriptor.
  *
  *  \details
@@ -737,7 +762,9 @@ aclblasStatus_t aclblasLtMatmulPreferenceCreate(aclblasLtMatmulPreference_t* pre
  *  aclblasLtMatmulPreference_t.
  *
  *  \retval ACLBLAS_STATUS_SUCCESS If operation was successful.
- *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p pref is NULL.
+ *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p pref is NULL, or if the capsule was not allocated
+ *  by aclblasLtMatmulPreferenceCreate() (an Init() product) -- the provenance guard rejects it
+ *  before any delete.
  */
 aclblasStatus_t aclblasLtMatmulPreferenceDestroy(const aclblasLtMatmulPreference_t pref);
 
@@ -831,6 +858,90 @@ aclblasStatus_t aclblasLtMatmulPreferenceGetAttribute(
 aclblasStatus_t aclblasLtMatmulAlgoInit(
     aclblasLtHandle_t lightHandle, aclblasComputeType_t computeType, aclDataType scaleType, aclDataType Atype,
     aclDataType Btype, aclDataType Ctype, aclDataType Dtype, int algoId, aclblasLtMatmulAlgo_t* algo);
+
+/*! \ingroup library_module
+ *  \brief Check whether a matmul algorithm is usable for a given problem.
+ *
+ *  \details
+ *  This function helps the user determine whether an algo (obtained from
+ *  aclblasLtMatmulAlgoInit() / aclblasLtMatmulAlgoGetHeuristic(), or restored
+ *  from a previously serialized aclblasLtMatmulAlgo_t) is usable for the given
+ *  matmul problem (operationDesc plus the A/B/C/D matrix layouts). When the algo
+ *  and the workload are both supported, \p result reports the algo echoed
+ *  back unchanged, the workspace size the algo intrinsically requires for
+ *  this problem, and a usable state. \p result->wavesCount is a placeholder
+ *  1.0 for every algo: this function performs no device query, so no
+ *  utilization estimate is available and the field must not be used to rank
+ *  algos. This is a host-side check only: no
+ *  kernel is launched, no device memory is accessed, and the handle is only
+ *  checked for presence.
+ *
+ *  The reported \p result->workspaceSize is the amount the caller should
+ *  allocate: max(the algo's intrinsic demand -- split-K staging and epilogue
+ *  bias buffers derived from m, n, splitK and the epilogue -- and
+ *  ``algo->max_workspace_bytes``, which aclblasLtMatmul() separately
+ *  validates ``workspaceSizeInBytes`` against). The m==0 / n==0 no-op case
+ *  reports 0 (nothing to execute, nothing to allocate). Additional
+ *  raw-product staging may still be required at aclblasLtMatmul() time
+ *  depending on runtime alpha/beta values and C/D buffer overlap, which are
+ *  not visible to this function.
+ *
+ *  On any validation-failure return, \p result is not written at all. In particular
+ *  \p result->state is NOT set to the failure code. Because the C++ default member
+ *  initializer of aclblasLtMatmulHeuristicResult_t::state is ACLBLAS_STATUS_SUCCESS,
+ *  a default-constructed \p result left untouched by a failed call still reads
+ *  SUCCESS. Callers must therefore branch on this function's return value only, and
+ *  must never inspect \p result->state after a non-SUCCESS return. (This deviates
+ *  from cuBLASLt, where the per-algo verdict is carried by the state field.)
+ *
+ *  @param[in]
+ *  lightHandle Pointer to the allocated aclBLASLt handle for the
+ *  aclBLASLt context. See \ref aclblasLtHandle_t.
+ *  @param[in]
+ *  operationDesc Handle to a previously created matrix multiplication
+ *  descriptor of type \ref aclblasLtMatmulDesc_t.
+ *  @param[in]
+ *  Adesc,Bdesc,Cdesc,Ddesc Handles to the previously created matrix layout
+ *  descriptors of the type \ref aclblasLtMatrixLayout_t.
+ *  @param[in]
+ *  algo Pointer to the algorithm structure to check. See \ref
+ *  aclblasLtMatmulAlgo_t.
+ *  @param[out]
+ *  result Pointer to the heuristic result structure receiving the algo echo,
+ *  workspace size and usability state. Must not be NULL.
+ *
+ *  \retval ACLBLAS_STATUS_SUCCESS If the algo is usable for the given
+ *  problem (including the m==0 / n==0 no-op case, whose workspaceSize is 0);
+ *  \p result is filled.
+ *  \retval ACLBLAS_STATUS_NOT_INITIALIZED If \p lightHandle is NULL and every
+ *  other pointer argument is non-NULL.
+ *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p result, \p algo, or any of
+ *  \p operationDesc / \p Adesc / \p Bdesc / \p Cdesc / \p Ddesc is NULL, the
+ *  algo structure is invalid (bad magic, or a non-zero algoId that cannot be
+ *  decoded), or the problem parameters conflict (unsupported pointer mode,
+ *  non-float scale type, invalid dimensions/layouts/leading dimensions,
+ *  batch metadata, integer ranges, or MXFP k / scale-pointer constraints).
+ *  Note the argument-shape check takes precedence over the \p lightHandle
+ *  check, so a call with both a NULL \p lightHandle and a NULL descriptor
+ *  returns INVALID_VALUE, not NOT_INITIALIZED. This precedence deliberately
+ *  differs from aclblasLtMatmul(), which returns NOT_INITIALIZED for the same
+ *  input.
+ *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If the algo cannot run the given
+ *  problem (unsupported transpose mode, dtype combination, or matrix order),
+ *  or if the A/B dtype pair is an MXFP8/MXFP4 combination excluded from this
+ *  build. Known conservative false negative: with
+ *  ACLBLASLT_POINTER_MODE_HOST and A/B both ACL_FLOAT, a D of ACL_BF16 is
+ *  reported NOT_SUPPORTED even though aclblasLtMatmul() succeeds when
+ *  alpha != 1 or beta != 0, because alpha/beta are not visible to this
+ *  function. Use ACLBLASLT_POINTER_MODE_DEVICE (or D = ACL_FLOAT) if that
+ *  combination must be reported usable.
+ *  \retval ACLBLAS_STATUS_INTERNAL_ERROR If the securec copy into \p result
+ *  fails.
+ */
+aclblasStatus_t aclblasLtMatmulAlgoCheck(
+    aclblasLtHandle_t lightHandle, aclblasLtMatmulDesc_t operationDesc, aclblasLtMatrixLayout_t Adesc,
+    aclblasLtMatrixLayout_t Bdesc, aclblasLtMatrixLayout_t Cdesc, aclblasLtMatrixLayout_t Ddesc,
+    const aclblasLtMatmulAlgo_t* algo, aclblasLtMatmulHeuristicResult_t* result);
 
 /*! \ingroup library_module
  *  \brief Set a configuration attribute on a matmul algorithm.
@@ -1087,10 +1198,42 @@ aclblasStatus_t aclblasLtMatrixTransformDescCreate(
     aclblasLtMatrixTransformDesc_t* transformDesc, aclDataType scaleType);
 
 /*! \ingroup matrix_transform_module
+ *  \brief Initialize a caller-allocated matrix transform descriptor in place.
+ *
+ *  \details
+ *  This function initializes a matrix transform descriptor that the caller has
+ *  already allocated (e.g. on the stack). Unlike aclblasLtMatrixTransformDescCreate(),
+ *  this function does not allocate heap memory and the resulting descriptor must
+ *  NOT be passed to aclblasLtMatrixTransformDescDestroy(); Destroy() rejects it with
+ *  ACLBLAS_STATUS_INVALID_VALUE (runtime provenance guard) instead of
+ *  attempting a non-heap delete.
+ *
+ *  \param transformDesc Handle to the caller-allocated descriptor capsule; it must point
+ *  to caller-allocated storage of at least sizeof(aclblasLtMatrixTransformDescOpaque_t)
+ *  bytes. Passed by value like cuBLASLt's
+ *  cublasLtMatrixTransformDescInit(transformDesc, scaleType) and the repo's
+ *  aclblasLtMatmulDescInit / aclblasLtMatmulPreferenceInit, unlike
+ *  aclblasLtMatrixTransformDescCreate() which takes an output pointer.
+ *  \param scaleType Compute (scale) data type. See ``aclDataType``.
+ *
+ *  \note transa/transb are deliberately NOT Init parameters, matching cuBLASLt: set them
+ *  afterwards via aclblasLtMatrixTransformDescSetAttribute() with
+ *  ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA / TRANSB. Until then they keep their default
+ *  (ACLBLAS_OP_N), byte-equivalent to a freshly Create()d descriptor.
+ *  \retval ACLBLAS_STATUS_SUCCESS On success.
+ *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p transformDesc is NULL.
+ *  \retval ACLBLAS_STATUS_INTERNAL_ERROR If an internal copy fails.
+ */
+aclblasStatus_t aclblasLtMatrixTransformDescInit(
+    aclblasLtMatrixTransformDesc_t transformDesc, aclDataType scaleType);
+
+/*! \ingroup matrix_transform_module
  *  \brief Destroy a matrix transform descriptor.
  *  \param transformDesc Descriptor to be destroyed.
  *  \retval ACLBLAS_STATUS_SUCCESS On success.
- *  \retval ACLBLAS_STATUS_INVALID_VALUE If transformDesc is NULL.
+ *  \retval ACLBLAS_STATUS_INVALID_VALUE If transformDesc is NULL, or if the capsule was
+ *  not allocated by aclblasLtMatrixTransformDescCreate() (an Init() product, a corrupted
+ *  or a foreign capsule) -- the provenance/magic guard rejects it before any delete.
  */
 aclblasStatus_t aclblasLtMatrixTransformDescDestroy(const aclblasLtMatrixTransformDesc_t transformDesc);
 

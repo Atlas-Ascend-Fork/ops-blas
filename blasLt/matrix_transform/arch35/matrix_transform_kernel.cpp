@@ -826,8 +826,17 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::DelayoutOp
         DataCopyExtParams p{1U, physCount * static_cast<uint32_t>(sizeof(T)), 0, 0, 0};
         DataCopyPadExtParams<typename MatDmaByte<T>::type> pad{false, 0, 0, 0};
         DataCopyPad(MatAsDmaBytes(rawTile), MatAsDmaBytes(srcGm)[gbase], p, pad);
+        // gatherSrcBuf_ is a raw single-slot TBuf, so no EnQue/DeQue flag orders this MTE2 load
+        // against the Vector pipe. Pair it with the Cast that consumes it (RAW)...
+        const int32_t rawEid = static_cast<int32_t>(pipe_->FetchEventID(HardEvent::MTE2_V));
+        SetFlag<HardEvent::MTE2_V>(rawEid);
+        WaitFlag<HardEvent::MTE2_V>(rawEid);
         LocalTensor<TScale> physScale = gatherScaleBuf_.Get<TScale>();
         MatCastToScale<T, TScale>(physScale, rawTile, physCount);
+        // ...and retire that read before the next loop iteration overwrites the same slot (WAR).
+        const int32_t warEid = static_cast<int32_t>(pipe_->FetchEventID(HardEvent::V_MTE2));
+        SetFlag<HardEvent::V_MTE2>(warEid);
+        WaitFlag<HardEvent::V_MTE2>(warEid);
         LocalTensor<TScale> accTile = calcBufA_.Get<TScale>();
         Gather(accTile, physScale, byteOff, 0U, MT_MAX_GROUP_ELEMS);
 
@@ -980,6 +989,12 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::BuildTileO
     DataCopyExtParams params{1U, MT_MAX_GROUP_ELEMS * static_cast<uint32_t>(sizeof(uint32_t)), 0, 0, 0};
     DataCopyPadExtParams<uint32_t> pad{false, 0, 0, 0};
     DataCopyPad(tbl, idx, params, pad);
+    // The table lands in a raw TBuf (not a TQue), so no EnQue/DeQue flag is inserted for it. Pair the
+    // MTE2 load with the first Vector consumer (MatElemOffsetToByte in GatherInputTile / the Scatter
+    // index build) explicitly, otherwise that consumer reads tbl before the DMA has landed.
+    const int32_t tblEid = static_cast<int32_t>(pipe_->FetchEventID(HardEvent::MTE2_V));
+    SetFlag<HardEvent::MTE2_V>(tblEid);
+    WaitFlag<HardEvent::MTE2_V>(tblEid);
 }
 
 // Load one tile column (blockRows contiguous-in-rowInTile elements) of a linear input order into
@@ -1032,9 +1047,20 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::GatherInpu
     DataCopyExtParams p{1U, physCount * static_cast<uint32_t>(sizeof(T)), 0, 0, 0};
     DataCopyPadExtParams<typename MatDmaByte<T>::type> pad{false, 0, 0, 0};
     DataCopyPad(MatAsDmaBytes(rawTile), MatAsDmaBytes(gm)[gbase], p, pad);
+    // gatherSrcBuf_ is a raw single-slot TBuf shared by the A and B gathers of the same tile (and by
+    // every tile of the loop), so no EnQue/DeQue flag orders these MTE2 loads against the Vector
+    // pipe. Pair the load with the Cast that consumes it (RAW)...
+    const int32_t rawEid = static_cast<int32_t>(pipe_->FetchEventID(HardEvent::MTE2_V));
+    SetFlag<HardEvent::MTE2_V>(rawEid);
+    WaitFlag<HardEvent::MTE2_V>(rawEid);
 
     LocalTensor<TScale> physScale = gatherScaleBuf_.Get<TScale>();
     MatCastToScale<T, TScale>(physScale, rawTile, physCount);
+    // ...and retire that read before the next gather (the other operand, or the next tile)
+    // overwrites the same slot (WAR).
+    const int32_t warEid = static_cast<int32_t>(pipe_->FetchEventID(HardEvent::V_MTE2));
+    SetFlag<HardEvent::V_MTE2>(warEid);
+    WaitFlag<HardEvent::V_MTE2>(warEid);
     LocalTensor<uint32_t> off = tileOffBuf_.Get<uint32_t>();
     LocalTensor<uint32_t> byteOff = off[MT_MAX_GROUP_ELEMS];
     MatElemOffsetToByte(byteOff, off, static_cast<uint32_t>(sizeof(TScale)), MT_MAX_GROUP_ELEMS);

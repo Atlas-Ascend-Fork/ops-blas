@@ -31,6 +31,12 @@ struct aclblasLtMatrixTransformDescImpl {
     int32_t pointerMode = 0;  // 0 = host
     aclblasOperation_t transA = ACLBLAS_OP_N;
     aclblasOperation_t transB = ACLBLAS_OP_N;
+    // Provenance flag: 1 for capsules allocated by aclblasLtMatrixTransformDescCreate() (heap,
+    // may be Destroy()ed); 0 for in-place Init() products (caller storage -- Destroy() rejects
+    // them with INVALID_VALUE instead of deleting a non-heap pointer, which is UB). Occupies
+    // capsule bytes [20,24), previously unused. Round-trips Set/GetAttribute
+    // (unpack-modify-repack preserves it).
+    uint32_t heapOwned = 0;
 };
 static_assert(
     sizeof(aclblasLtMatrixTransformDescImpl) <= sizeof(aclblasLtMatrixTransformDescOpaque_t),

@@ -15,10 +15,12 @@
 
 #pragma once
 
+#include "aclblaslt_layout_impl.h"
 #include "cann_ops_blasLt.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <new>
 #include <securec.h>
 #include <type_traits>
@@ -178,4 +180,128 @@ template <typename R = uint32_t, typename T1, typename T2>
 inline R CeilAlign(T1 val, T2 align)
 {
     return CeilDiv<R>(val, align) * static_cast<R>(align);
+}
+
+// Host-side matmul workload validation predicates shared by aclblasLtMatmul() and
+// aclblasLtMatmulAlgoCheck() (these were previously ~110 lines of file-local copies
+// duplicated across the two translation units and kept in sync by hand via "Mirror of
+// <file>:<line>" annotations -- one anchor had already drifted within a single commit).
+// Bodies moved verbatim from the former aclblaslt_matmul_algo.cpp mirrors.
+
+inline bool IsRepresentableAsUint32(uint64_t value) { return value <= std::numeric_limits<uint32_t>::max(); }
+
+inline bool IsSupportedPointerMode(int32_t pointerMode)
+{
+    return pointerMode == ACLBLASLT_POINTER_MODE_HOST || pointerMode == ACLBLASLT_POINTER_MODE_DEVICE;
+}
+
+// 校验链暂不接受 ACLBLAS_OP_C。内核将 trans 编码为布尔（N/非 N），
+// OP_C 与 OP_T 走同一路径且无共轭实现，放行会静默返回 A^T 而非 A^H；
+// 待补齐共轭转置路径后再放开。
+inline bool HasSupportedTransposeModes(const aclblasLtMatmulDescImpl* desc)
+{
+    const bool transAValid = desc->transA == ACLBLAS_OP_N || desc->transA == ACLBLAS_OP_T;
+    const bool transBValid = desc->transB == ACLBLAS_OP_N || desc->transB == ACLBLAS_OP_T;
+    return transAValid && transBValid;
+}
+
+// Details: exact rows/cols equality, negative ld rejected, uint32 representability of ld,
+// ld == 0 allowed through, minLd picked per layout->order (ROW -> cols, otherwise rows), and the
+// half-byte fold minLd = minLd/2 + minLd%2 for ACL_FLOAT4_E2M1.
+inline bool IsLayoutCompatible(const aclblasLtMatrixLayoutImpl* layout, uint64_t rows, uint64_t cols)
+{
+    if (layout == nullptr || layout->rows != rows || layout->cols != cols || layout->ld < 0) {
+        return false;
+    }
+    const uint64_t ld = static_cast<uint64_t>(layout->ld);
+    if (!IsRepresentableAsUint32(ld)) {
+        return false;
+    }
+    if (ld == 0) {
+        return true;
+    }
+    uint64_t minLd = (layout->order == ACLBLASLT_ORDER_ROW) ? cols : rows;
+    if (layout->type == ACL_FLOAT4_E2M1) {
+        minLd = minLd / 2U + minLd % 2U;
+    }
+    return ld >= minLd;
+}
+
+inline bool HasSingleNonStridedBatch(
+    const aclblasLtMatrixLayoutImpl* a, const aclblasLtMatrixLayoutImpl* b, const aclblasLtMatrixLayoutImpl* c,
+    const aclblasLtMatrixLayoutImpl* d)
+{
+    return a->batchCount == 1 && b->batchCount == 1 && c->batchCount == 1 && d->batchCount == 1 &&
+           a->stridedBatchOffset == 0 && b->stridedBatchOffset == 0 && c->stridedBatchOffset == 0 &&
+           d->stridedBatchOffset == 0;
+}
+
+inline bool AreOperandLayoutsCompatible(
+    const aclblasLtMatmulDescImpl* desc, const aclblasLtMatrixLayoutImpl* a, const aclblasLtMatrixLayoutImpl* b,
+    uint64_t m, uint64_t n, uint64_t k)
+{
+    const uint64_t aRows = (desc->transA == ACLBLAS_OP_N) ? m : k;
+    const uint64_t aCols = (desc->transA == ACLBLAS_OP_N) ? k : m;
+    const uint64_t bRows = (desc->transB == ACLBLAS_OP_N) ? k : n;
+    const uint64_t bCols = (desc->transB == ACLBLAS_OP_N) ? n : k;
+    return IsLayoutCompatible(a, aRows, aCols) && IsLayoutCompatible(b, bRows, bCols);
+}
+
+inline bool AreOutputLayoutsCompatible(
+    const aclblasLtMatrixLayoutImpl* c, const aclblasLtMatrixLayoutImpl* d, uint64_t m, uint64_t n)
+{
+    return IsLayoutCompatible(c, m, n) && IsLayoutCompatible(d, m, n);
+}
+
+// uint32 overflow first, then batch metadata, then operand/output layout shapes.
+inline bool IsMatmulLayoutValid(
+    const aclblasLtMatmulDescImpl* desc, const aclblasLtMatrixLayoutImpl* a, const aclblasLtMatrixLayoutImpl* b,
+    const aclblasLtMatrixLayoutImpl* c, const aclblasLtMatrixLayoutImpl* d, uint64_t m, uint64_t n, uint64_t k)
+{
+    if (!IsRepresentableAsUint32(m) || !IsRepresentableAsUint32(n) || !IsRepresentableAsUint32(k)) {
+        return false;
+    }
+    return HasSingleNonStridedBatch(a, b, c, d) && AreOperandLayoutsCompatible(desc, a, b, m, n, k) &&
+           AreOutputLayoutsCompatible(c, d, m, n);
+}
+
+// The matmul kernels interpret matrices in row-major order only.
+// The layout descriptor defaults to ACLBLASLT_ORDER_COL, so an unset or
+// unsupported order must be rejected explicitly instead of being silently
+// interpreted as row-major (which would compute on misinterpreted memory).
+inline bool HasRowMajorLayouts(
+    const aclblasLtMatrixLayoutImpl* a, const aclblasLtMatrixLayoutImpl* b, const aclblasLtMatrixLayoutImpl* c,
+    const aclblasLtMatrixLayoutImpl* d)
+{
+    return a->order == ACLBLASLT_ORDER_ROW && b->order == ACLBLASLT_ORDER_ROW && c->order == ACLBLASLT_ORDER_ROW &&
+           d->order == ACLBLASLT_ORDER_ROW;
+}
+
+// Verdict of the shared C-dtype / MXFP output-dtype rules (the common prefix of
+// aclblasLtMatmul()'s HasSupportedDtypes and AlgoCheck's HasSupportedDtypesForAlgoCheck;
+// extracted to remove duplicate code). kNotMxPath: A/B is not an MXFP pair and the
+// caller applies its own A/B-path rules -- the FP32 branch intentionally diverges (matmul sees
+// runtime alpha/beta; AlgoCheck applies the strict pointer-mode rule).
+enum class AclblasMxDtypeRule {
+    kSupported,
+    kUnsupported,
+    kNotMxPath,
+};
+
+// C dtype must be FP32/BF16 (epilogue reads C); D per A/B path: MXFP8 -> BF16 only,
+// MXFP4 -> {BF16, FP32}. See the callers for the full rationale.
+inline AclblasMxDtypeRule CheckCAndMxDtypeRules(
+    aclDataType dtypeA, aclDataType dtypeB, aclDataType dtypeC, aclDataType dtypeD)
+{
+    if (dtypeC != ACL_FLOAT && dtypeC != ACL_BF16) {
+        return AclblasMxDtypeRule::kUnsupported;
+    }
+    if (IsMxfp8Type(dtypeA) && IsMxfp8Type(dtypeB)) {
+        return (dtypeD == ACL_BF16) ? AclblasMxDtypeRule::kSupported : AclblasMxDtypeRule::kUnsupported;
+    }
+    if (IsMxfp4Type(dtypeA) && IsMxfp4Type(dtypeB)) {
+        return (dtypeD == ACL_BF16 || dtypeD == ACL_FLOAT) ? AclblasMxDtypeRule::kSupported
+                                                           : AclblasMxDtypeRule::kUnsupported;
+    }
+    return AclblasMxDtypeRule::kNotMxPath;
 }

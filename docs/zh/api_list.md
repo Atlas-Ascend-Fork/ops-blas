@@ -488,6 +488,20 @@ aclblasStatus_t aclblasLtMatmulPreferenceCreate(aclblasLtMatmulPreference_t* pre
 | `ACLBLAS_STATUS_INVALID_VALUE` | `pref` 为空指针。 |
 | `ACLBLAS_STATUS_ALLOC_FAILED` | 描述符内存分配失败。 |
 
+#### aclblasLtMatmulPreferenceInit()
+
+```cpp
+aclblasStatus_t aclblasLtMatmulPreferenceInit(aclblasLtMatmulPreference_t pref);
+```
+
+初始化调用方预分配的算法搜索偏好描述符胶囊（如栈上分配），不分配堆内存，就地写入与 `aclblasLtMatmulPreferenceCreate` 相同的默认属性值（`SEARCH_MODE`=0、`MAX_WORKSPACE_BYTES`=32MB 等；对标 cuBLASLt `cublasLtMatmulPreferenceInit(pref)`，签名逐参数一致）。与 Create 的区别：Create 在堆上分配胶囊并返回指针，Init 仅写入已分配的胶囊。通过 Init 初始化的栈胶囊**禁止**传给 `aclblasLtMatmulPreferenceDestroy()`——传错会得到 `ACLBLAS_STATUS_INVALID_VALUE`（运行期来源防护）而非对非堆指针 `delete`。
+
+| 返回值 | 含义 |
+|---|---|
+| `ACLBLAS_STATUS_SUCCESS` | 初始化成功。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `pref` 为空指针。 |
+| `ACLBLAS_STATUS_INTERNAL_ERROR` | 内部拷贝失败。 |
+
 #### aclblasLtMatmulPreferenceDestroy()
 
 ```cpp
@@ -499,7 +513,7 @@ aclblasStatus_t aclblasLtMatmulPreferenceDestroy(const aclblasLtMatmulPreference
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 销毁成功。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | `pref` 为空指针。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `pref` 为空指针，或胶囊非 `aclblasLtMatmulPreferenceCreate()` 产物（`Init` 胶囊 `heapOwned=0`，来源防护在 delete 前拒绝）。 |
 
 #### aclblasLtMatmulPreferenceSetAttribute()
 
@@ -661,6 +675,31 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(aclblasLtHandle_t lightHandle,
 | `ACLBLAS_STATUS_SUCCESS` | 查询成功（须进一步检查各结果项的 `state`）。 |
 | `ACLBLAS_STATUS_INVALID_VALUE` | 任一指针参数为空、`requestedAlgoCount` 小于等于 0，或计算类型与输入矩阵数据类型不兼容。 |
 
+#### aclblasLtMatmulAlgoCheck()
+
+```cpp
+aclblasStatus_t aclblasLtMatmulAlgoCheck(aclblasLtHandle_t lightHandle,
+                                         aclblasLtMatmulDesc_t operationDesc,
+                                         aclblasLtMatrixLayout_t Adesc,
+                                         aclblasLtMatrixLayout_t Bdesc,
+                                         aclblasLtMatrixLayout_t Cdesc,
+                                         aclblasLtMatrixLayout_t Ddesc,
+                                         const aclblasLtMatmulAlgo_t* algo,
+                                         aclblasLtMatmulHeuristicResult_t* result);
+```
+
+校验给定算法是否可用于由 `operationDesc` 与 A/B/C/D 四个 layout 描述的矩阵乘法问题，并把结论写入 `result`。与 `aclblasLtMatmulAlgoGetHeuristic` 的区别是：后者由库检索候选算法，本接口由调用方指定算法、库只负责判定其可用性并回填所需 workspace 大小。
+
+`m == 0` 或 `n == 0` 的 no-op 情形视为可用，此时 `result` 的 `workspaceSize` 为 0。
+
+| 返回值 | 含义 |
+|---|---|
+| `ACLBLAS_STATUS_SUCCESS` | 该算法可用于给定问题（含 no-op 情形），`result` 已填充。 |
+| `ACLBLAS_STATUS_NOT_INITIALIZED` | `lightHandle` 为空指针，**且其余指针参数均非空**（参数形状检查优先于 handle 检查）。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | 任一指针参数为空、`algo` 结构非法（magic 错误，或 `algoId` 非 0 且无法解码），或问题参数冲突（不支持的 pointer mode、非 float 的 scale type、非法维度/layout/leading dimension、batch 元数据、整数取值范围，或 MXFP 的 k / scale 指针约束）。 |
+| `ACLBLAS_STATUS_NOT_SUPPORTED` | 该算法无法运行给定问题（不支持的 transpose 模式、dtype 组合或矩阵 order）。 |
+| `ACLBLAS_STATUS_INTERNAL_ERROR` | 内部拷贝失败。 |
+
 #### aclblasLtMatrixTransformDescCreate()
 
 ```cpp
@@ -676,6 +715,23 @@ aclblasStatus_t aclblasLtMatrixTransformDescCreate(aclblasLtMatrixTransformDesc_
 | `ACLBLAS_STATUS_INVALID_VALUE` | `transformDesc` 为空指针。 |
 | `ACLBLAS_STATUS_ALLOC_FAILED` | 描述符内存分配失败。 |
 
+#### aclblasLtMatrixTransformDescInit()
+
+```cpp
+aclblasStatus_t aclblasLtMatrixTransformDescInit(aclblasLtMatrixTransformDesc_t transformDesc,
+                                                 aclDataType scaleType);
+```
+
+就地初始化调用方预分配的矩阵变换描述符胶囊（如栈上分配），指定计算（scale）精度类型，供 `aclblasLtMatrixTransform` 使用。参数面与 cuBLASLt `cublasLtMatrixTransformDescInit(transformDesc, scaleType)` 一致——transa/transb **不是** Init 参数（与 cuBLASLt 相同），初始化后经 `aclblasLtMatrixTransformDescSetAttribute` 的 `TRANSA`/`TRANSB` 设置；未设置时保持默认 `ACLBLAS_OP_N`，与新建 `Create` 描述符字节等价。
+
+本函数**不分配堆内存**，因此所得描述符**不得**传给 `aclblasLtMatrixTransformDescDestroy()`——传错时 `Destroy` 会以 `ACLBLAS_STATUS_INVALID_VALUE` 拒绝（运行期来源防护），而非对非堆指针执行 delete。`transformDesc` 为值传递（与 cuBLASLt `cublasLtMatrixTransformDescInit` 及本仓库 `aclblasLtMatmulDescInit` / `aclblasLtMatmulPreferenceInit` 一致），必须指向不小于 `sizeof(aclblasLtMatrixTransformDescOpaque_t)` 字节的调用方存储。
+
+| 返回值 | 含义 |
+|---|---|
+| `ACLBLAS_STATUS_SUCCESS` | 初始化成功。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `transformDesc` 为空指针。 |
+| `ACLBLAS_STATUS_INTERNAL_ERROR` | 内部拷贝失败。 |
+
 #### aclblasLtMatrixTransformDescDestroy()
 
 ```cpp
@@ -687,7 +743,7 @@ aclblasStatus_t aclblasLtMatrixTransformDescDestroy(const aclblasLtMatrixTransfo
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 销毁成功。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | `transformDesc` 为空指针。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `transformDesc` 为空指针，或胶囊非 `aclblasLtMatrixTransformDescCreate()` 产物（`Init` 胶囊 / 损坏 / 外来胶囊，来源与 magic 防护在 delete 前拒绝）。 |
 
 #### aclblasLtMatrixTransformDescSetAttribute()
 

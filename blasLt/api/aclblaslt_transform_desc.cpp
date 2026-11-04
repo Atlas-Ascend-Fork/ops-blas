@@ -18,6 +18,7 @@
 #include "aclblaslt_capsule.h"
 #include "host_utils.h"
 #include "matrix_transform_engine.h"
+#include "aclblaslt_logger_impl.h"
 
 #include <cstdint>
 #include <new>
@@ -44,6 +45,21 @@ aclblasStatus_t UnpackTransformDesc(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// In-place initializer of a caller-allocated transform desc capsule. Mirrors the Create path's
+// Impl packing (magic + scaleType + in-place trans), with the NSDMI defaults (pointerMode = host)
+// picked up identically, so an Init capsule is byte-equivalent to a Create + SetAttribute one.
+aclblasStatus_t InitTransformDescCapsule(aclblasLtMatrixTransformDescOpaque_t* capsule, aclDataType scaleType)
+{
+    // magic and scaleType have no NSDMI and must be assigned explicitly; pointerMode and
+    // transA/transB keep their NSDMI defaults (host / N), byte-equivalent to the Create path.
+    aclblasLtMatrixTransformDescImpl impl;
+    impl.magic = ACLBLASLT_TRANSFORM_DESC_MAGIC;
+    impl.scaleType = scaleType;
+    static_assert(sizeof(impl) <= sizeof(*capsule),
+                  "aclblasLtMatrixTransformDescImpl too large, not fit in capsule!");
+    return PackImplIntoCapsule(capsule, sizeof(*capsule), &impl, sizeof(impl));
+}
+
 } // namespace
 
 extern "C" {
@@ -63,6 +79,7 @@ aclblasStatus_t aclblasLtMatrixTransformDescCreate(aclblasLtMatrixTransformDesc_
     aclblasLtMatrixTransformDescImpl impl;
     impl.magic = ACLBLASLT_TRANSFORM_DESC_MAGIC;
     impl.scaleType = scaleType;
+    impl.heapOwned = 1U;  // heap provenance: this capsule may be Destroy()ed
 
     aclblasStatus_t copyStatus = MatPackTransformImpl(capsule, sizeof(*capsule), &impl, sizeof(impl));
     if (copyStatus != ACLBLAS_STATUS_SUCCESS) {
@@ -74,12 +91,50 @@ aclblasStatus_t aclblasLtMatrixTransformDescCreate(aclblasLtMatrixTransformDesc_
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// Parameter face mirrors cuBLASLt 13.x cublasLtMatrixTransformDescInit(transformDesc, scaleType):
+// by value, two parameters. transa/transb are NOT Init parameters there (nor here) -- they are set
+// afterwards via aclblasLtMatrixTransformDescSetAttribute(TRANSA/TRANSB), the same path Create()
+// users take. The handle is passed by value like the repo's aclblasLtMatmulDescInit /
+// aclblasLtMatmulPreferenceInit (all mirroring cuBLASLt's *Init convention); a null handle is a
+// NULL pointer, so a single check covers it.
+aclblasStatus_t aclblasLtMatrixTransformDescInit(
+    aclblasLtMatrixTransformDesc_t transformDesc, aclDataType scaleType)
+{
+    if (transformDesc == nullptr) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return InitTransformDescCapsule(transformDesc, scaleType);
+}
+
 aclblasStatus_t aclblasLtMatrixTransformDescDestroy(const aclblasLtMatrixTransformDesc_t transformDesc)
 {
     if (transformDesc == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     auto* capsule = reinterpret_cast<aclblasLtMatrixTransformDescOpaque_t*>(transformDesc);
+    // Provenance guard: an Init() product lives in caller storage (stack / static / member);
+    // deleting such a pointer is UB (heap metadata corruption / SIGABRT) and previously the
+    // crash happened only after this function had already returned SUCCESS. The heapOwned flag
+    // set by Create() distinguishes the two provenances and round-trips SetAttribute. Also
+    // rejects corrupted / foreign capsules via the magic check (mirrors UnpackTransformDesc).
+    aclblasLtMatrixTransformDescImpl impl;
+    aclblasStatus_t copyStatus = CheckedMemcpyS(&impl, sizeof(impl), capsule, sizeof(impl));
+    if (copyStatus != ACLBLAS_STATUS_SUCCESS) {
+        return copyStatus;
+    }
+    if (impl.magic != ACLBLASLT_TRANSFORM_DESC_MAGIC) {
+        AclBlasLt::LoggerManager::GetInstance().Log(
+            ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatrixTransformDescDestroy",
+            "descriptor failed the magic check (corrupted / foreign capsule)");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (impl.heapOwned == 0U) {
+        AclBlasLt::LoggerManager::GetInstance().Log(
+            ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatrixTransformDescDestroy",
+            "capsule was not allocated by aclblasLtMatrixTransformDescCreate (heapOwned=0); "
+            "Init-produced descriptors must not be passed to Destroy");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     delete capsule;
     return ACLBLAS_STATUS_SUCCESS;
 }

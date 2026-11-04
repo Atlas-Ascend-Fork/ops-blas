@@ -21,13 +21,7 @@
 
 aclblasStatus_t MatPackTransformImpl(void* capsule, size_t capsuleBytes, const void* impl, size_t implBytes)
 {
-    aclblasStatus_t copyStatus = CheckedMemcpyS(capsule, capsuleBytes, impl, implBytes);
-    if (copyStatus != ACLBLAS_STATUS_SUCCESS) {
-        return copyStatus;
-    }
-    if (capsuleBytes > implBytes) {
-        copyStatus = CheckedMemsetS(
-            reinterpret_cast<char*>(capsule) + implBytes, capsuleBytes - implBytes, capsuleBytes - implBytes);
-    }
-    return copyStatus;
+    // 与 host_utils.h 的 PackImplIntoCapsule 函数体曾逐字重复。本文件已 include
+    // host_utils.h，故直接委托，只保留符号以维持既有调用点不变。
+    return PackImplIntoCapsule(capsule, capsuleBytes, impl, implBytes);
 }

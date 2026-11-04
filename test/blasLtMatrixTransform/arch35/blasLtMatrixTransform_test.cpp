@@ -377,3 +377,75 @@ TEST_F(LtMatrixTransformArch35Test, OversizeDimsRejected)
     aclblasLtMatrixLayoutDestroy(aLayout);
     aclblasLtMatrixTransformDescDestroy(desc);
 }
+
+// ── aclblasLtMatrixTransformDescInit 契约组 ──
+// 覆盖：Init 产物被 Destroy 拒绝、Create 产物穿过 SetAttribute 后仍可 Destroy、
+// 损坏胶囊被 magic 检查拦下（而非 delete 一个非法指针）。
+
+TEST_F(LtMatrixTransformArch35Test, TransformDescInitProductRejectedByDestroy)
+{
+    aclblasLtMatrixTransformDescOpaque_t storage{};
+    ASSERT_EQ(aclblasLtMatrixTransformDescInit(&storage, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+    // Init 产物位于调用方存储，Destroy 必须拒绝而不是 delete 一个非堆指针。
+    EXPECT_EQ(aclblasLtMatrixTransformDescDestroy(&storage), ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+TEST_F(LtMatrixTransformArch35Test, TransformDescInitRejectsNull)
+{
+    EXPECT_EQ(aclblasLtMatrixTransformDescInit(nullptr, ACL_FLOAT), ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+TEST_F(LtMatrixTransformArch35Test, TransformDescCreateProductSurvivesSetAttributeThenDestroy)
+{
+    aclblasLtMatrixTransformDesc_t desc = nullptr;
+    ASSERT_EQ(aclblasLtMatrixTransformDescCreate(&desc, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+    ASSERT_NE(desc, nullptr);
+    const int32_t transT = ACLBLAS_OP_T;
+    ASSERT_EQ(aclblasLtMatrixTransformDescSetAttribute(desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA, &transT,
+                                                       sizeof(transT)),
+              ACLBLAS_STATUS_SUCCESS);
+    // 来源标记必须能穿过 SetAttribute 的「解包—改一项—重打包」，否则此路径会被误拒。
+    EXPECT_EQ(aclblasLtMatrixTransformDescDestroy(desc), ACLBLAS_STATUS_SUCCESS);
+}
+
+TEST_F(LtMatrixTransformArch35Test, TransformDescDestroyRejectsCorruptedMagic)
+{
+    aclblasLtMatrixTransformDesc_t desc = nullptr;
+    ASSERT_EQ(aclblasLtMatrixTransformDescCreate(&desc, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+    auto* capsule = reinterpret_cast<aclblasLtMatrixTransformDescOpaque_t*>(desc);
+    const uint64_t savedWord = capsule->data[0];
+    capsule->data[0] ^= 0xFFu;  // 破坏 magic；heapOwned 仍为 1，故命中的是 magic 检查
+    EXPECT_EQ(aclblasLtMatrixTransformDescDestroy(desc), ACLBLAS_STATUS_INVALID_VALUE);
+    capsule->data[0] = savedWord;  // 复原后正常释放，避免测试泄漏
+    EXPECT_EQ(aclblasLtMatrixTransformDescDestroy(desc), ACLBLAS_STATUS_SUCCESS);
+}
+
+TEST_F(LtMatrixTransformArch35Test, TransformDescInitDefaultsMatchCreate)
+{
+    // transa/transb 不是 Init 的参数，须与刚 Create 出来的描述符逐字节等价（均为 OP_N）。
+    aclblasLtMatrixTransformDescOpaque_t fromInit{};
+    ASSERT_EQ(aclblasLtMatrixTransformDescInit(&fromInit, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+    aclblasLtMatrixTransformDesc_t fromCreate = nullptr;
+    ASSERT_EQ(aclblasLtMatrixTransformDescCreate(&fromCreate, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+
+    int32_t transAInit = -1, transACreate = -1, transBInit = -1, transBCreate = -1;
+    size_t written = 0;
+    ASSERT_EQ(aclblasLtMatrixTransformDescGetAttribute(&fromInit, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA,
+                                                       &transAInit, sizeof(transAInit), &written),
+              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclblasLtMatrixTransformDescGetAttribute(fromCreate, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA,
+                                                       &transACreate, sizeof(transACreate), &written),
+              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclblasLtMatrixTransformDescGetAttribute(&fromInit, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSB,
+                                                       &transBInit, sizeof(transBInit), &written),
+              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclblasLtMatrixTransformDescGetAttribute(fromCreate, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSB,
+                                                       &transBCreate, sizeof(transBCreate), &written),
+              ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(transAInit, transACreate);
+    EXPECT_EQ(transAInit, ACLBLAS_OP_N);
+    EXPECT_EQ(transBInit, transBCreate);
+    EXPECT_EQ(transBInit, ACLBLAS_OP_N);
+
+    ASSERT_EQ(aclblasLtMatrixTransformDescDestroy(fromCreate), ACLBLAS_STATUS_SUCCESS);
+}

@@ -14,12 +14,14 @@
 #   其他架构不受此版本限制。新增算子只需在下方列表中加一行。
 # - TRSM_BLOCKED：仅 arch35(ascend950) 的 strsm_blocked_kernel 使用 tensor_api，需 asc-devkit >= 9.1；
 #   strsm_kernel(SIMT path) 不依赖 tensor_api，低版本下 fallback 到 SIMT（特例，不纳入列表驱动）
+# Empty = auto-detect by devkit version; ON/OFF = force (escape hatch for a misdetection).
+set(ENABLE_BLASLT_MXFP8 "" CACHE STRING "blasLt MXFP8/MXFP4 kernels: empty=auto-detect, ON/OFF=force")
+
 function(ops_blas_detect_asc_devkit_version)
   set(_header
       "${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/include/version/asc_devkit_version.h")
   set(ASC_DEVKIT_MAJOR 0)
   set(ASC_DEVKIT_MINOR 0)
-  set(ENABLE_BLASLT_MXFP8 FALSE)
 
   # 列表驱动的 tensor_api 算子注册。
   # 格式: VAR_SUFFIX|blas_filter_regex|test_name1,test_name2
@@ -75,30 +77,56 @@ function(ops_blas_detect_asc_devkit_version)
     if(_version_content MATCHES "#define ASC_DEVKIT_MINOR ([0-9]+)")
       set(ASC_DEVKIT_MINOR "${CMAKE_MATCH_1}")
     endif()
-    # MXFP8/MXFP4 need the full AscendC::Reg SIMD API (CastTrait/Cast/DataCopy/...),
-    # which the blaze fmm epilogue pulls in through kernel_basic_intf.h when
-    # ASC_DEVKIT_MAJOR >= 9. Some 9.1 devkits report version 9.1 but do NOT wire
-    # AscendC::Reg into kernel_basic_intf.h, so a pure version check is insufficient
-    # and the build fails with "no member 'CastTrait' in namespace AscendC::Reg".
-    # Probe the actual capability instead of trusting the version number.
-    set(_reg_api_wired FALSE)
-    set(_kb_intf
-        "${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/asc/include/basic_api/kernel_basic_intf.h")
-    if(EXISTS "${_kb_intf}")
-      file(READ "${_kb_intf}" _kb_content)
-      if(_kb_content MATCHES "reg_compute" OR _kb_content MATCHES "namespace Reg")
-        set(_reg_api_wired TRUE)
-      endif()
-    endif()
-    if(ASC_DEVKIT_MAJOR GREATER_EQUAL 9 AND ASC_DEVKIT_MINOR GREATER 0 AND _reg_api_wired)
+    # MXFP8/MXFP4 need the full AscendC::Reg SIMD API (CastTrait/Cast/DataCopy/...).
+    # ENABLE_BLASLT_MXFP8 is a tri-state cache variable: empty = auto-detect (below),
+    # ON/OFF = force, so a misdetection is always recoverable via
+    # cmake -DENABLE_BLASLT_MXFP8=ON without patching this file.
+    #
+    # Auto-detect by devkit tier. Probing is kept ONLY for the 9.1 tier, where the
+    # reported version is known to be ambiguous; >= 9.2 trusts the version, because
+    # header layouts move between releases and any fixed path or marker goes stale:
+    #   < 9.1   -- Reg SIMD API does not exist yet.
+    #   == 9.1  -- some 9.1 devkits report 9.1 but do NOT wire AscendC::Reg into
+    #              kernel_basic_intf.h (build fails with "no member 'CastTrait' in
+    #              namespace AscendC::Reg"), so probe that header to tell them apart.
+    #              Without the probe a pure version gate would turn a buildable 9.1
+    #              tree into a hard compile failure.
+    #   >= 9.2  -- the Reg API moved to c_api/reg_compute and is pulled in via
+    #              ops-tensor's tensor_api headers, so the kernel_basic_intf.h
+    #              marker is a stale false negative there. Trust the version: if the
+    #              API is in fact missing, the mxfp kernels fail loudly at compile
+    #              time (diagnosable), rather than being silently excluded while
+    #              their symbols stay referenced (link error).
+    if(NOT "${ENABLE_BLASLT_MXFP8}" STREQUAL "")
+      # Forced by the user: honor it verbatim. (Keep the quotes: an undefined bare
+      # token in if(... STREQUAL ...) compares as a literal string, which would make
+      # this branch always fire when the cache variable has never been set.)
+      message(STATUS "ENABLE_BLASLT_MXFP8 forced to ${ENABLE_BLASLT_MXFP8} (user override)")
+    elseif(ASC_DEVKIT_MAJOR GREATER 9 OR (ASC_DEVKIT_MAJOR EQUAL 9 AND ASC_DEVKIT_MINOR GREATER 1))
       set(ENABLE_BLASLT_MXFP8 TRUE)
-    else()
-      set(ENABLE_BLASLT_MXFP8 FALSE)
-      if(ASC_DEVKIT_MAJOR GREATER_EQUAL 9 AND ASC_DEVKIT_MINOR GREATER 0 AND NOT _reg_api_wired)
+    elseif(ASC_DEVKIT_MAJOR EQUAL 9 AND ASC_DEVKIT_MINOR EQUAL 1)
+      set(_reg_api_wired FALSE)
+      set(_kb_intf
+          "${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/asc/include/basic_api/kernel_basic_intf.h")
+      if(EXISTS "${_kb_intf}")
+        file(READ "${_kb_intf}" _kb_content)
+        if(_kb_content MATCHES "reg_compute" OR _kb_content MATCHES "namespace Reg")
+          set(_reg_api_wired TRUE)
+        endif()
+      endif()
+      if(_reg_api_wired)
+        set(ENABLE_BLASLT_MXFP8 TRUE)
+      else()
+        set(ENABLE_BLASLT_MXFP8 FALSE)
         message(STATUS
                 "AscendC::Reg SIMD API not wired in devkit ${ASC_DEVKIT_MAJOR}.${ASC_DEVKIT_MINOR}; "
-                "disabling blasLt MXFP8/MXFP4 (requires AscendC::Reg via kernel_basic_intf.h)")
+                "disabling blasLt MXFP8/MXFP4 (override with -DENABLE_BLASLT_MXFP8=ON if available)")
       endif()
+    else()
+      set(ENABLE_BLASLT_MXFP8 FALSE)
+      message(STATUS
+              "asc-devkit ${ASC_DEVKIT_MAJOR}.${ASC_DEVKIT_MINOR} < 9.1 has no AscendC::Reg SIMD API; "
+              "disabling blasLt MXFP8/MXFP4 (override with -DENABLE_BLASLT_MXFP8=ON)")
     endif()
     # ops-tensor (>= 781745c) 的 print_tensor_debug_bus_impl.h 依赖工具链提供的
     # __asc_aicore::get_debug_bus_local_addr_shift / get_debug_bus_loop_steplen。

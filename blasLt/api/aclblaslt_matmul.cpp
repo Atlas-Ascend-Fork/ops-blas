@@ -24,66 +24,8 @@
 #include "matmul_engine.h"
 
 #include <cstdint>
-#include <limits>
 
 namespace {
-
-bool IsRepresentableAsUint32(uint64_t value) { return value <= std::numeric_limits<uint32_t>::max(); }
-
-bool IsLayoutCompatible(const aclblasLtMatrixLayoutImpl* layout, uint64_t rows, uint64_t cols)
-{
-    if (layout == nullptr || layout->rows != rows || layout->cols != cols || layout->ld < 0) {
-        return false;
-    }
-    const uint64_t ld = static_cast<uint64_t>(layout->ld);
-    if (!IsRepresentableAsUint32(ld)) {
-        return false;
-    }
-    if (ld == 0) {
-        return true;
-    }
-    uint64_t minLd = (layout->order == ACLBLASLT_ORDER_ROW) ? cols : rows;
-    if (layout->type == ACL_FLOAT4_E2M1) {
-        minLd = minLd / 2U + minLd % 2U;
-    }
-    return ld >= minLd;
-}
-
-// issue #595: 校验链暂不接受 ACLBLAS_OP_C。内核将 trans 编码为布尔（N/非 N），
-// OP_C 与 OP_T 走同一路径且无共轭实现，放行会静默返回 A^T 而非 A^H；
-// 待补齐共轭转置路径后再放开。
-bool HasSupportedTransposeModes(const aclblasLtMatmulDescImpl* desc)
-{
-    const bool transAValid = desc->transA == ACLBLAS_OP_N || desc->transA == ACLBLAS_OP_T;
-    const bool transBValid = desc->transB == ACLBLAS_OP_N || desc->transB == ACLBLAS_OP_T;
-    return transAValid && transBValid;
-}
-
-bool HasSingleNonStridedBatch(
-    const aclblasLtMatrixLayoutImpl* a, const aclblasLtMatrixLayoutImpl* b, const aclblasLtMatrixLayoutImpl* c,
-    const aclblasLtMatrixLayoutImpl* d)
-{
-    return a->batchCount == 1 && b->batchCount == 1 && c->batchCount == 1 && d->batchCount == 1 &&
-           a->stridedBatchOffset == 0 && b->stridedBatchOffset == 0 && c->stridedBatchOffset == 0 &&
-           d->stridedBatchOffset == 0;
-}
-
-bool AreOperandLayoutsCompatible(
-    const aclblasLtMatmulDescImpl* desc, const aclblasLtMatrixLayoutImpl* a, const aclblasLtMatrixLayoutImpl* b,
-    uint64_t m, uint64_t n, uint64_t k)
-{
-    const uint64_t aRows = (desc->transA == ACLBLAS_OP_N) ? m : k;
-    const uint64_t aCols = (desc->transA == ACLBLAS_OP_N) ? k : m;
-    const uint64_t bRows = (desc->transB == ACLBLAS_OP_N) ? k : n;
-    const uint64_t bCols = (desc->transB == ACLBLAS_OP_N) ? n : k;
-    return IsLayoutCompatible(a, aRows, aCols) && IsLayoutCompatible(b, bRows, bCols);
-}
-
-bool AreOutputLayoutsCompatible(
-    const aclblasLtMatrixLayoutImpl* c, const aclblasLtMatrixLayoutImpl* d, uint64_t m, uint64_t n)
-{
-    return IsLayoutCompatible(c, m, n) && IsLayoutCompatible(d, m, n);
-}
 
 // issue #582: 内核写出宽度由 A/B dtype 路径决定，C/D dtype 必须落在对应路径实际支持的白名单内，
 // 否则设备端按错误元素宽度读写 D 造成越界或静默错误结果：
@@ -98,16 +40,16 @@ bool HasSupportedDtypes(
 {
     const aclDataType dtypeA = a->type;
     const aclDataType dtypeB = b->type;
-    const aclDataType dtypeC = c->type;
     const aclDataType dtypeD = d->type;
-    if (dtypeC != ACL_FLOAT && dtypeC != ACL_BF16) {
-        return false;
-    }
-    if (IsMxfp8Type(dtypeA) && IsMxfp8Type(dtypeB)) {
-        return dtypeD == ACL_BF16;
-    }
-    if (IsMxfp4Type(dtypeA) && IsMxfp4Type(dtypeB)) {
-        return dtypeD == ACL_BF16 || dtypeD == ACL_FLOAT;
+    // C 白名单与 MXFP 输出 dtype 规则与 AlgoCheck 共享（host_utils.h）；
+    // FP32 分支两处有意分叉——本侧能看到运行时 alpha/beta（epilogueRuns）。
+    switch (CheckCAndMxDtypeRules(dtypeA, dtypeB, c->type, dtypeD)) {
+        case AclblasMxDtypeRule::kUnsupported:
+            return false;
+        case AclblasMxDtypeRule::kSupported:
+            return true;
+        case AclblasMxDtypeRule::kNotMxPath:
+            break;
     }
     if (dtypeA == ACL_FLOAT && dtypeB == ACL_FLOAT) {
         const bool epilogueRuns = desc->pointerMode == ACLBLASLT_POINTER_MODE_DEVICE ||
@@ -116,26 +58,6 @@ bool HasSupportedDtypes(
         return epilogueRuns ? (dtypeD == ACL_FLOAT || dtypeD == ACL_BF16) : dtypeD == ACL_FLOAT;
     }
     return false;
-}
-
-bool IsMatmulLayoutValid(
-    const aclblasLtMatmulDescImpl* desc, const aclblasLtMatrixLayoutImpl* a, const aclblasLtMatrixLayoutImpl* b,
-    const aclblasLtMatrixLayoutImpl* c, const aclblasLtMatrixLayoutImpl* d, uint64_t m, uint64_t n, uint64_t k)
-{
-    if (!IsRepresentableAsUint32(m) || !IsRepresentableAsUint32(n) || !IsRepresentableAsUint32(k)) {
-        return false;
-    }
-    return HasSingleNonStridedBatch(a, b, c, d) && AreOperandLayoutsCompatible(desc, a, b, m, n, k) &&
-           AreOutputLayoutsCompatible(c, d, m, n);
-}
-
-} // namespace
-
-namespace {
-
-bool IsSupportedPointerMode(int32_t pointerMode)
-{
-    return pointerMode == ACLBLASLT_POINTER_MODE_HOST || pointerMode == ACLBLASLT_POINTER_MODE_DEVICE;
 }
 
 } // namespace
@@ -237,8 +159,7 @@ aclblasStatus_t aclblasLtMatmul(
     // The layout descriptor defaults to ACLBLASLT_ORDER_COL, so an unset or
     // unsupported order must be rejected explicitly instead of being silently
     // interpreted as row-major (which would compute on misinterpreted memory).
-    const bool rowOrder = ALayout->order == ACLBLASLT_ORDER_ROW && BLayout->order == ACLBLASLT_ORDER_ROW &&
-                          CLayout->order == ACLBLASLT_ORDER_ROW && DLayout->order == ACLBLASLT_ORDER_ROW;
+    const bool rowOrder = HasRowMajorLayouts(ALayout, BLayout, CLayout, DLayout);
     if (!rowOrder) {
         AclBlasLt::LoggerManager::GetInstance().Log(
             ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul",
