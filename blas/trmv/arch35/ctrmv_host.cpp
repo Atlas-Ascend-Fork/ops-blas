@@ -102,13 +102,14 @@ aclblasStatus_t aclblasCtrmv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
     const aclblasComplex* A, int lda, aclblasComplex* x, int incx)
 {
-    if (n < 0) {
-        OP_LOGE("aclblasCtrmv", "invalid n=%d", n);
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
+    // issue #765: handle 判空先于参数校验，对齐 api_list.md 契约与 stpttr（#722）口径
     if (handle == nullptr) {
         OP_LOGE("aclblasCtrmv", "handle is nullptr");
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    if (n < 0) {
+        OP_LOGE("aclblasCtrmv", "invalid n=%d", n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (n == 0) {
         return ACLBLAS_STATUS_SUCCESS;

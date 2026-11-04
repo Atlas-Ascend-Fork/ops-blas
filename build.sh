@@ -456,7 +456,25 @@ if [ "${RUN_TEST}" == "ON" ]; then
             echo "[FAIL] ${op}_test: binary not found (build may have failed)"
             return 1
         fi
-        BLAS_DEVICE_ID="${dev}" "${TEST_BIN}" "$(dirname "${TEST_BIN}")"
+        # 共租户环境下存在瞬态设备失败（单例在 aclrtSynchronizeStream 长卡滞后报
+        # 107002/507034 等设备侧错误、其余用例与复跑均正常恢复）。失败后重试一次：
+        # 瞬态错误复跑即恢复，确定性缺陷连续两轮失败仍会 FAIL，不掩盖真实问题
+        local attempt rc
+        for attempt in 1 2; do
+            BLAS_DEVICE_ID="${dev}" "${TEST_BIN}" "$(dirname "${TEST_BIN}")"
+            rc=$?
+            if [ ${rc} -eq 0 ]; then
+                if [ ${attempt} -gt 1 ]; then
+                    echo "[INFO] ${op}_test passed on retry (attempt ${attempt}): transient device error recovered"
+                fi
+                return 0
+            fi
+            if [ ${attempt} -lt 2 ]; then
+                echo "[WARN] ${op}_test failed (exit code: ${rc}), retrying once for transient device error"
+                sleep 5
+            fi
+        done
+        return ${rc}
     }
 
     run_sharded() {

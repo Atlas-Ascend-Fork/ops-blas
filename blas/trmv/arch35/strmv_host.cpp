@@ -28,22 +28,18 @@ static aclblasStatus_t ValidateStrmvParams(
     aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n, const float* a, int lda,
     const float* x, int incx)
 {
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE("aclblasStrmv", "invalid uplo=%d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
-        OP_LOGE("aclblasStrmv", "invalid trans=%d", static_cast<int>(trans));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        diag == ACLBLAS_UNIT || diag == ACLBLAS_NON_UNIT,
-        OP_LOGE("aclblasStrmv", "invalid diag=%d", static_cast<int>(diag));
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE("aclblasStrmv", "invalid uplo=%d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
+              OP_LOGE("aclblasStrmv", "invalid trans=%d", static_cast<int>(trans));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(diag == ACLBLAS_UNIT || diag == ACLBLAS_NON_UNIT,
+              OP_LOGE("aclblasStrmv", "invalid diag=%d", static_cast<int>(diag));
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(n >= 0, OP_LOGE("aclblasStrmv", "invalid n=%d", n); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        lda >= std::max(1, n), OP_LOGE("aclblasStrmv", "invalid lda=%d, n=%d", lda, n);
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(lda >= std::max(1, n), OP_LOGE("aclblasStrmv", "invalid lda=%d, n=%d", lda, n);
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasStrmv", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(a != nullptr, OP_LOGE("aclblasStrmv", "a must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(x != nullptr, OP_LOGE("aclblasStrmv", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
@@ -71,8 +67,9 @@ aclblasStatus_t aclblasStrmv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
     const float* A, int lda, float* x, int incx)
 {
-    CHECK_RET(n >= 0, OP_LOGE("aclblasStrmv", "invalid n=%d", n); return ACLBLAS_STATUS_INVALID_VALUE);
+    // issue #765: handle 判空先于参数校验，对齐 api_list.md 契约与 stpttr（#722）口径
     CHECK_RET(handle != nullptr, OP_LOGE("aclblasStrmv", "handle is nullptr"); return ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
+    CHECK_RET(n >= 0, OP_LOGE("aclblasStrmv", "invalid n=%d", n); return ACLBLAS_STATUS_INVALID_VALUE);
     if (n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }
@@ -85,8 +82,8 @@ aclblasStatus_t aclblasStrmv(
     aclrtStream useStream = h->stream;
 
     uint32_t aivCoreNum = GetAivCoreCount();
-    CHECK_RET(
-        aivCoreNum > 0, OP_LOGE("aclblasStrmv", "GetAivCoreCount failed"); return ACLBLAS_STATUS_EXECUTION_FAILED);
+    CHECK_RET(aivCoreNum > 0, OP_LOGE("aclblasStrmv", "GetAivCoreCount failed");
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
     uint32_t useNumBlocks = std::min(CeilDiv<uint32_t>(static_cast<uint32_t>(n), SIMT_MIN_THREAD_NUM), aivCoreNum);
     useNumBlocks = std::max<uint32_t>(useNumBlocks, 1);
 
@@ -99,10 +96,9 @@ aclblasStatus_t aclblasStrmv(
     OP_LOGI("aclblasStrmv", "launching kernel");
 
     const size_t workspaceNeed = static_cast<size_t>(n) * sizeof(float);
-    CHECK_RET(
-        workspaceNeed <= GetEffectiveWorkspaceSize(h),
-        OP_LOGE("aclblasStrmv", "workspace %zu > handle %zu", workspaceNeed, GetEffectiveWorkspaceSize(h));
-        return ACLBLAS_STATUS_EXECUTION_FAILED);
+    CHECK_RET(workspaceNeed <= GetEffectiveWorkspaceSize(h),
+              OP_LOGE("aclblasStrmv", "workspace %zu > handle %zu", workspaceNeed, GetEffectiveWorkspaceSize(h));
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
     uint8_t* workspaceDevice = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
 
     strmv_arch35_kernel_do(A, x, workspaceDevice, tilingData, useNumBlocks, useStream);

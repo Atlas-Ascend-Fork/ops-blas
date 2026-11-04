@@ -148,10 +148,13 @@ __global__ __aicore__ void scasum_simt_kernel(GM_ADDR inGM, GM_ADDR outGM, GM_AD
     }
 }
 
-void scasum_kernel_do(
+// issue #764: 返回状态对齐 sasum_kernel_do（#588）错误透传范式；<<<>>> 异步下发，
+// 同步失败不可测，成功路径返回 SUCCESS，后续可同步检测的失败点在此透传
+aclblasStatus_t scasum_kernel_do(
     GM_ADDR inGM, GM_ADDR outGM, GM_ADDR workSpace, const ScasumTilingData& tiling, uint32_t numBlocks, void* stream)
 {
     auto aclStream = static_cast<aclrtStream>(stream);
 
     scasum_simt_kernel<<<numBlocks, nullptr, aclStream>>>(inGM, outGM, workSpace, tiling);
+    return ACLBLAS_STATUS_SUCCESS;
 }

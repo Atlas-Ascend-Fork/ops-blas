@@ -246,6 +246,8 @@ static aclblasStatus_t HandleScaleOnly(
     return ScaleHalfC(h, m, n, ldc, beta, C, typeC, blocks);
 }
 
+// issue #766: 门限是 cgemm_ex_small_c32_kernel 走 SmallC32Kernel 的契约边界，
+// 放宽前必须同步扩展 kernel 侧实现（原 AivC32Kernel 兜底分支已随死代码删除）
 static bool UseSmallC32(int m, int n, int k) { return (m <= 16 && n <= 16 && k <= 16); }
 
 static bool UseFusedCube3(int m, int n, int k) { return !(m >= 1000 && n >= 1000 && k >= 1000); }

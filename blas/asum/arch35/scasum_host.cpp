@@ -23,7 +23,8 @@
 #include "log/log.h"
 #include "scasum_tiling_data.h"
 
-void scasum_kernel_do(
+// issue #764: 返回状态透传 kernel 下发路径失败（对齐 sasum #588 错误透传范式）
+aclblasStatus_t scasum_kernel_do(
     uint8_t* inGM, uint8_t* outGM, uint8_t* workSpace, const ScasumTilingData& tiling, uint32_t numBlocks,
     void* stream);
 
@@ -105,11 +106,10 @@ static aclblasStatus_t ScasumExecuteKernel(
               return ACLBLAS_STATUS_EXECUTION_FAILED);
     uint8_t* workspaceDevice = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
 
-    scasum_kernel_do(
+    // issue #764: kernel_do 失败不得静默吞掉（<<<>>> 异步下发同步失败不可测，透传其状态）
+    return scasum_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)), reinterpret_cast<uint8_t*>(result), workspaceDevice,
         tiling, numBlocks, h->stream);
-
-    return ACLBLAS_STATUS_SUCCESS;
 }
 
 } // namespace
