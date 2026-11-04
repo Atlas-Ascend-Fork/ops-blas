@@ -2,8 +2,8 @@
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
- * Please refer to the License for details. You may not use the License for the License.
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
@@ -64,18 +64,15 @@ private:
 // Parameter validation
 // ==========================================================================
 static aclblasStatus_t ValidateCdgmmParams(
-    aclblasSideMode_t mode, int m, int n,
-    const aclblasComplex* A, int lda, const aclblasComplex* x, int incx,
+    aclblasSideMode_t mode, int m, int n, const aclblasComplex* A, int lda, const aclblasComplex* x, int incx,
     aclblasComplex* C, int ldc)
 {
     if (mode != ACLBLAS_SIDE_LEFT && mode != ACLBLAS_SIDE_RIGHT) {
-        OP_LOGE("aclblasCdgmm", "mode must be SIDE_LEFT(141) or SIDE_RIGHT(142), got %d",
-                static_cast<int>(mode));
+        OP_LOGE("aclblasCdgmm", "mode must be SIDE_LEFT(141) or SIDE_RIGHT(142), got %d", static_cast<int>(mode));
         return ACLBLAS_STATUS_INVALID_ENUM;
     }
     if (mode == ACLBLAS_SIDE_RIGHT) {
-        OP_LOGE("aclblasCdgmm",
-                "ACLBLAS_SIDE_RIGHT is not supported in the current row-major implementation");
+        OP_LOGE("aclblasCdgmm", "ACLBLAS_SIDE_RIGHT is not supported in the current row-major implementation");
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
     if (m < 0) {
@@ -88,6 +85,12 @@ static aclblasStatus_t ValidateCdgmmParams(
     }
     if (incx == 0) {
         OP_LOGE("aclblasCdgmm", "incx must not be zero");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    // issue #780: INT32_MIN 步长无合法使用场景（x 寻址必然越出任何实际分配），
+    // 对齐 scnrm2（arch35）显式拒绝口径
+    if (incx == INT32_MIN) {
+        OP_LOGE("aclblasCdgmm", "incx must not be INT32_MIN");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (lda < std::max(1, n)) {
@@ -122,8 +125,7 @@ static uint32_t CalcCdgmmNumBlocks(uint32_t m, uint32_t aivCoreNum)
 // Tiling: row-split decomposition (Task 1 + Task 2)
 // ==========================================================================
 static CdgmmTilingData CalCdgmmTilingData(
-    uint32_t mode, uint32_t m, uint32_t n, int32_t incx,
-    uint32_t lda, uint32_t ldc, uint32_t aivCoreNum)
+    uint32_t mode, uint32_t m, uint32_t n, int32_t incx, uint32_t lda, uint32_t ldc, uint32_t aivCoreNum)
 {
     CdgmmTilingData tiling{};
 
@@ -182,14 +184,13 @@ struct CdgmmLaunchConfig {
 };
 
 static aclblasStatus_t BuildCdgmmLaunchConfig(
-    aclblasSideMode_t mode, int m, int n, int lda, int incx, int ldc,
-    uint32_t aivCoreNum, CdgmmLaunchConfig& config)
+    aclblasSideMode_t mode, int m, int n, int lda, int incx, int ldc, uint32_t aivCoreNum, CdgmmLaunchConfig& config)
 {
     uint32_t modeNorm = (mode == ACLBLAS_SIDE_LEFT) ? CDGMM_MODE_LEFT : CDGMM_MODE_RIGHT;
 
     config.tiling = CalCdgmmTilingData(
-        modeNorm, static_cast<uint32_t>(m), static_cast<uint32_t>(n), incx,
-        static_cast<uint32_t>(lda), static_cast<uint32_t>(ldc), aivCoreNum);
+        modeNorm, static_cast<uint32_t>(m), static_cast<uint32_t>(n), incx, static_cast<uint32_t>(lda),
+        static_cast<uint32_t>(ldc), aivCoreNum);
 
     config.numBlocks = CalcCdgmmNumBlocks(static_cast<uint32_t>(m), aivCoreNum);
     config.aug = CreateAugCdgmm();
@@ -201,8 +202,7 @@ static aclblasStatus_t BuildCdgmmLaunchConfig(
 // Launch: allocate device buffers, copy, kernel, sync (Task 3)
 // ==========================================================================
 static aclblasStatus_t LaunchCdgmm(
-    aclrtStream stream,
-    const aclblasComplex* A, const aclblasComplex* x, aclblasComplex* C,
+    aclrtStream stream, const aclblasComplex* A, const aclblasComplex* x, aclblasComplex* C,
     const CdgmmLaunchConfig& config)
 {
     AclDeviceBuffer augDevice;
@@ -229,25 +229,24 @@ static aclblasStatus_t LaunchCdgmm(
         return ACLBLAS_STATUS_ALLOC_FAILED;
     }
 
-    aclRet = aclrtMemcpy(augDevice.Get(), augByteSize, config.aug.data(),
-                         augByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    aclRet = aclrtMemcpy(augDevice.Get(), augByteSize, config.aug.data(), augByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
     if (aclRet != ACL_SUCCESS) {
         OP_LOGE("aclblasCdgmm", "aclrtMemcpy aug failed. ERROR: %d", aclRet);
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
 
-    aclRet = aclrtMemcpy(tilingDevice.Get(), sizeof(CdgmmTilingData), &config.tiling,
-                         sizeof(CdgmmTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
+    aclRet = aclrtMemcpy(
+        tilingDevice.Get(), sizeof(CdgmmTilingData), &config.tiling, sizeof(CdgmmTilingData),
+        ACL_MEMCPY_HOST_TO_DEVICE);
     if (aclRet != ACL_SUCCESS) {
         OP_LOGE("aclblasCdgmm", "aclrtMemcpy tiling failed. ERROR: %d", aclRet);
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
 
-    cdgmm_kernel_do(reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(A)),
-                    reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(x)),
-                    reinterpret_cast<GM_ADDR>(C),
-                    augDevice.Get(), workspaceDevice.Get(), tilingDevice.Get(),
-                    config.numBlocks, stream);
+    cdgmm_kernel_do(
+        reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(A)),
+        reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(x)), reinterpret_cast<GM_ADDR>(C), augDevice.Get(),
+        workspaceDevice.Get(), tilingDevice.Get(), config.numBlocks, stream);
 
     aclRet = aclrtSynchronizeStream(stream);
     if (aclRet != ACL_SUCCESS) {
@@ -262,8 +261,7 @@ static aclblasStatus_t LaunchCdgmm(
 // Public API — orchestrates validate → build config → launch
 // ==========================================================================
 extern "C" aclblasStatus_t aclblasCdgmm(
-    aclblasHandle_t handle, aclblasSideMode_t mode,
-    int m, int n, const aclblasComplex* A, int lda,
+    aclblasHandle_t handle, aclblasSideMode_t mode, int m, int n, const aclblasComplex* A, int lda,
     const aclblasComplex* x, int incx, aclblasComplex* C, int ldc)
 {
     if (handle == nullptr) {
