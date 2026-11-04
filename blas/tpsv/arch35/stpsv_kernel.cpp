@@ -57,9 +57,8 @@ private:
     TQue<QuePosition::VECIN, BUFFER_NUM> xInQueue;
     TQue<QuePosition::VECOUT, BUFFER_NUM> xOutQueue;
 
-    static constexpr bool kForward =
-        (UPLO == TpsvUplo::LOWER && TRANS == TpsvTrans::NO_TRANS) ||
-        (UPLO == TpsvUplo::UPPER && TRANS == TpsvTrans::TRANS);
+    static constexpr bool kForward = (UPLO == TpsvUplo::LOWER && TRANS == TpsvTrans::NO_TRANS) ||
+                                     (UPLO == TpsvUplo::UPPER && TRANS == TpsvTrans::TRANS);
 
     uint32_t n;
     int64_t incx;
@@ -82,6 +81,9 @@ __aicore__ inline void StpsvKernel<UPLO, TRANS, DIAG>::Init(StpsvTilingData tili
     this->incx = tiling.incx;
 
     uint32_t apCount = n * (n + 1) / 2;
+    // Host ValidateTpsvParams rejects (n-1)*|incx| >= UINT32_MAX before launch, so absIncx*(n-1)+1
+    // and the per-element offsets below cannot wrap in uint32; the host guard is the only line of
+    // defense for the uint32 arithmetic here.
     uint32_t absIncx = static_cast<uint32_t>(incx >= 0 ? incx : -incx);
     uint32_t xCount = (n > 0) ? (absIncx * (n - 1) + 1) : 0;
     apGM.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(tiling.ap), apCount);
@@ -175,7 +177,7 @@ __aicore__ inline void StpsvKernel<UPLO, TRANS, DIAG>::ProcessForward()
 template <TpsvUplo UPLO, TpsvTrans TRANS, TpsvDiag DIAG>
 __aicore__ inline void StpsvKernel<UPLO, TRANS, DIAG>::ProcessBackward()
 {
-    for (uint32_t i = n; i-- > 0; ) {
+    for (uint32_t i = n; i-- > 0;) {
         CopyIn(i);
         Compute(i);
         CopyOut(i);
@@ -196,13 +198,13 @@ __aicore__ inline void StpsvKernel<UPLO, TRANS, DIAG>::Process()
 //  Kernel entry points (8 combinations)
 // ==========================================================================
 
-#define DEFINE_TPSV_KERNEL(uplo, trans, diag, name)                                         \
-    __global__ __aicore__ void name(StpsvTilingData tiling)                                \
-    {                                                                                       \
-        KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);                                     \
-        StpsvKernel<TpsvUplo::uplo, TpsvTrans::trans, TpsvDiag::diag> op;                  \
-        op.Init(tiling);                                                                    \
-        op.Process();                                                                       \
+#define DEFINE_TPSV_KERNEL(uplo, trans, diag, name)                       \
+    __global__ __aicore__ void name(StpsvTilingData tiling)               \
+    {                                                                     \
+        KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);                   \
+        StpsvKernel<TpsvUplo::uplo, TpsvTrans::trans, TpsvDiag::diag> op; \
+        op.Init(tiling);                                                  \
+        op.Process();                                                     \
     }
 
 DEFINE_TPSV_KERNEL(LOWER, NO_TRANS, NON_UNIT, stpsv_kernel_lower_no_trans_non_unit)
@@ -220,9 +222,9 @@ DEFINE_TPSV_KERNEL(UPPER, TRANS, UNIT, stpsv_kernel_upper_trans_unit)
 //  Kernel dispatcher
 // ==========================================================================
 
-void stpsv_simt_kernel_do(const StpsvTilingData &tiling, void* stream);
+void stpsv_simt_kernel_do(const StpsvTilingData& tiling, void* stream);
 
-void stpsv_kernel_do(const StpsvTilingData &tiling, void* stream)
+void stpsv_kernel_do(const StpsvTilingData& tiling, void* stream)
 {
     // SIMT path: dispatch to kernel in stpsv_kernel_simt.cpp for n >= 128
     if (tiling.numThreads > 0) {

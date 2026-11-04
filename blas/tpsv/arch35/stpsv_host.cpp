@@ -26,7 +26,7 @@
 
 struct StpsvTilingData;
 
-void stpsv_kernel_do(const StpsvTilingData &tiling, void *stream);
+void stpsv_kernel_do(const StpsvTilingData& tiling, void* stream);
 
 static constexpr uint32_t SIMT_THRESHOLD = 128;
 
@@ -34,19 +34,29 @@ static aclblasStatus_t ValidateTpsvParams(
     aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n, int incx, const float* AP,
     const float* x)
 {
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE("aclblasStpsv", "invalid uplo=%d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
-        OP_LOGE("aclblasStpsv", "invalid trans=%d", static_cast<int>(trans));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        diag == ACLBLAS_NON_UNIT || diag == ACLBLAS_UNIT,
-        OP_LOGE("aclblasStpsv", "invalid diag=%d", static_cast<int>(diag));
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE("aclblasStpsv", "invalid uplo=%d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
+              OP_LOGE("aclblasStpsv", "invalid trans=%d", static_cast<int>(trans));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(diag == ACLBLAS_NON_UNIT || diag == ACLBLAS_UNIT,
+              OP_LOGE("aclblasStpsv", "invalid diag=%d", static_cast<int>(diag));
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasStpsv", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
+    // The per-element x offset is i * |incx| and the device GM view length is (n-1)*|incx| + 1.
+    // Both are computed in uint32 on the device (stpsv_kernel.cpp Init/XOffset). Reject shapes whose
+    // span (n-1)*|incx| reaches or exceeds UINT32_MAX: at span == UINT32_MAX the per-element offset
+    // still fits uint32, but the GM view length span+1 wraps to 0 in uint32 (kernel Init), so we
+    // must refuse at the boundary. The CSV suite keeps |incx| <= 3 and never hits this, but a
+    // hand-built caller could (e.g. n=4, incx=1431655765 -> (4-1)*1431655765 = 4294967295 =
+    // UINT32_MAX), which would otherwise wrap xCount and silently corrupt x. Same guard as the
+    // arch22 stpsv_host.cpp.
+    const int64_t absIncx64 = (incx >= 0) ? static_cast<int64_t>(incx) : -static_cast<int64_t>(incx);
+    const uint64_t span = static_cast<uint64_t>(n > 0 ? (n - 1) : 0) * static_cast<uint64_t>(absIncx64);
+    CHECK_RET(span < 0xFFFFFFFFULL,
+              OP_LOGE("aclblasStpsv", "x index span %llu overflows uint32", (unsigned long long)span);
+              return ACLBLAS_STATUS_NOT_SUPPORTED);
     CHECK_RET(AP != nullptr, OP_LOGE("aclblasStpsv", "AP must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(x != nullptr, OP_LOGE("aclblasStpsv", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     return ACLBLAS_STATUS_SUCCESS;
