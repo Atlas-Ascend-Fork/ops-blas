@@ -97,6 +97,9 @@ CopyTilingData CalTilingData(uint32_t totalEleNum, uint32_t vecCoreNum)
 aclblasStatus_t aclblasScopy_legacy(
     aclblasHandle_t handle, uint8_t* x, uint8_t* y, const int64_t n, const int64_t incx, const int64_t incy)
 {
+    // issue #779: 对齐全库 handle 判空口径（#765），空 handle 不再静默取空流继续执行
+    CHECK_RET(handle != nullptr, LOG_PRINT("aclblasScopy_legacy: handle is nullptr\n");
+              return ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
     if (n <= 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }
@@ -105,11 +108,8 @@ aclblasStatus_t aclblasScopy_legacy(
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
-    aclrtStream useStream = nullptr;
-    if (handle != nullptr) {
-        auto* h = handle;
-        useStream = h->stream;
-    }
+    auto* h = handle;
+    aclrtStream useStream = h->stream;
 
     uint32_t numBlocks = 8;
     CopyTilingData tiling = CalTilingData(n, numBlocks);
@@ -134,6 +134,9 @@ aclblasStatus_t aclblasScopy_legacy(
 aclblasStatus_t aclblasCcopy(
     aclblasHandle_t handle, int n, const aclblasComplex* x, int incx, aclblasComplex* y, int incy)
 {
+    // issue #779: 对齐全库 handle 判空口径（#765），空 handle 不再静默取空流继续执行
+    CHECK_RET(handle != nullptr, LOG_PRINT("aclblasCcopy: handle is nullptr\n");
+              return ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
     if (n <= 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }
@@ -149,11 +152,8 @@ aclblasStatus_t aclblasCcopy(
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
-    aclrtStream useStream = nullptr;
-    if (handle != nullptr) {
-        auto* h = handle;
-        useStream = h->stream;
-    }
+    auto* h = handle;
+    aclrtStream useStream = h->stream;
 
     uint32_t numBlocks = 8;
     // issue #734: 非连续步长走按复数分核的 strided 路径；连续步长保留原快路径

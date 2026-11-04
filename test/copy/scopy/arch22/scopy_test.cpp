@@ -124,6 +124,12 @@ static uint32_t RunScopyContiguousTest()
     aclRet = aclrtMemcpy(yDevice, totalByteSize, yHost.data(), totalByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy yDevice failed.\n"); return 1);
 
+    // issue #779: 空 handle 必须返回 HANDLE_IS_NULLPTR，不得静默取空流继续执行
+    ret = aclblasScopy_legacy(nullptr, xDevice, yDevice, totalLength, incx, incy);
+    CHECK_RET(ret == ACLBLAS_STATUS_HANDLE_IS_NULLPTR,
+              LOG_PRINT("aclblasScopy_legacy null handle expected HANDLE_IS_NULLPTR, got %d\n", ret);
+              return 1);
+
     ret = aclblasScopy_legacy(handle, xDevice, yDevice, totalLength, incx, incy);
     CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclblasScopy_legacy failed.\n"); return 1);
 
@@ -179,6 +185,12 @@ static uint32_t RunCcopyContiguousTest(int32_t deviceId)
 
     int64_t incx = 1;
     int64_t incy = 1;
+    // issue #779: 空 handle 必须返回 HANDLE_IS_NULLPTR，不得静默取空流继续执行
+    ret = aclblasCcopy(nullptr, complexLength, cxDevice, incx, cyDevice, incy);
+    CHECK_RET(ret == ACLBLAS_STATUS_HANDLE_IS_NULLPTR,
+              LOG_PRINT("aclblasCcopy null handle expected HANDLE_IS_NULLPTR, got %d\n", ret);
+              return 1);
+
     ret = aclblasCcopy(handle2, complexLength, cxDevice, incx, cyDevice, incy);
     CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclblasCcopy failed.\n"); return 1);
 
