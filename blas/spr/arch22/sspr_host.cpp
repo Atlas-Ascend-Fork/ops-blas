@@ -19,6 +19,7 @@
 #include "sspr_kernel.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
+#include "common/helper/sspr_host_common.h"
 
 // arch22 (DAV_2201) host for aclblasSspr. arch22 contract notes:
 // 1. uplo illegal enum returns ACLBLAS_STATUS_INVALID_ENUM (arch22 contract, not
@@ -26,28 +27,28 @@
 // 2. core count comes from GetAivCoreCount() dynamically (never hardcoded), with column-level
 //    multi-core split and the per-core >= 4KB shrink rule (n <= 44 degenerates to single core).
 
-// Validation order (mandatory): uplo enum -> incx == 0 / INT_MIN -> alpha / x / ap nullptr
-// (n > 0). (handle nullptr / n < 0 / n == 0 quick return are handled in the entry, before this
-// function.)
-static aclblasStatus_t ValidateSsprParams(
-    aclblasFillMode_t uplo, int incx, const float* alpha, const float* x, const float* ap)
+// Validation order (mandatory): uplo enum -> incx == 0 / INT_MIN -> alpha nullptr
+// (n > 0). (handle nullptr / n < 0 / n == 0 quick return are handled by SsprCheckEntry in
+// common/helper/sspr_host_common.h, before this function. The x/ap nullptr checks and the
+// alpha == 0 no-op quick return live in SsprPostAlphaChecks in the same shared header and
+// only run with alpha != 0, see the alpha == 0 quick-return contract in aclblasSspr, issue
+// #781.) The uplo illegal-enum INVALID_ENUM return and the check order are arch22 contract,
+// intentionally different from arch35, which is why the validator stays in this file and is
+// passed into the shared entry sequence.
+static aclblasStatus_t ValidateSsprParams(aclblasFillMode_t uplo, int incx, const float* alpha)
 {
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE("aclblasSspr", "uplo must be UPPER(121) or LOWER(122), got %d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_ENUM);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE("aclblasSspr", "uplo must be UPPER(121) or LOWER(122), got %d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_ENUM);
     CHECK_RET(incx != 0, OP_LOGE("aclblasSspr", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        incx != INT_MIN, OP_LOGE("aclblasSspr", "incx must not be INT_MIN"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        alpha != nullptr, OP_LOGE("aclblasSspr", "alpha must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(x != nullptr, OP_LOGE("aclblasSspr", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(ap != nullptr, OP_LOGE("aclblasSspr", "ap must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(incx != INT_MIN, OP_LOGE("aclblasSspr", "incx must not be INT_MIN"); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(alpha != nullptr, OP_LOGE("aclblasSspr", "alpha must not be nullptr");
+              return ACLBLAS_STATUS_INVALID_VALUE);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
 // Naive/exact band boundary of the largeMode UB budget mirror (SsprUbBytesLarge).
-constexpr uint32_t SSPR_DESC_MAX_N = 2048;  // keep in sync with kernel SSPR_NAIVE_MAX_N
+constexpr uint32_t SSPR_DESC_MAX_N = 2048; // keep in sync with kernel SSPR_NAIVE_MAX_N
 
 // ------------------------------------------------------------------------------------------
 // Contract: keep the !IS_INCX1 resident path under the 192KB UB ceiling or the kernel silently
@@ -55,7 +56,7 @@ constexpr uint32_t SSPR_DESC_MAX_N = 2048;  // keep in sync with kernel SSPR_NAI
 // closes; when even the 64-element minimum window cannot fit xPhys, degrade to the single-core
 // scalar path via SsprTilingData::scalarMode.
 // ------------------------------------------------------------------------------------------
-constexpr uint64_t SSPR_UB_CEIL_BYTES = 192ULL * 1024ULL;  // UB hardware ceiling
+constexpr uint64_t SSPR_UB_CEIL_BYTES = 192ULL * 1024ULL; // UB hardware ceiling
 // Total UB bytes of the !IS_INCX1 resident path at window size ubf (see below).
 // SSPR_UB_FIXED_BYTES includes +32B for the xgBuf pad-corner slack
 // (the kernel allocates xgBuf with +8 elems; see sspr_kernel.cpp InitBuffer)
@@ -63,7 +64,7 @@ constexpr uint64_t SSPR_UB_CEIL_BYTES = 192ULL * 1024ULL;  // UB hardware ceilin
 // tail slack (apOut queue depth 2 x 64 + c 64 + sc 64 + tl 64 elements; sspr_tiling_data.h
 // SSPR_GUARD_SLACK_ELEMS).
 constexpr uint64_t SSPR_UB_FIXED_BYTES = 3648ULL + 96ULL + 32ULL + 5ULL * 64ULL * 4ULL;
-        // run/fix descriptors + win table + xg slack + Phase D guard tail slack
+// run/fix descriptors + win table + xg slack + Phase D guard tail slack
 
 // Total UB bytes of the !IS_INCX1 resident path at window size ubf: apIn(2) + apOut(2) + xg +
 // th + tl + e + s + c = 10 window-sized regions plus the idx buffer max(ubf, n), the fixed
@@ -101,7 +102,7 @@ inline uint64_t SsprUbBytesLarge(uint64_t n)
     }
     // xSeg + headIdx (seg + 8 each) + guard tail slack (tl + e + c + the 2 apOut queue
     // slots, 64 each) + the 2 apIn copy-in pads
-    constexpr uint64_t kExactSlack = 5ULL * 64ULL + 4ULL * 8ULL;  // = 352
+    constexpr uint64_t kExactSlack = 5ULL * 64ULL + 4ULL * 8ULL; // = 352
     return 4ULL * (SSPR_LARGE_TILE_FLOATS + 11ULL * SSPR_LARGE_SEG_FLOATS + kExactSlack);
 }
 
@@ -112,7 +113,7 @@ inline uint64_t SsprUbBytesLarge(uint64_t n)
 static bool SsprLargeGateEligible(uint64_t n, int incx)
 {
     return incx == 1 && n > SSPR_LARGE_MIN_N_UPPER && n <= SSPR_LARGE_MAX_N &&
-        SsprUbBytesLarge(n) <= SSPR_UB_CEIL_BYTES;
+           SsprUbBytesLarge(n) <= SSPR_UB_CEIL_BYTES;
 }
 
 // Core-count determination of CalSsprTilingData.
@@ -128,7 +129,7 @@ static uint32_t SsprChooseCoreNum(uint32_t aivCoreNum, uint64_t nU64, uint32_t u
     if (nU64 > SSPR_X_RESIDENT_MAX_FLOATS && !SsprLargeGateEligible(nU64, incx)) {
         useCoreNum = 1U;
     }
-    useCoreNum = std::min(useCoreNum, SSPR_MAX_CORES);  // bounds array capacity guard
+    useCoreNum = std::min(useCoreNum, SSPR_MAX_CORES); // bounds array capacity guard
     // Per-core minimum data volume 4KB (MIN_TILING_BITS = 32768 bits): AP total bytes =
     // n(n+1)/2 * 4B = 2n(n+1); shrink core count while each core's share < 4KB, floor = 1 core.
     // n <= 44 (2n(n+1) < 4096) converges to the floor: single-core fallback, never rejected.
@@ -181,7 +182,7 @@ static void SsprComputeCoreBegin(SsprTilingData& tilingData)
         while (col + 1U < n && colStart(col + 1U) + w * (col + 1U) <= target) {
             ++col;
         }
-        uint64_t x = target - w * col;  // in [ColStart(col), ColStart(col+1) + w)
+        uint64_t x = target - w * col; // in [ColStart(col), ColStart(col+1) + w)
         x = (x + 7U) & ~7ULL;
         if (x <= prev) {
             x = prev + 8U;
@@ -196,8 +197,7 @@ static void SsprComputeCoreBegin(SsprTilingData& tilingData)
 
 // UB-budget clamp of CalSsprTilingData (useCoreNum crosses by
 // reference - the scalarMode degrade forces the single-core split).
-static void SsprClampUbWindow(SsprTilingData& tilingData, uint64_t nU64, int incx, uint32_t nU32,
-    uint32_t& useCoreNum)
+static void SsprClampUbWindow(SsprTilingData& tilingData, uint64_t nU64, int incx, uint32_t nU32, uint32_t& useCoreNum)
 {
     if (nU64 <= SSPR_X_RESIDENT_MAX_FLOATS) {
         // UB budget guard for the resident path (see the SsprUbBytes
@@ -247,9 +247,8 @@ static SsprTilingData CalSsprTilingData(uint32_t aivCoreNum, int n, aclblasFillM
     tilingData.ubFormer = (incx == 1) ? SSPR_UB_FORMER_INCX1 : SSPR_UB_FORMER;
     SsprClampUbWindow(tilingData, nU64, incx, nU32, useCoreNum);
     tilingData.ubLoopMax = CeilDiv<uint32_t>(nU32, SSPR_UB_FORMER);
-    tilingData.ubTailMax =
-        std::min(SSPR_UB_FORMER, nU32 - (tilingData.ubLoopMax - 1U) * SSPR_UB_FORMER);
-    tilingData.debug = 0U;  // ABI-stable field: pinned to 0 (no debug knob)
+    tilingData.ubTailMax = std::min(SSPR_UB_FORMER, nU32 - (tilingData.ubLoopMax - 1U) * SSPR_UB_FORMER);
+    tilingData.debug = 0U; // ABI-stable field: pinned to 0 (no debug knob)
     SsprChooseRunCostW(tilingData, nU64);
     if (tilingData.runCostW > 0U && tilingData.useCoreNum >= 1U) {
         SsprComputeCoreBegin(tilingData);
@@ -261,31 +260,17 @@ static SsprTilingData CalSsprTilingData(uint32_t aivCoreNum, int n, aclblasFillM
 aclblasStatus_t aclblasSspr(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* alpha, const float* x, int incx, float* ap)
 {
-    auto* h = handle;
-    CHECK_RET(h != nullptr, OP_LOGE("aclblasSspr", "handle is nullptr"); return ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
-
-    CHECK_RET(n >= 0, OP_LOGE("aclblasSspr", "n must be >= 0, got %d", n); return ACLBLAS_STATUS_INVALID_VALUE);
-    if (n == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-
-    aclblasStatus_t st = ValidateSsprParams(uplo, incx, alpha, x, ap);
-    if (st != ACLBLAS_STATUS_SUCCESS) {
-        return st;
+    SsprEntryCtx ctx;
+    if (!SsprEntryProceed(handle, uplo, n, incx, alpha, ValidateSsprParams, &ctx)) {
+        return ctx.st;
     }
 
     // alpha is a Host-memory float32 scalar pointer: dereference directly into tiling,
-    // no Device read-back. Pointer checks above precede this branch, so
-    // alpha == 0 quick return keeps ap bitwise unchanged and never reads x (even NaN/Inf).
+    // no Device read-back.
     float alphaVal = *alpha;
-    if (alphaVal == 0.0f) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-
-    uint32_t aivCoreNum = GetAivCoreCount();
-    if (aivCoreNum == 0) {
-        OP_LOGE("aclblasSspr", "vector core count is 0");
-        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    uint32_t aivCoreNum = 0;
+    if (!SsprPostAlphaChecks(alphaVal, x, ap, &ctx.st, &aivCoreNum)) {
+        return ctx.st;
     }
 
     SsprTilingData tiling = CalSsprTilingData(aivCoreNum, n, uplo, alphaVal, incx);
@@ -302,14 +287,14 @@ aclblasStatus_t aclblasSspr(
         "aclblasSspr",
         "launching kernel: useCoreNum=%u, columnsPerCore=%u, n=%d, incx=%d, ubFormer=%u, "
         "large=%u",
-        tiling.useCoreNum, tiling.columnsPerCore, n, incx, tiling.ubFormer,
-        static_cast<unsigned>(tiling.largeMode));
+        tiling.useCoreNum, tiling.columnsPerCore, n, incx, tiling.ubFormer, static_cast<unsigned>(tiling.largeMode));
 
-    aclrtStream stream = h->stream;
+    aclrtStream stream = ctx.h->stream;
     // x crosses the boundary as const - the kernel is strictly read-only on x
     // (see sspr_kernel.cpp), so no const_cast exists on this path.
-    sspr_kernel_do(reinterpret_cast<const uint8_t*>(x), reinterpret_cast<uint8_t*>(ap),
-        nullptr, tiling, tiling.useCoreNum, stream);
+    sspr_kernel_do(
+        reinterpret_cast<const uint8_t*>(x), reinterpret_cast<uint8_t*>(ap), nullptr, tiling, tiling.useCoreNum,
+        stream);
 
     return ACLBLAS_STATUS_SUCCESS;
 }

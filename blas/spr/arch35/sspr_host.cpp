@@ -19,57 +19,39 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/kernel_constant.h"
 #include "common/helper/host_utils.h"
+#include "common/helper/sspr_host_common.h"
 
 // ---- kernel entry (local declaration, replacing aclblas_kernel_do.h) ----
 void sspr_kernel_do(uint8_t* x, uint8_t* ap, const SsprTilingData& tiling, uint32_t numBlocks, void* stream);
 
-static aclblasStatus_t ValidateSsprParams(
-    aclblasFillMode_t uplo, int incx, const float* alpha, const float* x, const float* ap)
+// !831 检视意见：与 arch22（#781）口径收敛——alpha == 0 是 BLAS no-op（x/ap 不被引用），
+// x/ap 判空仅在 alpha != 0 时执行（公共序列见 sspr_host_common.h 的 SsprPostAlphaChecks），
+// 消除同一公有接口跨架构返回码分裂。本架构参数校验契约：alpha 判空先行、uplo 非法返回
+// INVALID_VALUE（与 arch22 的 INVALID_ENUM 有意不同），故校验器保留在本文件经函数指针
+// 传入公共入口序列。
+static aclblasStatus_t ValidateSsprParams(aclblasFillMode_t uplo, int incx, const float* alpha)
 {
-    CHECK_RET(
-        alpha != nullptr, OP_LOGE("aclblasSspr", "alpha must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE("aclblasSspr", "uplo must be UPPER(121) or LOWER(122), got %d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(alpha != nullptr, OP_LOGE("aclblasSspr", "alpha must not be nullptr");
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE("aclblasSspr", "uplo must be UPPER(121) or LOWER(122), got %d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasSspr", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != INT_MIN, OP_LOGE("aclblasSspr", "incx must not be INT_MIN"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(x != nullptr, OP_LOGE("aclblasSspr", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(ap != nullptr, OP_LOGE("aclblasSspr", "ap must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static SsprTilingData CalSsprTilingData(uint32_t useNumBlocks, int n, aclblasFillMode_t uplo, float alpha, int incx)
-{
-    SsprTilingData tilingData{};
-    uint32_t nU32 = static_cast<uint32_t>(n);
-    uint32_t colsPerBlk = CeilDiv<uint32_t>(nU32, useNumBlocks);
-    tilingData.numThreads = std::min(CeilAlign<uint32_t>(colsPerBlk, SIMT_MIN_THREAD_NUM), SIMT_MAX_THREAD_NUM);
-    tilingData.columnsPerBlock = colsPerBlk;
-    tilingData.n = nU32;
-    tilingData.uplo = static_cast<uint32_t>(uplo);
-    tilingData.alpha = alpha;
-    tilingData.incx = static_cast<int64_t>(incx);
-    return tilingData;
-}
+static SsprTilingData CalSsprTilingData(uint32_t useNumBlocks, int n, aclblasFillMode_t uplo, float alpha, int incx);
 
 aclblasStatus_t aclblasSspr(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* alpha, const float* x, int incx, float* ap)
 {
-    auto* h = handle;
-    CHECK_RET(h != nullptr, OP_LOGE("aclblasSspr", "handle is nullptr"); return ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
-
-    CHECK_RET(n >= 0, OP_LOGE("aclblasSspr", "n must be >= 0, got %d", n); return ACLBLAS_STATUS_INVALID_VALUE);
-    if (n == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
+    SsprEntryCtx ctx;
+    if (!SsprEntryProceed(handle, uplo, n, incx, alpha, ValidateSsprParams, &ctx)) {
+        return ctx.st;
     }
 
-    aclblasStatus_t st = ValidateSsprParams(uplo, incx, alpha, x, ap);
-    if (st != ACLBLAS_STATUS_SUCCESS) {
-        return st;
-    }
-
-    aclrtStream stream = h->stream;
+    aclrtStream stream = ctx.h->stream;
 
     // issue #510: alpha 允许 Host/Device 指针；Device 指针须先经 handle stream D2H 读回，
     // 不能在 Host 直接解引用，否则会崩溃或读到错误标量。
@@ -87,14 +69,9 @@ aclblasStatus_t aclblasSspr(
     } else {
         alphaVal = *alpha;
     }
-    if (alphaVal == 0.0f) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-
-    uint32_t aivCoreNum = GetAivCoreCount();
-    if (aivCoreNum == 0) {
-        OP_LOGE("aclblasSspr", "vector core count is 0");
-        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    uint32_t aivCoreNum = 0;
+    if (!SsprPostAlphaChecks(alphaVal, x, ap, &ctx.st, &aivCoreNum)) {
+        return ctx.st;
     }
     uint32_t useNumBlocks = std::min(CeilDiv<uint32_t>(n, SIMT_MIN_THREAD_NUM), aivCoreNum);
 
@@ -107,4 +84,18 @@ aclblasStatus_t aclblasSspr(
     sspr_kernel_do((uint8_t*)const_cast<float*>(x), (uint8_t*)ap, tiling, useNumBlocks, stream);
 
     return ACLBLAS_STATUS_SUCCESS;
+}
+
+static SsprTilingData CalSsprTilingData(uint32_t useNumBlocks, int n, aclblasFillMode_t uplo, float alpha, int incx)
+{
+    SsprTilingData tilingData{};
+    uint32_t nU32 = static_cast<uint32_t>(n);
+    uint32_t colsPerBlk = CeilDiv<uint32_t>(nU32, useNumBlocks);
+    tilingData.numThreads = std::min(CeilAlign<uint32_t>(colsPerBlk, SIMT_MIN_THREAD_NUM), SIMT_MAX_THREAD_NUM);
+    tilingData.columnsPerBlock = colsPerBlk;
+    tilingData.n = nU32;
+    tilingData.uplo = static_cast<uint32_t>(uplo);
+    tilingData.alpha = alpha;
+    tilingData.incx = static_cast<int64_t>(incx);
+    return tilingData;
 }
