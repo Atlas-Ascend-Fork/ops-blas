@@ -20,6 +20,7 @@
 #include "fill.h"
 #include "verify_uplo.h"
 #include "cherk_param.h"
+#include "host_scalar_utils.h"
 #include "cherk_golden.h"
 #include "cherk_npu_wrapper.h"
 
@@ -137,23 +138,25 @@ static inline void VerifyUploTriangleComplex(
 
 class CherkArch35Test : public BlasTest<CherkParam> {};
 
-static bool HasCasePrefix(const CherkParam& p, const char* prefix) { return p.caseName.rfind(prefix, 0U) == 0U; }
-
 static std::vector<CherkParam> LoadCherkCorrectnessCases()
 {
     const bool fullRegression = std::getenv("CHERK_FULL_REGRESSION") != nullptr;
-    std::string csvPath = ReplaceFileExtension2Csv(__BASE_FILE__);
-    // Only arch22 has a separate smoke/full CSV pair.
-    if (fullRegression && csvPath.find("arch22") != std::string::npos) {
-        csvPath.insert(csvPath.size() - 4U, "_full");
-    }
+    const std::string csvPath = ReplaceFileExtension2Csv(__BASE_FILE__);
+    // arch35 ST CSV keeps precision/interface cases only; the white-box
+    // (TC_WB) and performance (TC_PF) cases live in separate _wb/_perf CSVs
+    // loaded under CHERK_FULL_REGRESSION=1 (issue #755 delivery boundary).
     std::vector<CherkParam> selectedCases;
     for (const CherkParam& p : GetCasesFromCsv<CherkParam>(csvPath)) {
-        if (!fullRegression && HasCasePrefix(p, "TC_PF_")) {
-            continue;
-        }
-
         selectedCases.push_back(p);
+    }
+    if (fullRegression) {
+        const std::string base = csvPath.substr(0U, csvPath.size() - 4U);
+        for (const CherkParam& p : GetCasesFromCsv<CherkParam>(base + "_wb.csv")) {
+            selectedCases.push_back(p);
+        }
+        for (const CherkParam& p : GetCasesFromCsv<CherkParam>(base + "_perf.csv")) {
+            selectedCases.push_back(p);
+        }
     }
     return selectedCases;
 }
@@ -166,6 +169,68 @@ TEST_F(CherkArch35Test, NullHandle)
     aclblasStatus_t ret =
         aclblasCherk_npu(nullptr, ACLBLAS_UPPER, ACLBLAS_OP_N, 4, 4, &alpha, nullptr, 4, &beta, nullptr, 4);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_HANDLE_IS_NULLPTR));
+}
+
+// ── TEST_F: host-scalar alpha/beta accepted (issue #759 CH-01) ──
+// The npu wrapper uploads scalars to device, so this calls the public API
+// directly with host-side alpha/beta addresses: they must be dereferenced
+// instead of receiving a misleading error from a failed D2H copy. Host golden
+// for the UPPER triangle (alpha/beta are real): C = alpha*A^H*A + beta*C with
+// the diagonal imaginary part forced to zero.
+static void BuildCherkHostGolden(
+    int n, int k, int lda, int ldc, float alpha, float beta, const std::vector<aclblasComplex>& aHost,
+    const std::vector<aclblasComplex>& cInit, std::vector<aclblasComplex>& golden)
+{
+    golden = cInit;
+    for (int i = 0; i < n; i++) {
+        for (int j = i; j < n; j++) {
+            float accRe = 0.0f;
+            float accIm = 0.0f;
+            for (int t = 0; t < k; t++) {
+                const aclblasComplex& av = aHost[static_cast<size_t>(t) * lda + i];
+                const aclblasComplex& bv = aHost[static_cast<size_t>(t) * lda + j];
+                accRe += av.real * bv.real + av.imag * bv.imag;
+                accIm += av.real * bv.imag - av.imag * bv.real;
+            }
+            const size_t idx = static_cast<size_t>(j) * ldc + i;
+            golden[idx].real = alpha * accRe + beta * cInit[idx].real;
+            golden[idx].imag = alpha * accIm + beta * cInit[idx].imag;
+            if (i == j) {
+                golden[idx].imag = 0.0f;
+            }
+        }
+    }
+}
+
+static bool RunCherkHostScalarShape(aclblasHandle_t handle, aclrtStream stream, int n, int k, int ld)
+{
+    const float alpha = 2.0f;
+    const float beta = 1.5f;
+    std::vector<aclblasComplex> aHost(static_cast<size_t>(ld) * k);
+    std::vector<aclblasComplex> cInit(static_cast<size_t>(ld) * n);
+    for (size_t i = 0; i < aHost.size(); i++) {
+        aHost[i] = {0.5f + static_cast<float>(i), 0.25f + static_cast<float>(i)};
+        cInit[i] = {1.0f + static_cast<float>(i), 2.0f + static_cast<float>(i)};
+    }
+
+    std::vector<aclblasComplex> golden;
+    BuildCherkHostGolden(n, k, ld, ld, alpha, beta, aHost, cInit, golden);
+
+    return host_scalar::RunOnDevice<aclblasComplex>(
+        stream, aHost.size() * sizeof(aclblasComplex), 0, cInit.size() * sizeof(aclblasComplex), aHost.data(), nullptr,
+        cInit.data(),
+        [&](const void* dA, const void*, void* dC) {
+            return aclblasCherk(
+                handle, ACLBLAS_UPPER, ACLBLAS_OP_N, n, k, &alpha, static_cast<const aclblasComplex*>(dA), ld, &beta,
+                static_cast<aclblasComplex*>(dC), ld);
+        },
+        [&](const std::vector<aclblasComplex>& cOut) { host_scalar::VerifyUploNearComplex(n, ld, cOut, golden); });
+}
+
+TEST_F(CherkArch35Test, HostScalarAlphaBeta)
+{
+    ASSERT_TRUE(RunCherkHostScalarShape(handle_, stream_, 4, 3, 4));
+    ASSERT_TRUE(RunCherkHostScalarShape(handle_, stream_, 72, 4, 72));
 }
 
 INSTANTIATE_TEST_SUITE_P(

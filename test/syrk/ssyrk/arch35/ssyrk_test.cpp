@@ -8,12 +8,14 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
+#include <cmath>
 #include <vector>
 
 #include "verify.h"
 #include "blas_test.h"
 #include "csv_loader.h"
 #include "fill.h"
+#include "host_scalar_utils.h"
 #include "verify_uplo.h"
 #include "ssyrk_param.h"
 #include "ssyrk_golden.h"
@@ -23,23 +25,83 @@
 // Test fixture
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class SsyrkArch35Test : public BlasTest<SsyrkParam> {
-};
+class SsyrkTest : public BlasTest<SsyrkParam> {};
 
 // ── TEST_F: null handle (not CSV-driven) ──
-TEST_F(SsyrkArch35Test, NullHandle)
+TEST_F(SsyrkTest, NullHandle)
 {
     float alpha = 1.0f;
     float beta = 0.0f;
-    aclblasStatus_t ret = aclblasSsyrk_npu(
-        nullptr, ACLBLAS_UPPER, ACLBLAS_OP_N, 4, 4,
-        &alpha, nullptr, 4, &beta, nullptr, 4);
+    aclblasStatus_t ret =
+        aclblasSsyrk_npu(nullptr, ACLBLAS_UPPER, ACLBLAS_OP_N, 4, 4, &alpha, nullptr, 4, &beta, nullptr, 4);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_HANDLE_IS_NULLPTR));
 }
 
+// ── TEST_F: host-scalar alpha/beta accepted (issue #752 SRK-02) ──
+// The npu wrapper uploads scalars to device, so this calls the public API
+// directly with host-side alpha/beta addresses: they must be dereferenced
+// instead of receiving a misleading error from a failed D2H copy. Host golden
+// for the UPPER triangle: C = alpha*A*A^T + beta*C.
+static void BuildSsyrkHostGolden(
+    int n, int k, int lda, int ldc, float alpha, float beta, const std::vector<float>& aHost,
+    const std::vector<float>& cInit, std::vector<float>& golden)
+{
+    golden = cInit;
+    for (int i = 0; i < n; i++) {
+        for (int j = i; j < n; j++) {
+            float acc = 0.0f;
+            for (int t = 0; t < k; t++) {
+                acc += aHost[static_cast<size_t>(t) * lda + i] * aHost[static_cast<size_t>(t) * lda + j];
+            }
+            const size_t idx = static_cast<size_t>(j) * ldc + i;
+            golden[idx] = alpha * acc + beta * cInit[idx];
+        }
+    }
+}
+
+static bool RunSsyrkHostScalarShape(aclblasHandle_t handle, aclrtStream stream, int n, int k, int lda, int ldc)
+{
+    const float alpha = 2.0f;
+    const float beta = 1.5f;
+    std::vector<float> aHost(static_cast<size_t>(lda) * k);
+    std::vector<float> cInit(static_cast<size_t>(ldc) * n);
+    host_scalar::FillHostScalarPattern(aHost, cInit);
+
+    std::vector<float> golden;
+    BuildSsyrkHostGolden(n, k, lda, ldc, alpha, beta, aHost, cInit, golden);
+
+    return host_scalar::RunOnDevice<float>(
+        stream, aHost.size() * sizeof(float), 0, cInit.size() * sizeof(float), aHost.data(), nullptr, cInit.data(),
+        [&](const void* dA, const void*, void* dC) {
+            return aclblasSsyrk(
+                handle, ACLBLAS_UPPER, ACLBLAS_OP_N, n, k, &alpha, static_cast<const float*>(dA), lda, &beta,
+                static_cast<float*>(dC), ldc);
+        },
+        [&](const std::vector<float>& cOut) { host_scalar::VerifyUploNear(n, ldc, cOut, golden); });
+}
+
+TEST_F(SsyrkTest, HostScalarAlphaBeta)
+{
+    ASSERT_TRUE(RunSsyrkHostScalarShape(handle_, stream_, 4, 3, 4, 4));
+    ASSERT_TRUE(RunSsyrkHostScalarShape(handle_, stream_, 72, 4, 72, 72));
+}
+
+// ── TEST_F: n=0 still validates scalars (issue #752 SRK-03) ──
+// Validation runs before the n==0 quick return, so null alpha/beta must yield
+// INVALID_VALUE rather than SUCCESS even for n=0.
+TEST_F(SsyrkTest, ZeroDimValidatesScalars)
+{
+    float dummy = 0.0f;
+    EXPECT_EQ(
+        aclblasSsyrk(handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, 0, 4, nullptr, &dummy, 4, &dummy, &dummy, 4),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasSsyrk(handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, 0, 4, &dummy, &dummy, 4, nullptr, &dummy, 4),
+        ACLBLAS_STATUS_INVALID_VALUE);
+}
+
 INSTANTIATE_TEST_SUITE_P(
-    Ssyrk, SsyrkArch35Test,
-    ::testing::ValuesIn(GetCasesFromCsv<SsyrkParam>(ReplaceFileExtension2Csv(__FILE__))),
+    Ssyrk, SsyrkTest, ::testing::ValuesIn(GetCasesFromCsv<SsyrkParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<SsyrkParam>);
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -96,7 +158,7 @@ static bool PrepareHostData(const SsyrkParam& p, SsyrkHostData& d)
     return true;
 }
 
-TEST_P(SsyrkArch35Test, CsvDriven)
+TEST_P(SsyrkTest, CsvDriven)
 {
     const auto& p = GetParam();
     SsyrkHostData d;
@@ -105,8 +167,7 @@ TEST_P(SsyrkArch35Test, CsvDriven)
     }
 
     aclblasStatus_t ret = aclblasSsyrk_npu(
-        SsyrkArch35Test::handle_, p.uplo, p.trans, p.n, p.k,
-        &p.alpha, d.aPtr, p.lda, &p.beta, d.cPtr, p.ldc);
+        SsyrkTest::handle_, p.uplo, p.trans, p.n, p.k, &p.alpha, d.aPtr, p.lda, &p.beta, d.cPtr, p.ldc);
 
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS || p.n == 0 || d.cPtr == nullptr) {
@@ -114,8 +175,7 @@ TEST_P(SsyrkArch35Test, CsvDriven)
     }
 
     aclblasStatus_t goldenRet = aclblasSsyrk_cpu(
-        SsyrkArch35Test::handle_, p.uplo, p.trans, p.n, p.k,
-        &p.alpha, d.aPtr, p.lda, &p.beta, d.cGoldenPtr, p.ldc);
+        SsyrkTest::handle_, p.uplo, p.trans, p.n, p.k, &p.alpha, d.aPtr, p.lda, &p.beta, d.cGoldenPtr, p.ldc);
     if (goldenRet != ACLBLAS_STATUS_SUCCESS) {
         EXPECT_EQ(goldenRet, ACLBLAS_STATUS_SUCCESS) << "golden computation failed";
         return;

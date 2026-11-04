@@ -458,7 +458,11 @@ INSTANTIATE_TEST_SUITE_P(
 std::filesystem::path EvidenceRoot(const Case& p)
 {
     const char* directory = std::getenv("GEMM_EVIDENCE_DIR");
-    Require(directory != nullptr, "GEMM_EVIDENCE_DIR is required");
+    if (directory == nullptr) {
+        // Standard CI/smoke runs provide no evidence directory: capture no
+        // evidence, but keep every numerical and guard verification active.
+        return {};
+    }
     Require(
         !p.caseName.empty() &&
             p.caseName.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") ==
@@ -480,6 +484,8 @@ void FreezeMatrix(const std::filesystem::path& path, const Matrices& matrix)
 
 void FreezeInputs(const std::filesystem::path& root, const Data& data)
 {
+    if (root.empty())
+        return;
     FreezeMatrix(root / "input_a.bin", data.a);
     FreezeMatrix(root / "input_b.bin", data.b);
     FreezeMatrix(root / "initial_c.bin", data.initialC);
@@ -518,7 +524,8 @@ Matrices RunFresh(const CaseRun& x, const Invoke& invoke)
     Require(status == ACLBLAS_STATUS_SUCCESS, "operator status " + std::to_string(status));
     AclCheck(aclrtSynchronizeStream(x.stream_));
     auto output = x.data.readC();
-    WriteMatrices(x.root / "fresh_output.bin", output);
+    if (!x.root.empty())
+        WriteMatrices(x.root / "fresh_output.bin", output);
     x.data.checkGuardsAndPadding(x.p, output);
     x.workspace->checkGuards();
     x.alphaDevice.checkGuards();
@@ -543,7 +550,7 @@ void RunSample(
     AclCheck(aclrtEventElapsedTime(&milliseconds, begin, end));
     auto output = x.data.readC();
     std::string file = "output_0.bin";
-    if (i == 0 || !SameMatrices(first, output)) {
+    if (!x.root.empty() && (i == 0 || !SameMatrices(first, output))) {
         file = "output_" + std::to_string(i) + ".bin";
         WriteMatrices(x.root / file, output);
         if (i == 0)
@@ -564,9 +571,12 @@ template <typename Invoke>
 void RunPerformance(const CaseRun& x, const Invoke& invoke)
 {
     Require(x.p.beta == 0.0f, "performance case must not accumulate across samples");
-    Require(!std::filesystem::exists(x.root / "samples.csv"), "refuse to repeat an existing performance case");
-    std::ofstream samples(x.root / "samples.csv");
-    samples << "index,phase,event_us,api_sync_us,output_file\n";
+    std::ofstream samples;
+    if (!x.root.empty()) {
+        Require(!std::filesystem::exists(x.root / "samples.csv"), "refuse to repeat an existing performance case");
+        samples.open(x.root / "samples.csv");
+        samples << "index,phase,event_us,api_sync_us,output_file\n";
+    }
     Matrices first;
     aclrtEvent begin = nullptr;
     aclrtEvent end = nullptr;
@@ -583,6 +593,8 @@ void RunPerformance(const CaseRun& x, const Invoke& invoke)
 
 void RecordPolicy(const CaseRun& x)
 {
+    if (x.root.empty())
+        return;
     if (x.p.alpha == 1.0f && x.p.beta == 0.0f && x.p.k >= 512 && static_cast<uint64_t>(x.p.m) * x.p.n > 4096U / x.p.k) {
         Require(reinterpret_cast<uint64_t>(x.workspace->data()) % 64 == 0, "policy diagnostic workspace alignment");
         std::vector<uint32_t> flags(static_cast<size_t>(x.p.batchCount) * 16U);
@@ -620,17 +632,22 @@ Matrices LoadGolden(const CaseRun& x)
     } else {
         golden = Golden(x.p, x.data);
     }
-    const auto goldenPath = x.root / "golden.bin";
-    if (std::filesystem::exists(goldenPath)) {
-        Require(SameMatrices(ReadMatrices(goldenPath, x.data.initialC), golden), "immutable Golden identity differs");
-    } else {
-        WriteMatrices(goldenPath, golden);
+    if (!x.root.empty()) {
+        const auto goldenPath = x.root / "golden.bin";
+        if (std::filesystem::exists(goldenPath)) {
+            Require(
+                SameMatrices(ReadMatrices(goldenPath, x.data.initialC), golden), "immutable Golden identity differs");
+        } else {
+            WriteMatrices(goldenPath, golden);
+        }
     }
     return golden;
 }
 
 void VerifySavedOutputs(const CaseRun& x, const Matrices& golden)
 {
+    if (x.root.empty())
+        return;
     const auto samplesPath = x.root / "samples.csv";
     if (std::filesystem::exists(samplesPath)) {
         std::ifstream samples(samplesPath);

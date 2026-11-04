@@ -24,6 +24,7 @@
 #include "csv_loader.h"
 #include "fill.h"
 #include "cherkx_param.h"
+#include "verify_uplo.h"
 #include "cherkx_golden.h"
 #include "cherkx_npu_wrapper.h"
 
@@ -45,7 +46,7 @@
 // 判定实现一律走框架 applyMixedTolerance(ACL_FLOAT) / PrecisionMode::EXACT，不在测试文件内复制
 // 框架阈值做一致性对账（2026-10-29 用户决策：去除本地镜像+溯源自检，框架 verify.h 为唯一权威）。
 // ═══════════════════════════════════════════════════════════════════════════════
-static constexpr double kSpecDiagImagAtol = 1.52587890625e-5;  // 2^-16（区域③真实判定阈值，非框架镜像）
+static constexpr double kSpecDiagImagAtol = 1.52587890625e-5; // 2^-16（区域③真实判定阈值，非框架镜像）
 
 static const char* const kSpecSrcRegion1 =
     "测试方案§2.3区域①←需求§2.6;精度判定以框架verify.h为唯一权威"
@@ -57,8 +58,7 @@ static const char* const kSpecSrcRegion5 = "测试方案§2.3区域⑤←需求�
 static const char* const kSpecSrcRetCode = "测试方案§2.3返回值行←需求§2.3/§4差距表/O2决议";
 // 方案 §2.3「辅助交叉核对」表取值为**无**（O5 决议：不引入第二套统计口径，避免判定歧义），
 // 故本文件不自建宽松容差；台账 crosscheck 列如实记录该事实，不存在「两套结论分叉」的可能。
-static const char* const kCrossCheckState =
-    "NOT_ENABLED(方案§2.3辅助交叉核对=无;O5不引入第二套口径)";
+static const char* const kCrossCheckState = "NOT_ENABLED(方案§2.3辅助交叉核对=无;O5不引入第二套口径)";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 权威精度断言台账（PM 口径：每条用例产出「输出张量 / 判定指标 / 实测值 / 阈值 / 结论」并随结果落盘）
@@ -126,19 +126,18 @@ static std::ofstream& CherkxLedgerStream()
 }
 
 // 台账单行：输出张量 / 判定指标 / 实测值 / 阈值 / 结论（+ 交叉核对状态 / 权威源出处 / 备注）
-static void CherkxLedgerRecord(const std::string& caseName, const std::string& tensor,
-    const std::string& metric, const std::string& measured, const std::string& threshold,
-    bool pass, const std::string& source, const std::string& note = "")
+static void CherkxLedgerRecord(
+    const std::string& caseName, const std::string& tensor, const std::string& metric, const std::string& measured,
+    const std::string& threshold, bool pass, const std::string& source, const std::string& note = "")
 {
     std::ofstream& stream = CherkxLedgerStream();
     if (!stream.is_open()) {
         return;
     }
-    stream << CherkxQuote(CherkxRunId()) << ',' << CherkxQuote(caseName) << ','
-           << CherkxQuote(tensor) << ',' << CherkxQuote(metric) << ','
-           << CherkxQuote(measured) << ',' << CherkxQuote(threshold) << ','
-           << (pass ? "PASS" : "FAIL") << ',' << CherkxQuote(kCrossCheckState) << ','
-           << CherkxQuote(source) << ',' << CherkxQuote(note) << '\n';
+    stream << CherkxQuote(CherkxRunId()) << ',' << CherkxQuote(caseName) << ',' << CherkxQuote(tensor) << ','
+           << CherkxQuote(metric) << ',' << CherkxQuote(measured) << ',' << CherkxQuote(threshold) << ','
+           << (pass ? "PASS" : "FAIL") << ',' << CherkxQuote(kCrossCheckState) << ',' << CherkxQuote(source) << ','
+           << CherkxQuote(note) << '\n';
     stream.flush();
 }
 
@@ -199,8 +198,8 @@ static CherkxRegionMetrics CherkxMeasureExact(const std::vector<float>& out, con
         if (!equal) {
             m.failCount++;
             if (std::isfinite(out[i]) && std::isfinite(gold[i])) {
-                m.maxAbsErr = std::max(m.maxAbsErr,
-                    std::abs(static_cast<double>(out[i]) - static_cast<double>(gold[i])));
+                m.maxAbsErr =
+                    std::max(m.maxAbsErr, std::abs(static_cast<double>(out[i]) - static_cast<double>(gold[i])));
             }
         }
     }
@@ -213,16 +212,16 @@ static std::string CherkxFmtMixed(const CherkxRegionMetrics& m)
     // %.6f → fixed(6)；%.6e → scientific(6)；%zu → 整型插入（不受浮点格式影响）
     std::ostringstream oss;
     oss << "matched_ratio=" << std::fixed << std::setprecision(6) << m.matchedRatio
-        << ";max_abs_err=" << std::scientific << std::setprecision(6) << m.maxAbsErr
-        << ";fail=" << m.failCount << "/" << m.count;
+        << ";max_abs_err=" << std::scientific << std::setprecision(6) << m.maxAbsErr << ";fail=" << m.failCount << "/"
+        << m.count;
     return oss.str();
 }
 
 static std::string CherkxFmtExact(const CherkxRegionMetrics& m)
 {
     std::ostringstream oss;
-    oss << "mismatch=" << m.failCount << "/" << m.count
-        << ";max_abs_diff=" << std::scientific << std::setprecision(6) << m.maxAbsErr;
+    oss << "mismatch=" << m.failCount << "/" << m.count << ";max_abs_diff=" << std::scientific << std::setprecision(6)
+        << m.maxAbsErr;
     return oss.str();
 }
 
@@ -234,45 +233,18 @@ static std::string CherkxFmtExact(const CherkxRegionMetrics& m)
 //   herk only checks it when beta==0 (relying on anti-symmetry).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Collect uplo / non-uplo element pairs from the NPU output and golden buffers.
-// `isUplo` follows the BLAS uplo convention: UPPER ⇒ i <= j, LOWER ⇒ i >= j.
+// Collect uplo / non-uplo element pairs from the NPU output and golden buffers
+// via the shared CollectUploNonUploElementsT<float> (test/utils/verify_uplo.h).
 // `goldPtr` doubles as the "input old" reference for the non-uplo triangle because
 // the golden restores the non-uplo triangle to originalC via RestoreNonUploTriangleComplex.
-template <typename Param>
-static inline void CollectUploNonUploElements(
-    const Param& p, const aclblasComplex* cPtr, const aclblasComplex* goldPtr,
-    std::vector<float>& npuUploRe, std::vector<float>& npuUploIm,
-    std::vector<float>& goldUploRe, std::vector<float>& goldUploIm,
-    std::vector<float>& npuNonRe, std::vector<float>& npuNonIm,
-    std::vector<float>& oldNonRe, std::vector<float>& oldNonIm)
-{
-    for (int j = 0; j < p.n; j++) {
-        for (int i = 0; i < p.n; i++) {
-            size_t idx = static_cast<size_t>(i) + static_cast<size_t>(j) * p.ldc;
-            bool isUplo = (p.uplo == ACLBLAS_UPPER) ? (i <= j) : (i >= j);
-            if (isUplo) {
-                npuUploRe.push_back(cPtr[idx].real);
-                npuUploIm.push_back(cPtr[idx].imag);
-                goldUploRe.push_back(goldPtr[idx].real);
-                goldUploIm.push_back(goldPtr[idx].imag);
-            } else {
-                npuNonRe.push_back(cPtr[idx].real);
-                npuNonIm.push_back(cPtr[idx].imag);
-                oldNonRe.push_back(goldPtr[idx].real);
-                oldNonIm.push_back(goldPtr[idx].imag);
-            }
-        }
-    }
-}
 
 // Collect the ldc padding region (rows n..ldc-1 of each of the n columns) — 区域⑤.
 // Reference is the host pre-fill snapshot: padding must never be written nor memset
 // （既有缺陷：ldc>n 时逐列只清 n 个 active 行，padding 区须保持预填值）。
 template <typename Param>
 static inline void CollectPaddingElements(
-    const Param& p, const aclblasComplex* cPtr, const aclblasComplex* prefillPtr,
-    std::vector<float>& npuPadRe, std::vector<float>& npuPadIm,
-    std::vector<float>& oldPadRe, std::vector<float>& oldPadIm)
+    const Param& p, const aclblasComplex* cPtr, const aclblasComplex* prefillPtr, std::vector<float>& npuPadRe,
+    std::vector<float>& npuPadIm, std::vector<float>& oldPadRe, std::vector<float>& oldPadIm)
 {
     if (p.ldc <= p.n) {
         return;
@@ -303,25 +275,26 @@ static inline void CherkxRecordEmptyRegion(
 
 // 区域①：uplo 三角混合容差（正常路径 α≠0 且 k>0）——real / imag 分别判定。
 static inline void VerifyUploPrecision(
-    const std::string& caseName,
-    const std::vector<float>& npuUploRe, const std::vector<float>& goldUploRe,
+    const std::string& caseName, const std::vector<float>& npuUploRe, const std::vector<float>& goldUploRe,
     const std::vector<float>& npuUploIm, const std::vector<float>& goldUploIm)
 {
     VerifyConfig cfgRe;
     applyMixedTolerance(cfgRe, ACL_FLOAT, goldUploRe.data(), goldUploRe.size());
-    const bool passRe = Verifier::verifyVector(npuUploRe.data(), goldUploRe.data(), goldUploRe.size(), 1, cfgRe,
-        caseName + "_uplo_real");
+    const bool passRe = Verifier::verifyVector(
+        npuUploRe.data(), goldUploRe.data(), goldUploRe.size(), 1, cfgRe, caseName + "_uplo_real");
     const CherkxRegionMetrics mRe = CherkxMeasureMixed(npuUploRe, goldUploRe, cfgRe);
-    CherkxLedgerRecord(caseName, "C_uplo_triangle.real", "mixed_tolerance(atol+rtol*|gold|,matched_ratio,max_abs_err)",
+    CherkxLedgerRecord(
+        caseName, "C_uplo_triangle.real", "mixed_tolerance(atol+rtol*|gold|,matched_ratio,max_abs_err)",
         CherkxFmtMixed(mRe), kThresholdMixed, passRe, kSpecSrcRegion1);
     EXPECT_TRUE(passRe);
 
     VerifyConfig cfgIm;
     applyMixedTolerance(cfgIm, ACL_FLOAT, goldUploIm.data(), goldUploIm.size());
-    const bool passIm = Verifier::verifyVector(npuUploIm.data(), goldUploIm.data(), goldUploIm.size(), 1, cfgIm,
-        caseName + "_uplo_imag");
+    const bool passIm = Verifier::verifyVector(
+        npuUploIm.data(), goldUploIm.data(), goldUploIm.size(), 1, cfgIm, caseName + "_uplo_imag");
     const CherkxRegionMetrics mIm = CherkxMeasureMixed(npuUploIm, goldUploIm, cfgIm);
-    CherkxLedgerRecord(caseName, "C_uplo_triangle.imag", "mixed_tolerance(atol+rtol*|gold|,matched_ratio,max_abs_err)",
+    CherkxLedgerRecord(
+        caseName, "C_uplo_triangle.imag", "mixed_tolerance(atol+rtol*|gold|,matched_ratio,max_abs_err)",
         CherkxFmtMixed(mIm), kThresholdMixed, passIm, kSpecSrcRegion1);
     EXPECT_TRUE(passIm);
 }
@@ -329,84 +302,85 @@ static inline void VerifyUploPrecision(
 // 区域④：快路径（α 复数零 或 k==0）uplo 三角 bit-exact —— 设备与 golden 均为单次 FP32
 // 乘法/拷贝，bit-exact 可判（对齐 ssymm `alpha==0 → EXACT` 范式）。
 static inline void VerifyUploPrecisionExact(
-    const std::string& caseName,
-    const std::vector<float>& npuUploRe, const std::vector<float>& goldUploRe,
+    const std::string& caseName, const std::vector<float>& npuUploRe, const std::vector<float>& goldUploRe,
     const std::vector<float>& npuUploIm, const std::vector<float>& goldUploIm)
 {
     VerifyConfig cfgRe;
     cfgRe.mode = PrecisionMode::EXACT;
-    const bool passRe = Verifier::verifyVector(npuUploRe.data(), goldUploRe.data(), goldUploRe.size(), 1, cfgRe,
-        caseName + "_uplo_real_fastpath_exact");
+    const bool passRe = Verifier::verifyVector(
+        npuUploRe.data(), goldUploRe.data(), goldUploRe.size(), 1, cfgRe, caseName + "_uplo_real_fastpath_exact");
     const CherkxRegionMetrics mRe = CherkxMeasureExact(npuUploRe, goldUploRe);
-    CherkxLedgerRecord(caseName, "C_uplo_triangle.real(fastpath)", "bit_exact",
-        CherkxFmtExact(mRe), kThresholdExact, passRe, kSpecSrcRegion4);
+    CherkxLedgerRecord(
+        caseName, "C_uplo_triangle.real(fastpath)", "bit_exact", CherkxFmtExact(mRe), kThresholdExact, passRe,
+        kSpecSrcRegion4);
     EXPECT_TRUE(passRe);
 
     VerifyConfig cfgIm;
     cfgIm.mode = PrecisionMode::EXACT;
-    const bool passIm = Verifier::verifyVector(npuUploIm.data(), goldUploIm.data(), goldUploIm.size(), 1, cfgIm,
-        caseName + "_uplo_imag_fastpath_exact");
+    const bool passIm = Verifier::verifyVector(
+        npuUploIm.data(), goldUploIm.data(), goldUploIm.size(), 1, cfgIm, caseName + "_uplo_imag_fastpath_exact");
     const CherkxRegionMetrics mIm = CherkxMeasureExact(npuUploIm, goldUploIm);
-    CherkxLedgerRecord(caseName, "C_uplo_triangle.imag(fastpath)", "bit_exact",
-        CherkxFmtExact(mIm), kThresholdExact, passIm, kSpecSrcRegion4);
+    CherkxLedgerRecord(
+        caseName, "C_uplo_triangle.imag(fastpath)", "bit_exact", CherkxFmtExact(mIm), kThresholdExact, passIm,
+        kSpecSrcRegion4);
     EXPECT_TRUE(passIm);
 }
 
 // 区域②：非 uplo 三角必须等于输入旧值（EXACT，验证未被污染）。
 static inline void VerifyNonUploExact(
-    const std::string& caseName,
-    const std::vector<float>& npuNonRe, const std::vector<float>& oldNonRe,
+    const std::string& caseName, const std::vector<float>& npuNonRe, const std::vector<float>& oldNonRe,
     const std::vector<float>& npuNonIm, const std::vector<float>& oldNonIm)
 {
     if (npuNonRe.empty()) {
-        CherkxRecordEmptyRegion(caseName, "C_non_uplo_triangle.real+imag", "bit_exact_vs_originalC",
-            kSpecSrcRegion2);
+        CherkxRecordEmptyRegion(caseName, "C_non_uplo_triangle.real+imag", "bit_exact_vs_originalC", kSpecSrcRegion2);
         return;
     }
     VerifyConfig cfgNonRe;
     cfgNonRe.mode = PrecisionMode::EXACT;
-    const bool passRe = Verifier::verifyVector(npuNonRe.data(), oldNonRe.data(), npuNonRe.size(), 1, cfgNonRe,
-        caseName + "_nonuplo_real");
+    const bool passRe = Verifier::verifyVector(
+        npuNonRe.data(), oldNonRe.data(), npuNonRe.size(), 1, cfgNonRe, caseName + "_nonuplo_real");
     const CherkxRegionMetrics mRe = CherkxMeasureExact(npuNonRe, oldNonRe);
-    CherkxLedgerRecord(caseName, "C_non_uplo_triangle.real", "bit_exact_vs_originalC",
-        CherkxFmtExact(mRe), kThresholdExact, passRe, kSpecSrcRegion2);
+    CherkxLedgerRecord(
+        caseName, "C_non_uplo_triangle.real", "bit_exact_vs_originalC", CherkxFmtExact(mRe), kThresholdExact, passRe,
+        kSpecSrcRegion2);
     EXPECT_TRUE(passRe);
 
     VerifyConfig cfgNonIm;
     cfgNonIm.mode = PrecisionMode::EXACT;
-    const bool passIm = Verifier::verifyVector(npuNonIm.data(), oldNonIm.data(), npuNonIm.size(), 1, cfgNonIm,
-        caseName + "_nonuplo_imag");
+    const bool passIm = Verifier::verifyVector(
+        npuNonIm.data(), oldNonIm.data(), npuNonIm.size(), 1, cfgNonIm, caseName + "_nonuplo_imag");
     const CherkxRegionMetrics mIm = CherkxMeasureExact(npuNonIm, oldNonIm);
-    CherkxLedgerRecord(caseName, "C_non_uplo_triangle.imag", "bit_exact_vs_originalC",
-        CherkxFmtExact(mIm), kThresholdExact, passIm, kSpecSrcRegion2);
+    CherkxLedgerRecord(
+        caseName, "C_non_uplo_triangle.imag", "bit_exact_vs_originalC", CherkxFmtExact(mIm), kThresholdExact, passIm,
+        kSpecSrcRegion2);
     EXPECT_TRUE(passIm);
 }
 
 // 区域⑤：ldc padding 区（ldc>n）必须与 host 预填快照 bit-exact（不得被写/memset 触碰）。
 static inline void VerifyLdcPaddingExact(
-    const std::string& caseName,
-    const std::vector<float>& npuPadRe, const std::vector<float>& oldPadRe,
+    const std::string& caseName, const std::vector<float>& npuPadRe, const std::vector<float>& oldPadRe,
     const std::vector<float>& npuPadIm, const std::vector<float>& oldPadIm)
 {
     if (npuPadRe.empty()) {
-        CherkxRecordEmptyRegion(caseName, "C_ldc_padding.real+imag", "bit_exact_vs_host_prefill",
-            kSpecSrcRegion5);
+        CherkxRecordEmptyRegion(caseName, "C_ldc_padding.real+imag", "bit_exact_vs_host_prefill", kSpecSrcRegion5);
         return;
     }
     VerifyConfig cfg;
     cfg.mode = PrecisionMode::EXACT;
-    const bool passRe = Verifier::verifyVector(npuPadRe.data(), oldPadRe.data(), npuPadRe.size(), 1, cfg,
-        caseName + "_ldc_padding_real");
+    const bool passRe = Verifier::verifyVector(
+        npuPadRe.data(), oldPadRe.data(), npuPadRe.size(), 1, cfg, caseName + "_ldc_padding_real");
     const CherkxRegionMetrics mRe = CherkxMeasureExact(npuPadRe, oldPadRe);
-    CherkxLedgerRecord(caseName, "C_ldc_padding.real", "bit_exact_vs_host_prefill",
-        CherkxFmtExact(mRe), kThresholdExact, passRe, kSpecSrcRegion5);
+    CherkxLedgerRecord(
+        caseName, "C_ldc_padding.real", "bit_exact_vs_host_prefill", CherkxFmtExact(mRe), kThresholdExact, passRe,
+        kSpecSrcRegion5);
     EXPECT_TRUE(passRe);
 
-    const bool passIm = Verifier::verifyVector(npuPadIm.data(), oldPadIm.data(), npuPadIm.size(), 1, cfg,
-        caseName + "_ldc_padding_imag");
+    const bool passIm = Verifier::verifyVector(
+        npuPadIm.data(), oldPadIm.data(), npuPadIm.size(), 1, cfg, caseName + "_ldc_padding_imag");
     const CherkxRegionMetrics mIm = CherkxMeasureExact(npuPadIm, oldPadIm);
-    CherkxLedgerRecord(caseName, "C_ldc_padding.imag", "bit_exact_vs_host_prefill",
-        CherkxFmtExact(mIm), kThresholdExact, passIm, kSpecSrcRegion5);
+    CherkxLedgerRecord(
+        caseName, "C_ldc_padding.imag", "bit_exact_vs_host_prefill", CherkxFmtExact(mIm), kThresholdExact, passIm,
+        kSpecSrcRegion5);
     EXPECT_TRUE(passIm);
 }
 
@@ -428,23 +402,23 @@ static inline void VerifyDiagonalImagZero(const Param& p, const aclblasComplex* 
     // ACL_FLOAT atol = 2^-16 ≈ 1.5259e-5（口径表区域③）
     const bool pass = (maxDiagImag <= kSpecDiagImagAtol);
     std::ostringstream oss;
-    oss << "max_abs_imag=" << std::scientific << std::setprecision(6) << maxDiagImag
-        << ";n=" << p.n;
+    oss << "max_abs_imag=" << std::scientific << std::setprecision(6) << maxDiagImag << ";n=" << p.n;
     const std::string measured = oss.str();
-    CherkxLedgerRecord(p.caseName, "C_diagonal.imag", "max_abs_imag<=atol(强制清零语义)", measured,
-        "<=2^-16(1.52587890625e-05)", pass, kSpecSrcRegion3);
+    CherkxLedgerRecord(
+        p.caseName, "C_diagonal.imag", "max_abs_imag<=atol(强制清零语义)", measured, "<=2^-16(1.52587890625e-05)", pass,
+        kSpecSrcRegion3);
     EXPECT_LE(maxDiagImag, kSpecDiagImagAtol)
         << "[" << p.caseName << "] diagonal imag not zero (max=" << maxDiagImag << ")";
 }
 
 // 返回值断言台账（口径表「返回值」行：整数相等）
-static inline void CherkxRecordReturnCode(
-    const std::string& caseName, aclblasStatus_t ret, aclblasStatus_t expect)
+static inline void CherkxRecordReturnCode(const std::string& caseName, aclblasStatus_t ret, aclblasStatus_t expect)
 {
     // %d → std::to_string（纯整数字段）
     const std::string measured = "ret=" + std::to_string(static_cast<int>(ret));
     const std::string threshold = "expect_result=" + std::to_string(static_cast<int>(expect)) + "(整数相等)";
-    CherkxLedgerRecord(caseName, "return_value", "integer_equal", measured, threshold,
+    CherkxLedgerRecord(
+        caseName, "return_value", "integer_equal", measured, threshold,
         static_cast<int>(ret) == static_cast<int>(expect), kSpecSrcRetCode);
 }
 
@@ -479,21 +453,19 @@ static inline void CherkxExpectRegionPartition(
 {
     const size_t active = static_cast<size_t>(p.n) * static_cast<size_t>(p.n);
     const size_t padding = (p.ldc > p.n) ? static_cast<size_t>(p.ldc - p.n) * static_cast<size_t>(p.n) : 0;
-    const bool ok = (uploCount + nonCount == active) && (padCount == padding) &&
-        (active + padding == d.cCount);
+    const bool ok = (uploCount + nonCount == active) && (padCount == padding) && (active + padding == d.cCount);
     // %zu → std::to_string（纯整数字段）
     const std::string measured = "uplo+nonuplo=" + std::to_string(uploCount + nonCount) +
-        ";active(n*n)=" + std::to_string(active) + ";padding=" + std::to_string(padCount) +
-        ";pad_expect=" + std::to_string(padding) + ";cCount=" + std::to_string(d.cCount);
-    CherkxLedgerRecord(p.caseName, "region_partition_selfcheck", "四区域元素数覆盖 C 缓冲区(ldc*n)",
-        measured, "uplo+nonuplo==n*n && padding==(ldc-n)*n && 合计==cCount", ok,
-        "测试方案§2.3（四区域口径的划分自洽前提）");
+                                 ";active(n*n)=" + std::to_string(active) + ";padding=" + std::to_string(padCount) +
+                                 ";pad_expect=" + std::to_string(padding) + ";cCount=" + std::to_string(d.cCount);
+    CherkxLedgerRecord(
+        p.caseName, "region_partition_selfcheck", "四区域元素数覆盖 C 缓冲区(ldc*n)", measured,
+        "uplo+nonuplo==n*n && padding==(ldc-n)*n && 合计==cCount", ok, "测试方案§2.3（四区域口径的划分自洽前提）");
     EXPECT_TRUE(ok) << "[" << p.caseName << "] 区域划分不自洽，四区域口径未完整覆盖 C 缓冲区";
 }
 
 template <typename Param>
-static inline void VerifyUploTriangleComplex(
-    const Param& p, const CherkxHostData& d, bool fastPath)
+static inline void VerifyUploTriangleComplex(const Param& p, const CherkxHostData& d, bool fastPath)
 {
     if (p.n <= 0) {
         return;
@@ -501,9 +473,8 @@ static inline void VerifyUploTriangleComplex(
 
     std::vector<float> npuUploRe, npuUploIm, goldUploRe, goldUploIm;
     std::vector<float> npuNonRe, npuNonIm, oldNonRe, oldNonIm;
-    CollectUploNonUploElements(p, d.cPtr, d.cGoldenPtr,
-        npuUploRe, npuUploIm, goldUploRe, goldUploIm,
-        npuNonRe, npuNonIm, oldNonRe, oldNonIm);
+    CollectUploNonUploElementsT<Param, float, aclblasComplex>(
+        p, d.cPtr, d.cGoldenPtr, npuUploRe, npuUploIm, goldUploRe, goldUploIm, npuNonRe, npuNonIm, oldNonRe, oldNonIm);
 
     std::vector<float> npuPadRe, npuPadIm, oldPadRe, oldPadIm;
     CollectPaddingElements(p, d.cPtr, d.originalCPtr, npuPadRe, npuPadIm, oldPadRe, oldPadIm);
@@ -534,8 +505,7 @@ static inline bool CherkxIsFastPath(const aclblasComplex& alpha, int k)
 // Test fixture
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class CherkxArch35Test : public BlasTest<CherkxParam> {
-};
+class CherkxTest : public BlasTest<CherkxParam> {};
 
 // ── stream 健康探针（TEST_F 专用，超出 CSV 统一校验能力）──
 // 在同 stream 追加 probe 任务（aclrtMemsetAsync 到临时 device buffer）并同步：
@@ -551,28 +521,28 @@ static void CherkxExpectStreamHealthy(aclrtStream stream, const std::string& cas
     const bool pass = (memsetRet == ACL_SUCCESS) && (syncRet == ACL_SUCCESS);
     // %d → std::to_string（纯整数字段）
     const std::string measured = "memsetAsync=" + std::to_string(static_cast<int>(memsetRet)) +
-        ";syncStream=" + std::to_string(static_cast<int>(syncRet));
-    CherkxLedgerRecord(caseName, "stream_health", "probe_aclrtMemsetAsync+aclrtSynchronizeStream",
-        measured, "ACL_SUCCESS(0)", pass, "测试方案§5.3 TEST_F 断言要点②（S-S2/S-S3）");
+                                 ";syncStream=" + std::to_string(static_cast<int>(syncRet));
+    CherkxLedgerRecord(
+        caseName, "stream_health", "probe_aclrtMemsetAsync+aclrtSynchronizeStream", measured, "ACL_SUCCESS(0)", pass,
+        "测试方案§5.3 TEST_F 断言要点②（S-S2/S-S3）");
     EXPECT_EQ(memsetRet, ACL_SUCCESS) << "[" << caseName << "] stream 已被毒化（probe memsetAsync 失败）";
     EXPECT_EQ(syncRet, ACL_SUCCESS) << "[" << caseName << "] stream 已被毒化（probe sync 失败）";
     aclrtFree(probe);
 }
 
 // ── TEST_F 1/4: null handle（既有保留，S-E1）──
-TEST_F(CherkxArch35Test, NullHandle)
+TEST_F(CherkxTest, NullHandle)
 {
     const aclblasComplex alpha{1.0f, 0.0f};
     const float beta = 0.0f;
     aclblasStatus_t ret = aclblasCherkx_npu(
-        nullptr, ACLBLAS_UPPER, ACLBLAS_OP_N, 4, 4,
-        &alpha, nullptr, 4, nullptr, 4, &beta, nullptr, 4);
+        nullptr, ACLBLAS_UPPER, ACLBLAS_OP_N, 4, 4, &alpha, nullptr, 4, nullptr, 4, &beta, nullptr, 4);
     CherkxRecordReturnCode("TEST_F_NullHandle", ret, ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_HANDLE_IS_NULLPTR));
 }
 
 // ── TEST_F 2/4: β==0 + C==nullptr（Host 标量）→ SUCCESS 且不发 kernel、stream 健康（S-S3）──
-TEST_F(CherkxArch35Test, NullCBetaZero_NoKernelLaunch)
+TEST_F(CherkxTest, NullCBetaZero_NoKernelLaunch)
 {
     constexpr int dim = 8;
     const std::string caseName = "TEST_F_NullCBetaZero_NoKernelLaunch";
@@ -582,17 +552,17 @@ TEST_F(CherkxArch35Test, NullCBetaZero_NoKernelLaunch)
     const float beta = 0.0f;
 
     aclblasStatus_t ret = aclblasCherkx_npu(
-        CherkxArch35Test::handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, dim, dim,
-        &alpha, aHost.data(), dim, bHost.data(), dim, &beta, nullptr, dim);
+        CherkxTest::handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, dim, dim, &alpha, aHost.data(), dim, bHost.data(), dim, &beta,
+        nullptr, dim);
     CherkxRecordReturnCode(caseName, ret, ACLBLAS_STATUS_SUCCESS);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_SUCCESS));
-    CherkxExpectStreamHealthy(CherkxArch35Test::stream_, caseName);
+    CherkxExpectStreamHealthy(CherkxTest::stream_, caseName);
 }
 
 // ── TEST_F 3/4: α/β 双 Device + β==0 + C==nullptr → SUCCESS（host D2H 读回真值后分支，终态语义）──
 // α/β 须同置 Device：(H,D) 混合会于解引用前被拒绝 INVALID_VALUE，与期望 SUCCESS 矛盾
 // 且到不了 β 读回分支（CP2.1 第 2/3 轮 R1b 修正）。
-TEST_F(CherkxArch35Test, DeviceBetaZeroNullC_NoKernelLaunch)
+TEST_F(CherkxTest, DeviceBetaZeroNullC_NoKernelLaunch)
 {
     constexpr int dim = 8;
     const std::string caseName = "TEST_F_DeviceBetaZeroNullC_NoKernelLaunch";
@@ -602,18 +572,18 @@ TEST_F(CherkxArch35Test, DeviceBetaZeroNullC_NoKernelLaunch)
     const float beta = 0.0f;
 
     aclblasStatus_t ret = aclblasCherkx_npu(
-        CherkxArch35Test::handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, dim, dim,
-        &alpha, aHost.data(), dim, bHost.data(), dim, &beta, nullptr, dim,
+        CherkxTest::handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, dim, dim, &alpha, aHost.data(), dim, bHost.data(), dim, &beta,
+        nullptr, dim,
         /*nullAlpha=*/false, /*nullBeta=*/false, /*alphaOnDevice=*/true, /*betaOnDevice=*/true);
     CherkxRecordReturnCode(caseName, ret, ACLBLAS_STATUS_SUCCESS);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_SUCCESS));
-    CherkxExpectStreamHealthy(CherkxArch35Test::stream_, caseName);
+    CherkxExpectStreamHealthy(CherkxTest::stream_, caseName);
 }
 
 // ── TEST_F 4/4: α/β 双 Device + α≠0 + A==nullptr → INVALID_VALUE（S-E10，禁「Device 标量猜测语义」的 α 侧反例）──
 // host 必须 D2H 读回 α 真值后按 α≠0 校验 A 非空，禁止「Device α + null A 就假设 α==0」的猜测语义。
 // β 同置 Device：(D,H) 混合会于解引用前被拒绝，返回码碰巧一致但目标验证点不可达（R1c 修正）。
-TEST_F(CherkxArch35Test, DeviceAlphaNonZeroNullA)
+TEST_F(CherkxTest, DeviceAlphaNonZeroNullA)
 {
     constexpr int dim = 8;
     const std::string caseName = "TEST_F_DeviceAlphaNonZeroNullA";
@@ -623,17 +593,29 @@ TEST_F(CherkxArch35Test, DeviceAlphaNonZeroNullA)
     const float beta = 0.0f;
 
     aclblasStatus_t ret = aclblasCherkx_npu(
-        CherkxArch35Test::handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, dim, dim,
-        &alpha, nullptr, dim, bHost.data(), dim, &beta, cHost.data(), dim,
+        CherkxTest::handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, dim, dim, &alpha, nullptr, dim, bHost.data(), dim, &beta,
+        cHost.data(), dim,
         /*nullAlpha=*/false, /*nullBeta=*/false, /*alphaOnDevice=*/true, /*betaOnDevice=*/true);
     CherkxRecordReturnCode(caseName, ret, ACLBLAS_STATUS_INVALID_VALUE);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_INVALID_VALUE));
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    Cherkx, CherkxArch35Test,
-    ::testing::ValuesIn(GetCasesFromCsv<CherkxParam>(ReplaceFileExtension2Csv(__FILE__))),
-    PrintCaseInfoString<CherkxParam>);
+// ST CSV keeps precision/interface cases only; the white-box (TC_WB) cases
+// live in a separate _wb CSV loaded under CHERKX_FULL_REGRESSION=1 (issue
+// #755 delivery boundary).
+static std::vector<CherkxParam> LoadCherkxCases()
+{
+    const std::string csvPath = ReplaceFileExtension2Csv(__FILE__);
+    std::vector<CherkxParam> cases = GetCasesFromCsv<CherkxParam>(csvPath);
+    if (std::getenv("CHERKX_FULL_REGRESSION") != nullptr) {
+        const std::string wbPath = csvPath.substr(0U, csvPath.size() - 4U) + "_wb.csv";
+        std::vector<CherkxParam> wb = GetCasesFromCsv<CherkxParam>(wbPath);
+        cases.insert(cases.end(), wb.begin(), wb.end());
+    }
+    return cases;
+}
+
+INSTANTIATE_TEST_SUITE_P(Cherkx, CherkxTest, ::testing::ValuesIn(LoadCherkxCases()), PrintCaseInfoString<CherkxParam>);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Host data preparation
@@ -706,7 +688,7 @@ static bool PrepareHostData(const CherkxParam& p, CherkxHostData& d)
 //   1. Generate host data  2. Run NPU  3. Check return code
 //   4. Run CPU golden       5. Verify precision（四区域口径 + padding 保护）
 // ═══════════════════════════════════════════════════════════════════════════════
-TEST_P(CherkxArch35Test, CsvDriven)
+TEST_P(CherkxTest, CsvDriven)
 {
     const auto& p = GetParam();
     CherkxHostData d;
@@ -719,8 +701,7 @@ TEST_P(CherkxArch35Test, CsvDriven)
     // nullAlpha/nullBeta 由 wrapper 转发 nullptr；alphaOnDevice/betaOnDevice 透传指针模式。
     const aclblasComplex alpha{p.alphaReal, p.alphaImag};
     aclblasStatus_t ret = aclblasCherkx_npu(
-        CherkxArch35Test::handle_, p.uplo, p.trans, p.n, p.k,
-        &alpha, d.aPtr, p.lda, d.bPtr, p.ldb, &p.beta, d.cPtr, p.ldc,
+        CherkxTest::handle_, p.uplo, p.trans, p.n, p.k, &alpha, d.aPtr, p.lda, d.bPtr, p.ldb, &p.beta, d.cPtr, p.ldc,
         p.nullAlpha, p.nullBeta, p.alphaOnDevice, p.betaOnDevice);
 
     CherkxRecordReturnCode(p.caseName, ret, p.expectResult);
@@ -733,9 +714,8 @@ TEST_P(CherkxArch35Test, CsvDriven)
     // expectResult=INVALID_VALUE and returned above). originalC feeds the restore.
     // golden 一律按 Host 语义解引用标量真值（指针位置是 NPU 侧被测行为，golden 不感知）。
     aclblasStatus_t goldenRet = aclblasCherkx_cpu(
-        CherkxArch35Test::handle_, p.uplo, p.trans, p.n, p.k,
-        &alpha, d.aPtr, p.lda, d.bPtr, p.ldb, &p.beta,
-        d.cGoldenPtr, p.ldc, d.originalCPtr);
+        CherkxTest::handle_, p.uplo, p.trans, p.n, p.k, &alpha, d.aPtr, p.lda, d.bPtr, p.ldb, &p.beta, d.cGoldenPtr,
+        p.ldc, d.originalCPtr);
     if (goldenRet != ACLBLAS_STATUS_SUCCESS) {
         EXPECT_EQ(goldenRet, ACLBLAS_STATUS_SUCCESS) << "golden computation failed";
         return;

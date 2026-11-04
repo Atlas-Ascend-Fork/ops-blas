@@ -63,12 +63,12 @@ aclblasStatus_t aclblasSsyrkx(
 | trans | 输入 | aclblasOperation_t | 指定 A/B 是否转置：ACLBLAS_OP_N("N")=不转置，ACLBLAS_OP_T("T")=转置，ACLBLAS_OP_C("C")=共轭转置（实数域等价于 OP_T），Host 内存 |
 | n | 输入 | int | 矩阵 C 的行列数，且为 op(A) 的行数和 op(B)^T 的列数，Host 内存 |
 | k | 输入 | int | op(A) 的列数和 op(B)^T 的行数，Host 内存 |
-| alpha | 输入 | const float*（FP32） | 标量缩放因子，不可为 nullptr，Device 内存 |
+| alpha | 输入 | const float*（FP32） | 标量缩放因子，不可为 nullptr，Host 或 Device 内存（按指针位置自动探测，alpha 与 beta 须同为 Host 或同为 Device） |
 | A | 输入 | const float*（FP32） | 输入矩阵 A，列主序存储，Device 内存 |
 | lda | 输入 | int | A 的 leading dimension，Host 内存 |
 | B | 输入 | const float*（FP32） | 输入矩阵 B，列主序存储，Device 内存 |
 | ldb | 输入 | int | B 的 leading dimension，Host 内存 |
-| beta | 输入 | const float*（FP32） | 标量缩放因子，不可为 nullptr，Device 内存 |
+| beta | 输入 | const float*（FP32） | 标量缩放因子，不可为 nullptr，Host 或 Device 内存（按指针位置自动探测，alpha 与 beta 须同为 Host 或同为 Device） |
 | C | 输入/输出 | float*（FP32） | 输入/输出矩阵 C，(N, N) 对称矩阵，列主序存储，仅 uplo 指定的三角部分被更新，Device 内存 |
 | ldc | 输入 | int | C 的 leading dimension，Host 内存 |
 
@@ -86,12 +86,12 @@ aclblasStatus_t aclblasSsyrkx(
 - trans = ACLBLAS_OP_N 时：lda >= max(1, n)，ldb >= max(1, n)
 - trans = ACLBLAS_OP_T 或 ACLBLAS_OP_C 时：lda >= max(1, k)，ldb >= max(1, k)
 - ldc >= max(1, n)
-- 当 n == 0 时，直接返回成功
+- 当 n == 0 时，参数校验（含 alpha/beta 非空、前导维等）仍会执行，校验通过后不启动任何计算，直接返回成功
 - 当 k == 0 或 alpha == 0 时，跳过矩阵乘，仅执行 C = beta * C 的缩放更新（A/B 不被引用）
 
 边界情况处理：
 
-- n = 0 时为合法 no-op，直接返回 ACLBLAS_STATUS_SUCCESS
+- n = 0 时为合法 no-op：参数校验（含 alpha/beta 非空、前导维等）仍会执行，校验通过后不启动任何计算，直接返回 ACLBLAS_STATUS_SUCCESS
 - beta = 0 时 C 的取值无需有效（cuBLAS 契约 "If beta == 0 then C does not have to be a valid input"）：uplo 指定三角不读取 C 旧值做缩放、直接写为新值（含全零），其结果不依赖 C 旧值，C 旧值中的 NaN/Inf 不进入 uplo 三角的结果；但 C 指针仍须有效（n > 0 时非空校验不变），且实现上 C 仍被读取——对角跨越 64×64 块的非 uplo 段按 C_old 原值恒等回写（语义上不修改，该段的 NaN/Inf 原位保留、不扩散到 uplo 三角）
 
 workspace 说明（arch35）：

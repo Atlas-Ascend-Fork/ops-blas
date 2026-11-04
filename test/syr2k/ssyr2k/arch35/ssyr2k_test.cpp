@@ -9,6 +9,7 @@
  */
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -17,45 +18,12 @@
 #include "blas_test.h"
 #include "csv_loader.h"
 #include "ssyr2k_param.h"
+#include "host_scalar_utils.h"
+#include "verify_uplo.h"
 #include "ssyr2k_golden.h"
 #include "ssyr2k_npu_wrapper.h"
 
 class Ssyr2kArch35Test : public BlasTest<Ssyr2kParam> {};
-
-static inline void VerifySsyr2kUploTriangle(
-    const Ssyr2kParam& p, const float* cPtr, const float* goldPtr, size_t cSize)
-{
-    if (cSize == 0) return;
-
-    std::vector<float> npuUplo;
-    std::vector<float> goldenUplo;
-    std::vector<float> npuNonUplo;
-    std::vector<float> goldenNonUplo;
-    for (int j = 0; j < p.n; j++) {
-        for (int i = 0; i < p.n; i++) {
-            size_t idx = static_cast<size_t>(i) + static_cast<size_t>(j) * p.ldc;
-            bool isUplo = (p.uplo == ACLBLAS_UPPER) ? (i <= j) : (i >= j);
-            if (isUplo) {
-                npuUplo.push_back(cPtr[idx]);
-                goldenUplo.push_back(goldPtr[idx]);
-            } else {
-                npuNonUplo.push_back(cPtr[idx]);
-                goldenNonUplo.push_back(goldPtr[idx]);
-            }
-        }
-    }
-
-    VerifyConfig cfg;
-    applyMixedTolerance(cfg, ACL_FLOAT, goldenUplo.data(), goldenUplo.size());
-    EXPECT_TRUE(Verifier::verifyVector(npuUplo.data(), goldenUplo.data(), npuUplo.size(), 1, cfg, p.caseName));
-
-    if (!npuNonUplo.empty()) {
-        VerifyConfig cfgNonUplo;
-        applyMixedTolerance(cfgNonUplo, ACL_FLOAT, goldenNonUplo.data(), goldenNonUplo.size());
-        EXPECT_TRUE(Verifier::verifyVector(npuNonUplo.data(), goldenNonUplo.data(),
-            npuNonUplo.size(), 1, cfgNonUplo, std::string(p.caseName) + "_nonuplo"));
-    }
-}
 
 TEST_F(Ssyr2kArch35Test, NullHandle)
 {
@@ -65,14 +33,78 @@ TEST_F(Ssyr2kArch35Test, NullHandle)
     std::vector<float> b(16, 0.0f);
     std::vector<float> c(16, 0.0f);
     aclblasStatus_t ret = aclblasSsyr2k_npu(
-        nullptr, ACLBLAS_UPPER, ACLBLAS_OP_N, 4, 4,
-        &alpha, a.data(), 4, b.data(), 4, &beta, c.data(), 4);
+        nullptr, ACLBLAS_UPPER, ACLBLAS_OP_N, 4, 4, &alpha, a.data(), 4, b.data(), 4, &beta, c.data(), 4);
     EXPECT_EQ(ret, ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 }
 
+// ── TEST_F: host-scalar alpha/beta accepted (issue #759 SS2K-02) ──
+// The npu wrapper uploads scalars to device, so this calls the public API
+// directly with host-side alpha/beta addresses: they must be dereferenced
+// instead of receiving a misleading error from a failed D2H copy. Host golden
+// for the UPPER triangle: C = alpha*(A*B^T + B*A^T) + beta*C (trans=N).
+static void BuildSsyr2kHostGolden(
+    int n, int k, int lda, int ldb, int ldc, float alpha, float beta, const std::vector<float>& aHost,
+    const std::vector<float>& bHost, const std::vector<float>& cInit, std::vector<float>& golden)
+{
+    golden = cInit;
+    for (int i = 0; i < n; i++) {
+        for (int j = i; j < n; j++) {
+            float acc = 0.0f;
+            for (int t = 0; t < k; t++) {
+                acc += aHost[static_cast<size_t>(t) * lda + i] * bHost[static_cast<size_t>(t) * ldb + j] +
+                       bHost[static_cast<size_t>(t) * ldb + i] * aHost[static_cast<size_t>(t) * lda + j];
+            }
+            const size_t idx = static_cast<size_t>(j) * ldc + i;
+            golden[idx] = alpha * acc + beta * cInit[idx];
+        }
+    }
+}
+
+static bool RunSsyr2kHostScalarShape(aclblasHandle_t handle, aclrtStream stream, int n, int k, int ld)
+{
+    const float alpha = 2.0f;
+    const float beta = 1.5f;
+    std::vector<float> aHost(static_cast<size_t>(ld) * k);
+    std::vector<float> bHost(static_cast<size_t>(ld) * k);
+    std::vector<float> cInit(static_cast<size_t>(ld) * n);
+    host_scalar::FillHostScalarPattern(aHost, bHost, cInit);
+
+    std::vector<float> golden;
+    BuildSsyr2kHostGolden(n, k, ld, ld, ld, alpha, beta, aHost, bHost, cInit, golden);
+
+    return host_scalar::RunOnDevice<float>(
+        stream, aHost.size() * sizeof(float), bHost.size() * sizeof(float), cInit.size() * sizeof(float), aHost.data(),
+        bHost.data(), cInit.data(),
+        [&](const void* dA, const void* dB, void* dC) {
+            return aclblasSsyr2k(
+                handle, ACLBLAS_UPPER, ACLBLAS_OP_N, n, k, &alpha, static_cast<const float*>(dA), ld,
+                static_cast<const float*>(dB), ld, &beta, static_cast<float*>(dC), ld);
+        },
+        [&](const std::vector<float>& cOut) { host_scalar::VerifyUploNear(n, ld, cOut, golden); });
+}
+
+TEST_F(Ssyr2kArch35Test, HostScalarAlphaBeta)
+{
+    ASSERT_TRUE(RunSsyr2kHostScalarShape(handle_, stream_, 4, 3, 4));
+    ASSERT_TRUE(RunSsyr2kHostScalarShape(handle_, stream_, 72, 4, 72));
+}
+
+// ── TEST_F: n=0 still validates scalars (issue #760 SS2K-03) ──
+// Validation runs before the n==0 quick return, so null alpha/beta must yield
+// INVALID_VALUE rather than SUCCESS even for n=0.
+TEST_F(Ssyr2kArch35Test, ZeroDimValidatesScalars)
+{
+    float dummy = 0.0f;
+    EXPECT_EQ(
+        aclblasSsyr2k(handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, 0, 4, nullptr, &dummy, 4, &dummy, 4, &dummy, &dummy, 4),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasSsyr2k(handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, 0, 4, &dummy, &dummy, 4, &dummy, 4, nullptr, &dummy, 4),
+        ACLBLAS_STATUS_INVALID_VALUE);
+}
+
 INSTANTIATE_TEST_SUITE_P(
-    Ssyr2k, Ssyr2kArch35Test,
-    ::testing::ValuesIn(GetCasesFromCsv<Ssyr2kParam>(ReplaceFileExtension2Csv(__FILE__))),
+    Ssyr2k, Ssyr2kArch35Test, ::testing::ValuesIn(GetCasesFromCsv<Ssyr2kParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<Ssyr2kParam>);
 
 TEST_P(Ssyr2kArch35Test, CsvDriven)
@@ -96,24 +128,23 @@ TEST_P(Ssyr2kArch35Test, CsvDriven)
     std::vector<float> cGolden(cHost);
 
     const float* alphaPtr = p.nullAlpha ? nullptr : &p.alpha;
-    const float* betaPtr  = p.nullBeta  ? nullptr : &p.beta;
-    const float* aPtr     = p.nullA ? nullptr : (aHost.empty() ? nullptr : aHost.data());
-    const float* bPtr     = p.nullB ? nullptr : (bHost.empty() ? nullptr : bHost.data());
-    float*       cPtr     = p.nullC ? nullptr : (cHost.empty() ? nullptr : cHost.data());
+    const float* betaPtr = p.nullBeta ? nullptr : &p.beta;
+    const float* aPtr = p.nullA ? nullptr : (aHost.empty() ? nullptr : aHost.data());
+    const float* bPtr = p.nullB ? nullptr : (bHost.empty() ? nullptr : bHost.data());
+    float* cPtr = p.nullC ? nullptr : (cHost.empty() ? nullptr : cHost.data());
 
     // For n <= 0 or k < 0 or other invalid param cases, pass through to operator
     // (npu_wrapper handles these by direct pass-through)
     if (p.n <= 0 || p.k < 0) {
         aclblasStatus_t ret = aclblasSsyr2k_npu(
-            Ssyr2kArch35Test::handle_, p.uplo, p.trans, p.n, p.k,
-            alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc);
+            Ssyr2kArch35Test::handle_, p.uplo, p.trans, p.n, p.k, alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr,
+            p.ldc);
         EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
         return;
     }
 
     aclblasStatus_t ret = aclblasSsyr2k_npu(
-        Ssyr2kArch35Test::handle_, p.uplo, p.trans, p.n, p.k,
-        alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc);
+        Ssyr2kArch35Test::handle_, p.uplo, p.trans, p.n, p.k, alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc);
 
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
         EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
@@ -126,13 +157,13 @@ TEST_P(Ssyr2kArch35Test, CsvDriven)
     float* goldPtr = cGolden.empty() ? nullptr : cGolden.data();
 
     aclblasStatus_t goldenRet = aclblasSsyr2k_cpu(
-        Ssyr2kArch35Test::handle_, p.uplo, p.trans, p.n, p.k,
-        alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, goldPtr, p.ldc);
+        Ssyr2kArch35Test::handle_, p.uplo, p.trans, p.n, p.k, alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, goldPtr,
+        p.ldc);
     if (goldenRet != ACLBLAS_STATUS_SUCCESS) {
         EXPECT_EQ(goldenRet, ACLBLAS_STATUS_SUCCESS) << "golden computation failed";
         return;
     }
 
     const size_t cCount = cSize;
-    VerifySsyr2kUploTriangle(p, cPtr, goldPtr, cCount);
+    VerifyUploTriangle(p, cPtr, goldPtr, cCount);
 }

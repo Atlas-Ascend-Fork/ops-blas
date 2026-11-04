@@ -47,10 +47,10 @@ aclblasStatus_t aclblasSsyrk(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 | trans | 输入 | aclblasOperation_t | A 矩阵转置模式：ACLBLAS_OP_N(111) 不转置、ACLBLAS_OP_T(112) 转置或 ACLBLAS_OP_C(113) 共轭转置（实数域等价于 OP_T），Host 内存 |
 | n | 输入 | int | C 矩阵的阶数，n >= 0，Host 内存 |
 | k | 输入 | int | 归约维度：trans='N' 时为 A 的列数（第二维度），trans='T'/'C' 时为 A 的行数（第一维度），k >= 0，Host 内存 |
-| alpha | 输入 | const float*（FP32） | 标量乘数，不可为 nullptr，Device 内存 |
+| alpha | 输入 | const float*（FP32） | 标量乘数，不可为 nullptr，Host 或 Device 内存（按指针位置自动探测，alpha 与 beta 须同为 Host 或同为 Device） |
 | A | 输入 | const float*（FP32） | 输入矩阵，trans='N' 时维度为 N×K，trans='T' 时维度为 K×N，Device 内存 |
 | lda | 输入 | int | A 矩阵的主维，trans='N' 时 lda >= max(1, n)，trans='T'/'C' 时 lda >= max(1, k)，Host 内存 |
-| beta | 输入 | const float*（FP32） | 标量乘数，不可为 nullptr，Device 内存 |
+| beta | 输入 | const float*（FP32） | 标量乘数，不可为 nullptr，Host 或 Device 内存（按指针位置自动探测，alpha 与 beta 须同为 Host 或同为 Device） |
 | C | 输入/输出 | float*（FP32） | N×N 对称矩阵，输入旧值，输出新值，Device 内存 |
 | ldc | 输入 | int | C 矩阵的主维，ldc >= max(1, n)，Host 内存 |
 
@@ -68,7 +68,7 @@ aclblasStatus_t aclblasSsyrk(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 
 边界情况处理：
 
-- n = 0 时为合法 no-op，直接返回 ACLBLAS_STATUS_SUCCESS
+- n = 0 时为合法 no-op：参数校验（含 alpha/beta 非空、前导维等）仍会执行，校验通过后不启动任何计算，直接返回 ACLBLAS_STATUS_SUCCESS
 - k = 0 或 alpha = 0 时跳过矩阵乘，仅对 uplo 指定三角执行 C = beta * C
 - beta = 0 时 C 的取值无需有效（cuBLAS 契约 "If beta == 0 then C does not have to be a valid input"）：uplo 指定三角不读取 C 旧值做缩放、直接写为新值（含全零），其结果不依赖 C 旧值，C 旧值中的 NaN/Inf 不进入 uplo 三角的结果；但 C 指针仍须有效（n > 0 时非空校验不变），且实现上 C 仍被读取——对角跨越 64×64 块的非 uplo 段按 C_old 原值恒等回写（语义上不修改，该段的 NaN/Inf 原位保留、不扩散到 uplo 三角）
 

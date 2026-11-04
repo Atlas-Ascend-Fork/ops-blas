@@ -94,13 +94,13 @@ arch35（Ascend 950）实现：
 - 输出 C 满足 Hermitian 性质：C[i][j] = conj(C[j][i])，对角线元素虚部精确为零（代数相消），非 uplo 三角与 ldc padding 字节保持不变
 - 异步执行：多个 kernel 全部下发至 handle 绑定的同一 stream，按流语义自动排序，算子内部无需显式同步；调用方读回结果前须自行同步所绑定的 stream（如 `aclrtSynchronizeStream(stream)`，见下方调用示例第 5 步）
 
-测试 CSV 口径：arch22 侧默认 CSV 含前 50 条用例，`CHER2K_FULL_REGRESSION=1` 读取全量 1214 条；arch35 侧为单文件 1203 条（含 200 条 TC_PF 性能用例与 3 条 TC_WB K4 路径锁定用例），性能模式单独读取其中的性能用例。
+测试 CSV 口径：arch22 侧默认 CSV 含前 50 条用例，`CHER2K_FULL_REGRESSION=1` 读取全量 1214 条；arch35 侧主 CSV 为 1000 条精度/接口用例，200 条 TC_PF 性能用例与 3 条 TC_WB K4 路径锁定用例拆分至独立的 `cher2k_perf.csv` / `cher2k_wb.csv`（`CHER2K_FULL_REGRESSION=1` 时追加加载），ST 默认仅执行主 CSV。
 
 #### 返回码
 
 | 返回值 | 含义 |
 |--------|------|
-| ACLBLAS_STATUS_SUCCESS（0） | 成功（含 n=0、(alpha=(0,0) 或 k=0) 且 beta=1 的 quick return，以及 C=nullptr 的无写出 quick return——arch35 为 beta=0，arch22 为零乘积且 beta=0） |
+| ACLBLAS_STATUS_SUCCESS（0） | 成功（含 n=0——仍执行全部参数校验、(alpha=(0,0) 或 k=0) 且 beta=1 的 quick return，以及 C=nullptr 的无写出 quick return——arch35 为 beta=0，arch22 为零乘积且 beta=0） |
 | ACLBLAS_STATUS_HANDLE_IS_NULLPTR（9） | handle 为 nullptr |
 | ACLBLAS_STATUS_INVALID_ENUM（10） | uplo 或 trans 为越界枚举值 |
 | ACLBLAS_STATUS_INVALID_VALUE（3） | trans=OP_T；n<0 或 k<0；lda/ldb/ldc 违反前导维规则；alpha 或 beta 为 nullptr；n>0 且 k>0 时 A 或 B 为 nullptr；n>0 且 beta!=0 时 C 为 nullptr |

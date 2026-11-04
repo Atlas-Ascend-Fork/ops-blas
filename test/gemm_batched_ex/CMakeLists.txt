@@ -12,3 +12,11 @@ ops_blas_add_gtest_tests(${OPS_BLAS} gemm_batched_ex_test)
 
 # Reuse parseAclDataType / physRows / physCols from gemm_ex
 target_include_directories(gemm_batched_ex_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../gemm_ex)
+
+# The arch22 test TU calls host_utils.h inline helpers (GetAicCoreCount /
+# GetAivCoreCount) whose OP_LOGE paths reference dlog symbols; unified_dlog is
+# linked PRIVATE in the main library only, so the test target must link it
+# explicitly (same as cher2k_test).
+if(TARGET gemm_batched_ex_test)
+    target_link_libraries(gemm_batched_ex_test PRIVATE unified_dlog)
+endif()

@@ -1,16 +1,17 @@
 /**
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
- * This program is free software; you can redistribute it and/or modify it under the terms of
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
  * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
- * INCLUDING BUT NOT LIMITED TO, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
 #include <cmath>
 #include <cstdio>
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -24,12 +25,15 @@
 #include "csv_loader.h"
 #include "fill.h"
 #include "cher2k_param.h"
+#include "verify_uplo.h"
 #include "cher2k_golden.h"
 #include "cher2k_npu_wrapper.h"
 #include "cher2k_perf.h"
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // aclblasCher2k CSV-driven precision ST + TC_PF performance branch + host tests
+// (TC_PF/TC_WB rows live in cher2k_perf.csv / cher2k_wb.csv, loaded under
+// CHER2K_FULL_REGRESSION=1)
 // Test plan §6:
 //   §6.1 precision-criterion table — per-output-tensor hard assertions
 //   §6.4 golden parameter mirror (validation-order table replicated row by row)
@@ -384,7 +388,7 @@ inline MixedToleranceResult EvaluateMixedTolerance(
         double ulpLimit = std::max(fixedLimit, 32.0 * getUlpsAt(goldAbs, mantissaBits, emin));
         ApplyMixedTolItem(diff, tolLimit, ulpLimit, failCount, r); // [codecheck issue 2] shared verdict statements
     }
-    FinalizeMixedTolerance(r, count, failCount);                   // [codecheck #8] shared verdict tail
+    FinalizeMixedTolerance(r, count, failCount); // [codecheck #8] shared verdict tail
     return r;
 }
 
@@ -434,7 +438,7 @@ inline MixedToleranceResult EvaluateMixedToleranceDbl(
             std::max(fixedLimit, 32.0 * getUlpsAt(std::abs(static_cast<double>(goldF)), mantissaBits, emin));
         ApplyMixedTolItem(diff, tolLimit, ulpLimit, failCount, r); // [codecheck issue 2] shared verdict statements
     }
-    FinalizeMixedTolerance(r, count, failCount);                   // [codecheck #8] shared verdict tail
+    FinalizeMixedTolerance(r, count, failCount); // [codecheck #8] shared verdict tail
     return r;
 }
 
@@ -488,43 +492,6 @@ inline MixedToleranceResult EvaluateMereMareDbl(
 //   4. non-uplo triangle     : EXACT equality with the old input C (no pollution)
 //   5. ldc padding           : canary 0xCAFEBABE bit-exact (cher2k-specific)
 // ═══════════════════════════════════════════════════════════════════════════════
-
-// [codecheck issue 3] Shared element-collection template: the gold side is parameterized by GoldT --
-// GoldT=float is the original float chain (goldPtr is aclblasComplex*, and both the uplo/non-uplo
-// segments take float values directly), GoldT=double is the original [A' golden dual chain] double
-// chain (goldPtr is aclblasDoubleComplex*, the uplo segment takes double directly and the non-uplo
-// segment takes the float old value via static_cast<float>). The loop body/index/upper-triangle test
-// are preserved verbatim; only the element type of goldPtr[idx].real/.imag follows the GoldT
-// instantiation, and the two instantiations are statement-for-statement equivalent to the original
-// two functions.
-template <typename Param, typename GoldT, typename GoldPtrT>
-static inline void CollectUploNonUploElementsT(
-    const Param& p, const aclblasComplex* cPtr, const GoldPtrT* goldPtr, std::vector<float>& npuUploRe,
-    std::vector<float>& npuUploIm, std::vector<GoldT>& goldUploRe, std::vector<GoldT>& goldUploIm,
-    std::vector<float>& npuNonRe, std::vector<float>& npuNonIm, std::vector<float>& oldNonRe,
-    std::vector<float>& oldNonIm)
-{
-    for (int j = 0; j < p.n; j++) {
-        for (int i = 0; i < p.n; i++) {
-            size_t idx = static_cast<size_t>(i) + static_cast<size_t>(j) * p.ldc;
-            bool isUplo = (p.uplo == ACLBLAS_UPPER) ? (i <= j) : (i >= j);
-            if (isUplo) {
-                npuUploRe.push_back(cPtr[idx].real);
-                npuUploIm.push_back(cPtr[idx].imag);
-                goldUploRe.push_back(goldPtr[idx].real);
-                goldUploIm.push_back(goldPtr[idx].imag);
-            } else {
-                npuNonRe.push_back(cPtr[idx].real);
-                npuNonIm.push_back(cPtr[idx].imag);
-                // Non-uplo: the float old value (same source as the float chain; this segment of the
-                // double golden is an exact up-conversion of the float old value, so the memcmp float
-                // metric is equivalent). For GoldT=float the cast is a no-op.
-                oldNonRe.push_back(static_cast<float>(goldPtr[idx].real));
-                oldNonIm.push_back(static_cast<float>(goldPtr[idx].imag));
-            }
-        }
-    }
-}
 
 // float chain (the main criterion before A'): goldPtr is the float golden, and the non-uplo segment
 // takes the float old value directly.
@@ -867,7 +834,7 @@ struct Cher2kHostData {
     std::vector<aclblasComplex> cHost;
     std::vector<aclblasComplex> cGolden; // [A'] float cross-check chain (original golden, cross columns only)
     std::vector<aclblasComplex> cOld;
-    Cher2kGoldenDbl cGoldenDbl;          // [A'] double main-criterion chain (cblas_zher2k, no round-back to float)
+    Cher2kGoldenDbl cGoldenDbl; // [A'] double main-criterion chain (cblas_zher2k, no round-back to float)
     const aclblasComplex* aPtr = nullptr;
     const aclblasComplex* bPtr = nullptr;
     aclblasComplex* cPtr = nullptr;
@@ -1198,6 +1165,24 @@ TEST_F(Cher2kArch35Test, HostQuickReturnN0)
     RunQuickReturnCase(
         "QuickReturnN0", Cher2kArch35Test::handle_,
         Cfg{ACLBLAS_UPPER, ACLBLAS_OP_N, 0, 4, aclblasComplex{1.0f, 0.0f}, 1.0f});
+}
+
+// n=0 still runs full validation before the quick return (issue #760 C2K-01):
+// null alpha/beta must yield INVALID_VALUE instead of SUCCESS.
+TEST_F(Cher2kArch35Test, HostN0NullScalarsInvalid)
+{
+    aclblasComplex dummyC{1.0f, 1.0f};
+    float dummyF = 1.0f;
+    EXPECT_EQ(
+        aclblasCher2k(
+            Cher2kArch35Test::handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, 0, 4, nullptr,
+            static_cast<const aclblasComplex*>(nullptr), 4, &dummyC, 4, &dummyF, &dummyC, 4),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasCher2k(
+            Cher2kArch35Test::handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, 0, 4, &dummyC,
+            static_cast<const aclblasComplex*>(nullptr), 4, &dummyC, 4, nullptr, &dummyC, 4),
+        ACLBLAS_STATUS_INVALID_VALUE);
 }
 
 TEST_F(Cher2kArch35Test, HostQuickReturnK0)
@@ -1825,9 +1810,25 @@ TEST_F(Cher2kArch35Test, WhiteboxN1Degenerate)
     }
 }
 
+// ST CSV keeps precision/interface cases only; the white-box (TC_WB) and
+// performance (TC_PF) cases live in separate _wb/_perf CSVs loaded under
+// CHER2K_FULL_REGRESSION=1 (issue #755 delivery boundary).
+static std::vector<Cher2kParam> LoadCher2kCases()
+{
+    const std::string csvPath = ReplaceFileExtension2Csv(__FILE__);
+    std::vector<Cher2kParam> cases = GetCasesFromCsv<Cher2kParam>(csvPath);
+    if (std::getenv("CHER2K_FULL_REGRESSION") != nullptr) {
+        const std::string base = csvPath.substr(0U, csvPath.size() - 4U);
+        std::vector<Cher2kParam> wb = GetCasesFromCsv<Cher2kParam>(base + "_wb.csv");
+        std::vector<Cher2kParam> perf = GetCasesFromCsv<Cher2kParam>(base + "_perf.csv");
+        cases.insert(cases.end(), wb.begin(), wb.end());
+        cases.insert(cases.end(), perf.begin(), perf.end());
+    }
+    return cases;
+}
+
 INSTANTIATE_TEST_SUITE_P(
-    Cher2k, Cher2kArch35Test, ::testing::ValuesIn(GetCasesFromCsv<Cher2kParam>(ReplaceFileExtension2Csv(__FILE__))),
-    PrintCaseInfoString<Cher2kParam>);
+    Cher2k, Cher2kArch35Test, ::testing::ValuesIn(LoadCher2kCases()), PrintCaseInfoString<Cher2kParam>);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CSV-driven parameterised test (5-step flow)

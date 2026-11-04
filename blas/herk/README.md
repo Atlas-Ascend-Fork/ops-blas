@@ -50,10 +50,10 @@ aclblasStatus_t aclblasCherk(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 | trans | 输入 | aclblasOperation_t | A 矩阵转置模式：ACLBLAS_OP_N(111) 不转置或 ACLBLAS_OP_C(113) 共轭转置（计算 A^H），Host 内存 |
 | n | 输入 | int | C 矩阵的阶数，n >= 0，Host 内存 |
 | k | 输入 | int | 归约维度：trans='N' 时为 A 的列数（第二维度），trans='C' 时为 A 的行数（第一维度），k >= 0，Host 内存 |
-| alpha | 输入 | const float*（FP32） | 实数标量乘数，不可为 nullptr，Device 内存 |
+| alpha | 输入 | const float*（FP32） | 实数标量乘数，不可为 nullptr，Host 或 Device 内存（按指针位置自动探测，alpha 与 beta 须同为 Host 或同为 Device） |
 | A | 输入 | const aclblasComplex*（复数 FP32） | 输入复矩阵，trans='N' 时维度为 N×K，trans='C' 时维度为 K×N，Device 内存 |
 | lda | 输入 | int | A 矩阵的主维，trans='N' 时 lda >= max(1, n)，trans='C' 时 lda >= max(1, k)，Host 内存 |
-| beta | 输入 | const float*（FP32） | 实数标量乘数，不可为 nullptr，Device 内存 |
+| beta | 输入 | const float*（FP32） | 实数标量乘数，不可为 nullptr，Host 或 Device 内存（按指针位置自动探测，alpha 与 beta 须同为 Host 或同为 Device） |
 | C | 输入/输出 | aclblasComplex*（复数 FP32） | N×N Hermitian 复矩阵，输入旧值，输出新值，仅 uplo 指定三角区域被更新，Device 内存 |
 | ldc | 输入 | int | C 矩阵的主维，ldc >= max(1, n)，Host 内存 |
 
@@ -70,11 +70,11 @@ aclblasStatus_t aclblasCherk(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 - C 不可为 nullptr（当 n > 0 时）。该校验为有意严于 cuBLAS 的差异：cuBLAS 仅在 beta != 0 时将 C 为 nullptr 视为错误，本实现为保证错误码口径一致，n > 0 时一律要求非空
 - alpha、beta 为实数（float），分别缩放复数 C 的实部与虚部
 - 仅更新指定三角，对角线虚部强制置零（主路径与 alpha=0/k=0 的 C=beta*C 路径均如此）。另一三角和 leading-dimension padding 保持原值（值语义不变；实现上 uplo='L' 时对角块的非 uplo（严格上）段按 C 旧值恒等回写，uplo='U' 时非 uplo 段不写出；C 块恒被读入——beta=0 亦然，供缩放与 LOWER 恢复）
-- 接口在 handle 绑定的 stream 上下发计算任务。arch22 实现自身不执行 Device 或 stream 同步（alpha/beta 由 kernel 从 Device 内存直读）；arch35 实现需在 host 侧读取 alpha/beta 的 Device 标量真值（两次 D2H 异步拷贝后跟随一次 stream 同步），因此 n > 0 的调用在库内包含一次 stream 同步（n = 0 直接返回，无同步），除此之外无其它同步
+- 接口在 handle 绑定的 stream 上下发计算任务。arch22 实现自身不执行 Device 或 stream 同步（alpha/beta 由 kernel 从 Device 内存直读）；arch35 实现需在 host 侧取得 alpha/beta 标量真值（Host 标量直接解引用；Device 标量经两次 D2H 异步拷贝后跟随一次 stream 同步），因此 n > 0 且使用 Device 标量的调用在库内包含一次 stream 同步（Host 标量与 n = 0 直接返回，无同步），除此之外无其它同步
 
 边界情况处理：
 
-- n = 0 时为合法 no-op，直接返回 ACLBLAS_STATUS_SUCCESS
+- n = 0 时为合法 no-op：参数校验（含 alpha/beta 非空、前导维等）仍会执行，校验通过后不启动任何计算，直接返回 ACLBLAS_STATUS_SUCCESS
 - 当 alpha=0 或 k=0，且 beta=1 时直接返回，C 全部保持原值（含对角线虚部；族内差异注：cher2k 同为快返回不写 C，cherkx 无快返回、uplo 三角恒重写且对角虚部恒清零，见各自 README）
 - 当 alpha=0 或 k=0，且 beta 非 0 非 1 时，仅对 uplo 指定三角执行 C = beta * C，对角线虚部置零（netlib 语义 C(J,J) = beta*REAL(C(J,J))）
 - beta = 0 时 C 的取值无需有效（cuBLAS 契约 "If beta == 0 then C does not have to be a valid input"）：uplo 指定三角不读取 C 旧值做缩放、直接写为新值（含全零），C 旧值中的 NaN/Inf 不进入 uplo 三角的结果；但 C 指针仍须有效（n > 0 时非空校验不变），且 C 块仍被读入——uplo='L' 时对角块的非 uplo（严格上）段按 C 旧值恒等回写（语义上不修改，NaN/Inf 原位保留、不扩散）
