@@ -576,14 +576,14 @@ TEST_F(GemmGroupedBatchedExArch35Test, InvalidTransaEnum_L1E19)
 {
     ApiValidationCase tc;
     tc.transa = static_cast<aclblasOperation_t>(999);
-    ExpectApiStatus(handle_, tc, ACLBLAS_STATUS_INVALID_VALUE);
+    ExpectApiStatus(handle_, tc, ACLBLAS_STATUS_INVALID_ENUM);
 }
 
 TEST_F(GemmGroupedBatchedExArch35Test, InvalidTransbEnum_L1E20)
 {
     ApiValidationCase tc;
     tc.transb = static_cast<aclblasOperation_t>(999);
-    ExpectApiStatus(handle_, tc, ACLBLAS_STATUS_INVALID_VALUE);
+    ExpectApiStatus(handle_, tc, ACLBLAS_STATUS_INVALID_ENUM);
 }
 
 TEST_F(GemmGroupedBatchedExArch35Test, LdaLessThanM_transaN_L1E21)

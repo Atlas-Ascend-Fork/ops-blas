@@ -119,9 +119,13 @@ aclblasStatus_t ValidateOneGroup(int index,
     const int mArray[], const int nArray[], const int kArray[],
     const int ldaArray[], const int ldbArray[], const int ldcArray[], const int groupSize[])
 {
-    if (!IsValidOperation(transaArray[index]) || !IsValidOperation(transbArray[index]) ||
-        mArray[index] < 0 || nArray[index] < 0 || kArray[index] < 0 || groupSize[index] < 0) {
-        OP_LOGE("aclblasGemmGroupedBatchedEx", "invalid dimensions/operation in group %d", index);
+    if (!IsValidOperation(transaArray[index]) || !IsValidOperation(transbArray[index])) {
+        OP_LOGE("aclblasGemmGroupedBatchedEx", "invalid operation in group %d: transa=%d transb=%d",
+            index, transaArray[index], transbArray[index]);
+        return ACLBLAS_STATUS_INVALID_ENUM;
+    }
+    if (mArray[index] < 0 || nArray[index] < 0 || kArray[index] < 0 || groupSize[index] < 0) {
+        OP_LOGE("aclblasGemmGroupedBatchedEx", "invalid dimensions in group %d", index);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     int minLda = transaArray[index] == ACLBLAS_OP_N ?

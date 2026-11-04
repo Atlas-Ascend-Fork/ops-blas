@@ -25,8 +25,8 @@ C[index] = alpha[g] * op(A[index]) * op(B[index]) + beta[g] * C[index]
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持（arch22，FLOAT32主路径）
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持（arch22，FLOAT32主路径）
 
 #### 函数原型
 
@@ -80,3 +80,38 @@ aclblasStatus_t aclblasGemmGroupedBatchedEx(aclblasHandle_t handle, const aclbla
 | ACL_FLOAT8_E5M2 | ACL_FLOAT8_E5M2 | ACL_FLOAT16 | ACLBLAS_COMPUTE_32F |
 | ACL_FLOAT8_E4M3FN | ACL_FLOAT8_E5M2 | ACL_FLOAT16 | ACLBLAS_COMPUTE_32F |
 | ACL_FLOAT8_E5M2 | ACL_FLOAT8_E4M3FN | ACL_FLOAT16 | ACLBLAS_COMPUTE_32F |
+
+## Atlas A2/A3（arch22）支持范围
+
+arch22 支持 Atype/Btype/Ctype 均为 `ACL_FLOAT` 且 computeType 为
+`ACLBLAS_COMPUTE_32F`。其他组合返回 `ACLBLAS_STATUS_NOT_SUPPORTED`；上方
+FP16/BF16/FP8 类型表为 arch35 的支持范围，不表示 arch22 同样支持。
+公共 API 仍复用 `include/cann_ops_blas.h` 的已有声明。
+
+Aarray、Barray、Carray 本身及矩阵位于 Device；组内实例按组顺序展开。
+Host 组数组长度须为 groupCount，不能广播。alphaArray、betaArray 为连续
+FLOAT32 标量数组，arch22 支持 Host 或 Device 存储；Device 标量在句柄
+stream 上执行时读取。arch35 标量布局仍按其已有实现的 Host 约束。
+
+所有矩阵为列主序，支持 N/T/C（实数 C 等同 T）和合法 leading dimension
+padding。m/n/k、groupCount、groupSize 非负。dtype 校验后，groupCount=0
+直接成功；groupCount>0 则校验 Host 数组与所有组参数，然后在实例总数>0
+时要求三个设备指针数组非空。空 m/n 或 groupSize 的组不执行计算。
+
+k=0 或 alpha=0 时不读取 A/B 矩阵与对应单个指针；beta=1 保持 C，beta=0
+直接写零，其余值缩放 C。正常 GEMM 的 beta=0 也不读取旧 C。结果仅覆盖
+C 的逻辑 m×n 区域，padding 保持不变。异步调用使用 handle 绑定的 stream；
+读回结果或释放输入前须同步该 stream。工作区由 handle 管理；用户提供的
+工作区不足时返回 `ACLBLAS_STATUS_ALLOC_FAILED`。
+
+两种架构的非法 transa/transb 均返回 `ACLBLAS_STATUS_INVALID_ENUM`，
+与公共 CPU 参考实现及 A2/A3 任务书 §2.4/§2.5 一致。
+
+返回值包含 SUCCESS、HANDLE_IS_NULLPTR、NOT_SUPPORTED、INVALID_ENUM、
+INVALID_VALUE、ALLOC_FAILED；异步设备错误还须通过 stream 同步结果检查。
+裸数组 API 不携带数组长度，CSV 长度错误由测试加载器单独检测。
+
+arch22 的稠密小矩阵在 Host α=1、β=0、m/ldc 满足直接写出约束时使用 Cube，
+并在同 stream 的 AIV 检查 A/B 指数位；存在极大值、Inf 或 NaN 时按 Netlib
+逐K顺序重算该矩阵。检测与重算都属于算子执行，并在同一 stream 中顺序完成。
+其他小矩阵保留 AIV 路径；K 以1024分段，尾块仅写有效逻辑元素。

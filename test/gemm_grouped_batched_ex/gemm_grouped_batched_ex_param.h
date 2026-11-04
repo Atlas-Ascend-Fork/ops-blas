@@ -83,13 +83,18 @@ inline aclDataType ParseAclDataTypeForGemm(const std::string& s)
 
 inline size_t DtypeElementSize(aclDataType dt)
 {
-    if (dt == ACL_FLOAT16) return 2;
-    if (dt == ACL_BF16) return 2;
-    if (dt == ACL_FLOAT8_E4M3FN || dt == ACL_FLOAT8_E5M2) return 1;
+    if (dt == ACL_FLOAT16)
+        return 2;
+    if (dt == ACL_BF16)
+        return 2;
+    if (dt == ACL_FLOAT8_E4M3FN || dt == ACL_FLOAT8_E5M2)
+        return 1;
     return 4;
 }
 
 struct GemmGroupedBatchedExParam : public BlasTestParamBase {
+    csv_map raw;
+    bool lengthsValid = true;
     std::vector<aclblasOperation_t> transaArray;
     std::vector<aclblasOperation_t> transbArray;
     std::vector<int> mArray;
@@ -177,14 +182,90 @@ struct GemmGroupedBatchedExParam : public BlasTestParamBase {
         ExpandArrayToGroupCount(ldcArray, groupCount);
     }
 
-    GemmGroupedBatchedExParam(const csv_map& values) : BlasTestParamBase(values)
+    template <typename T, typename Parse>
+    std::vector<T> ReadApiArray(const std::string& key, Parse parse)
     {
-        ParseGroupArrays(values);
-        ParseTypes(values);
-        ParseLeadingDimensions(values);
+        const std::string text = ReadMap(raw, key);
+        if (text.empty() || text == "NULLPTR")
+            return {};
+        std::vector<T> result;
+        std::istringstream stream(text);
+        std::string item;
+        while (std::getline(stream, item, ';'))
+            result.push_back(parse(item));
+        if (groupCount > 0 && result.size() != static_cast<size_t>(groupCount))
+            lengthsValid = false;
+        return result;
+    }
+
+    static aclblasOperation_t ParseApiOperation(const std::string& value)
+    {
+        if (value == "ACLBLAS_OP_N" || value == "N")
+            return ACLBLAS_OP_N;
+        if (value == "ACLBLAS_OP_T" || value == "T")
+            return ACLBLAS_OP_T;
+        if (value == "ACLBLAS_OP_C" || value == "C")
+            return ACLBLAS_OP_C;
+        return static_cast<aclblasOperation_t>(std::stoi(value));
+    }
+
+    static aclDataType ParseApiType(const std::string& value)
+    {
+        if (value == "ACL_FLOAT")
+            return ACL_FLOAT;
+        if (value == "ACL_DOUBLE")
+            return ACL_DOUBLE;
+        if (value == "ACL_FLOAT16")
+            return ACL_FLOAT16;
+        if (value == "ACL_INT32")
+            return ACL_INT32;
+        return static_cast<aclDataType>(999);
+    }
+
+    // API-named CSV arrays are exact-length inputs, including null/invalid tests.
+    // The legacy snake_case schema keeps its existing scalar broadcast behavior.
+    void ParseApiArrays()
+    {
+        groupCount = std::stoi(ReadMap(raw, "groupCount", "0"));
+        const auto integer = [](const std::string& value) { return std::stoi(value); };
+        const auto real = [](const std::string& value) { return std::stof(value); };
+        mArray = ReadApiArray<int>("mArray", integer);
+        nArray = ReadApiArray<int>("nArray", integer);
+        kArray = ReadApiArray<int>("kArray", integer);
+        ldaArray = ReadApiArray<int>("ldaArray", integer);
+        ldbArray = ReadApiArray<int>("ldbArray", integer);
+        ldcArray = ReadApiArray<int>("ldcArray", integer);
+        groupSizeArray = ReadApiArray<int>("groupSize", integer);
+        transaArray = ReadApiArray<aclblasOperation_t>("transaArray", ParseApiOperation);
+        transbArray = ReadApiArray<aclblasOperation_t>("transbArray", ParseApiOperation);
+        alphaArray = ReadApiArray<float>("alphaArray", real);
+        betaArray = ReadApiArray<float>("betaArray", real);
+        Atype = ParseApiType(ReadMap(raw, "Atype"));
+        Btype = ParseApiType(ReadMap(raw, "Btype"));
+        Ctype = ParseApiType(ReadMap(raw, "Ctype"));
+        auto type = ReadMap(raw, "computeType");
+        computeType =
+            type == "ACLBLAS_COMPUTE_32F" ? ACLBLAS_COMPUTE_32F : static_cast<aclblasComputeType_t>(std::stoi(type));
+    }
+
+    explicit GemmGroupedBatchedExParam(const csv_map& values) : BlasTestParamBase(values), raw(values)
+    {
+        if (values.count("groupCount") != 0) {
+            ParseApiArrays();
+        } else {
+            ParseGroupArrays(values);
+            ParseTypes(values);
+            ParseLeadingDimensions(values);
+        }
         aFill = parseFill(ReadMap(values, "a_fill", "RANDOM"));
         bFill = parseFill(ReadMap(values, "b_fill", "RANDOM"));
         cFill = parseFill(ReadMap(values, "c_fill", "VALUE_NORM_0"));
+    }
+
+    template <typename T>
+    const T* Arg(const std::vector<T>& value, const std::string& key) const
+    {
+        return ReadMap(raw, key) == "NULLPTR" || value.empty() ? nullptr : value.data();
     }
 
     int TotalInstanceCount() const
