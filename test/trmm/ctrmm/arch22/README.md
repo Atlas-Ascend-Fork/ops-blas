@@ -95,7 +95,7 @@ build-ctrmm/test/trmm/ctrmm/ctrmm_test --gtest_filter='*TC_PF_1005'
 
 补充24项GTest还覆盖独立幅度/规约长度/seed、重复舍入、128阶Small、576次短Cube分支组合，以及非恒定相消（180次）、小矩阵不同相位比例相消（72次）、短规约长条矩阵相消（72次）、幅度16的邻近值与规约长度边界（180次）。全部使用任务容差；`CTRMM_CHECK_EXACT=1`可附加零误差诊断，不属于默认验收标准。
 
-最新精度、性能和历史失败证据必须按对应源文件和二进制版本解读。报告生成与原始profiler证据见[自验证步骤](../../../../task_submission/1%20自验证步骤说明.md)。
+最新精度、性能和历史失败证据必须按对应源文件和二进制版本解读。报告生成与原始profiler证据随社区任务材料提交，流程见[贡献指南](../../../../CONTRIBUTING.md)。
 
 `PairedUniformGaussianDistributions`补充真正的正态分布：使用`std::normal_distribution`，与理论方差一致的均匀分布成对测试，各196次。覆盖8个短/中规约长度的24模式及1024/4096长规约；补充输入由测试直接构造，框架填充器保持不变，避免把`RANDOM_NORM`的名称误当作正态覆盖。
 
