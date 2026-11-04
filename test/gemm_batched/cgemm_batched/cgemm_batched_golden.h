@@ -16,26 +16,40 @@
 #include "cblas_compat.h"
 #include "cgemm_batched_param.h"
 
-inline void ApplyComplexAlphaZeroGolden(aclblasComplex* c, int m, int n, int ldc,
-    const aclblasComplex& beta)
+inline void ApplyComplexAlphaZeroGolden(aclblasComplex* c, int m, int n, int ldc, const aclblasComplex& beta)
 {
+    if (beta.real == 1.0f && beta.imag == 0.0f)
+        return;
     for (int col = 0; col < n; col++) {
         for (int row = 0; row < m; row++) {
             int64_t idx = static_cast<int64_t>(col) * ldc + row;
+            if (beta.real == 0.0f && beta.imag == 0.0f) {
+                c[idx] = {0.0f, 0.0f};
+                continue;
+            }
             float cr = c[idx].real;
             float ci = c[idx].imag;
-            c[idx].real = beta.real * cr - beta.imag * ci;
-            c[idx].imag = beta.real * ci + beta.imag * cr;
+            // Match the specified sequence of FP32 operations, without FMA contraction.
+            volatile float rr = beta.real * cr;
+            volatile float ii = beta.imag * ci;
+            volatile float ri = beta.real * ci;
+            volatile float ir = beta.imag * cr;
+            c[idx].real = rr - ii;
+            c[idx].imag = ri + ir;
         }
     }
 }
 
 inline CGEMM_BATCHED_SIGNATURE(aclblasCgemmBatched_cpu)
 {
-    if (handle == nullptr) return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
-    if (alpha == nullptr || beta == nullptr) return ACLBLAS_STATUS_INVALID_VALUE;
-    if (m < 0 || n < 0 || k < 0 || batchCount < 0) return ACLBLAS_STATUS_INVALID_VALUE;
-    if (batchCount == 0 || m == 0 || n == 0) return ACLBLAS_STATUS_SUCCESS;
+    if (handle == nullptr)
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    if (alpha == nullptr || beta == nullptr)
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    if (m < 0 || n < 0 || k < 0 || batchCount < 0)
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    if (batchCount == 0 || m == 0 || n == 0)
+        return ACLBLAS_STATUS_SUCCESS;
 
     aclblasComplex alphaVal = *alpha;
     aclblasComplex betaVal = *beta;
@@ -47,20 +61,19 @@ inline CGEMM_BATCHED_SIGNATURE(aclblasCgemmBatched_cpu)
         const aclblasComplex* aData = Aarray ? Aarray[batch] : nullptr;
         const aclblasComplex* bData = Barray ? Barray[batch] : nullptr;
         aclblasComplex* cData = Carray ? Carray[batch] : nullptr;
-        if (cData == nullptr) continue;
+        if (cData == nullptr)
+            continue;
 
         bool alphaZero = (alphaVal.real == 0.0f && alphaVal.imag == 0.0f);
-        if (alphaZero) {
+        if (alphaZero || k == 0) {
             ApplyComplexAlphaZeroGolden(cData, m, n, ldc, betaVal);
             continue;
         }
 
-        cblas_cgemm(CblasColMajor, cTransA, cTransB,
-                    m, n, k, reinterpret_cast<const void*>(&alphaVal),
-                    reinterpret_cast<const void*>(aData), lda,
-                    reinterpret_cast<const void*>(bData), ldb,
-                    reinterpret_cast<const void*>(&betaVal),
-                    reinterpret_cast<void*>(cData), ldc);
+        cblas_cgemm(
+            CblasColMajor, cTransA, cTransB, m, n, k, reinterpret_cast<const void*>(&alphaVal),
+            reinterpret_cast<const void*>(aData), lda, reinterpret_cast<const void*>(bData), ldb,
+            reinterpret_cast<const void*>(&betaVal), reinterpret_cast<void*>(cData), ldc);
     }
     return ACLBLAS_STATUS_SUCCESS;
 }

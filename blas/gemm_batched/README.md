@@ -198,8 +198,12 @@ aclblasStatus_t status = aclblasSgemmBatched(
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品（含 Atlas 800I A3）：支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品（含 Atlas 800I A2）：支持
+
+arch22 的构建环境和严格复验步骤见
+MR 描述中的复现与验收说明。
+A2 与 A3 需分别真机验证，运行结果和日志保存在仓外。
 
 > Ascend 950PR/Ascend 950DT 上的 cgemmBatched 依赖 CANN asc-devkit >= 9.1（`ASC_DEVKIT_MAJOR >= 9 && ASC_DEVKIT_MINOR >= 1`），低于该版本时编译与运行将跳过此算子。
 
@@ -238,6 +242,9 @@ aclblasStatus_t aclblasCgemmBatched(aclblasHandle_t handle, aclblasOperation_t t
 - ldc >= max(1, m)
 - 各 C[i] 矩阵之间不得重叠
 - 复数矩阵以实部/虚部交错存储（interleaved complex），即 A[i][0].real, A[i][0].imag, A[i][1].real, A[i][1].imag, ...
+- m = 0 或 n = 0 或 batchCount = 0 为合法 no-op（返回成功，不执行计算）；k = 0 或 alpha = (0,0) 时逐批执行 `C[i] = beta * C[i]`（beta = (1,0) 时 C 不变；beta = (0,0) 时 C 置零，且 C 无需预先初始化）
+- Atlas A2/A3（arch22）实现复用仓内 complex BLAS-3 共享框架：AIV 拆分实虚部（含 op=C 共轭）、AIC 以 Matmul API 执行 4 次实数 GEMM（C^T = op(B)^T * op(A)^T，转置语义由 Matmul 读取方向吸收）、AIV 合并复数 alpha/beta 写回；batch 超出 workspace 容量时自动分轮执行
+- arch22 按尺寸、布局和标量选择直接复数归约、UB 向量计算或 FP32 Cube；小面板可融合预处理与写回。小输出的部分布局保留顺序复数归约，极端数值使用数值修正。具体分派见 `cgemm_batched_host.cpp`。
 
 #### 精度验证
 

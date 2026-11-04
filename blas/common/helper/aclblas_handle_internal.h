@@ -72,6 +72,16 @@ struct _aclblas_handle {
     // Immutable planar-to-AoS gather metadata shared by Cher2k fast paths.
     // It is initialized lazily on first use and released with the handle.
     void* cher2k_interleave_offsets = nullptr;
+
+    // The handle's workspace and stream belong to one device context.
+    // Cache its immutable core counts; zero means not queried successfully.
+    uint32_t cgemm_aic_cores = 0U;
+    uint32_t cgemm_aiv_cores = 0U;
+    // Runtime-owned kernel handles, scoped to this handle's device context.
+    // One reference per compiled entry; no input data or results are cached.
+    void* cgemm_panel_function = nullptr;
+    void* cgemm_vector_function = nullptr;
+    void* cgemm_vector_grouped_function = nullptr;
 };
 
 /**

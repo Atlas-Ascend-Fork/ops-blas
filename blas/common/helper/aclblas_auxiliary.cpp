@@ -91,6 +91,13 @@ aclblasStatus_t aclblasSetStream(aclblasHandle_t handle, aclrtStream stream)
     }
 
     h->stream = stream;
+    // Kernel references are owned by the runtime context. Resolve them again
+    // after a stream change instead of carrying a previous stream's cache.
+    h->cgemm_panel_function = nullptr;
+    h->cgemm_vector_function = nullptr;
+    h->cgemm_vector_grouped_function = nullptr;
+    h->cgemm_aic_cores = 0U;
+    h->cgemm_aiv_cores = 0U;
 
     // Reset to the library workspace when switching streams (cuBLAS-compatible behavior).
     return ResetToDefaultWorkspace(h);
