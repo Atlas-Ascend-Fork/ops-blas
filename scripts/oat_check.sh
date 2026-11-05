@@ -53,7 +53,14 @@ fi
 _OAT_OK=$("$_PYTHON" -c "import importlib.util; print('ok' if importlib.util.find_spec('oat') else 'missing')" 2>/dev/null || echo "missing")
 if [ "$_OAT_OK" != "ok" ]; then
     echo "[OAT] oat-py not found. Installing oat-py>=1.0.1 ..."
-    "$_PYTHON" -m pip install --quiet "oat-py>=1.0.1"
+    # issue #810: set -e 下 pip install 失败（离线环境 / pip 不可用 / 权限不足）会直接中止
+    # 脚本，下方"安装失败则告警跳过"的兜底分支对最常见失败路径不可达。以 if ! 包裹容错，
+    # 保证安装失败落入跳过分支（检查失败不阻断提交的设计语义）。
+    if ! "$_PYTHON" -m pip install --quiet "oat-py>=1.0.1"; then
+        echo "[OAT] [WARNING] Failed to install oat-py. Please run: pip install oat-py>=1.0.1"
+        echo "[OAT] Skipping OAT check, continuing commit..."
+        exit 0
+    fi
     _OAT_OK=$("$_PYTHON" -c "import importlib.util; print('ok' if importlib.util.find_spec('oat') else 'missing')" 2>/dev/null || echo "missing")
     if [ "$_OAT_OK" != "ok" ]; then
         echo "[OAT] [WARNING] Failed to install oat-py. Please run: pip install oat-py>=1.0.1"
