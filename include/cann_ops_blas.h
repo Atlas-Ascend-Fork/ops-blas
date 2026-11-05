@@ -237,8 +237,8 @@ aclblasStatus_t aclblasComplexMatDot(
 
 aclblasStatus_t aclblasCgemvBatched(
     aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, const aclblasComplex* alpha,
-    const aclblasComplex* A, int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y,
-    int incy, int batchCount);
+    const aclblasComplex* const Aarray[], int lda, const aclblasComplex* const xarray[], int incx,
+    const aclblasComplex* beta, aclblasComplex* const yarray[], int incy, int batchCount);
 
 aclblasStatus_t aclblasCgerc(
     aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,

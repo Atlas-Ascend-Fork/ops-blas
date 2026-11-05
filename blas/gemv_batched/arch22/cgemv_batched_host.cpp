@@ -10,150 +10,127 @@
 
 /* !
  * \file cgemv_batched_host.cpp
- * \brief
+ * \brief Host-side API for batched complex GEMV with pointer-array form.
+ *        Aarray/xarray/yarray are device-side pointer arrays, matching cuBLAS
+ *        cublasCgemvBatched semantics.
+ *
+ *        The arch22 legacy batched kernel (cgemv_batched_kernel_impl.h) addresses
+ *        the operands as one contiguous batched buffer and its tiling data
+ *        carries no alpha/beta/lda/incx/incy, so it cannot be reused for the
+ *        pointer-array form: forwarding the array base address would make the
+ *        kernel read Aarray[0]'s address value as the first matrix element and
+ *        write y back by contiguous offset (silent memory corruption). This
+ *        path therefore reads the pointer arrays back to host and dispatches
+ *        each batch to the single-matrix arch22 cgemv implementation
+ *        (blas/gemv/arch22/cgemv_host.cpp), which already handles
+ *        alpha/beta/lda/incx/incy correctly.
  */
 
 #include <cstdint>
-#include <iostream>
 #include <vector>
-#include <algorithm>
-#include <iterator>
-#include <memory>
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
-#include "cgemv_batched_plan.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
-void cgemv_batched_kernel_do(
-    uint8_t* A, uint8_t* x, uint8_t* mask, uint8_t* y, uint8_t* workSpace, uint8_t* tilingGm, uint32_t numBlocks,
-    void* stream);
-
-constexpr uint32_t MAX_CORE_CNT = 40;
-constexpr uint32_t WORKSPACE_SIZE = 16 * 1024 * 1024;
-
-struct CgemvBatchedTilingData {
-    uint32_t dtype;
-    uint32_t trans;
-    uint32_t m;
-    uint32_t n;
-    uint32_t maxMatNum;
-    uint32_t calMatNum[40];
-    uint32_t startMatId[40];
-};
-
-static CgemvBatchedTilingData CalTilingData(
-    uint32_t batchCount, uint32_t m, uint32_t n, uint32_t dtype, uint32_t trans, uint32_t vecCoreNum)
+// Validate the public API arguments in the fixed order required by the task spec.
+// Returns the first failing status code, or ACLBLAS_STATUS_SUCCESS.
+static aclblasStatus_t ValidateCgemvBatchedParams(
+    aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, int lda, int incx, int incy, int batchCount,
+    const aclblasComplex* const* Aarray, const aclblasComplex* const* xarray, const aclblasComplex* const* yarray,
+    const aclblasComplex* alpha, const aclblasComplex* beta)
 {
-    CgemvBatchedTilingData tilingData;
-    tilingData.dtype = dtype;
-    tilingData.trans = trans;
-    tilingData.m = m;
-    tilingData.n = n;
-
-    // Calculate maxMatNum based on available UB size
-    // For simplicity, we set maxMatNum to a reasonable value
-    uint32_t maxMatNum = 1;                   // Can be adjusted based on actual UB size
-    bool isTrans = trans == 0 ? false : true; // 0: ACLBLAS_OP_N
-    bool dataType = (dtype == (uint32_t)aclDataType_t::ACL_C_64F) ? true : false;
-    maxMatNum = CalMaxMatNum(isTrans, dataType, static_cast<uint32_t>(m));
-
-    tilingData.maxMatNum = maxMatNum > 0 ? maxMatNum : 1;
-
-    // Initialize arrays
-    for (uint32_t i = 0; i < MAX_CORE_CNT; i++) {
-        tilingData.startMatId[i] = 0;
-        tilingData.calMatNum[i] = 0;
+    if (handle == nullptr) {
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
-
-    if (vecCoreNum == 0) {
-        vecCoreNum = 1;
+    if (m <= 0 || n <= 0) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    vecCoreNum = vecCoreNum > MAX_CORE_CNT ? MAX_CORE_CNT : vecCoreNum;
-
-    // Distribute batch across cores
-    uint32_t baseNum = batchCount / vecCoreNum;
-    uint32_t remainNum = batchCount % vecCoreNum;
-
-    uint32_t curMatId = 0;
-    for (uint32_t i = 0; i < vecCoreNum; i++) {
-        uint32_t curMatNum = 0;
-        if (i < remainNum) {
-            curMatNum = baseNum + 1;
-        } else {
-            curMatNum = baseNum;
-        }
-        tilingData.startMatId[i] = curMatId;
-        tilingData.calMatNum[i] = curMatNum;
-        curMatId += curMatNum;
+    if (lda < (m > 0 ? m : 1)) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    if (incx == 0 || incy == 0 || batchCount <= 0) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (Aarray == nullptr || xarray == nullptr || yarray == nullptr) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (alpha == nullptr || beta == nullptr) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (trans != ACLBLAS_OP_N && trans != ACLBLAS_OP_T && trans != ACLBLAS_OP_C) {
+        return ACLBLAS_STATUS_INVALID_ENUM;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
 
-    return tilingData;
+// The pointer arrays live in device memory; copy them back so each batch can be
+// handed to the single-matrix cgemv host entry point.  The copy is submitted on
+// the handle stream as an async D2H and then synchronized, so it sees every
+// prior write enqueued on that stream (e.g. an async H2D fill or a producer
+// kernel).  A plain aclrtMemcpy would use the default stream and could race
+// ahead of those writes, reading stale or null pointers.
+static aclblasStatus_t ReadPtrArrayToHost(
+    const void* devArray, int batchCount, std::vector<aclblasComplex*>& hostPtrs, aclrtStream stream)
+{
+    hostPtrs.assign(static_cast<size_t>(batchCount), nullptr);
+    if (batchCount <= 0) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    const size_t ptrBytes = static_cast<size_t>(batchCount) * sizeof(aclblasComplex*);
+    aclError aclRet = aclrtMemcpyAsync(
+        hostPtrs.data(), ptrBytes, const_cast<void*>(devArray), ptrBytes, ACL_MEMCPY_DEVICE_TO_HOST, stream);
+    if (aclRet != ACL_SUCCESS) {
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    aclRet = aclrtSynchronizeStream(stream);
+    if (aclRet != ACL_SUCCESS) {
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
 aclblasStatus_t aclblasCgemvBatched(
     aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, const aclblasComplex* alpha,
-    const aclblasComplex* A, int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y,
-    int incy, int batchCount)
+    const aclblasComplex* const Aarray[], int lda, const aclblasComplex* const xarray[], int incx,
+    const aclblasComplex* beta, aclblasComplex* const yarray[], int incy, int batchCount)
 {
-    if (alpha == nullptr || beta == nullptr) {
-        return ACLBLAS_STATUS_INVALID_VALUE;
+    // Argument validation runs first so callers keep getting the precise contract
+    // error for malformed input, independent of the dispatch path below.
+    aclblasStatus_t validRet = ValidateCgemvBatchedParams(
+        handle, trans, m, n, lda, incx, incy, batchCount, Aarray, xarray, yarray, alpha, beta);
+    if (validRet != ACLBLAS_STATUS_SUCCESS) {
+        return validRet;
     }
-    auto* h = handle;
-    aclrtStream useStream = h->stream;
 
-    uint32_t numBlocks = 8;
+    auto* h = static_cast<_aclblas_handle*>(handle);
+    aclrtStream stream = h->stream;
 
-    uint32_t dtype = 1; // 1 = float
-    uint32_t dtypeSize = sizeof(float);
-    uint32_t transUint = (trans == ACLBLAS_OP_N) ? 0 : ((trans == ACLBLAS_OP_C) ? 2 : 1);
+    std::vector<aclblasComplex*> hostA;
+    std::vector<aclblasComplex*> hostX;
+    std::vector<aclblasComplex*> hostY;
+    aclblasStatus_t ret = ReadPtrArrayToHost(Aarray, batchCount, hostA, stream);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        return ret;
+    }
+    ret = ReadPtrArrayToHost(xarray, batchCount, hostX, stream);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        return ret;
+    }
+    ret = ReadPtrArrayToHost(yarray, batchCount, hostY, stream);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        return ret;
+    }
 
-    CgemvBatchedTilingData tiling = CalTilingData(batchCount, m, n, dtype, transUint, numBlocks);
-    // CreateCgemvBatchedMask 以 new uint32_t[] 分配主机侧 mask，交给 unique_ptr 管理，
-    // 保证成功与各错误返回路径都会释放（此前全函数无 delete[]）。
-    std::unique_ptr<uint32_t[]> mask(CreateCgemvBatchedMask(m, dtype, transUint));
-    size_t maskSize = tiling.maxMatNum * 32 * 2 * sizeof(uint32_t);
-
-    size_t workSpaceSize = WORKSPACE_SIZE;
-
-    uint8_t* maskDevice = nullptr;
-    uint8_t* workSpaceDevice = nullptr;
-    uint8_t* tilingDevice = nullptr;
-
-    aclError aclRet = aclrtMalloc((void**)&maskDevice, maskSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-              return ACLBLAS_STATUS_ALLOC_FAILED);
-
-    aclRet = aclrtMalloc((void**)&workSpaceDevice, workSpaceSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(maskDevice);
-              return ACLBLAS_STATUS_ALLOC_FAILED);
-
-    aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(CgemvBatchedTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(workSpaceDevice);
-              aclrtFree(maskDevice); return ACLBLAS_STATUS_ALLOC_FAILED);
-
-    aclRet = aclrtMemcpy(maskDevice, maskSize, mask.get(), maskSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-              aclrtFree(workSpaceDevice); aclrtFree(maskDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
-
-    aclRet = aclrtMemcpy(
-        tilingDevice, sizeof(CgemvBatchedTilingData), &tiling, sizeof(CgemvBatchedTilingData),
-        ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-              aclrtFree(workSpaceDevice); aclrtFree(maskDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
-
-    cgemv_batched_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(A)),
-        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)), maskDevice, reinterpret_cast<uint8_t*>(y),
-        workSpaceDevice, tilingDevice, numBlocks, useStream);
-    aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
-              aclrtFree(tilingDevice); aclrtFree(workSpaceDevice); aclrtFree(maskDevice);
-              return ACLBLAS_STATUS_INTERNAL_ERROR);
-
-    aclrtFree(maskDevice);
-    aclrtFree(workSpaceDevice);
-    aclrtFree(tilingDevice);
-
+    for (int b = 0; b < batchCount; b++) {
+        if (hostA[b] == nullptr || hostX[b] == nullptr || hostY[b] == nullptr) {
+            return ACLBLAS_STATUS_INVALID_VALUE;
+        }
+        aclblasStatus_t batchRet =
+            aclblasCgemv(handle, trans, m, n, alpha, hostA[b], lda, hostX[b], incx, beta, hostY[b], incy);
+        if (batchRet != ACLBLAS_STATUS_SUCCESS) {
+            return batchRet;
+        }
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
