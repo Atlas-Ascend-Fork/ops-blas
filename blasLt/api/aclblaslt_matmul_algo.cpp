@@ -99,6 +99,15 @@ bool InitPackedAlgoForId(int algoId, PackedAlgo& packed)
     if (!DecodeAlgoIdFields(packed.algoId, &decPolicy, &decL1mDiv16, &decL1nDiv16, &decL1k, &decSplitK)) {
         return false;
     }
+    // issue #799: AlgoInit 与 heuristic 统一双缓冲 L1 容量口径——解码出的 (l1m, l1n, l1k)
+    // 若使 FP32 kernel 双缓冲 L1 需求超出物理容量，则该配置不可执行，拒绝构造，
+    // 避免绕过 heuristic 过滤到达同一超容量配置。
+    const size_t l1Demand =
+        2U * ((static_cast<size_t>(decL1mDiv16) * 16U) * decL1k + (static_cast<size_t>(decL1nDiv16) * 16U) * decL1k) *
+        sizeof(float);
+    if (l1Demand > static_cast<size_t>(L1_SIZE)) {
+        return false;
+    }
     packed.policy = decPolicy;
     packed.l1mDiv16 = decL1mDiv16;
     packed.l1nDiv16 = decL1nDiv16;
@@ -286,7 +295,10 @@ float ScoreTileCandidate(
     const uint32_t totalTiles = tilesM * tilesN;
     const float balanceScore =
         1.0f - static_cast<float>(totalTiles % std::max(1u, caps.numAICores)) / std::max(1u, caps.numAICores);
-    const size_t l1Usage = static_cast<size_t>(cm) * ck * sizeof(float) + static_cast<size_t>(cn) * ck * sizeof(float);
+    // issue #799: FP32 kernel 的 L1 布局为 A/B 双缓冲（matmul_fp32_kernel.cpp：
+    // offsetAL1 = baseM*kL1*l1BufId、offsetBL1 = baseM*kL1*2 + baseN*kL1*l1BufId），
+    // 打分须按双缓冲口径评估；单缓冲公式会低估实际需求，放行超容量候选。
+    const size_t l1Usage = 2U * (static_cast<size_t>(cm) * ck + static_cast<size_t>(cn) * ck) * sizeof(float);
     const float l1Util = static_cast<float>(l1Usage) / static_cast<float>(L1_SIZE);
     float l0Match = 0.0f;
     if (prefL0M > 0 && cm % prefL0M == 0) {
@@ -308,9 +320,10 @@ std::vector<RankedCandidate> BuildRankedCandidates(
     AscendHardwareCaps caps;
     GetAscendHardwareCaps(deviceId, &caps);
 
-    // L1 tile candidates (M, N, K); mirrors the heuristic search space.
+    // L1 tile candidates (M, N, K); mirrors the heuristic search space. {128,256,256} 的双缓冲
+    // L1 需求 768KB 超出物理 512KB（issue #799），K 深度压缩至 128（384KB）。
     const uint32_t tileCandidates[][3] = {
-        {128, 256, 256}, {256, 128, 256}, {256, 256, 128}, {128, 128, 128}, {256, 256, 64}};
+        {128, 256, 128}, {256, 128, 256}, {256, 256, 128}, {128, 128, 128}, {256, 256, 64}};
 
     std::vector<RankedCandidate> ranked;
     ranked.reserve(sizeof(tileCandidates) / sizeof(tileCandidates[0]));
@@ -319,6 +332,12 @@ std::vector<RankedCandidate> BuildRankedCandidates(
         const uint32_t cm = tc[0];
         const uint32_t cn = tc[1];
         const uint32_t ck = tc[2];
+        // issue #799: 双缓冲 L1 容量门——实际需求超出物理容量的候选不可执行，结构性剔除，
+        // 防止后续扩充候选表时重新引入超容量配置。
+        const size_t l1Demand = 2U * (static_cast<size_t>(cm) * ck + static_cast<size_t>(cn) * ck) * sizeof(float);
+        if (l1Demand > static_cast<size_t>(L1_SIZE)) {
+            continue;
+        }
         const float score = ScoreTileCandidate(m, n, cm, cn, ck, prefL0M, prefL0N, prefL0K, caps);
 
         AlgoCandidate cand;
@@ -985,6 +1004,19 @@ aclblasStatus_t aclblasLtMatmulAlgoCheck(
             ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmulAlgoCheck", "lightHandle is null");
         return ACLBLAS_STATUS_NOT_INITIALIZED;
     }
+
+#ifdef OPS_BLASLT_ARCH22
+    // issue #808: arch22 本模块（lt_matmul）发放的算法 ID 位于 0x220000xx 专属域，legacy
+    // 位域解码（DecodeAlgoIdFields）对其必然失败，heuristic→check 工作流断裂。有效 magic
+    // 且 algoId 落在本模块域前缀的 blob 分流给 LtMatmul22AlgoCheck（复用执行链的
+    // ValidateLayouts / DecodePlan / RequiredPlanWorkspace 校验与 workspace 内在需求口径）；
+    // 其余（legacy 域 / 坏 magic）维持原校验链不变。
+    PackedAlgo domainProbe;
+    if (DecodeAlgo(*algo, &domainProbe) &&
+        (domainProbe.algoId & LT_MATMUL22_ALGO_DOMAIN_MASK) == LT_MATMUL22_ALGO_DOMAIN) {
+        return LtMatmul22AlgoCheck(operationDesc, Adesc, Bdesc, Cdesc, Ddesc, algo, result);
+    }
+#endif
 
     // Stage 2: P_algo — structural validity of the algo blob (
     // see CheckAlgoBlobStructural).

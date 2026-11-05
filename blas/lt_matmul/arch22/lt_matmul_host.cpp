@@ -1318,6 +1318,63 @@ aclblasStatus_t LtMatmul22AlgoInit(int id, aclblasLtMatmulAlgo_t& algo)
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// issue #808: AlgoCheck 的本模块分流入口。与执行链（LtMatmul22Api）同序复用宿主侧校验：
+// 描述符 magic/pointerMode → 空矩阵短路 → ValidateLayouts（布局/类型/维度）→ DecodePlan
+// （plan 域与胶囊字段一致性）→ RequiredPlanWorkspace（形状门控 + workspace 内在需求）。
+// 运行期资源项（硬件查询 / 操作数指针重叠 / workspace 容量与对齐）依执行链入参不可见，
+// 与 legacy AlgoCheck「无设备查询、无内核启动、无分配」的边界一致。
+// result 回填沿用 legacy FillAlgoCheckResult 口径：原样回显 algo（不重写
+// max_workspace_bytes，用户可安全复用/再序列化）、state=SUCCESS、wavesCount=1.0f、
+// reserved 清零；workspaceSize = max(plan 内在需求, algo->max_workspace_bytes)。
+aclblasStatus_t LtMatmul22AlgoCheck(
+    aclblasLtMatmulDesc_t computeDesc, aclblasLtMatrixLayout_t aDesc, aclblasLtMatrixLayout_t bDesc,
+    aclblasLtMatrixLayout_t cDesc, aclblasLtMatrixLayout_t dDesc, const aclblasLtMatmulAlgo_t* algo,
+    aclblasLtMatmulHeuristicResult_t* result)
+{
+    const auto& desc = *reinterpret_cast<const Desc*>(computeDesc);
+    if (desc.magic != ACLBLASLT_DESC_MAGIC || desc.pointerMode != ACLBLASLT_POINTER_MODE_HOST) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    const auto& aLayout = *reinterpret_cast<const Layout*>(aDesc);
+    const auto& bLayout = *reinterpret_cast<const Layout*>(bDesc);
+    const auto& cLayout = *reinterpret_cast<const Layout*>(cDesc);
+    const auto& dLayout = *reinterpret_cast<const Layout*>(dDesc);
+    // 执行链契约：空矩阵先于布局/类型校验短路成功；AlgoCheck 需回填 result，按 legacy
+    // no-op 口径回填 workspaceSize=0。
+    if (dLayout.rows == 0U || dLayout.cols == 0U) {
+        *result = aclblasLtMatmulHeuristicResult_t{};
+        result->algo = *algo;
+        result->workspaceSize = 0;
+        result->state = ACLBLAS_STATUS_SUCCESS;
+        result->wavesCount = 1.0f;
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    LtMatmul22Tiling t{};
+    const aclblasStatus_t layoutStatus = ValidateLayouts(desc, aLayout, bLayout, cLayout, dLayout, t);
+    if (layoutStatus != ACLBLAS_STATUS_SUCCESS) {
+        return layoutStatus;
+    }
+    uint32_t id = LT_MATMUL22_ALGO_H0;
+    const aclblasStatus_t planStatus = DecodePlan(algo, id);
+    if (planStatus != ACLBLAS_STATUS_SUCCESS) {
+        return planStatus;
+    }
+    H1Storage h1;
+    const aclblasStatus_t h1Status = BuildH1Storage(t.m, t.n, h1);
+    size_t required = 0;
+    const aclblasStatus_t requiredStatus = RequiredPlanWorkspace(id, t, h1, h1Status, required);
+    if (requiredStatus != ACLBLAS_STATUS_SUCCESS) {
+        return requiredStatus;
+    }
+    *result = aclblasLtMatmulHeuristicResult_t{};
+    result->algo = *algo;
+    const size_t advertised = algo->max_workspace_bytes;
+    result->workspaceSize = required > advertised ? required : advertised;
+    result->state = ACLBLAS_STATUS_SUCCESS;
+    result->wavesCount = 1.0f;
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 aclblasStatus_t LtMatmul22Api(
     aclblasLtHandle_t handle, aclblasLtMatmulDesc_t computeDesc, const void* alpha, const void* a,
     aclblasLtMatrixLayout_t aDesc, const void* b, aclblasLtMatrixLayout_t bDesc, const void* beta, const void* c,

@@ -23,6 +23,10 @@ constexpr uint32_t LT_MATMUL22_ALGO_H11 = 0x2200000bU;
 constexpr uint32_t LT_MATMUL22_ALGO_H12 = 0x2200000cU;
 constexpr uint32_t LT_MATMUL22_ALGO_H9 = 0x22000009U;
 constexpr uint32_t LT_MATMUL22_ALGO_H5 = 0x22000005U;
+// issue #808: 本模块算法 ID 的域前缀（高 16 位 = 0x2200）；aclblasLtMatmulAlgoCheck 据此把
+// 本模块发放的 algo 分流给 LtMatmul22AlgoCheck，legacy 位域解码链维持现状。
+constexpr uint32_t LT_MATMUL22_ALGO_DOMAIN = 0x22000000U;
+constexpr uint32_t LT_MATMUL22_ALGO_DOMAIN_MASK = 0xFFFF0000U;
 
 aclblasStatus_t LtMatmul22Api(
     aclblasLtHandle_t handle, aclblasLtMatmulDesc_t computeDesc, const void* alpha, const void* a,
@@ -34,4 +38,11 @@ aclblasStatus_t LtMatmul22Heuristic(
     aclblasLtMatrixLayout_t bDesc, aclblasLtMatrixLayout_t cDesc, aclblasLtMatrixLayout_t dDesc,
     aclblasLtMatmulPreference_t preference, int requested, aclblasLtMatmulHeuristicResult_t* results, int* count);
 aclblasStatus_t LtMatmul22AlgoInit(int id, aclblasLtMatmulAlgo_t& algo);
+// issue #808: AlgoCheck 的本模块分流入口。复用执行链（LtMatmul22Api）的宿主侧校验
+// （描述符 magic/pointerMode、ValidateLayouts、DecodePlan、RequiredPlanWorkspace 形状门控）
+// 与 workspace 内在需求口径；不含运行期资源项（硬件查询 / 指针重叠 / workspace 容量）。
+aclblasStatus_t LtMatmul22AlgoCheck(
+    aclblasLtMatmulDesc_t computeDesc, aclblasLtMatrixLayout_t aDesc, aclblasLtMatrixLayout_t bDesc,
+    aclblasLtMatrixLayout_t cDesc, aclblasLtMatrixLayout_t dDesc, const aclblasLtMatmulAlgo_t* algo,
+    aclblasLtMatmulHeuristicResult_t* result);
 aclblasStatus_t LtMatmul22Launch(const MatmulProblem& problem);
