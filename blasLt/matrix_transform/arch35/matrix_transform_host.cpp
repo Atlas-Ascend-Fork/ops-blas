@@ -777,6 +777,11 @@ aclblasStatus_t MatTransformLaunch(
     // FP8 when any operand is fp8, otherwise the anchor (A) dtype's path. The descriptor scaleType
     // must match: FP8 requires FP32 scaleType, FP4 requires BF16 (FP32 tolerated), integer requires
     // INT32. Cross-dtype legality (one compute domain, no FP8/FP4 mix) is enforced in MatValidateConfig.
+    // issue #803: 标量执行链恒按主机指针解引用 alpha/beta（MatResolveScalars），pointerMode 仅支持
+    // HOST；DEVICE 模式会把设备地址当主机指针解引用（段错误或垃圾系数），在此显式拒绝。
+    if (desc->pointerMode != ACLBLASLT_POINTER_MODE_HOST) {
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
     const uint8_t codeAEntry = MatDtypeCode(aLayout->type);
     const uint8_t codeCEntry = MatDtypeCode(cLayout->type);
     if (codeAEntry == MT_DTYPE_INVALID) {

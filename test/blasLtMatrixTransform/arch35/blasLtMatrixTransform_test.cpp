@@ -344,6 +344,41 @@ TEST_F(LtMatrixTransformArch35Test, MixedOperandDtypesRejected)
     aclblasLtMatrixTransformDescDestroy(desc);
 }
 
+// issue #803: 标量执行链恒按主机指针解引用 alpha/beta，pointerMode 仅支持 HOST；DEVICE 模式
+// 在入口显式拒绝（校验先于任何指针解引用，哑缓冲区不会被读写）。
+TEST_F(LtMatrixTransformArch35Test, DevicePointerModeRejected)
+{
+    aclblasLtMatrixTransformDesc_t desc = nullptr;
+    ASSERT_EQ(aclblasLtMatrixTransformDescCreate(&desc, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+    const int32_t modeDevice = ACLBLASLT_POINTER_MODE_DEVICE;
+    ASSERT_EQ(
+        aclblasLtMatrixTransformDescSetAttribute(
+            desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE, &modeDevice, sizeof(modeDevice)),
+        ACLBLAS_STATUS_SUCCESS);
+    aclblasLtMatrixLayout_t aLayout = nullptr;
+    aclblasLtMatrixLayout_t cLayout = nullptr;
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&aLayout, ACL_FLOAT, 4, 4, 4), ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&cLayout, ACL_FLOAT, 4, 4, 4), ACLBLAS_STATUS_SUCCESS);
+
+    constexpr size_t kF32Bytes = 4 * 4 * sizeof(float);
+    void* dA = nullptr;
+    void* dC = nullptr;
+    ASSERT_EQ(aclrtMalloc(&dA, kF32Bytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dC, kF32Bytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+
+    float alpha = 1.0f;
+    const aclblasStatus_t ret = aclblasLtMatrixTransform(
+        LtMatrixTransformArch35Test::ltHandle_, desc, &alpha, dA, aLayout, nullptr, nullptr, nullptr, dC, cLayout,
+        LtMatrixTransformArch35Test::stream_);
+    EXPECT_EQ(ret, ACLBLAS_STATUS_NOT_SUPPORTED);
+
+    aclrtFree(dC);
+    aclrtFree(dA);
+    aclblasLtMatrixLayoutDestroy(cLayout);
+    aclblasLtMatrixLayoutDestroy(aLayout);
+    aclblasLtMatrixTransformDescDestroy(desc);
+}
+
 // issue #586: rows/cols/ld 超过 2^32-1 时 tiling 的 uint32 截断会使内核按错误形状执行并返回
 // SUCCESS，入口须显式拒绝（校验在设备访问之前，哑缓冲区不会被读写）。
 TEST_F(LtMatrixTransformArch35Test, OversizeDimsRejected)
@@ -401,9 +436,9 @@ TEST_F(LtMatrixTransformArch35Test, TransformDescCreateProductSurvivesSetAttribu
     ASSERT_EQ(aclblasLtMatrixTransformDescCreate(&desc, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
     ASSERT_NE(desc, nullptr);
     const int32_t transT = ACLBLAS_OP_T;
-    ASSERT_EQ(aclblasLtMatrixTransformDescSetAttribute(desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA, &transT,
-                                                       sizeof(transT)),
-              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatrixTransformDescSetAttribute(desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA, &transT, sizeof(transT)),
+        ACLBLAS_STATUS_SUCCESS);
     // 来源标记必须能穿过 SetAttribute 的「解包—改一项—重打包」，否则此路径会被误拒。
     EXPECT_EQ(aclblasLtMatrixTransformDescDestroy(desc), ACLBLAS_STATUS_SUCCESS);
 }
@@ -414,9 +449,9 @@ TEST_F(LtMatrixTransformArch35Test, TransformDescDestroyRejectsCorruptedMagic)
     ASSERT_EQ(aclblasLtMatrixTransformDescCreate(&desc, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
     auto* capsule = reinterpret_cast<aclblasLtMatrixTransformDescOpaque_t*>(desc);
     const uint64_t savedWord = capsule->data[0];
-    capsule->data[0] ^= 0xFFu;  // 破坏 magic；heapOwned 仍为 1，故命中的是 magic 检查
+    capsule->data[0] ^= 0xFFu; // 破坏 magic；heapOwned 仍为 1，故命中的是 magic 检查
     EXPECT_EQ(aclblasLtMatrixTransformDescDestroy(desc), ACLBLAS_STATUS_INVALID_VALUE);
-    capsule->data[0] = savedWord;  // 复原后正常释放，避免测试泄漏
+    capsule->data[0] = savedWord; // 复原后正常释放，避免测试泄漏
     EXPECT_EQ(aclblasLtMatrixTransformDescDestroy(desc), ACLBLAS_STATUS_SUCCESS);
 }
 
@@ -430,18 +465,22 @@ TEST_F(LtMatrixTransformArch35Test, TransformDescInitDefaultsMatchCreate)
 
     int32_t transAInit = -1, transACreate = -1, transBInit = -1, transBCreate = -1;
     size_t written = 0;
-    ASSERT_EQ(aclblasLtMatrixTransformDescGetAttribute(&fromInit, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA,
-                                                       &transAInit, sizeof(transAInit), &written),
-              ACLBLAS_STATUS_SUCCESS);
-    ASSERT_EQ(aclblasLtMatrixTransformDescGetAttribute(fromCreate, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA,
-                                                       &transACreate, sizeof(transACreate), &written),
-              ACLBLAS_STATUS_SUCCESS);
-    ASSERT_EQ(aclblasLtMatrixTransformDescGetAttribute(&fromInit, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSB,
-                                                       &transBInit, sizeof(transBInit), &written),
-              ACLBLAS_STATUS_SUCCESS);
-    ASSERT_EQ(aclblasLtMatrixTransformDescGetAttribute(fromCreate, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSB,
-                                                       &transBCreate, sizeof(transBCreate), &written),
-              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatrixTransformDescGetAttribute(
+            &fromInit, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA, &transAInit, sizeof(transAInit), &written),
+        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatrixTransformDescGetAttribute(
+            fromCreate, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA, &transACreate, sizeof(transACreate), &written),
+        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatrixTransformDescGetAttribute(
+            &fromInit, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSB, &transBInit, sizeof(transBInit), &written),
+        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatrixTransformDescGetAttribute(
+            fromCreate, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSB, &transBCreate, sizeof(transBCreate), &written),
+        ACLBLAS_STATUS_SUCCESS);
     EXPECT_EQ(transAInit, transACreate);
     EXPECT_EQ(transAInit, ACLBLAS_OP_N);
     EXPECT_EQ(transBInit, transBCreate);

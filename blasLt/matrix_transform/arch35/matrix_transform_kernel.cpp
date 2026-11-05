@@ -102,11 +102,9 @@ __aicore__ inline uint64_t MatInputColBase(uint8_t order, uint8_t op, uint32_t l
     if (order == MT_ORDER_COL32) {
         // op=N reads logical (r, c) at group*ld + r*32 + c%32; op=T reads A_preop(c, r) whose tile
         // base (row block 0) is c*32 (the 2D-burst load supplies the per-32-row-block ld stride).
-        return (op == MT_OP_T) ? static_cast<uint64_t>(c) * 32U
-                               : static_cast<uint64_t>(c / 32U) * ld + (c % 32U);
+        return (op == MT_OP_T) ? static_cast<uint64_t>(c) * 32U : static_cast<uint64_t>(c / 32U) * ld + (c % 32U);
     }
-    const bool scaledByLd = (order == MT_ORDER_COL && op == MT_OP_N) ||
-                            (order == MT_ORDER_ROW && op == MT_OP_T);
+    const bool scaledByLd = (order == MT_ORDER_COL && op == MT_OP_N) || (order == MT_ORDER_ROW && op == MT_OP_T);
     return scaledByLd ? static_cast<uint64_t>(c) * ld : static_cast<uint64_t>(c);
 }
 
@@ -135,8 +133,7 @@ __aicore__ inline uint64_t MatOutputColBase(uint8_t order, uint32_t ldc, uint32_
 __aicore__ inline bool MatNeedsGroupPath(uint8_t orderA, uint8_t orderB, uint8_t orderC, uint8_t hasB)
 {
     const bool complexA = orderA == MT_ORDER_COL4_4R2_8C || orderA == MT_ORDER_COL32_2R_4R4;
-    const bool complexB = (hasB != 0U) &&
-                          (orderB == MT_ORDER_COL4_4R2_8C || orderB == MT_ORDER_COL32_2R_4R4);
+    const bool complexB = (hasB != 0U) && (orderB == MT_ORDER_COL4_4R2_8C || orderB == MT_ORDER_COL32_2R_4R4);
     const bool complexC = orderC == MT_ORDER_COL4_4R2_8C || orderC == MT_ORDER_COL32_2R_4R4;
     return complexA || complexB || complexC;
 }
@@ -253,17 +250,17 @@ __aicore__ inline uint64_t MatPhysOffsetLinear(uint8_t order, uint32_t row, uint
     if (order == MT_ORDER_COL32) {
         return static_cast<uint64_t>(col / 32U) * ld + static_cast<uint64_t>(row) * 32U + (col % 32U);
     }
-    return static_cast<uint64_t>(col) * ld + row;  // COL
+    return static_cast<uint64_t>(col) * ld + row; // COL
 }
 
 // Group-path tile-column read for a linear input order: returns base/step of the contiguous-in-rowInTile
 // element offsets for output tile column (group, rowBlock, colInTile). Affine within one tile block.
 __aicore__ inline void MatTileColInputLinear(
-    uint8_t order, uint8_t op, uint32_t ld, uint32_t group, uint32_t rowBlock, uint32_t tileRows,
-    uint32_t colInTile, uint64_t& base, uint32_t& step)
+    uint8_t order, uint8_t op, uint32_t ld, uint32_t group, uint32_t rowBlock, uint32_t tileRows, uint32_t colInTile,
+    uint64_t& base, uint32_t& step)
 {
     const uint32_t outCol = group * MT_TILE_COLS + colInTile;
-    const uint32_t outRow0 = rowBlock * tileRows;  // first output row in the tile block
+    const uint32_t outRow0 = rowBlock * tileRows; // first output row in the tile block
     // op=N reads A[outRow, outCol]; op=T reads A[outCol, outRow] (transpose).
     const uint32_t a0 = (op == MT_OP_N) ? outRow0 : outCol;
     const uint32_t b0 = (op == MT_OP_N) ? outCol : outRow0;
@@ -272,23 +269,24 @@ __aicore__ inline void MatTileColInputLinear(
     const uint32_t b1 = (op == MT_OP_N) ? outCol : (outRow0 + 1U);
     step = static_cast<uint32_t>(MatPhysOffsetLinear(order, a1, b1, ld) - base);
 }
-}  // namespace
+} // namespace
 
 template <typename TinA, typename TinB, typename ToutC, typename TScale>
 class MatrixTransformAIV {
 public:
     __aicore__ inline MatrixTransformAIV() {}
-    __aicore__ inline void Init(GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR idxGm, GM_ADDR idxAGm, GM_ADDR idxBGm,
-                                GM_ADDR ndAGm, GM_ADDR ndBGm, const MatrixTransformTilingData& tiling, TPipe* pipe);
+    __aicore__ inline void Init(
+        GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR idxGm, GM_ADDR idxAGm, GM_ADDR idxBGm, GM_ADDR ndAGm,
+        GM_ADDR ndBGm, const MatrixTransformTilingData& tiling, TPipe* pipe);
     __aicore__ inline void Process();
 
 private:
-    __aicore__ inline void LoadStrided(const GlobalTensor<TinA>& src, const LocalTensor<TinA>& dst, uint64_t base,
-                                       uint32_t step, uint32_t count);
-    __aicore__ inline void LoadCol32Transpose(const GlobalTensor<TinA>& src, const LocalTensor<TinA>& dst,
-                                              uint64_t base, uint32_t count);
-    __aicore__ inline void LoadStridedB(const GlobalTensor<TinB>& src, const LocalTensor<TinB>& dst, uint64_t base,
-                                        uint32_t step, uint32_t count);
+    __aicore__ inline void LoadStrided(
+        const GlobalTensor<TinA>& src, const LocalTensor<TinA>& dst, uint64_t base, uint32_t step, uint32_t count);
+    __aicore__ inline void LoadCol32Transpose(
+        const GlobalTensor<TinA>& src, const LocalTensor<TinA>& dst, uint64_t base, uint32_t count);
+    __aicore__ inline void LoadStridedB(
+        const GlobalTensor<TinB>& src, const LocalTensor<TinB>& dst, uint64_t base, uint32_t step, uint32_t count);
     __aicore__ inline void StoreStrided(uint64_t base, uint32_t step, uint32_t count);
     // Cast a scaleType tile into dtype T: fp8 round-to-nearest, the INT32->INT8 three-step chain
     // (int32->float->half->int8, bit-exact for values already in [-128,127]), or a single Cast.
@@ -296,8 +294,8 @@ private:
     template <typename T>
     __aicore__ inline void CastScaleToDtype(const LocalTensor<T>& dst, const LocalTensor<TScale>& src, uint32_t count);
     __aicore__ inline void CastOutput(const LocalTensor<ToutC>& out, const LocalTensor<TScale>& acc, uint32_t count);
-    __aicore__ inline void AccumulateB(const LocalTensor<TScale>& accA, uint32_t col, uint32_t rowOffset,
-                                       uint32_t count);
+    __aicore__ inline void AccumulateB(
+        const LocalTensor<TScale>& accA, uint32_t col, uint32_t rowOffset, uint32_t count);
     __aicore__ inline void ComputeTile(uint32_t col, uint32_t rowOffset, uint32_t count);
     __aicore__ inline void ProcessColumn(uint32_t col);
     // Single-row (rows == 1) contiguous-vector path on one core (avoids sub-DataBlock races).
@@ -307,14 +305,15 @@ private:
     // General group-tile path (complex layouts and COL32 op=T).
     __aicore__ inline void BuildTileOffsetTable();
     template <typename T>
-    __aicore__ inline void LoadTileColumnMajor(const GlobalTensor<T>& src, const LocalTensor<T>& dst, uint8_t order,
-                                               uint8_t op, uint32_t ld, uint32_t group, uint32_t rowBase,
-                                               uint32_t blockRows, uint32_t blockCols);
+    __aicore__ inline void LoadTileColumnMajor(
+        const GlobalTensor<T>& src, const LocalTensor<T>& dst, uint8_t order, uint8_t op, uint32_t ld, uint32_t group,
+        uint32_t rowBase, uint32_t blockRows, uint32_t blockCols);
     template <typename T>
-    __aicore__ inline void GatherInputTile(const GlobalTensor<T>& gm, uint8_t order, uint32_t ld, uint32_t group,
-                                           uint32_t rowBase, const LocalTensor<TScale>& acc);
-    __aicore__ inline void StoreOutputTile(uint32_t group, uint32_t rowBlock, uint32_t blockRows, uint32_t blockCols,
-                                           const LocalTensor<TScale>& accTile);
+    __aicore__ inline void GatherInputTile(
+        const GlobalTensor<T>& gm, uint8_t order, uint32_t ld, uint32_t group, uint32_t rowBase,
+        const LocalTensor<TScale>& acc);
+    __aicore__ inline void StoreOutputTile(
+        uint32_t group, uint32_t rowBlock, uint32_t blockRows, uint32_t blockCols, const LocalTensor<TScale>& accTile);
     __aicore__ inline void ProcessGroupTile(uint32_t group, uint32_t rowBlock, uint32_t blockRows, uint32_t blockCols);
     __aicore__ inline void ProcessGroups();
     // De-layout pass (complex input + op=T): gather the complex physical input into a logical
@@ -324,20 +323,19 @@ private:
     template <typename T>
     __aicore__ inline void DelayoutCastToOperand(const LocalTensor<T>& outTile, const LocalTensor<TScale>& accTile);
     template <typename T>
-    __aicore__ inline void StoreDelayoutTile(const GlobalTensor<T>& ndGm, const LocalTensor<T>& accSrc, uint32_t group,
-                                             uint32_t rowBase, uint32_t physRows, uint32_t blockRows,
-                                             uint32_t blockCols);
+    __aicore__ inline void StoreDelayoutTile(
+        const GlobalTensor<T>& ndGm, const LocalTensor<T>& accSrc, uint32_t group, uint32_t rowBase, uint32_t physRows,
+        uint32_t blockRows, uint32_t blockCols);
     template <typename T>
-    __aicore__ inline void DelayoutOperand(const GlobalTensor<T>& srcGm, const GlobalTensor<T>& ndGm, uint8_t order,
-                                           uint32_t ld, uint32_t physRows, uint32_t physCols, GM_ADDR idxGm);
+    __aicore__ inline void DelayoutOperand(
+        const GlobalTensor<T>& srcGm, const GlobalTensor<T>& ndGm, uint8_t order, uint32_t ld, uint32_t physRows,
+        uint32_t physCols, GM_ADDR idxGm);
     __aicore__ inline void DelayoutComplexInputs();
     // FP4 packed pipeline (only instantiated when TScale is bfloat16_t and the operand is fp4x2).
     // Unpack one fp4x2 operand block-by-block into the bf16 ND workspace (logical ld = 2*packedLd);
     // repack the bf16 ND C output block-by-block back into the packed fp4x2 C buffer.
-    __aicore__ inline void Fp4UnpackOperand(GM_ADDR srcFp4Gm, GM_ADDR dstBf16Gm, uint32_t packedLd,
-                                            uint32_t numBlocks);
-    __aicore__ inline void Fp4RepackOutput(GM_ADDR srcBf16Gm, GM_ADDR dstFp4Gm, uint32_t packedLd,
-                                           uint32_t numBlocks);
+    __aicore__ inline void Fp4UnpackOperand(GM_ADDR srcFp4Gm, GM_ADDR dstBf16Gm, uint32_t packedLd, uint32_t numBlocks);
+    __aicore__ inline void Fp4RepackOutput(GM_ADDR srcBf16Gm, GM_ADDR dstFp4Gm, uint32_t packedLd, uint32_t numBlocks);
     __aicore__ inline void Fp4UnpackInputs();
     __aicore__ inline void Fp4RepackC();
 
@@ -345,7 +343,7 @@ private:
     GM_ADDR idxGm_;
     GM_ADDR idxAGm_;
     GM_ADDR idxBGm_;
-    GM_ADDR aGmRaw_{nullptr};   // raw GM pointers for the byte-level FP4 unpack / repack passes
+    GM_ADDR aGmRaw_{nullptr}; // raw GM pointers for the byte-level FP4 unpack / repack passes
     GM_ADDR bGmRaw_{nullptr};
     GM_ADDR cGmRaw_{nullptr};
     GM_ADDR ndAGmRaw_{nullptr};
@@ -361,7 +359,7 @@ private:
     TQue<QuePosition::VECOUT, 2> outQueueC_;
     TBuf<QuePosition::VECCALC> calcBufA_;
     TBuf<QuePosition::VECCALC> calcBufB_;
-    TBuf<QuePosition::VECCALC> castChainBuf_;  // int32->float->half chain for INT8 output
+    TBuf<QuePosition::VECCALC> castChainBuf_; // int32->float->half chain for INT8 output
 
     // Group-tile path scratch buffers (allocated only when the group path is taken).
     TBuf<QuePosition::VECCALC> tileOffBuf_;     // uint32 in-tile element offset table + byte scratch
@@ -369,7 +367,7 @@ private:
     TBuf<QuePosition::VECCALC> gatherSrcBuf_;   // contiguous raw physical input tile (complex input)
     TBuf<QuePosition::VECCALC> gatherScaleBuf_; // scaleType cast of the raw tile before Gather
     bool groupPath_{false};
-    uint32_t chainHalfBase_{0};  // half-domain start offset within castChainBuf_ (matches the allocated slotElems)
+    uint32_t chainHalfBase_{0}; // half-domain start offset within castChainBuf_ (matches the allocated slotElems)
 
     MatrixTransformTilingData tiling_;
     uint32_t blockIdx_;
@@ -378,8 +376,8 @@ private:
 
 template <typename TinA, typename TinB, typename ToutC, typename TScale>
 __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::Init(
-    GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR idxGm, GM_ADDR idxAGm, GM_ADDR idxBGm, GM_ADDR ndAGm,
-    GM_ADDR ndBGm, const MatrixTransformTilingData& tiling, TPipe* pipe)
+    GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR idxGm, GM_ADDR idxAGm, GM_ADDR idxBGm, GM_ADDR ndAGm, GM_ADDR ndBGm,
+    const MatrixTransformTilingData& tiling, TPipe* pipe)
 {
     pipe_ = pipe;
     idxGm_ = idxGm;
@@ -402,8 +400,8 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::Init(
 
     // The FP4 instance only runs the unpack / repack passes (the bf16 main pass runs on the bf16
     // template), so it just needs a byte input queue and a bf16-wide output staging buffer.
-    if constexpr (AscendC::Std::is_same<TScale, bfloat16_t>::value &&
-                  (MatIsFp4<TinA>::value || MatIsFp4<ToutC>::value)) {
+    if constexpr (
+        AscendC::Std::is_same<TScale, bfloat16_t>::value && (MatIsFp4<TinA>::value || MatIsFp4<ToutC>::value)) {
         pipe_->InitBuffer(inQueueA_, 2, MT_MAX_TILE_ELEMS * sizeof(bfloat16_t));
         pipe_->InitBuffer(outQueueC_, 2, MT_MAX_TILE_ELEMS * sizeof(bfloat16_t));
         return;
@@ -418,8 +416,7 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::Init(
     // The de-layout pass casts a staged operand (TinA / TinB) through the output queue and loads
     // its raw tile into gatherSrcBuf_, so these buffers are sized for the widest input dtype too.
     constexpr uint32_t maxInBytes = (sizeof(TinA) > sizeof(TinB)) ? sizeof(TinA) : sizeof(TinB);
-    constexpr uint32_t outSlotBytes =
-        (sizeof(ToutC) > maxInBytes) ? sizeof(ToutC) : maxInBytes;
+    constexpr uint32_t outSlotBytes = (sizeof(ToutC) > maxInBytes) ? sizeof(ToutC) : maxInBytes;
 
     pipe_->InitBuffer(inQueueA_, 2, slotElems * sizeof(TinA));
     pipe_->InitBuffer(outQueueC_, 2, slotElems * outSlotBytes);
@@ -431,9 +428,9 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::Init(
     // The INT32->INT8 narrowing chain (int32->float->half->int8) backs both the INT8 output path
     // and the de-layout pass writing an INT8 staged operand back to its ND workspace. Allocate it
     // whenever any participating INT8 tensor exists on the integer scale path.
-    if constexpr (sizeof(TScale) == sizeof(int32_t) &&
-                  (sizeof(ToutC) == sizeof(int8_t) || sizeof(TinA) == sizeof(int8_t) ||
-                   sizeof(TinB) == sizeof(int8_t))) {
+    if constexpr (
+        sizeof(TScale) == sizeof(int32_t) &&
+        (sizeof(ToutC) == sizeof(int8_t) || sizeof(TinA) == sizeof(int8_t) || sizeof(TinB) == sizeof(int8_t))) {
         pipe_->InitBuffer(castChainBuf_, slotElems * (sizeof(float) + sizeof(half)));
         chainHalfBase_ = slotElems;
     }
@@ -486,8 +483,8 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::CastOutput
         Maxs(acc, acc, static_cast<TScale>(MT_INT8_MIN), count);
         Mins(acc, acc, static_cast<TScale>(MT_INT8_MAX), count);
         CastScaleToDtype<ToutC>(out, acc, count);
-    } else if constexpr (!MatIsFp8<ToutC>::value && sizeof(ToutC) == sizeof(TScale) &&
-                         sizeof(TScale) == sizeof(float)) {
+    } else if constexpr (
+        !MatIsFp8<ToutC>::value && sizeof(ToutC) == sizeof(TScale) && sizeof(TScale) == sizeof(float)) {
         // FP32 in / FP32 out and INT32 in / INT32 out: no dtype change, plain copy. DataCopy moves
         // whole 32-byte blocks, so the count is rounded up to a block multiple (the out buffer carries
         // padding headroom); without this the sub-block tail (e.g. single-row matrices, count < 8) is
@@ -581,8 +578,8 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::Accumulate
     const LocalTensor<TScale>& accA, uint32_t col, uint32_t rowOffset, uint32_t count)
 {
     const uint32_t stepB = MatInputStep(tiling_.orderB, tiling_.opB, tiling_.ldb);
-    const uint64_t baseB = MatInputColBase(tiling_.orderB, tiling_.opB, tiling_.ldb, col) +
-                           static_cast<uint64_t>(rowOffset) * stepB;
+    const uint64_t baseB =
+        MatInputColBase(tiling_.orderB, tiling_.opB, tiling_.ldb, col) + static_cast<uint64_t>(rowOffset) * stepB;
     LocalTensor<TinB> bIn = inQueueB_.AllocTensor<TinB>();
     LoadStridedB(bGm_, bIn, baseB, stepB, count);
     inQueueB_.EnQue(bIn);
@@ -601,8 +598,8 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::ComputeTil
     uint32_t col, uint32_t rowOffset, uint32_t count)
 {
     const uint32_t stepA = MatInputStep(tiling_.orderA, tiling_.opA, tiling_.lda);
-    const uint64_t baseA = MatInputColBase(tiling_.orderA, tiling_.opA, tiling_.lda, col) +
-                           static_cast<uint64_t>(rowOffset) * stepA;
+    const uint64_t baseA =
+        MatInputColBase(tiling_.orderA, tiling_.opA, tiling_.lda, col) + static_cast<uint64_t>(rowOffset) * stepA;
     LocalTensor<TinA> aIn = inQueueA_.AllocTensor<TinA>();
     LoadStrided(aGm_, aIn, baseA, stepA, count);
     inQueueA_.EnQue(aIn);
@@ -623,8 +620,8 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::ComputeTil
     outQueueC_.EnQue(out);
 
     const uint32_t stepC = MatOutputStep(tiling_.orderC, tiling_.ldc);
-    const uint64_t baseC = MatOutputColBase(tiling_.orderC, tiling_.ldc, col) +
-                           static_cast<uint64_t>(rowOffset) * stepC;
+    const uint64_t baseC =
+        MatOutputColBase(tiling_.orderC, tiling_.ldc, col) + static_cast<uint64_t>(rowOffset) * stepC;
     StoreStrided(baseC, stepC, count);
 }
 
@@ -654,7 +651,9 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::ProcessLin
 // Single-row matrices (rows == 1) have a one-element-per-column output. Writing each column on a
 // separate core would race on shared 32-byte DataBlocks, so the whole row is processed as one
 // contiguous vector on a single core: the cols elements are gathered/scattered with the per-column
-// stride and stored in one shot, avoiding sub-DataBlock multi-core writes.
+// stride and stored in chunks, avoiding sub-DataBlock multi-core writes. Chunks stay within
+// MT_MAX_TILE_ELEMS so every UB queue slot (sized for MT_MAX_TILE_ELEMS) and the uint16_t burst
+// count of the strided DataCopyPad remain in range for arbitrarily large cols.
 template <typename TinA, typename TinB, typename ToutC, typename TScale>
 __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::ProcessSingleRow()
 {
@@ -662,37 +661,50 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::ProcessSin
         return;
     }
     const uint32_t cols = tiling_.cols;
-    const uint32_t stepA = static_cast<uint32_t>(MatInputColBase(tiling_.orderA, tiling_.opA, tiling_.lda, 1U) -
-                                                 MatInputColBase(tiling_.orderA, tiling_.opA, tiling_.lda, 0U));
-    LocalTensor<TinA> aIn = inQueueA_.AllocTensor<TinA>();
-    LoadStrided(aGm_, aIn, MatInputColBase(tiling_.orderA, tiling_.opA, tiling_.lda, 0U), stepA, cols);
-    inQueueA_.EnQue(aIn);
-    LocalTensor<TinA> aLoaded = inQueueA_.DeQue<TinA>();
-    LocalTensor<TScale> accA = calcBufA_.Get<TScale>();
-    MatCastToScale<TinA, TScale>(accA, aLoaded, cols);
-    inQueueA_.FreeTensor(aLoaded);
+    const uint32_t stepA = static_cast<uint32_t>(
+        MatInputColBase(tiling_.orderA, tiling_.opA, tiling_.lda, 1U) -
+        MatInputColBase(tiling_.orderA, tiling_.opA, tiling_.lda, 0U));
+    const uint64_t baseA = MatInputColBase(tiling_.orderA, tiling_.opA, tiling_.lda, 0U);
     const TScale alpha = *reinterpret_cast<const TScale*>(&tiling_.alphaBits);
-    Muls(accA, accA, alpha, cols);
-    if (tiling_.hasB != 0U) {
-        const uint32_t stepB = static_cast<uint32_t>(MatInputColBase(tiling_.orderB, tiling_.opB, tiling_.ldb, 1U) -
-                                                     MatInputColBase(tiling_.orderB, tiling_.opB, tiling_.ldb, 0U));
-        LocalTensor<TinB> bIn = inQueueB_.AllocTensor<TinB>();
-        LoadStridedB(bGm_, bIn, MatInputColBase(tiling_.orderB, tiling_.opB, tiling_.ldb, 0U), stepB, cols);
-        inQueueB_.EnQue(bIn);
-        LocalTensor<TinB> bLoaded = inQueueB_.DeQue<TinB>();
-        LocalTensor<TScale> accB = calcBufB_.Get<TScale>();
-        MatCastToScale<TinB, TScale>(accB, bLoaded, cols);
-        inQueueB_.FreeTensor(bLoaded);
-        const TScale beta = *reinterpret_cast<const TScale*>(&tiling_.betaBits);
-        Muls(accB, accB, beta, cols);
-        Add(accA, accA, accB, cols);
+    uint32_t colOffset = 0U;
+    while (colOffset < cols) {
+        uint32_t count = cols - colOffset;
+        if (count > MT_MAX_TILE_ELEMS) {
+            count = MT_MAX_TILE_ELEMS;
+        }
+        LocalTensor<TinA> aIn = inQueueA_.AllocTensor<TinA>();
+        LoadStrided(aGm_, aIn, baseA + static_cast<uint64_t>(colOffset) * stepA, stepA, count);
+        inQueueA_.EnQue(aIn);
+        LocalTensor<TinA> aLoaded = inQueueA_.DeQue<TinA>();
+        LocalTensor<TScale> accA = calcBufA_.Get<TScale>();
+        MatCastToScale<TinA, TScale>(accA, aLoaded, count);
+        inQueueA_.FreeTensor(aLoaded);
+        Muls(accA, accA, alpha, count);
+        if (tiling_.hasB != 0U) {
+            const uint32_t stepB = static_cast<uint32_t>(
+                MatInputColBase(tiling_.orderB, tiling_.opB, tiling_.ldb, 1U) -
+                MatInputColBase(tiling_.orderB, tiling_.opB, tiling_.ldb, 0U));
+            const uint64_t baseB = MatInputColBase(tiling_.orderB, tiling_.opB, tiling_.ldb, 0U);
+            LocalTensor<TinB> bIn = inQueueB_.AllocTensor<TinB>();
+            LoadStridedB(bGm_, bIn, baseB + static_cast<uint64_t>(colOffset) * stepB, stepB, count);
+            inQueueB_.EnQue(bIn);
+            LocalTensor<TinB> bLoaded = inQueueB_.DeQue<TinB>();
+            LocalTensor<TScale> accB = calcBufB_.Get<TScale>();
+            MatCastToScale<TinB, TScale>(accB, bLoaded, count);
+            inQueueB_.FreeTensor(bLoaded);
+            const TScale beta = *reinterpret_cast<const TScale*>(&tiling_.betaBits);
+            Muls(accB, accB, beta, count);
+            Add(accA, accA, accB, count);
+        }
+        LocalTensor<ToutC> out = outQueueC_.AllocTensor<ToutC>();
+        CastOutput(out, accA, count);
+        outQueueC_.EnQue(out);
+        const uint32_t stepC = static_cast<uint32_t>(
+            MatOutputColBase(tiling_.orderC, tiling_.ldc, 1U) - MatOutputColBase(tiling_.orderC, tiling_.ldc, 0U));
+        StoreStrided(
+            MatOutputColBase(tiling_.orderC, tiling_.ldc, 0U) + static_cast<uint64_t>(colOffset) * stepC, stepC, count);
+        colOffset += count;
     }
-    LocalTensor<ToutC> out = outQueueC_.AllocTensor<ToutC>();
-    CastOutput(out, accA, cols);
-    outQueueC_.EnQue(out);
-    const uint32_t stepC = static_cast<uint32_t>(MatOutputColBase(tiling_.orderC, tiling_.ldc, 1U) -
-                                                 MatOutputColBase(tiling_.orderC, tiling_.ldc, 0U));
-    StoreStrided(MatOutputColBase(tiling_.orderC, tiling_.ldc, 0U), stepC, cols);
 }
 
 template <typename TinA, typename TinB, typename ToutC, typename TScale>
@@ -850,12 +862,10 @@ template <typename TinA, typename TinB, typename ToutC, typename TScale>
 __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::DelayoutComplexInputs()
 {
     if (tiling_.needDelayoutA != 0U) {
-        DelayoutOperand<TinA>(aGm_, ndAGm_, tiling_.orderA, tiling_.lda, tiling_.physRowsA, tiling_.physColsA,
-                              idxAGm_);
+        DelayoutOperand<TinA>(aGm_, ndAGm_, tiling_.orderA, tiling_.lda, tiling_.physRowsA, tiling_.physColsA, idxAGm_);
     }
     if (tiling_.needDelayoutB != 0U) {
-        DelayoutOperand<TinB>(bGm_, ndBGm_, tiling_.orderB, tiling_.ldb, tiling_.physRowsB, tiling_.physColsB,
-                              idxBGm_);
+        DelayoutOperand<TinB>(bGm_, ndBGm_, tiling_.orderB, tiling_.ldb, tiling_.physRowsB, tiling_.physColsB, idxBGm_);
     }
 }
 
@@ -876,7 +886,7 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::Fp4UnpackO
         GlobalTensor<bfloat16_t> dst;
         dst.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(dstBf16Gm));
         // Each byte yields two bf16 elements; chunk so the bf16 result fits one calc slot.
-        const uint32_t chunkBytes = MT_MAX_TILE_ELEMS / 2U;  // 2*chunkBytes <= MT_MAX_TILE_ELEMS bf16
+        const uint32_t chunkBytes = MT_MAX_TILE_ELEMS / 2U; // 2*chunkBytes <= MT_MAX_TILE_ELEMS bf16
         const uint64_t numChunks = (totalBytes + chunkBytes - 1U) / chunkBytes;
         for (uint64_t ch = blockIdx_; ch < numChunks; ch += blockNum_) {
             const uint64_t byteBase = ch * chunkBytes;
@@ -922,7 +932,7 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::Fp4RepackO
         src.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(srcBf16Gm));
         GlobalTensor<uint8_t> dst;
         dst.SetGlobalBuffer(reinterpret_cast<__gm__ uint8_t*>(dstFp4Gm));
-        const uint32_t chunkBytes = MT_MAX_TILE_ELEMS / 2U;  // reads 2*chunkBytes bf16 per chunk
+        const uint32_t chunkBytes = MT_MAX_TILE_ELEMS / 2U; // reads 2*chunkBytes bf16 per chunk
         const uint64_t numChunks = (totalBytes + chunkBytes - 1U) / chunkBytes;
         for (uint64_t ch = blockIdx_; ch < numChunks; ch += blockNum_) {
             const uint64_t byteBase = ch * chunkBytes;
@@ -1006,8 +1016,7 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::LoadTileCo
     const GlobalTensor<T>& src, const LocalTensor<T>& dst, uint8_t order, uint8_t op, uint32_t ld, uint32_t group,
     uint32_t rowBase, uint32_t blockRows, uint32_t blockCols)
 {
-    const uint8_t pivotOrder =
-        MatPickComplexOrderDev(tiling_.orderA, tiling_.orderB, tiling_.orderC, tiling_.hasB);
+    const uint8_t pivotOrder = MatPickComplexOrderDev(tiling_.orderA, tiling_.orderB, tiling_.orderC, tiling_.hasB);
     const uint32_t tileRows = MatTileRowsDev(pivotOrder);
     const uint32_t rowBlock = rowBase / tileRows;
     for (uint32_t colInTile = 0U; colInTile < blockCols; ++colInTile) {
@@ -1041,7 +1050,7 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::GatherInpu
 {
     const uint32_t tileRows = MatTileRowsDev(order);
     const uint32_t rowBlock = rowBase / tileRows;
-    const uint32_t physCount = tileRows * MT_TILE_COLS;  // physical tile element count
+    const uint32_t physCount = tileRows * MT_TILE_COLS; // physical tile element count
     LocalTensor<T> rawTile = gatherSrcBuf_.Get<T>();
     const uint64_t gbase = MatComplexGroupBase(group, rowBlock, order, ld);
     DataCopyExtParams p{1U, physCount * static_cast<uint32_t>(sizeof(T)), 0, 0, 0};
@@ -1096,8 +1105,7 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::StoreOutpu
     }
     // Linear output (complex input -> COL/ROW/COL32): logical row block size follows the driving
     // complex order (C -> A -> B), matching ProcessGroups' tile sizing.
-    const uint8_t pivotOrder =
-        MatPickComplexOrderDev(tiling_.orderA, tiling_.orderB, tiling_.orderC, tiling_.hasB);
+    const uint8_t pivotOrder = MatPickComplexOrderDev(tiling_.orderA, tiling_.orderB, tiling_.orderC, tiling_.hasB);
     const uint32_t tileRows = MatTileRowsDev(pivotOrder);
     const uint32_t logicalRows = (tileRows != 0U) ? tileRows : MT_MAX_TILE_ROWS;
     LocalTensor<ToutC> out = outQueueC_.AllocTensor<ToutC>();
@@ -1116,7 +1124,8 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::StoreOutpu
             DataCopyPad(MatAsDmaBytes(cGm_)[base], MatAsDmaBytes(slot), p);
         } else {
             const int64_t dstStride = static_cast<int64_t>(stepC - 1U) * static_cast<int64_t>(sizeof(ToutC));
-            DataCopyExtParams p{static_cast<uint16_t>(blockRows), static_cast<uint32_t>(sizeof(ToutC)), 0, dstStride, 0};
+            DataCopyExtParams p{
+                static_cast<uint16_t>(blockRows), static_cast<uint32_t>(sizeof(ToutC)), 0, dstStride, 0};
             DataCopyPad<DmaT, PaddingMode::Compact>(MatAsDmaBytes(cGm_)[base], MatAsDmaBytes(slot), p);
         }
     }
@@ -1127,8 +1136,7 @@ template <typename TinA, typename TinB, typename ToutC, typename TScale>
 __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::ProcessGroupTile(
     uint32_t group, uint32_t rowBlock, uint32_t blockRows, uint32_t blockCols)
 {
-    const uint8_t pivotOrder =
-        MatPickComplexOrderDev(tiling_.orderA, tiling_.orderB, tiling_.orderC, tiling_.hasB);
+    const uint8_t pivotOrder = MatPickComplexOrderDev(tiling_.orderA, tiling_.orderB, tiling_.orderC, tiling_.hasB);
     const uint32_t tileRows = MatTileRowsDev(pivotOrder);
     const uint32_t rowBase = rowBlock * tileRows;
     // Compute over the full 32x32 column-major tile (fixed 32-element column stride). Padding slots
@@ -1140,8 +1148,8 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::ProcessGro
         GatherInputTile<TinA>(aGm_, tiling_.orderA, tiling_.lda, group, rowBase, accA);
     } else {
         LocalTensor<TinA> aIn = inQueueA_.AllocTensor<TinA>();
-        LoadTileColumnMajor<TinA>(aGm_, aIn, tiling_.orderA, tiling_.opA, tiling_.lda, group, rowBase, blockRows,
-                                  blockCols);
+        LoadTileColumnMajor<TinA>(
+            aGm_, aIn, tiling_.orderA, tiling_.opA, tiling_.lda, group, rowBase, blockRows, blockCols);
         inQueueA_.EnQue(aIn);
         LocalTensor<TinA> aLoaded = inQueueA_.DeQue<TinA>();
         MatCastToScale<TinA, TScale>(accA, aLoaded, count);
@@ -1156,8 +1164,8 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::ProcessGro
             GatherInputTile<TinB>(bGm_, tiling_.orderB, tiling_.ldb, group, rowBase, accB);
         } else {
             LocalTensor<TinB> bIn = inQueueB_.AllocTensor<TinB>();
-            LoadTileColumnMajor<TinB>(bGm_, bIn, tiling_.orderB, tiling_.opB, tiling_.ldb, group, rowBase, blockRows,
-                                      blockCols);
+            LoadTileColumnMajor<TinB>(
+                bGm_, bIn, tiling_.orderB, tiling_.opB, tiling_.ldb, group, rowBase, blockRows, blockCols);
             inQueueB_.EnQue(bIn);
             LocalTensor<TinB> bLoaded = inQueueB_.DeQue<TinB>();
             MatCastToScale<TinB, TScale>(accB, bLoaded, count);
@@ -1176,8 +1184,7 @@ template <typename TinA, typename TinB, typename ToutC, typename TScale>
 __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::ProcessGroups()
 {
     BuildTileOffsetTable();
-    const uint8_t pivotOrder =
-        MatPickComplexOrderDev(tiling_.orderA, tiling_.orderB, tiling_.orderC, tiling_.hasB);
+    const uint8_t pivotOrder = MatPickComplexOrderDev(tiling_.orderA, tiling_.orderB, tiling_.orderC, tiling_.hasB);
     const uint32_t tileRows = MatTileRowsDev(pivotOrder);
     const uint32_t numGroups = (tiling_.cols + MT_TILE_COLS - 1U) / MT_TILE_COLS;
     const uint32_t numRowBlocks = (tiling_.rows + tileRows - 1U) / tileRows;
@@ -1199,8 +1206,8 @@ __aicore__ inline void MatrixTransformAIV<TinA, TinB, ToutC, TScale>::ProcessGro
 
 template <typename TinA, typename TinB, typename ToutC, typename TScale>
 __aicore__ inline void MatrixTransformLaunch(
-    GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR idxGm, GM_ADDR idxAGm, GM_ADDR idxBGm, GM_ADDR ndAGm,
-    GM_ADDR ndBGm, const MatrixTransformTilingData& tiling)
+    GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR idxGm, GM_ADDR idxAGm, GM_ADDR idxBGm, GM_ADDR ndAGm, GM_ADDR ndBGm,
+    const MatrixTransformTilingData& tiling)
 {
     TPipe pipe;
     MatrixTransformAIV<TinA, TinB, ToutC, TScale> op;
@@ -1215,7 +1222,7 @@ constexpr uint32_t MatDtypeKey(uint8_t a, uint8_t b, uint8_t c)
 {
     return (static_cast<uint32_t>(a) << 8U) | (static_cast<uint32_t>(b) << 4U) | static_cast<uint32_t>(c);
 }
-}  // namespace
+} // namespace
 
 // Single source of truth for the materialised dtype combinations. Each X(SUFFIX, TINA, TINB, TOUTC,
 // TSCALE, CA, CB, CC) entry drives both the kernel instantiation and the router case, so adding a
@@ -1225,60 +1232,72 @@ constexpr uint32_t MatDtypeKey(uint8_t a, uint8_t b, uint8_t c)
 //   - float : FP8 {E4M3, E5M2} plus FP8<->float cross (fp8 moves as int8 bytes, casts in the scale
 //             domain, reusing the linear / group / de-layout engine byte-for-byte like INT8)
 //   - bf16  : FP4_E2M1 (packed fp4x2; dedicated unpack/transform/repack pipeline, single instance)
-#define MT_DTYPE_LIST(X)                                                                                             \
-    X(f32f32f32, float, float, float, float, MT_DTYPE_FP32, MT_DTYPE_FP32, MT_DTYPE_FP32)                            \
-    X(f16f16f16, half, half, half, float, MT_DTYPE_FP16, MT_DTYPE_FP16, MT_DTYPE_FP16)                               \
-    X(bf16bf16bf16, bfloat16_t, bfloat16_t, bfloat16_t, float, MT_DTYPE_BF16, MT_DTYPE_BF16, MT_DTYPE_BF16)          \
-    X(f16f16f32, half, half, float, float, MT_DTYPE_FP16, MT_DTYPE_FP16, MT_DTYPE_FP32)                              \
-    X(f32f32f16, float, float, half, float, MT_DTYPE_FP32, MT_DTYPE_FP32, MT_DTYPE_FP16)                             \
-    X(bf16bf16f32, bfloat16_t, bfloat16_t, float, float, MT_DTYPE_BF16, MT_DTYPE_BF16, MT_DTYPE_FP32)                \
-    X(f32f32bf16, float, float, bfloat16_t, float, MT_DTYPE_FP32, MT_DTYPE_FP32, MT_DTYPE_BF16)                      \
-    X(bf16bf16f16, bfloat16_t, bfloat16_t, half, float, MT_DTYPE_BF16, MT_DTYPE_BF16, MT_DTYPE_FP16)                 \
-    X(f16f16bf16, half, half, bfloat16_t, float, MT_DTYPE_FP16, MT_DTYPE_FP16, MT_DTYPE_BF16)                        \
-    X(i32i32i32, int32_t, int32_t, int32_t, int32_t, MT_DTYPE_INT32, MT_DTYPE_INT32, MT_DTYPE_INT32)                 \
-    X(i8i8i32, int8_t, int8_t, int32_t, int32_t, MT_DTYPE_INT8, MT_DTYPE_INT8, MT_DTYPE_INT32)                       \
-    X(i32i32i8, int32_t, int32_t, int8_t, int32_t, MT_DTYPE_INT32, MT_DTYPE_INT32, MT_DTYPE_INT8)                    \
-    X(i8i8i8, int8_t, int8_t, int8_t, int32_t, MT_DTYPE_INT8, MT_DTYPE_INT8, MT_DTYPE_INT8)                          \
-    X(e4m3e4m3e4m3, MatFp8E4m3, MatFp8E4m3, MatFp8E4m3, float, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP8_E4M3) \
-    X(e5m2e5m2e5m2, MatFp8E5m2, MatFp8E5m2, MatFp8E5m2, float, MT_DTYPE_FP8_E5M2, MT_DTYPE_FP8_E5M2, MT_DTYPE_FP8_E5M2) \
-    X(e4m3e4m3e5m2, MatFp8E4m3, MatFp8E4m3, MatFp8E5m2, float, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP8_E5M2) \
-    X(e5m2e5m2e4m3, MatFp8E5m2, MatFp8E5m2, MatFp8E4m3, float, MT_DTYPE_FP8_E5M2, MT_DTYPE_FP8_E5M2, MT_DTYPE_FP8_E4M3) \
-    X(e4m3e4m3f16, MatFp8E4m3, MatFp8E4m3, half, float, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP16)           \
-    X(e4m3e4m3bf16, MatFp8E4m3, MatFp8E4m3, bfloat16_t, float, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP8_E4M3, MT_DTYPE_BF16)    \
-    X(e4m3e4m3f32, MatFp8E4m3, MatFp8E4m3, float, float, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP32)          \
-    X(f32f32e4m3, float, float, MatFp8E4m3, float, MT_DTYPE_FP32, MT_DTYPE_FP32, MT_DTYPE_FP8_E4M3)                   \
-    X(f16f16e4m3, half, half, MatFp8E4m3, float, MT_DTYPE_FP16, MT_DTYPE_FP16, MT_DTYPE_FP8_E4M3)                     \
-    X(bf16bf16e4m3, bfloat16_t, bfloat16_t, MatFp8E4m3, float, MT_DTYPE_BF16, MT_DTYPE_BF16, MT_DTYPE_FP8_E4M3)       \
+#define MT_DTYPE_LIST(X)                                                                                            \
+    X(f32f32f32, float, float, float, float, MT_DTYPE_FP32, MT_DTYPE_FP32, MT_DTYPE_FP32)                           \
+    X(f16f16f16, half, half, half, float, MT_DTYPE_FP16, MT_DTYPE_FP16, MT_DTYPE_FP16)                              \
+    X(bf16bf16bf16, bfloat16_t, bfloat16_t, bfloat16_t, float, MT_DTYPE_BF16, MT_DTYPE_BF16, MT_DTYPE_BF16)         \
+    X(f16f16f32, half, half, float, float, MT_DTYPE_FP16, MT_DTYPE_FP16, MT_DTYPE_FP32)                             \
+    X(f32f32f16, float, float, half, float, MT_DTYPE_FP32, MT_DTYPE_FP32, MT_DTYPE_FP16)                            \
+    X(bf16bf16f32, bfloat16_t, bfloat16_t, float, float, MT_DTYPE_BF16, MT_DTYPE_BF16, MT_DTYPE_FP32)               \
+    X(f32f32bf16, float, float, bfloat16_t, float, MT_DTYPE_FP32, MT_DTYPE_FP32, MT_DTYPE_BF16)                     \
+    X(bf16bf16f16, bfloat16_t, bfloat16_t, half, float, MT_DTYPE_BF16, MT_DTYPE_BF16, MT_DTYPE_FP16)                \
+    X(f16f16bf16, half, half, bfloat16_t, float, MT_DTYPE_FP16, MT_DTYPE_FP16, MT_DTYPE_BF16)                       \
+    X(i32i32i32, int32_t, int32_t, int32_t, int32_t, MT_DTYPE_INT32, MT_DTYPE_INT32, MT_DTYPE_INT32)                \
+    X(i8i8i32, int8_t, int8_t, int32_t, int32_t, MT_DTYPE_INT8, MT_DTYPE_INT8, MT_DTYPE_INT32)                      \
+    X(i32i32i8, int32_t, int32_t, int8_t, int32_t, MT_DTYPE_INT32, MT_DTYPE_INT32, MT_DTYPE_INT8)                   \
+    X(i8i8i8, int8_t, int8_t, int8_t, int32_t, MT_DTYPE_INT8, MT_DTYPE_INT8, MT_DTYPE_INT8)                         \
+    X(e4m3e4m3e4m3, MatFp8E4m3, MatFp8E4m3, MatFp8E4m3, float, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP8_E4M3,                \
+      MT_DTYPE_FP8_E4M3)                                                                                            \
+    X(e5m2e5m2e5m2, MatFp8E5m2, MatFp8E5m2, MatFp8E5m2, float, MT_DTYPE_FP8_E5M2, MT_DTYPE_FP8_E5M2,                \
+      MT_DTYPE_FP8_E5M2)                                                                                            \
+    X(e4m3e4m3e5m2, MatFp8E4m3, MatFp8E4m3, MatFp8E5m2, float, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP8_E4M3,                \
+      MT_DTYPE_FP8_E5M2)                                                                                            \
+    X(e5m2e5m2e4m3, MatFp8E5m2, MatFp8E5m2, MatFp8E4m3, float, MT_DTYPE_FP8_E5M2, MT_DTYPE_FP8_E5M2,                \
+      MT_DTYPE_FP8_E4M3)                                                                                            \
+    X(e4m3e4m3f16, MatFp8E4m3, MatFp8E4m3, half, float, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP16)        \
+    X(e4m3e4m3bf16, MatFp8E4m3, MatFp8E4m3, bfloat16_t, float, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP8_E4M3, MT_DTYPE_BF16) \
+    X(e4m3e4m3f32, MatFp8E4m3, MatFp8E4m3, float, float, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP8_E4M3, MT_DTYPE_FP32)       \
+    X(e5m2e5m2f16, MatFp8E5m2, MatFp8E5m2, half, float, MT_DTYPE_FP8_E5M2, MT_DTYPE_FP8_E5M2, MT_DTYPE_FP16)        \
+    X(e5m2e5m2bf16, MatFp8E5m2, MatFp8E5m2, bfloat16_t, float, MT_DTYPE_FP8_E5M2, MT_DTYPE_FP8_E5M2, MT_DTYPE_BF16) \
+    X(e5m2e5m2f32, MatFp8E5m2, MatFp8E5m2, float, float, MT_DTYPE_FP8_E5M2, MT_DTYPE_FP8_E5M2, MT_DTYPE_FP32)       \
+    X(f32f32e4m3, float, float, MatFp8E4m3, float, MT_DTYPE_FP32, MT_DTYPE_FP32, MT_DTYPE_FP8_E4M3)                 \
+    X(f16f16e4m3, half, half, MatFp8E4m3, float, MT_DTYPE_FP16, MT_DTYPE_FP16, MT_DTYPE_FP8_E4M3)                   \
+    X(bf16bf16e4m3, bfloat16_t, bfloat16_t, MatFp8E4m3, float, MT_DTYPE_BF16, MT_DTYPE_BF16, MT_DTYPE_FP8_E4M3)     \
+    X(f32f32e5m2, float, float, MatFp8E5m2, float, MT_DTYPE_FP32, MT_DTYPE_FP32, MT_DTYPE_FP8_E5M2)                 \
+    X(f16f16e5m2, half, half, MatFp8E5m2, float, MT_DTYPE_FP16, MT_DTYPE_FP16, MT_DTYPE_FP8_E5M2)                   \
+    X(bf16bf16e5m2, bfloat16_t, bfloat16_t, MatFp8E5m2, float, MT_DTYPE_BF16, MT_DTYPE_BF16, MT_DTYPE_FP8_E5M2)     \
     X(e2m1e2m1e2m1, MatFp4x2, MatFp4x2, MatFp4x2, bfloat16_t, MT_DTYPE_FP4, MT_DTYPE_FP4, MT_DTYPE_FP4)
 
-#define MT_DEFINE_KERNEL(SUFFIX, TINA, TINB, TOUTC, TSCALE, CA, CB, CC)                                         \
-    __global__ __aicore__ void MatrixTransformKernel_##SUFFIX(                                                 \
-        GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR idxGm, GM_ADDR idxAGm, GM_ADDR idxBGm, GM_ADDR ndAGm,   \
-        GM_ADDR ndBGm, const MatrixTransformTilingData tiling)                                                 \
-    {                                                                                                         \
-        KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);                                                       \
-        MatrixTransformLaunch<TINA, TINB, TOUTC, TSCALE>(                                                      \
-            aGm, bGm, cGm, idxGm, idxAGm, idxBGm, ndAGm, ndBGm, tiling);                                       \
+#define MT_DEFINE_KERNEL(SUFFIX, TINA, TINB, TOUTC, TSCALE, CA, CB, CC)                                               \
+    __global__ __aicore__ void MatrixTransformKernel_##SUFFIX(                                                        \
+        GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR idxGm, GM_ADDR idxAGm, GM_ADDR idxBGm, GM_ADDR ndAGm,          \
+        GM_ADDR ndBGm, const MatrixTransformTilingData tiling)                                                        \
+    {                                                                                                                 \
+        KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);                                                               \
+        MatrixTransformLaunch<TINA, TINB, TOUTC, TSCALE>(aGm, bGm, cGm, idxGm, idxAGm, idxBGm, ndAGm, ndBGm, tiling); \
     }
 MT_DTYPE_LIST(MT_DEFINE_KERNEL)
 #undef MT_DEFINE_KERNEL
 
-#define MT_LAUNCH(SUFFIX)                                                                       \
-    MatrixTransformKernel_##SUFFIX<<<numBlocks, nullptr, stream>>>(                              \
+#define MT_LAUNCH(SUFFIX)                                           \
+    MatrixTransformKernel_##SUFFIX<<<numBlocks, nullptr, stream>>>( \
         aGm, bGm, cGm, idxGm, idxAGm, idxBGm, ndAGm, ndBGm, tiling)
 
 void matrix_transform_kernel_do(
-    GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR idxGm, GM_ADDR idxAGm, GM_ADDR idxBGm, GM_ADDR ndAGm,
-    GM_ADDR ndBGm, uint8_t dtypeA, uint8_t dtypeB, uint8_t dtypeC, const MatrixTransformTilingData& tiling,
-    uint32_t numBlocks, void* stream)
+    GM_ADDR aGm, GM_ADDR bGm, GM_ADDR cGm, GM_ADDR idxGm, GM_ADDR idxAGm, GM_ADDR idxBGm, GM_ADDR ndAGm, GM_ADDR ndBGm,
+    uint8_t dtypeA, uint8_t dtypeB, uint8_t dtypeC, const MatrixTransformTilingData& tiling, uint32_t numBlocks,
+    void* stream)
 {
     const uint32_t key = MatDtypeKey(dtypeA, dtypeB, dtypeC);
     switch (key) {
 #define MT_CASE(SUFFIX, TINA, TINB, TOUTC, TSCALE, CA, CB, CC) \
-    case MatDtypeKey(CA, CB, CC): MT_LAUNCH(SUFFIX); break;
+    case MatDtypeKey(CA, CB, CC):                              \
+        MT_LAUNCH(SUFFIX);                                     \
+        break;
         MT_DTYPE_LIST(MT_CASE)
 #undef MT_CASE
-        default: break;
+        default:
+            break;
     }
 }
 

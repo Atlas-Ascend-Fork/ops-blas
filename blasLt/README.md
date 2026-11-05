@@ -38,7 +38,7 @@ D = alpha * op(A) * op(B) + beta * C
 | 输入/输出类型 | A/B/C/D 均为 FP32，`ACLBLAS_COMPUTE_32F` | FP32 及下文规定的 MXFP8/MXFP4 组合 |
 | 布局与 batch | ROW，单 batch，无 batch stride | ROW，单 batch，无 batch stride |
 | 转置 | N/T/C；FP32 实数的 C 按 T 执行 | N/T；C 返回 `ACLBLAS_STATUS_NOT_SUPPORTED` |
-| 标量 pointerMode | FP32 HOST；DEVICE 返回 `ACLBLAS_STATUS_INVALID_VALUE` | FP32 HOST 或 DEVICE |
+| 标量 pointerMode | FP32 HOST；DEVICE 返回 `ACLBLAS_STATUS_INVALID_VALUE` | FP32 HOST；DEVICE 返回 `ACLBLAS_STATUS_NOT_SUPPORTED` |
 | 非 FP32 scaleType | `ACLBLAS_STATUS_NOT_SUPPORTED` | `ACLBLAS_STATUS_INVALID_VALUE` |
 | `MatrixLayoutCreate(..., ld=0)` 后读取 LD | 返回原始值 0，执行 ROW 计划时按 `max(1, cols)` 解析 | 创建时归一为 rows，读取返回 rows |
 
