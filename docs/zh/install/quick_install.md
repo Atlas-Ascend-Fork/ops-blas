@@ -102,6 +102,8 @@ docker run --name cann_container --device /dev/davinci0 --device /dev/davinci_ma
 
     请参考《[CANN快速安装](https://www.hiascend.com/cann/download)》，选择`稳定版本`（仅支持CANN 9.0.0及后续版本），并根据产品系列、CPU架构、操作系统等下载对应包，最后参考页面提供的命令完成安装。
 
+> 说明：若《CANN快速安装》页面提供的命令以 `./` 开头执行 `.run` 包，请先对下载的 `.run` 包执行 `chmod +x` 赋予可执行权限。
+
 #### 安装基础依赖
  	 
 本项目基础依赖如下，注意满足版本号要求。
