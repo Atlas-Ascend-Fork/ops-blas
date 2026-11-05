@@ -129,15 +129,16 @@ __aicore__ inline void SscalAIV::Process()
 }
 
 __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void SscalSimtCompute(
-    uint32_t calNum, uint32_t startOffset, uint32_t stride, float alpha,
-    __gm__ float* xGm)
+    uint32_t calNum, uint32_t startOffset, uint64_t stride, float alpha, __gm__ float* xGm)
 {
     if (calNum == 0) {
         return;
     }
 
     for (uint32_t i = threadIdx.x; i < calNum; i += blockDim.x) {
-        uint32_t idx = (startOffset + i) * stride;
+        // issue #806: 索引与 stride 统一 uint64 域（对齐同族 csscal 的 uint64 索引写法），
+        // (n-1)*incx 超出 uint32 时 uint32 乘法回绕会读写错误地址（in-place 写，破坏性强）。
+        const uint64_t idx = (static_cast<uint64_t>(startOffset) + i) * stride;
         xGm[idx] = alpha * xGm[idx];
     }
 }
@@ -159,18 +160,16 @@ __global__ __aicore__ void sscal_simt_kernel(GM_ADDR x, SscalTilingData tdata)
     uint32_t calNum = tdata.calCount[blockIdx];
 
     if (calNum > 0) {
-        uint32_t stride = static_cast<uint32_t>(tdata.incx);
+        // issue #806: tdata.incx 为 int64 域，经 uint32 窄化会在步长超出 uint32 时符号/量值
+        // 双重失真；直接以 uint64 传入 SIMT 计算核。
+        const uint64_t stride = static_cast<uint64_t>(tdata.incx);
         asc_vf_call<SscalSimtCompute>(
-            dim3{tdata.nthreads, 1, 1},
-            calNum, tdata.startOffset[blockIdx],
-            stride,
-            tdata.alpha,
+            dim3{tdata.nthreads, 1, 1}, calNum, tdata.startOffset[blockIdx], stride, tdata.alpha,
             reinterpret_cast<__gm__ float*>(x));
     }
 }
 
-void sscal_kernel_do(GM_ADDR x, GM_ADDR workSpace, const SscalTilingData& tiling,
-                     uint32_t numBlocks, void* stream)
+void sscal_kernel_do(GM_ADDR x, GM_ADDR workSpace, const SscalTilingData& tiling, uint32_t numBlocks, void* stream)
 {
     auto aclStream = static_cast<aclrtStream>(stream);
 

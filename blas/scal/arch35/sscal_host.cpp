@@ -127,6 +127,17 @@ aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, 
         return status;
     }
 
+    // issue #806: SIMT 路径按 (startOffset + i) * stride 计算元素偏移，(n-1)*incx 超出
+    // uint32 索引域时回绕读写错误地址（in-place 写，破坏性强）。kernel 侧已统一 uint64
+    // 索引（对齐同族 csscal），此处按 srot_host.cpp 的拒绝式守卫口径再做跨度校验。
+    const int64_t span = static_cast<int64_t>(n - 1) * static_cast<int64_t>(incx);
+    if (span > static_cast<int64_t>(UINT32_MAX)) {
+        OP_LOGE(
+            "aclblasSscal", "strided offset overflow: n=%d incx=%d span=%lld exceeds uint32 index domain", n, incx,
+            static_cast<long long>(span));
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+
     uint32_t aivCoreNum = GetAivCoreCount();
     if (aivCoreNum == 0) {
         OP_LOGE("aclblasSscal", "GetAivCoreCount failed");
