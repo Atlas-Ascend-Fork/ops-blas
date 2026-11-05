@@ -27,9 +27,8 @@
 |      类型      |                                           开源代码地址                                           |                            文件名                             |             公网IP地址/公网URL地址/域名/邮箱地址/压缩文件地址             |                   用途说明                    |
 | :------------: |:------------------------------------------------------------------------------------------:|:----------------------------------------------------------| :---------------------------------------------------------- |:-----------------------------------------|
 |  依赖  | 不涉及  | cmake/third_party/makeself-fetch.cmake | https://gitcode.com/cann-src-third-party/makeself/releases/download/release-2.5.0-patch1.0/makeself-release-2.5.0-patch1.tar.gz | 从gitcode下载makeself源码，作用编译依赖 |
-|  依赖  | 不涉及  | cmake/third_party/json.cmake | https://gitcode.com/cann-src-third-party/json/releases/download/v3.11.3/include.zip | 从gitcode下载json源码，作用编译依赖 |
-|  依赖  | 不涉及  | cmake/third_party/gtest.cmake | https://gitcode.com/cann-src-third-party/googletest/releases/download/v1.14.0/googletest-1.14.0.tar.gz | 从gitcode下载googletest源码，作用编译依赖 |
-|  依赖  | 不涉及  | cmake/third_party/eigen.cmake | https://gitcode.com/cann-src-third-party/eigen/releases/download/3.4.0/eigen-3.4.0.tar.gz | 从gitcode下载eigen源码，作用编译依赖 |
+|  依赖  | https://gitcode.com/cann/ops-tensor.git | cmake/third_party/ops-tensor.cmake | https://gitcode.com/cann/ops-tensor.git（git clone 固定 commit c1326e7a7fb30536dc3517ac40e06935aba5e88d，并执行 submodule update --init --recursive 拉取 include/tensor_api 子模块） | 从gitcode克隆ops-tensor源码并初始化子模块，作用编译依赖 |
+|  依赖  | https://gitcode.com/google/googletest.git | install_deps.sh（install_googletest 函数） | https://gitcode.com/google/googletest.git（git clone --depth 1 --branch release-1.11.0 源码编译安装） | 从gitcode克隆googletest release-1.11.0源码编译安装，作用测试依赖 |
 ---
 
 ## 漏洞机制说明
