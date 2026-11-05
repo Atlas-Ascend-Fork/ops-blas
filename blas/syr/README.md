@@ -16,6 +16,7 @@ A := alpha * x * x^T + A
 |--------|---------|
 | aclblasSsyr | 单精度对称秩-1更新 |
 | aclblasCsyr | 单精度复数对称秩-1更新（不共轭） |
+| aclblasCher | 单精度复数 Hermitian 秩-1更新（arch35 / Ascend 950PR） |
 
 ## 算子执行接口
 
@@ -370,3 +371,167 @@ arch22 测试覆盖上下三角、正负步长、参数校验、Host/Device alph
 快速返回、G3 未引用区域快照断言与性能用例；arch35 测试覆盖上下三角、正负步长、
 参数校验、Host/Device alpha、特殊浮点值、4 字节地址对齐，以及输入向量、另一
 三角区域和 padding 不被修改的检查。
+
+### aclblasCher
+
+#### 产品支持情况
+
+- Ascend 950PR / Ascend 950DT：支持（arch35）
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasCher(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, const int n,
+    const float* alpha, const aclblasComplex* x, const int incx,
+    aclblasComplex* A, const int lda);
+```
+
+对标 cuBLAS `cublasCher` / Netlib `cher`，计算单精度复数 Hermitian 秩-1更新：
+
+```
+A := alpha * x * x^H + A
+```
+
+其中 `alpha` 为实数 float；`x`、`A` 为 COMPLEX64；仅 `uplo` 指定三角区域被引用和更新；对角虚部更新后置 0。
+
+#### 参数说明
+
+| 参数名 | 输入/输出 | 参数类型 | 说明 |
+|--------|----------|---------|------|
+| handle | 输入 | aclblasHandle_t | 库上下文句柄，携带 stream，Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | ACLBLAS_UPPER / ACLBLAS_LOWER |
+| n | 输入 | int | 矩阵阶数，n >= 0 |
+| alpha | 输入 | const float* | 实数标量，Host 或 Device 指针；Device 路径异步由 kernel 读取（与 Csyr 一致）；nullptr 非法；0.0 为 no-op |
+| x | 输入 | const aclblasComplex* | 复数向量，Device 内存 |
+| incx | 输入 | int | 步长，incx != 0，支持负步长；`INT_MIN` 非法 |
+| A | 输入/输出 | aclblasComplex* | Hermitian 矩阵，Device 内存，列主序 |
+| lda | 输入 | int | 前导维，lda >= max(1, n) |
+
+#### 约束说明
+
+- `n == 0` 或 `alpha == 0.0`：合法 quick return，不更新 A
+- 非法 `uplo` 返回 `ACLBLAS_STATUS_INVALID_ENUM`
+- `incx == 0` 或 `incx == INT_MIN` 返回 `ACLBLAS_STATUS_INVALID_VALUE`
+
+#### 调用示例
+
+示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](https://gitcode.com/cann/ops-blas/blob/master/docs/zh/develop/compile_and_run_example.md)。
+
+```cpp
+#include <cstdio>
+#include <memory>
+#include <vector>
+
+#include "acl/acl.h"
+#include "cann_ops_blas.h"
+
+#define CHECK_RET(cond, return_expr) \
+    do {                             \
+        if (!(cond)) {               \
+            return_expr;             \
+        }                            \
+    } while (0)
+
+#define LOG_PRINT(message, ...)         \
+    do {                                \
+        printf(message, ##__VA_ARGS__); \
+    } while (0)
+
+class AclContext {
+public:
+    explicit AclContext(int32_t deviceId) : deviceId_(deviceId) {}
+
+    ~AclContext()
+    {
+        if (stream_ != nullptr) {
+            aclrtDestroyStream(stream_);
+            stream_ = nullptr;
+        }
+        if (deviceSet_) {
+            aclrtResetDevice(deviceId_);
+            deviceSet_ = false;
+        }
+        if (aclInited_) {
+            aclFinalize();
+            aclInited_ = false;
+        }
+    }
+
+    int Init()
+    {
+        auto ret = aclInit(nullptr);
+        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclInit failed. ERROR: %d\n", ret); return ret);
+        aclInited_ = true;
+        ret = aclrtSetDevice(deviceId_);
+        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclrtSetDevice failed. ERROR: %d\n", ret); return ret);
+        deviceSet_ = true;
+        ret = aclrtCreateStream(&stream_);
+        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclrtCreateStream failed. ERROR: %d\n", ret); return ret);
+        return ACL_SUCCESS;
+    }
+
+    aclrtStream Stream() const { return stream_; }
+
+private:
+    int32_t deviceId_;
+    aclrtStream stream_ = nullptr;
+    bool aclInited_ = false;
+    bool deviceSet_ = false;
+};
+
+int aclblasCherTest(AclContext& ctx)
+{
+    aclrtStream stream = ctx.Stream();
+    aclblasHandle_t rawHandle = nullptr;
+    auto blasRet = aclblasCreate(&rawHandle);
+    CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
+              return blasRet);
+    std::unique_ptr<void, aclblasStatus_t (*)(void*)> handlePtr(rawHandle, aclblasDestroy);
+    blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
+    CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
+              return blasRet);
+
+    constexpr int n = 2;
+    constexpr int incx = 1;
+    constexpr int lda = n;
+    constexpr size_t xBytes = n * sizeof(aclblasComplex);
+    constexpr size_t aBytes = static_cast<size_t>(lda) * n * sizeof(aclblasComplex);
+    std::vector<aclblasComplex> hX = {{1.0f, 2.0f}, {3.0f, -1.0f}};
+    std::vector<aclblasComplex> hA(static_cast<size_t>(lda) * n, {0.0f, 0.0f});
+    float alpha = 1.0f;
+
+    void* rawX = nullptr;
+    void* rawA = nullptr;
+    aclError aclRet = aclrtMalloc(&rawX, xBytes, ACL_MEM_MALLOC_HUGE_FIRST);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc x failed. ERROR: %d\n", aclRet); return aclRet);
+    std::unique_ptr<void, aclError (*)(void*)> dXPtr(rawX, aclrtFree);
+    aclRet = aclrtMalloc(&rawA, aBytes, ACL_MEM_MALLOC_HUGE_FIRST);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc A failed. ERROR: %d\n", aclRet); return aclRet);
+    std::unique_ptr<void, aclError (*)(void*)> dAPtr(rawA, aclrtFree);
+
+    aclRet = aclrtMemcpy(dXPtr.get(), xBytes, hX.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy x failed. ERROR: %d\n", aclRet); return aclRet);
+    aclRet = aclrtMemcpy(dAPtr.get(), aBytes, hA.data(), aBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy A failed. ERROR: %d\n", aclRet); return aclRet);
+
+    blasRet = aclblasCher(
+        static_cast<aclblasHandle_t>(handlePtr.get()), ACLBLAS_LOWER, n, &alpha,
+        static_cast<const aclblasComplex*>(dXPtr.get()), incx, static_cast<aclblasComplex*>(dAPtr.get()), lda);
+    CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCher failed. ERROR: %d\n", blasRet);
+              return blasRet);
+    aclRet = aclrtSynchronizeStream(stream);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); return aclRet);
+    return ACLBLAS_STATUS_SUCCESS;
+}
+```
+
+#### 编译与自测
+
+```bash
+bash build.sh --ops=cher --soc=ascend950 --run
+```
+
+测试目录：`test/syr/cher/`（CSV + GTest；golden 为手写 CPU 参考实现 `ComputeGoldenCher`，含负 `incx`）。

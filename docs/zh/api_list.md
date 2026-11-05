@@ -974,6 +974,7 @@ Level 2 接口在矩阵与向量之间进行运算，典型操作包括通用矩
 | [aclblasStrttp](../../blas/trttp/README.md) | 单精度常规三角矩阵压缩为 packed 格式 |
 | [aclblasSsyr](../../blas/syr/README.md) | 单精度对称秩-1 更新 |
 | [aclblasCsyr](../../blas/syr/README.md) | 单精度复数对称秩-1 更新（不共轭） |
+| [aclblasCher](../../blas/syr/README.md) | 单精度复数 Hermitian 秩-1 更新（Ascend 950PR） |
 | [aclblasSsyr2](../../blas/syr2/README.md) | 单精度对称秩-2 更新 |
 | [aclblasCsyr2](../../blas/syr2/README.md) | 单精度复数对称秩-2 更新（不共轭） |
 | [aclblasCher2](../../blas/syr2/README.md) | 单精度复数 Hermitian 秩-2 更新 |
