@@ -34,7 +34,12 @@ inline constexpr GemvBufCfg kGmvCfg_TSS = {sizeof(uint16_t), sizeof(float), 2, t
 
 inline GemvType SelectGemvType(uint32_t dtype)
 {
-    return (dtype == 2) ? GemvType::HSH :
+    // issue #797: dtype 语义以 host/kernel 侧为准（gemv_batched_host.cpp CalTilingData：
+    // dtype==2 走 HSS tiling；gemv_batched_kernel.cpp D_NORM：dtype==2 即 half 输入 / float
+    // 输出 y）。此前 dtype==2 被映射为 HSH，ComputeBufferLayout 按 kGmvCfg_HSH 的 2 字节
+    // y 布局分配，与 kernel 的 4 字节 float y 读写不一致（UB 布局减半、转置路径 elemSize
+    // 误判、tile 搜索偏移潜在越界），HSS 枚举值不可达。
+    return (dtype == 2) ? GemvType::HSS :
            (dtype == 3) ? GemvType::TST :
            (dtype == 4) ? GemvType::TSS :
            (dtype != 0) ? GemvType::S :
