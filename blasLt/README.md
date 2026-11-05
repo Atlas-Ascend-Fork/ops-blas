@@ -79,6 +79,7 @@ aclblasStatus_t aclblasLtMatmul(aclblasLtHandle_t lightHandle, aclblasLtMatmulDe
 - M、N、K >= 0；M=0 或 N=0 时为空操作，直接返回 `ACLBLAS_STATUS_SUCCESS`
 - Atlas A2/A3 的 A/B/C/D 均为 FP32；以下 MXFP8/MXFP4 与 BF16 输出约束仅适用于 Ascend 950PR/950DT
 - dtypeA / dtypeB 须为同类型组合：FP32×FP32、MXFP8×MXFP8、MXFP4×MXFP4；其他组合返回 `ACLBLAS_STATUS_NOT_SUPPORTED`
+- MXFP8 路径的 FP8 位型当前仅支持 E4M3FN（FP8_E5M2 输入返回 `ACLBLAS_STATUS_NOT_SUPPORTED`，不会静默按 E4M3 解码）
 - dtypeC 当前固定为 FP32
 - dtypeD 支持 FP32 或 BF16；MXFP8/MXFP4 路径支持 FP32 或 BF16 输出，FP32 路径输出 FP32
 - computeType 当前仅支持 `ACLBLAS_COMPUTE_32F`

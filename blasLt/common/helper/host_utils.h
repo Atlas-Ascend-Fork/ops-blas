@@ -120,20 +120,11 @@ inline size_t GetTypeSize(aclDataType dt)
     }
 }
 
-inline bool IsDataTypeSupported(aclDataType dt)
-{
-    return GetTypeSize(dt) != 0;
-}
+inline bool IsDataTypeSupported(aclDataType dt) { return GetTypeSize(dt) != 0; }
 
-inline bool IsMxfp8Type(aclDataType dt)
-{
-    return dt == ACL_FLOAT8_E4M3FN || dt == ACL_FLOAT8_E5M2;
-}
+inline bool IsMxfp8Type(aclDataType dt) { return dt == ACL_FLOAT8_E4M3FN || dt == ACL_FLOAT8_E5M2; }
 
-inline bool IsMxfp4Type(aclDataType dt)
-{
-    return dt == ACL_FLOAT4_E2M1;
-}
+inline bool IsMxfp4Type(aclDataType dt) { return dt == ACL_FLOAT4_E2M1; }
 
 inline bool CheckComputeTypeCompatibility(aclblasComputeType_t ct, aclDataType typeA, aclDataType typeB)
 {
@@ -170,8 +161,8 @@ inline uint64_t CeilDivU64(T1 a, T2 b)
 template <typename R = uint32_t, typename T1, typename T2>
 inline R CeilDiv(T1 a, T2 b)
 {
-    static_assert(std::is_arithmetic<T1>::value && std::is_arithmetic<T2>::value,
-                  "CeilDiv arguments must be arithmetic types");
+    static_assert(
+        std::is_arithmetic<T1>::value && std::is_arithmetic<T2>::value, "CeilDiv arguments must be arithmetic types");
     static_assert(std::is_arithmetic<R>::value, "CeilDiv return type must be arithmetic");
     return static_cast<R>(CeilDivU64(a, b));
 }
@@ -297,11 +288,18 @@ inline AclblasMxDtypeRule CheckCAndMxDtypeRules(
         return AclblasMxDtypeRule::kUnsupported;
     }
     if (IsMxfp8Type(dtypeA) && IsMxfp8Type(dtypeB)) {
+        // issue #802: MXFP8 内核模板固定 E4M3FN 位型（matmul_mxfp8_kernel.cpp 的 AType/BType），
+        // E5M2 输入此前被静默按 E4M3 解码（指数/尾数位划分不同，结果错误且无报错）。校验链
+        // 显式拒绝 E5M2（engine MXFP8 分发同步拦截），文档声明 MXFP8 仅支持 E4M3FN；
+        // E5M2 双实例化留作后续需求评估。
+        if (dtypeA == ACL_FLOAT8_E5M2 || dtypeB == ACL_FLOAT8_E5M2) {
+            return AclblasMxDtypeRule::kUnsupported;
+        }
         return (dtypeD == ACL_BF16) ? AclblasMxDtypeRule::kSupported : AclblasMxDtypeRule::kUnsupported;
     }
     if (IsMxfp4Type(dtypeA) && IsMxfp4Type(dtypeB)) {
-        return (dtypeD == ACL_BF16 || dtypeD == ACL_FLOAT) ? AclblasMxDtypeRule::kSupported
-                                                           : AclblasMxDtypeRule::kUnsupported;
+        return (dtypeD == ACL_BF16 || dtypeD == ACL_FLOAT) ? AclblasMxDtypeRule::kSupported :
+                                                             AclblasMxDtypeRule::kUnsupported;
     }
     return AclblasMxDtypeRule::kNotMxPath;
 }

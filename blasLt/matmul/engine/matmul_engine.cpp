@@ -79,6 +79,11 @@ aclblasStatus_t LaunchMmadKernel(
     // NOT_SUPPORTED return below, matching the unsupported-dtype fallback semantics.
 #if defined(ENABLE_BLASLT_MXFP8) && (ENABLE_BLASLT_MXFP8)
     if (IsMxfp8Type(dtypeA) && IsMxfp8Type(dtypeB)) {
+        // issue #802: 内核固定 E4M3FN 位型，E5M2 输入到达分发层（如序列化 algo 复用等绕过
+        // 前置校验链的路径）时也明确拒绝，不静默按 E4M3 解码。
+        if (dtypeA == ACL_FLOAT8_E5M2 || dtypeB == ACL_FLOAT8_E5M2) {
+            return ACLBLAS_STATUS_NOT_SUPPORTED;
+        }
         if (problem.scaleA == nullptr || problem.scaleB == nullptr) {
             return ACLBLAS_STATUS_INVALID_VALUE;
         }
