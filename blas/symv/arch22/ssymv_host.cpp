@@ -46,9 +46,15 @@ static SymvTilingData CalSymvTilingData(
     return tilingData;
 }
 
-aclblasStatus_t aclblasSsymv(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* alpha, const float* a, int lda, const float* x,
-    int incx, const float* beta, float* y, int incy)
+// 参数合法性（uplo/handle/步长/lda/指针）与 issue #807 大跨度守卫的一次性校验。
+// 返回 INVALID_VALUE / HANDLE_IS_NULLPTR 表示非法入参；n<=0 属空操作语义（cuBLAS 约定），
+// 返回 SUCCESS 并由调用方按 n<=0 短路、不下发 kernel。校验顺序与既有入口一致。
+// issue #807: kernel 侧步长物理位置换算与 SetGlobalBuffer 长度已统一 uint64 域，
+// 此处按 srot_host.cpp 的拒绝式守卫口径校验 (n-1)*|incx| / (n-1)*|incy| 跨度，
+// 拒绝超出 uint32 索引域的大跨度调用后再下发 kernel。
+static aclblasStatus_t ValidateSsymvArgs(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, int lda, const float* alpha, const float* a, const float* x,
+    const float* beta, float* y, int incx, int incy)
 {
     if (uplo != ACLBLAS_UPPER && uplo != ACLBLAS_LOWER) {
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -67,6 +73,31 @@ aclblasStatus_t aclblasSsymv(
     }
     if (alpha == nullptr || beta == nullptr || a == nullptr || x == nullptr || y == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    const int64_t incxAbs = (incx >= 0) ? static_cast<int64_t>(incx) : -static_cast<int64_t>(incx);
+    const int64_t incyAbs = (incy >= 0) ? static_cast<int64_t>(incy) : -static_cast<int64_t>(incy);
+    const int64_t spanX = static_cast<int64_t>(n - 1) * incxAbs;
+    const int64_t spanY = static_cast<int64_t>(n - 1) * incyAbs;
+    constexpr int64_t kMaxSpan = static_cast<int64_t>(UINT32_MAX);
+    if (spanX > kMaxSpan || spanY > kMaxSpan) {
+        OP_LOGE(
+            "aclblasSsymv", "strided offset overflow: n=%d incx=%d incy=%d spanX=%lld spanY=%lld", n, incx, incy,
+            static_cast<long long>(spanX), static_cast<long long>(spanY));
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+aclblasStatus_t aclblasSsymv(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* alpha, const float* a, int lda, const float* x,
+    int incx, const float* beta, float* y, int incy)
+{
+    aclblasStatus_t checkStatus = ValidateSsymvArgs(handle, uplo, n, lda, alpha, a, x, beta, y, incx, incy);
+    if (checkStatus != ACLBLAS_STATUS_SUCCESS) {
+        return checkStatus;
+    }
+    if (n <= 0) {
+        return ACLBLAS_STATUS_SUCCESS;
     }
 
     auto* h = handle;

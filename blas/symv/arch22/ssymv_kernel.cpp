@@ -57,13 +57,17 @@ private:
         x2Queue.EnQue<T>(LocalX2);
     }
 
-    __aicore__ inline uint32_t XPhysicalPos(uint32_t logical)
+    __aicore__ inline uint64_t XPhysicalPos(uint32_t logical)
     {
-        return (incx >= 0) ? (logical * absIncx) : ((n - 1U - logical) * absIncx);
+        // issue #807: 物理位置换算统一 uint64 域（对齐同函数 aGM 尺寸的 64 位写法），
+        // (n-1)*|incx| 不小于 2^32 时 uint32 乘法回绕会索引错误地址。
+        return (incx >= 0) ? (static_cast<uint64_t>(logical) * absIncx) :
+                             (static_cast<uint64_t>(n - 1U - logical) * absIncx);
     }
-    __aicore__ inline uint32_t YPhysicalPos(uint32_t logical)
+    __aicore__ inline uint64_t YPhysicalPos(uint32_t logical)
     {
-        return (incy >= 0) ? (logical * absIncy) : ((n - 1U - logical) * absIncy);
+        return (incy >= 0) ? (static_cast<uint64_t>(logical) * absIncy) :
+                             (static_cast<uint64_t>(n - 1U - logical) * absIncy);
     }
 
     // chunk 是否全程位于对角线一侧（不含对角元）：UPPER 走 [0, row]，纯三角 chunk
@@ -128,8 +132,10 @@ __aicore__ inline void SymvAIV<T>::Init(GM_ADDR a, GM_ADDR x, GM_ADDR y, const S
     absIncx = (incx >= 0) ? static_cast<uint32_t>(incx) : static_cast<uint32_t>(-incx);
     absIncy = (incy >= 0) ? static_cast<uint32_t>(incy) : static_cast<uint32_t>(-incy);
 
-    xGM.SetGlobalBuffer((__gm__ T*)x, (n - 1U) * absIncx + 1U);
-    yGM.SetGlobalBuffer((__gm__ T*)y, (n - 1U) * absIncy + 1U);
+    // issue #807: x/y 缓冲长度按 uint64 计算（原 uint32 表达式在跨度不小于 2^32 时溢出，
+    // SetGlobalBuffer 拿到错误长度）；aGM 尺寸已是 uint64 口径。
+    xGM.SetGlobalBuffer((__gm__ T*)x, static_cast<uint64_t>(n - 1U) * absIncx + 1U);
+    yGM.SetGlobalBuffer((__gm__ T*)y, static_cast<uint64_t>(n - 1U) * absIncy + 1U);
     aGM.SetGlobalBuffer((__gm__ T*)a, static_cast<uint64_t>(this->n) * this->lda);
 
     maxDataCount = 30 * 1024 / BYTENUM_PER_FLOAT32;
@@ -204,7 +210,7 @@ __aicore__ inline void SymvAIV<T>::CopyOutV2(
         DataCopyExtParams copyParams{1, static_cast<uint32_t>(sizeof(T)), 0, 0, 0};
         DataCopyPad(yGM[rowOffset], zLocal, copyParams);
     } else {
-        uint32_t pos = YPhysicalPos(rowOffset);
+        uint64_t pos = YPhysicalPos(rowOffset);
         yGM.SetValue(pos, yGM.GetValue(pos) + zLocal.GetValue(0));
     }
     zQueue.FreeTensor(zLocal);
@@ -225,12 +231,12 @@ __aicore__ inline void SymvAIV<T>::CopyOutV2(
     } else {
         if (IsPureTriangleChunk(rowOffset, colOffset, dataCount)) {
             for (uint32_t i = 0; i < dataCount; i++) {
-                uint32_t pos = YPhysicalPos(colOffset + i);
+                uint64_t pos = YPhysicalPos(colOffset + i);
                 yGM.SetValue(pos, yGM.GetValue(pos) + z2Local.GetValue(i));
             }
         } else if (dataCount > 1) {
             for (uint32_t i = 0; i < dataCount - 1; i++) {
-                uint32_t pos = YPhysicalPos(colOffset + i);
+                uint64_t pos = YPhysicalPos(colOffset + i);
                 yGM.SetValue(pos, yGM.GetValue(pos) + z2Local.GetValue(i));
             }
         }
@@ -307,7 +313,7 @@ __aicore__ inline void SymvAIV<T>::CopyOutPadV2(
     if (incy == 1) {
         DataCopyPad(yGM[rowOffset], zLocal, copyParams);
     } else {
-        uint32_t pos = YPhysicalPos(rowOffset);
+        uint64_t pos = YPhysicalPos(rowOffset);
         yGM.SetValue(pos, yGM.GetValue(pos) + zLocal.GetValue(0));
     }
     zQueue.FreeTensor(zLocal);
@@ -328,12 +334,12 @@ __aicore__ inline void SymvAIV<T>::CopyOutPadV2(
     } else {
         if (IsPureTriangleChunk(rowOffset, colOffset, dataCount)) {
             for (uint32_t i = 0; i < dataCount; i++) {
-                uint32_t pos = YPhysicalPos(colOffset + i);
+                uint64_t pos = YPhysicalPos(colOffset + i);
                 yGM.SetValue(pos, yGM.GetValue(pos) + z2Local.GetValue(i));
             }
         } else if (dataCount > 1) {
             for (uint32_t i = 0; i < dataCount - 1; i++) {
-                uint32_t pos = YPhysicalPos(colOffset + i);
+                uint64_t pos = YPhysicalPos(colOffset + i);
                 yGM.SetValue(pos, yGM.GetValue(pos) + z2Local.GetValue(i));
             }
         }
@@ -409,7 +415,7 @@ __aicore__ inline void SymvAIV<T>::CopyOutVec(uint32_t curOffset, uint32_t dataC
     } else {
         LocalTensor<T> LocalZ = z2Queue.DeQue<T>();
         for (uint32_t i = 0; i < dataCount; i++) {
-            uint32_t pos = YPhysicalPos(curOffset + i);
+            uint64_t pos = YPhysicalPos(curOffset + i);
             yGM.SetValue(pos, yGM.GetValue(pos) + LocalZ.GetValue(i));
         }
         z2Queue.FreeTensor(LocalZ);
@@ -471,7 +477,7 @@ __aicore__ inline void SymvAIV<T>::CopyOutYBeta(uint32_t curOffset, uint32_t dat
     } else {
         LocalTensor<T> LocalZ = z2Queue.DeQue<T>();
         for (uint32_t i = 0; i < dataCount; i++) {
-            uint32_t pos = YPhysicalPos(curOffset + i);
+            uint64_t pos = YPhysicalPos(curOffset + i);
             yGM.SetValue(pos, LocalZ.GetValue(i));
         }
         z2Queue.FreeTensor(LocalZ);
