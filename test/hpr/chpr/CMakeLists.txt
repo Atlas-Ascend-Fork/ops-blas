@@ -9,3 +9,7 @@
 # ----------------------------------------------------------------------------------------------------------
 
 ops_blas_add_gtest_tests(${OPS_BLAS} chpr_test)
+
+if("arch35" IN_LIST SOC_ARCH_DIRS)
+    ops_blas_add_tests(${OPS_BLAS} chpr_bench)
+endif()

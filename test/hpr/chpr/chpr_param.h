@@ -30,12 +30,12 @@ struct ChprParam : public BlasTestParamBase {
         uplo = parseFillMode(ReadMap(map, "uplo", "UPPER"));
         n = parseInt(ReadMap(map, "n", "0"));
         std::string alphaStr = ReadMap(map, "alpha", "1.0");
-        alphaNull = (alphaStr == "NULLPTR");
+        alphaNull = (alphaStr == "NULLPTR" || alphaStr == "null");
         if (!alphaNull) {
             alpha = parseFloat(alphaStr, 1.0f);
         }
-        x = parseFill(ReadMap(map, "x", "RANDOM"));
+        x = parseFill(ReadMap(map, "x_fill", ReadMap(map, "x", "RANDOM")));
         incx = parseInt(ReadMap(map, "incx", "1"));
-        ap = parseFill(ReadMap(map, "ap", "RANDOM"));
+        ap = parseFill(ReadMap(map, "ap_fill", ReadMap(map, "ap", "RANDOM")));
     }
 };
