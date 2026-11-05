@@ -159,6 +159,17 @@ aclblasStatus_t aclblasLtMatmul(
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
+    // issue #800: k=0 时 FP32 kernel 的 kL1TileNum=CeilDiv(0,kL1)=0，内层 K 循环不执行，
+    // L0C 累加器从未经首次 MMAD 初始化，MatmulCopyOut 仍将其全量写出到 D（垃圾值而非
+    // BLAS 语义的 D=beta*C）。与 MX 路径对 k=0 的显式拒绝口径一致（engine issue #584），
+    // 在入口统一拒绝；D=beta*C 快路径留作后续需求评估。
+    if (k == 0U) {
+        AclBlasLt::LoggerManager::GetInstance().Log(
+            ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul",
+            "k=0 is not supported: the FP32 kernel would write out uninitialized L0C accumulators");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+
     // issue #582: C/D dtype 白名单校验，内核实际不支持的组合不下发。
     if (!HasSupportedDtypes(desc, ALayout, BLayout, CLayout, DLayout, alpha, beta)) {
         AclBlasLt::LoggerManager::GetInstance().Log(
