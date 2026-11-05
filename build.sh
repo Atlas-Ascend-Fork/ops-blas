@@ -148,6 +148,9 @@ expand_family_ops() {
   local expanded=""
   IFS=',' read -ra OPS_ARRAY <<< "${ops_str}"
   for op in "${OPS_ARRAY[@]}"; do
+    if [ "${op}" = "lt_matmul" ] && [[ " ${SOC_ARCH_DIRS[*]} " == *" arch22 "* ]]; then
+      op="blasLtMatmul"
+    fi
     if [ -f "${BASE_PATH}/test/${op}/CMakeLists.txt" ]; then
       # 直接算子名 (如 scopy, sgbmv)
       if [ -z "${expanded}" ]; then
@@ -227,6 +230,12 @@ if [ "${RUN_TEST}" == "ON" ] && [ -z "${BUILD_OPS}" ]; then
   for dir in "${BASE_PATH}"/test/*/; do
     [ -d "${dir}" ] || continue
     dir_name=$(basename "${dir}")
+    if [[ " ${SOC_ARCH_DIRS[*]} " == *" arch22 "* ]]; then
+      [ "${dir_name}" = "blasLtMatmul" ] && continue
+      [ "${dir_name}" = "lt_matmul" ] && dir_name="blasLtMatmul"
+    elif [ "${dir_name}" = "lt_matmul" ]; then
+      continue
+    fi
     # 排除非算子目录
     if [ "${dir_name}" = "frame" ] || [ "${dir_name}" = "utils" ] || [ "${dir_name}" = "common" ]; then
       continue
@@ -440,6 +449,9 @@ if [ "${RUN_TEST}" == "ON" ]; then
         # $1=op $2=device_id
         local op="$1" dev="$2"
         local TEST_BIN="${BUILD_DIR}/test/${op}/${op}_test"
+        if [ "${op}" = "blasLtMatmul" ] && [[ " ${SOC_ARCH_DIRS[*]} " == *" arch22 "* ]]; then
+            TEST_BIN="${BUILD_DIR}/test/lt_matmul/blasLtMatmul_test"
+        fi
         if [ ! -f "${TEST_BIN}" ]; then
             for family_dir in "${BUILD_DIR}/test"/*/; do
                 if [ -f "${family_dir}${op}/${op}_test" ]; then

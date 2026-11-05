@@ -183,13 +183,21 @@ target_include_directories(${OPS_BLASLT} PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/blasLt/common/helper
     ${CMAKE_CURRENT_LIST_DIR}/blasLt/matmul/engine
     ${CMAKE_CURRENT_LIST_DIR}/blasLt/matmul/common
-    ${CMAKE_CURRENT_LIST_DIR}/blasLt/matmul/fp32/arch35
-    ${CMAKE_CURRENT_LIST_DIR}/blasLt/matmul/mxfp8/arch35
-    ${CMAKE_CURRENT_LIST_DIR}/blasLt/matmul/mxfp4/arch35
-    ${CMAKE_CURRENT_LIST_DIR}/blasLt/matmul/epilogue/arch35
     ${CMAKE_CURRENT_LIST_DIR}/blasLt/matrix_transform/engine
-    ${CMAKE_CURRENT_LIST_DIR}/blasLt/matrix_transform/arch35
 )
+
+if("arch22" IN_LIST SOC_ARCH_DIRS)
+    target_include_directories(${OPS_BLASLT} PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/blas/lt_matmul/arch22)
+    target_compile_definitions(${OPS_BLASLT} PRIVATE OPS_BLASLT_ARCH22=1)
+elseif("arch35" IN_LIST SOC_ARCH_DIRS)
+    target_include_directories(${OPS_BLASLT} PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/blasLt/matmul/fp32/arch35
+        ${CMAKE_CURRENT_LIST_DIR}/blasLt/matmul/mxfp8/arch35
+        ${CMAKE_CURRENT_LIST_DIR}/blasLt/matmul/mxfp4/arch35
+        ${CMAKE_CURRENT_LIST_DIR}/blasLt/matmul/epilogue/arch35
+        ${CMAKE_CURRENT_LIST_DIR}/blasLt/matrix_transform/arch35)
+endif()
 
 target_compile_definitions(${OPS_BLASLT} PRIVATE
   ASC_DEVKIT_MAJOR=${ASC_DEVKIT_MAJOR}
@@ -235,7 +243,7 @@ target_compile_definitions(${OPS_BLASLT} PRIVATE ${_ASC_TENSOR_API_COMPAT_DEFS})
 target_link_directories(${OPS_BLASLT} PRIVATE "${ASCEND_CANN_PACKAGE_PATH}/lib64")
 target_link_libraries(
   ${OPS_BLASLT}
-  PRIVATE ascendc_runtime ascendcl runtime register error_manager profapi ge_common_base unified_dlog mmpa dl
+  PRIVATE ascendc_runtime ascendcl runtime tiling_api platform register error_manager profapi ge_common_base unified_dlog mmpa dl
           ascend_dump c_sec)
 
 # ========= 构建 blas 动态库 =========

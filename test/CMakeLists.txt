@@ -1,3 +1,14 @@
+# ----------------------------------------------------------------------------------------------------------
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+# ----------------------------------------------------------------------------------------------------------
+
+
 if(BUILD_TEST)
     include(${CMAKE_SOURCE_DIR}/cmake/test.cmake)
 
@@ -10,7 +21,10 @@ if(BUILD_TEST)
     foreach(TEST_NAME ${TEST_NAMES})
         # 解析测试目录路径：支持直接目录 (test/scopy/) 和家族嵌套 (test/gbmv/sgbmv/)
         set(TEST_DIR "")
-        if(TEST_NAME STREQUAL "chemm" AND "arch35" IN_LIST SOC_ARCH_DIRS)
+        if(TEST_NAME STREQUAL "blasLtMatmul" AND "arch22" IN_LIST SOC_ARCH_DIRS)
+            # Task delivery lives in lt_matmul; its existing API/binary name stays stable.
+            set(TEST_DIR "lt_matmul")
+        elseif(TEST_NAME STREQUAL "chemm" AND "arch35" IN_LIST SOC_ARCH_DIRS)
             set(TEST_DIR "symm/chemm")
         elseif(TEST_NAME STREQUAL "cgemm_strided_batched" AND "arch35" IN_LIST SOC_ARCH_DIRS)
             set(TEST_DIR "gemm_strided_batched/cgemm_strided_batched")

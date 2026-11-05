@@ -22,6 +22,9 @@
 #include "aclblaslt_matmul_problem.h"
 #include "host_utils.h"
 #include "matmul_engine.h"
+#ifdef OPS_BLASLT_ARCH22
+#include "lt_matmul_host.h"
+#endif
 
 #include <cstdint>
 
@@ -70,6 +73,11 @@ aclblasStatus_t aclblasLtMatmul(
     aclblasLtMatrixLayout_t Cdesc, void* D, aclblasLtMatrixLayout_t Ddesc, const aclblasLtMatmulAlgo_t* algo,
     void* workspace, size_t workspaceSizeInBytes, aclrtStream stream)
 {
+#ifdef OPS_BLASLT_ARCH22
+    return LtMatmul22Api(
+        lightHandle, computeDesc, alpha, A, Adesc, B, Bdesc, beta, C, Cdesc, D, Ddesc, algo, workspace,
+        workspaceSizeInBytes, stream);
+#else
     // Validate lightHandle
     if (lightHandle == nullptr) {
         AclBlasLt::LoggerManager::GetInstance().Log(ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul", "lightHandle is null");
@@ -200,6 +208,7 @@ aclblasStatus_t aclblasLtMatmul(
         workspaceSizeInBytes, numBlocks, stream, problem);
 
     return MatmulLaunch(problem);
+#endif
 }
 
 } // extern "C"

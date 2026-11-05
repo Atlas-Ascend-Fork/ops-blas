@@ -2,7 +2,7 @@
 
 ## 算子概述
 
-LtMatmul 算子实现了 BLAS Lt 通用矩阵乘法，核心运算为 D = alpha * op(A) * op(B) + beta * C。其中 A、B 为输入矩阵，C 为累加矩阵，D 为输出矩阵，alpha 和 beta 为标量，op(A)/op(B) 支持不转置（N）和转置（T）。当前实现支持 FP32、MXFP8（E4M3FN）、MXFP4（E2M1）三种输入类型组合，输出支持 FP32 和 BF16。
+LtMatmul 算子实现了 BLAS Lt 通用矩阵乘法，核心运算为 D = alpha * op(A) * op(B) + beta * C。其中 A、B 为输入矩阵，C 为累加矩阵，D 为输出矩阵，alpha 和 beta 为标量。Atlas A2/A3 支持 FP32，op(A)/op(B) 支持 N/T/C，实数共轭转置 C 按 T 执行；Ascend 950PR/950DT 支持 N/T，以及 FP32、MXFP8（E4M3FN）、MXFP4（E2M1）输入组合和对应的 FP32/BF16 输出。
 
 数学表达式：
 
@@ -23,10 +23,29 @@ D = alpha * op(A) * op(B) + beta * C
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 系列产品：支持（FP32，arch22）
+- Atlas A2 系列产品：支持（FP32，arch22）
 
 > MXFP8/MXFP4 量化路径依赖 CANN asc-devkit >= 9.1（`ASC_DEVKIT_MAJOR >= 9 && ASC_DEVKIT_MINOR >= 1`）。
+
+#### 架构支持域与描述符约定
+
+以下差异按构建架构区分；状态码比较针对其他参数合法的非空矩阵调用。
+各产品复用 `include/cann_ops_blasLt.h` 中相同的公开接口和描述符结构。
+
+| 项目 | Atlas A2/A3（arch22） | Ascend 950PR/950DT（arch35） |
+|---|---|---|
+| 输入/输出类型 | A/B/C/D 均为 FP32，`ACLBLAS_COMPUTE_32F` | FP32 及下文规定的 MXFP8/MXFP4 组合 |
+| 布局与 batch | ROW，单 batch，无 batch stride | ROW，单 batch，无 batch stride |
+| 转置 | N/T/C；FP32 实数的 C 按 T 执行 | N/T；C 返回 `ACLBLAS_STATUS_NOT_SUPPORTED` |
+| 标量 pointerMode | FP32 HOST；DEVICE 返回 `ACLBLAS_STATUS_INVALID_VALUE` | FP32 HOST 或 DEVICE |
+| 非 FP32 scaleType | `ACLBLAS_STATUS_NOT_SUPPORTED` | `ACLBLAS_STATUS_INVALID_VALUE` |
+| `MatrixLayoutCreate(..., ld=0)` 后读取 LD | 返回原始值 0，执行 ROW 计划时按 `max(1, cols)` 解析 | 创建时归一为 rows，读取返回 rows |
+
+`ld=0` 的描述符默认值存在上述差异。需要按 LD 计算实际 stride 的调用方应显式传入
+非零 leading dimension；ROW 布局的非零 LD 必须不小于物理列数。
+Atlas A2/A3 的四路 LD 相互独立，C/D 原地时要求有效布局一致。
+详细 workspace 与退化输入语义见[arch22 算子说明](../blas/lt_matmul/README.md)。
 
 #### 函数原型
 
@@ -40,12 +59,12 @@ aclblasStatus_t aclblasLtMatmul(aclblasLtHandle_t lightHandle, aclblasLtMatmulDe
 |--------|----------|---------|------|
 | lightHandle | 输入 | aclblasLtHandle_t | aclBLASLt 库上下文句柄，由 `aclblasLtCreate` 创建，不可为 NULL，否则返回 `ACLBLAS_STATUS_NOT_INITIALIZED`，Host 内存 |
 | computeDesc | 输入 | aclblasLtMatmulDesc_t | 矩阵乘法描述符，设置 transA/transB、epilogue、scale 指针等属性，不可为 NULL，Host 内存 |
-| alpha | 输入 | const void*（FP32） | 用于乘法的 float 标量指针，不可为 NULL，Host 内存 |
+| alpha | 输入 | const void*（FP32） | 用于乘法的 float 标量指针，不可为 NULL；由 pointerMode 指定 Host/Device，arch22 仅支持 Host |
 | A | 输入 | const void* | 输入矩阵 A，数据类型由 Adesc 指定，m>0 且 n>0 时不可为 NULL，Device 内存 |
 | Adesc | 输入 | aclblasLtMatrixLayout_t | 矩阵 A 的 layout 描述符（rows/cols/ld/order/dtype），Host 内存 |
 | B | 输入 | const void* | 输入矩阵 B，数据类型由 Bdesc 指定，m>0 且 n>0 时不可为 NULL，Device 内存 |
 | Bdesc | 输入 | aclblasLtMatrixLayout_t | 矩阵 B 的 layout 描述符，Host 内存 |
-| beta | 输入 | const void*（FP32） | 用于累加的 float 标量指针，不可为 NULL，beta=0 时 C 可不参与计算，Host 内存 |
+| beta | 输入 | const void*（FP32） | 用于累加的 float 标量指针，不可为 NULL，beta=0 时 C 可不参与计算；arch22 仅支持 Host |
 | C | 输入 | const void* | 累加矩阵 C，beta=0 时可为 NULL，Device 内存 |
 | Cdesc | 输入 | aclblasLtMatrixLayout_t | 矩阵 C 的 layout 描述符，Host 内存 |
 | D | 输出 | void* | 输出矩阵 D，维度 m x n，m>0 且 n>0 时不可为 NULL，Device 内存 |
@@ -58,13 +77,14 @@ aclblasStatus_t aclblasLtMatmul(aclblasLtHandle_t lightHandle, aclblasLtMatmulDe
 #### 约束说明
 
 - M、N、K >= 0；M=0 或 N=0 时为空操作，直接返回 `ACLBLAS_STATUS_SUCCESS`
+- Atlas A2/A3 的 A/B/C/D 均为 FP32；以下 MXFP8/MXFP4 与 BF16 输出约束仅适用于 Ascend 950PR/950DT
 - dtypeA / dtypeB 须为同类型组合：FP32×FP32、MXFP8×MXFP8、MXFP4×MXFP4；其他组合返回 `ACLBLAS_STATUS_NOT_SUPPORTED`
 - dtypeC 当前固定为 FP32
 - dtypeD 支持 FP32 或 BF16；MXFP8/MXFP4 路径支持 FP32 或 BF16 输出，FP32 路径输出 FP32
 - computeType 当前仅支持 `ACLBLAS_COMPUTE_32F`
-- transA / transB 支持 N、T，对应 `ACLBLAS_OP_N`（不转置）、`ACLBLAS_OP_T`（转置）
+- transA / transB 支持 `ACLBLAS_OP_N`（不转置）、`ACLBLAS_OP_T`（转置）；Atlas A2/A3 还支持 `ACLBLAS_OP_C`，其 FP32 实数计算与 T 等价
 - MXFP8/MXFP4 路径要求 K 为 32 的整数倍，否则返回 `ACLBLAS_STATUS_INVALID_VALUE`
-- order 必须显式设为 `ACLBLASLT_ORDER_ROW`（layout 描述符的默认值为 `ACLBLASLT_ORDER_COL`，A/B/C/D 任一未设置为 ROW 均返回 `ACLBLAS_STATUS_NOT_SUPPORTED`，不再静默按行主序解释）；lda / ldb / ldc / ldd 须 >= 矩阵物理列数；MXFP4 的 ld 为逻辑元素 leading dim（2 个 FP4 元素打包为 1 字节）
+- order 必须显式设为 `ACLBLASLT_ORDER_ROW`（layout 描述符的默认值为 `ACLBLASLT_ORDER_COL`，A/B/C/D 任一未设置为 ROW 均返回 `ACLBLAS_STATUS_NOT_SUPPORTED`，不再静默按行主序解释）；非零 lda / ldb / ldc / ldd 须 >= 矩阵物理列数，零值约定见架构支持表；MXFP4 的 ld 为逻辑元素 leading dim（2 个 FP4 元素打包为 1 字节）
 - epilogue 当前仅支持 `ACLBLASLT_EPILOGUE_DEFAULT`
 - MXFP8/MXFP4 路径须通过 computeDesc 设置 scaleA / scaleB（`ACLBLASLT_MATMUL_DESC_A/B_SCALE_POINTER`），E8M0 格式，按 K 方向每 32 元素一组，不可为 NULL
 - algo 可为 NULL，使用默认算法

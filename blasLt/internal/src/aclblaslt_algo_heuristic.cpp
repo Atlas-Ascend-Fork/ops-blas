@@ -17,7 +17,9 @@
 #include "aclblaslt_algo_heuristic.h"
 
 #include "host_utils.h"
+#ifndef OPS_BLASLT_ARCH22
 #include "matmul_fp32_tiling_data.h"
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -92,12 +94,13 @@ void AppendAlgoIdsForPolicy(uint8_t p, std::vector<int>& ids)
 // ALGO_CAP_MAX_ELEMS elements. Growing the tile domains or the stages range beyond that capacity
 // must fail the build here instead of silently under-reporting the arrays (the runtime
 // `count >= ALGO_CAP_MAX_ELEMS` guards stay as defense in depth).
-static_assert(sizeof(VALID_L1_M) / sizeof(VALID_L1_M[0]) * (sizeof(VALID_L1_N) / sizeof(VALID_L1_N[0])) <=
-                  ALGO_CAP_MAX_ELEMS,
-              "TILE_IDS domain (VALID_L1_M x VALID_L1_N) exceeds ALGO_CAP_MAX_ELEMS: raise the capacity");
-static_assert(static_cast<uint32_t>(ACLBLASLT_MATMUL_STAGES_4) - static_cast<uint32_t>(ACLBLASLT_MATMUL_STAGES_1) +
-                      1u <= ALGO_CAP_MAX_ELEMS,
-              "STAGES_IDS domain (STAGES_1..STAGES_4) exceeds ALGO_CAP_MAX_ELEMS: raise the capacity");
+static_assert(
+    sizeof(VALID_L1_M) / sizeof(VALID_L1_M[0]) * (sizeof(VALID_L1_N) / sizeof(VALID_L1_N[0])) <= ALGO_CAP_MAX_ELEMS,
+    "TILE_IDS domain (VALID_L1_M x VALID_L1_N) exceeds ALGO_CAP_MAX_ELEMS: raise the capacity");
+static_assert(
+    static_cast<uint32_t>(ACLBLASLT_MATMUL_STAGES_4) - static_cast<uint32_t>(ACLBLASLT_MATMUL_STAGES_1) + 1u <=
+        ALGO_CAP_MAX_ELEMS,
+    "STAGES_IDS domain (STAGES_1..STAGES_4) exceeds ALGO_CAP_MAX_ELEMS: raise the capacity");
 
 // TILE_IDS: every VALID_L1_M x VALID_L1_N combination mapped through L1MNToTileId (UNDEFINED
 // filtered out), ascending and deduplicated. The current domains {128,256} x {128,256} derive to
@@ -217,6 +220,7 @@ bool DecodeAlgo(const aclblasLtMatmulAlgo_t& algo, PackedAlgo* packed)
 // stages have no corresponding field, so they are decoded and recorded but do not alter this path.
 // Because the default baseM already equals min(m, 128) and every valid L1 M tile is >= 128, only the
 // N and K tiles produce an observable effect here.
+#ifndef OPS_BLASLT_ARCH22
 void ApplyAlgoTilingOverrideFp32(
     const PackedAlgo& packed, uint64_t m, uint64_t n, uint64_t k, MatmulFp32TilingData& tiling)
 {
@@ -233,6 +237,8 @@ void ApplyAlgoTilingOverrideFp32(
         }
     }
 }
+
+#endif
 
 bool TileIdToL1MN(uint32_t tileId, uint16_t* l1mDiv16, uint16_t* l1nDiv16)
 {

@@ -17,7 +17,11 @@
 #pragma once
 
 #include "aclblaslt_handle_impl.h"
+#ifndef OPS_BLASLT_ARCH22
 #include "matmul_fp32_tiling_data.h"
+#else
+struct MatmulFp32TilingData;
+#endif
 
 #include "cann_ops_blasLt.h"
 

@@ -20,6 +20,9 @@
 #include "aclblaslt_layout_impl.h"
 #include "aclblaslt_logger_impl.h"
 #include "host_utils.h"
+#ifdef OPS_BLASLT_ARCH22
+#include "lt_matmul_host.h"
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -639,6 +642,19 @@ aclblasStatus_t aclblasLtMatmulAlgoInit(
     aclblasLtHandle_t lightHandle, aclblasComputeType_t computeType, aclDataType scaleType, aclDataType Atype,
     aclDataType Btype, aclDataType Ctype, aclDataType Dtype, int algoId, aclblasLtMatmulAlgo_t* algo)
 {
+#ifdef OPS_BLASLT_ARCH22
+    if (lightHandle == nullptr) {
+        return ACLBLAS_STATUS_NOT_INITIALIZED;
+    }
+    if (algo == nullptr) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (computeType != ACLBLAS_COMPUTE_32F || scaleType != ACL_FLOAT || Atype != ACL_FLOAT || Btype != ACL_FLOAT ||
+        Ctype != ACL_FLOAT || Dtype != ACL_FLOAT) {
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
+    return LtMatmul22AlgoInit(algoId, *algo);
+#else
     if (algo == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
@@ -660,11 +676,20 @@ aclblasStatus_t aclblasLtMatmulAlgoInit(
     algo->max_workspace_bytes = DEFAULT_WORKSPACE_SIZE;
 
     return ACLBLAS_STATUS_SUCCESS;
+#endif
 }
 
 aclblasStatus_t aclblasLtMatmulAlgoConfigSetAttribute(
     aclblasLtMatmulAlgo_t* algo, aclblasLtMatmulAlgoConfigAttributes_t attr, const void* buf, size_t sizeInBytes)
 {
+#ifdef OPS_BLASLT_ARCH22
+    if (algo == nullptr || buf == nullptr || sizeInBytes == 0) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    // Only the fixed arch22 plans are executable. Do not silently
+    // accept tuning attributes that no arch22 kernel can honor.
+    return ACLBLAS_STATUS_NOT_SUPPORTED;
+#else
     if (algo == nullptr || buf == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
@@ -691,6 +716,7 @@ aclblasStatus_t aclblasLtMatmulAlgoConfigSetAttribute(
     }
 
     return ACLBLAS_STATUS_SUCCESS;
+#endif
 }
 
 aclblasStatus_t aclblasLtMatmulAlgoConfigGetAttribute(
@@ -772,18 +798,31 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(
     aclblasLtHandle_t lightHandle, aclblasComputeType_t computeType, aclDataType scaleType, aclDataType Atype,
     aclDataType Btype, aclDataType Ctype, aclDataType Dtype, int* algoIdsArray, int algoIdsArrayLength, int* numAlgoIds)
 {
-    (void)scaleType;
     if (numAlgoIds == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     *numAlgoIds = 0;
-
     if (lightHandle == nullptr) {
         return ACLBLAS_STATUS_NOT_INITIALIZED;
     }
     if (algoIdsArray == nullptr || algoIdsArrayLength <= 0) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+#ifdef OPS_BLASLT_ARCH22
+    if (computeType != ACLBLAS_COMPUTE_32F || scaleType != ACL_FLOAT || Atype != ACL_FLOAT || Btype != ACL_FLOAT ||
+        Ctype != ACL_FLOAT || Dtype != ACL_FLOAT) {
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
+    const uint32_t ids[] = {LT_MATMUL22_ALGO_H0,  LT_MATMUL22_ALGO_H1, LT_MATMUL22_ALGO_H2, LT_MATMUL22_ALGO_H3,
+                            LT_MATMUL22_ALGO_H4,  LT_MATMUL22_ALGO_H5, LT_MATMUL22_ALGO_H9, LT_MATMUL22_ALGO_H10,
+                            LT_MATMUL22_ALGO_H11, LT_MATMUL22_ALGO_H12};
+    *numAlgoIds = std::min(algoIdsArrayLength, static_cast<int>(sizeof(ids) / sizeof(ids[0])));
+    for (int i = 0; i < *numAlgoIds; ++i) {
+        algoIdsArray[i] = static_cast<int>(ids[i]);
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+#else
+    (void)scaleType;
     if (!CheckComputeTypeCompatibility(computeType, Atype, Btype) || IsGatedOffMxPair(Atype, Btype)) {
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
@@ -798,6 +837,7 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(
     }
     *numAlgoIds = count;
     return ACLBLAS_STATUS_SUCCESS;
+#endif
 }
 
 // issue #748: preference 读取提取为 helper，控制 GetHeuristic 函数规模
@@ -847,6 +887,11 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(
     aclblasLtMatmulPreference_t preference, int requestedAlgoCount,
     aclblasLtMatmulHeuristicResult_t heuristicResultsArray[], int* returnAlgoCount)
 {
+#ifdef OPS_BLASLT_ARCH22
+    return LtMatmul22Heuristic(
+        lightHandle, computeDesc, Adesc, Bdesc, Cdesc, Ddesc, preference, requestedAlgoCount, heuristicResultsArray,
+        returnAlgoCount);
+#else
     // Validate input parameters
     if (returnAlgoCount == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -897,6 +942,7 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(
 
     *returnAlgoCount = filled;
     return ACLBLAS_STATUS_SUCCESS;
+#endif
 }
 
 // Host-side usability check of one algo against one matmul workload (parameter-aligned with

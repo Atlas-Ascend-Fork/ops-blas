@@ -156,7 +156,11 @@ aclblasStatus_t aclblasLtMatrixLayoutCreate(
     impl.type = type;
     impl.rows = rows;
     impl.cols = cols;
+#ifdef OPS_BLASLT_ARCH22
+    impl.ld = ld; // Preserve zero until the operation knows the final layout order.
+#else
     impl.ld = (ld == 0) ? static_cast<int64_t>(rows) : ld;
+#endif
     // Step 4: copy impl into capsule and zero the remaining bytes.
     static_assert(sizeof(impl) <= sizeof(*capsule), "aclblasLtMatrixLayoutImpl too large, not fit in capsule!");
     aclblasStatus_t copyStatus = PackImplIntoCapsule(capsule, sizeof(*capsule), &impl, sizeof(impl));

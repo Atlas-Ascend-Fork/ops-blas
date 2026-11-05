@@ -18,6 +18,12 @@ cmake_minimum_required(VERSION 3.16)
 # matching the current SOC (SOC_ARCH_DIRS) are compiled.
 file(GLOB_RECURSE BLASLT_ALL_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 
+if("arch22" IN_LIST SOC_ARCH_DIRS)
+    file(GLOB_RECURSE BLASLT_ARCH22_TASK_SRCS CONFIGURE_DEPENDS
+        ${CMAKE_SOURCE_DIR}/blas/lt_matmul/arch22/*.cpp)
+    list(APPEND BLASLT_ALL_SRCS ${BLASLT_ARCH22_TASK_SRCS})
+endif()
+
 set(BLASLT_HOST_SRCS "")
 set(BLASLT_KERNEL_SRCS "")
 
@@ -38,7 +44,8 @@ foreach(src_file ${BLASLT_ALL_SRCS})
 
     if(is_arch_specific AND NOT arch_selected)
         # architecture directory for another SOC: do not compile it here
-    elseif(src_file MATCHES "_kernel\\.cpp$")
+    elseif(src_file MATCHES "_kernel\\.cpp$" OR
+           src_file MATCHES "/lt_matmul/arch22/lt_matmul_(vector|ordered)\\.cpp$")
         list(APPEND BLASLT_KERNEL_SRCS ${src_file})
     else()
         list(APPEND BLASLT_HOST_SRCS ${src_file})

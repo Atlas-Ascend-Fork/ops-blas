@@ -15,6 +15,12 @@
 
 #include "matmul_engine.h"
 
+#ifdef OPS_BLASLT_ARCH22
+#include "lt_matmul_host.h"
+
+aclblasStatus_t MatmulLaunch(const MatmulProblem& problem) { return LtMatmul22Launch(problem); }
+#else
+
 #include "aclblaslt_algo_heuristic.h"
 #include "host_utils.h"
 
@@ -207,3 +213,5 @@ aclblasStatus_t MatmulLaunch(const MatmulProblem& problem)
 
     return ACLBLAS_STATUS_SUCCESS;
 }
+
+#endif
