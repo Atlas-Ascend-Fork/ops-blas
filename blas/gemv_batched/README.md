@@ -755,11 +755,6 @@ int main()
 - Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
 - Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
-> arch35（Ascend 950PR）走单次 kernel launch 的指针数组实现；arch22（A2/A3）的 legacy
-> batched kernel 按连续批量缓冲寻址、其 tiling 数据也不含 `alpha/beta/lda/incx/incy`，
-> 无法承载指针数组语义，因此 arch22 侧由 host 读回指针数组后逐 batch 调用单矩阵
-> `aclblasCgemv` 完成计算。两条路径的数值语义一致，仅性能特征不同。
-
 #### 函数原型
 
 ```cpp
