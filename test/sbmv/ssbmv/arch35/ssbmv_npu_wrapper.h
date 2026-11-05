@@ -8,57 +8,14 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
+/*!
+ * \file ssbmv_npu_wrapper.h
+ * \brief Ascend 950（arch35） 的测试封装入口。
+ *
+ * 封装体只依赖算子的 C 接口，与架构无关，实现放在 family 级 ssbmv_npu_wrapper_impl.h，
+ * 两个架构共用同一份，避免同一段代码在两个 arch 目录下各存一份。
+ */
+
 #pragma once
 
-#include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <memory>
-
-#include "acl/acl.h"
-#include "cann_ops_blas.h"
-#include "device.h"
-
-inline std::unique_ptr<DeviceBuffer> ssbmvTryAllocAndCopy(const void* hostPtr, size_t bytes)
-{
-    if (hostPtr == nullptr)
-        return nullptr;
-    auto buf = std::make_unique<DeviceBuffer>(bytes);
-    buf->copyFromHost(hostPtr, bytes);
-    return buf;
-}
-
-inline aclblasStatus_t aclblasSsbmv_npu(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, int k, const float* alpha, const float* a, int lda,
-    const float* x, int incx, const float* beta, float* y, int incy)
-{
-    if (handle == nullptr) {
-        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
-    }
-    if (n <= 0) {
-        return aclblasSsbmv(handle, uplo, n, k, alpha, a, lda, x, incx, beta, y, incy);
-    }
-
-    const size_t aBytes = static_cast<size_t>(lda) * n * sizeof(float);
-    const size_t xBytes = static_cast<size_t>((n - 1) * std::abs(incx) + 1) * sizeof(float);
-    const size_t yBytes = static_cast<size_t>((n - 1) * std::abs(incy) + 1) * sizeof(float);
-
-    auto dA = ssbmvTryAllocAndCopy(a, aBytes);
-    auto dX = ssbmvTryAllocAndCopy(x, xBytes);
-    auto dY = ssbmvTryAllocAndCopy(y, yBytes);
-
-    aclblasStatus_t ret = aclblasSsbmv(
-        handle, uplo, n, k, alpha, dA ? static_cast<const float*>(dA->ptr()) : nullptr, lda,
-        dX ? static_cast<const float*>(dX->ptr()) : nullptr, incx, beta,
-        dY ? static_cast<float*>(dY->ptr()) : nullptr, incy);
-
-    aclError syncRet = aclrtSynchronizeDevice();
-    if (syncRet != ACL_SUCCESS)
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-
-    if (y != nullptr && dY) {
-        dY->copyToHost(y, yBytes);
-    }
-
-    return ret;
-}
+#include "ssbmv_npu_wrapper_impl.h"
