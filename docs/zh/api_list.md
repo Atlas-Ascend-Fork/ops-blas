@@ -375,7 +375,8 @@ aclblasStatus_t aclblasLtMatrixLayoutSetAttribute(aclblasLtMatrixLayout_t matLay
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 设置成功。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | `buf` 为空，或 `sizeInBytes` 与属性所需大小不匹配。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `buf` 为空、`sizeInBytes` 与属性所需大小不匹配，或属性值非法（`LD` 为负数，或 `ORDER` 不是合法的 `aclblasLtOrder_t` 枚举值）。 |
+| `ACLBLAS_STATUS_NOT_SUPPORTED` | `attr` 不是已识别的属性。 |
 
 #### aclblasLtMatrixLayoutGetAttribute()
 
@@ -392,7 +393,8 @@ aclblasStatus_t aclblasLtMatrixLayoutGetAttribute(const aclblasLtMatrixLayout_t 
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 查询成功。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | 参数为空或缓冲区过小。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `matLayout` 为空，或 `buf` 非空但缓冲区过小。 |
+| `ACLBLAS_STATUS_NOT_SUPPORTED` | `attr` 不是已识别的属性。 |
 
 #### aclblasLtMatmulDescCreate()
 
@@ -754,12 +756,12 @@ aclblasStatus_t aclblasLtMatrixTransformDescSetAttribute(aclblasLtMatrixTransfor
                                                          size_t sizeInBytes);
 ```
 
-设置矩阵变换描述符属性，如 `TRANSA`/`TRANSB`（`aclblasOperation_t`）、pointer mode 等，详见 `aclblasLtMatrixTransformDescAttribute_t`。
+设置矩阵变换描述符属性，如 `TRANSA`/`TRANSB`（`aclblasOperation_t`）、pointer mode 等，详见 `aclblasLtMatrixTransformDescAttribute_t`。`SCALE_TYPE` 允许在 Set 阶段覆盖，但其值须为变换引擎支持的精度（`ACL_FLOAT` / `ACL_BF16` / `ACL_INT32`），其余 `aclDataType` 取值会被拒绝。校验顺序为：描述符判空与 magic 校验 → `buf` 判空 → `sizeInBytes` 校验 → `attr` 识别；因此非法 `sizeInBytes` 搭配未识别 `attr` 时返回 `INVALID_VALUE`（size 校验先于 attr 识别）。
 
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 设置成功。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | 参数为空或 `sizeInBytes` 不匹配。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `transformDesc` 或 `buf` 为空、描述符 magic 校验失败、`sizeInBytes` 不匹配，或 `SCALE_TYPE` 的值不是变换引擎支持的精度。 |
 | `ACLBLAS_STATUS_NOT_SUPPORTED` | `attr` 不是已识别的属性。 |
 
 #### aclblasLtMatrixTransformDescGetAttribute()

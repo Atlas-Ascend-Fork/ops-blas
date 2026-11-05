@@ -23,6 +23,24 @@
 
 namespace {
 
+// issue #784: 对齐同族 MatmulPreference / TransformDesc 的未知属性语义（cuBLASLt 一致行为），
+// 未识别 attr 统一返回 NOT_SUPPORTED。
+// issue #783: 与 aclblasLtMatrixLayoutCreate 的 ld < 0 校验对齐，并拒绝非法 ORDER 枚举；
+// TYPE 的值域由下游 Matmul / Transform 的数据类型矩阵校验，此处不重复设限。
+inline bool IsSupportedLayoutOrder(aclblasLtOrder_t order)
+{
+    switch (order) {
+        case ACLBLASLT_ORDER_COL:
+        case ACLBLASLT_ORDER_ROW:
+        case ACLBLASLT_ORDER_COL32:
+        case ACLBLASLT_ORDER_COL4_4R2_8C:
+        case ACLBLASLT_ORDER_COL32_2R_4R4:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Validate that the caller buffer is exactly sizeof(T), then load it into field. Collapsing the
 // per-attribute size check into one helper keeps the Set/Get switches free of nested branches.
 template <typename T>
@@ -64,16 +82,30 @@ aclblasStatus_t ApplyLayoutSetAttr(
             return LoadLayoutField(buf, sizeInBytes, impl.rows);
         case ACLBLASLT_MATRIX_LAYOUT_COLS:
             return LoadLayoutField(buf, sizeInBytes, impl.cols);
-        case ACLBLASLT_MATRIX_LAYOUT_LD:
-            return LoadLayoutField(buf, sizeInBytes, impl.ld);
-        case ACLBLASLT_MATRIX_LAYOUT_ORDER:
-            return LoadLayoutField(buf, sizeInBytes, impl.order);
+        case ACLBLASLT_MATRIX_LAYOUT_LD: {
+            const aclblasStatus_t loadStatus = LoadLayoutField(buf, sizeInBytes, impl.ld);
+            if (loadStatus != ACLBLAS_STATUS_SUCCESS) {
+                return loadStatus;
+            }
+            // issue #783: 与 aclblasLtMatrixLayoutCreate 的 ld < 0 校验对齐
+            if (impl.ld < 0) {
+                return ACLBLAS_STATUS_INVALID_VALUE;
+            }
+            return ACLBLAS_STATUS_SUCCESS;
+        }
+        case ACLBLASLT_MATRIX_LAYOUT_ORDER: {
+            const aclblasStatus_t loadStatus = LoadLayoutField(buf, sizeInBytes, impl.order);
+            if (loadStatus != ACLBLAS_STATUS_SUCCESS) {
+                return loadStatus;
+            }
+            return IsSupportedLayoutOrder(impl.order) ? ACLBLAS_STATUS_SUCCESS : ACLBLAS_STATUS_INVALID_VALUE;
+        }
         case ACLBLASLT_MATRIX_LAYOUT_BATCH_COUNT:
             return LoadLayoutField(buf, sizeInBytes, impl.batchCount);
         case ACLBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET:
             return LoadLayoutField(buf, sizeInBytes, impl.stridedBatchOffset);
         default:
-            return ACLBLAS_STATUS_INVALID_VALUE;
+            return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
 }
 
@@ -97,7 +129,7 @@ aclblasStatus_t ReadLayoutGetAttr(
         case ACLBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET:
             return StoreLayoutFieldOut(buf, sizeInBytes, impl.stridedBatchOffset, sizeWritten);
         default:
-            return ACLBLAS_STATUS_INVALID_VALUE;
+            return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
 }
 

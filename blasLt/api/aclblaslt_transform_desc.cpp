@@ -159,6 +159,14 @@ aclblasStatus_t aclblasLtMatrixTransformDescSetAttribute(
 
     switch (attr) {
         case ACLBLASLT_MATRIX_TRANSFORM_DESC_SCALE_TYPE:
+            // issue #788: scaleType 在 Set 阶段可覆盖，但值域须为变换引擎可消费的精度
+            // （FP32/INT32/FP8 路径用 FLOAT/INT32 scale，FP4 路径用 BF16/FLOAT，见
+            // matrix_transform_host.cpp 的 MatScaleTypeMatchesPath），拒绝越界
+            // aclDataType 直写（如 ACL_DOUBLE），避免成功构造后 transform 阶段才失败
+            if (v != static_cast<int32_t>(ACL_FLOAT) && v != static_cast<int32_t>(ACL_BF16) &&
+                v != static_cast<int32_t>(ACL_INT32)) {
+                return ACLBLAS_STATUS_INVALID_VALUE;
+            }
             impl.scaleType = static_cast<aclDataType>(v);
             break;
         case ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE:
