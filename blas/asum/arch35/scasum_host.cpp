@@ -133,6 +133,17 @@ aclblasStatus_t aclblasScasum(aclblasHandle_t handle, int n, const aclblasComple
         return ACLBLAS_STATUS_SUCCESS;
     }
 
+    // issue #805: SIMT 路径 3 处 (startOffset + i) * stride 的 uint32 乘法（成对加载两处 +
+    // 索引寄存一处），(n-1)*incx 超出 uint32 索引域时回绕指向错误地址（静默错误结果）。
+    // 此处按 srot_host.cpp 的拒绝式守卫口径校验跨度后再下发 kernel。
+    const int64_t span = static_cast<int64_t>(n - 1) * static_cast<int64_t>(incx);
+    if (span > static_cast<int64_t>(UINT32_MAX)) {
+        OP_LOGE(
+            "aclblasScasum", "strided offset overflow: n=%d incx=%d span=%lld exceeds uint32 index domain", n, incx,
+            static_cast<long long>(span));
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+
     uint32_t numBlocks;
     uint32_t nthreads;
     status = CalcScasumLaunchConfig(n, incx, &numBlocks, &nthreads);
