@@ -284,6 +284,62 @@ TEST_F(LtMatmulArch35Test, DevicePointerModeReadsScalarsOnDevice)
     }
 }
 
+// issue #801: 执行链仅实现 DEFAULT epilogue；BIAS/RELU/GELU 等属性此前被静默忽略按
+// DEFAULT 计算产生错误结果。入口与 heuristic 现以 NOT_SUPPORTED 显式拒绝（校验先于
+// 设备访问，哑缓冲区不会被读写）。
+TEST_F(LtMatmulArch35Test, NonDefaultEpilogueRejected)
+{
+    aclblasLtMatmulDesc_t desc = nullptr;
+    ASSERT_EQ(aclblasLtMatmulDescCreate(&desc, ACLBLAS_COMPUTE_32F, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+    const int32_t opN = ACLBLAS_OP_N;
+    ASSERT_EQ(
+        aclblasLtMatmulDescSetAttribute(desc, ACLBLASLT_MATMUL_DESC_TRANSA, &opN, sizeof(opN)), ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatmulDescSetAttribute(desc, ACLBLASLT_MATMUL_DESC_TRANSB, &opN, sizeof(opN)), ACLBLAS_STATUS_SUCCESS);
+    const int32_t epilogueBias = ACLBLASLT_EPILOGUE_BIAS;
+    ASSERT_EQ(
+        aclblasLtMatmulDescSetAttribute(desc, ACLBLASLT_MATMUL_DESC_EPILOGUE, &epilogueBias, sizeof(epilogueBias)),
+        ACLBLAS_STATUS_SUCCESS);
+
+    aclblasLtMatrixLayout_t layouts[4] = {nullptr, nullptr, nullptr, nullptr};
+    for (auto& layout : layouts) {
+        ASSERT_EQ(aclblasLtMatrixLayoutCreate(&layout, ACL_FLOAT, 16, 16, 16), ACLBLAS_STATUS_SUCCESS);
+        const aclblasLtOrder_t row = ACLBLASLT_ORDER_ROW;
+        ASSERT_EQ(
+            aclblasLtMatrixLayoutSetAttribute(layout, ACLBLASLT_MATRIX_LAYOUT_ORDER, &row, sizeof(row)),
+            ACLBLAS_STATUS_SUCCESS);
+    }
+
+    constexpr size_t kBytes = 16 * 16 * sizeof(float);
+    void* deviceBuffers[4] = {nullptr, nullptr, nullptr, nullptr};
+    for (void*& buffer : deviceBuffers) {
+        ASSERT_EQ(aclrtMalloc(&buffer, kBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    }
+
+    float alpha = 1.0f;
+    float beta = 0.0f;
+    EXPECT_EQ(
+        aclblasLtMatmul(
+            ltHandle_, desc, &alpha, deviceBuffers[0], layouts[0], deviceBuffers[1], layouts[1], &beta,
+            deviceBuffers[2], layouts[2], deviceBuffers[3], layouts[3], nullptr, nullptr, 0, stream_),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
+
+    aclblasLtMatmulHeuristicResult_t heuristic{};
+    int returned = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetHeuristic(
+            ltHandle_, desc, layouts[0], layouts[1], layouts[2], layouts[3], nullptr, 1, &heuristic, &returned),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
+
+    for (void*& buffer : deviceBuffers) {
+        aclrtFree(buffer);
+    }
+    for (auto& layout : layouts) {
+        aclblasLtMatrixLayoutDestroy(layout);
+    }
+    aclblasLtMatmulDescDestroy(desc);
+}
+
 // ── TEST_F: null handle (TC_L0_25) ──
 TEST_F(LtMatmulArch35Test, NullHandle)
 {
@@ -1462,8 +1518,9 @@ namespace {
 
 bool MakeDefaultFp32Algo(aclblasLtHandle_t handle, aclblasLtMatmulAlgo_t* out)
 {
-    return aclblasLtMatmulAlgoInit(handle, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
-                                   ACL_FLOAT, 0, out) == ACLBLAS_STATUS_SUCCESS;
+    return aclblasLtMatmulAlgoInit(
+               handle, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, 0, out) ==
+           ACLBLAS_STATUS_SUCCESS;
 }
 
 // algo blob 里 magic 占 data[0:4]、algoId 占 data[4:8]，均小端。逐字节读写，避免裸 memcpy。
@@ -1490,8 +1547,8 @@ struct AlgoCheckWorkload {
     {
         const uint64_t rows[] = {m, k, m, m};
         const uint64_t cols[] = {k, n, n, n};
-        const int64_t ld[] = {static_cast<int64_t>(k), static_cast<int64_t>(n), static_cast<int64_t>(n),
-                              static_cast<int64_t>(n)};
+        const int64_t ld[] = {
+            static_cast<int64_t>(k), static_cast<int64_t>(n), static_cast<int64_t>(n), static_cast<int64_t>(n)};
         return layouts.Initialize(rows, cols, ld);
     }
 };
@@ -1504,8 +1561,9 @@ TEST_F(LtMatmulArch35Test, AlgoCheckNullArgsPrecedeHandleCheck)
     // 而非 aclblasLtMatmul 在同输入下返回的 NOT_INITIALIZED。
     aclblasLtMatmulAlgo_t algo{};
     aclblasLtMatmulHeuristicResult_t result{};
-    EXPECT_EQ(aclblasLtMatmulAlgoCheck(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &algo, &result),
-              ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCheck(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &algo, &result),
+        ACLBLAS_STATUS_INVALID_VALUE);
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckNullHandleAlone)
@@ -1515,9 +1573,10 @@ TEST_F(LtMatmulArch35Test, AlgoCheckNullHandleAlone)
     aclblasLtMatmulAlgo_t algo{};
     ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
     aclblasLtMatmulHeuristicResult_t result{};
-    EXPECT_EQ(aclblasLtMatmulAlgoCheck(nullptr, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
-                                       wl.layouts.d, &algo, &result),
-              ACLBLAS_STATUS_NOT_INITIALIZED);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCheck(
+            nullptr, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c, wl.layouts.d, &algo, &result),
+        ACLBLAS_STATUS_NOT_INITIALIZED);
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckRejectsTamperedMagic)
@@ -1526,11 +1585,13 @@ TEST_F(LtMatmulArch35Test, AlgoCheckRejectsTamperedMagic)
     ASSERT_TRUE(wl.Create());
     aclblasLtMatmulAlgo_t algo{};
     ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
-    SetAlgoBlobWord(algo, 0, GetAlgoBlobWord(algo, 0) ^ 0xFFu);  // 破坏 magic
+    SetAlgoBlobWord(algo, 0, GetAlgoBlobWord(algo, 0) ^ 0xFFu); // 破坏 magic
     aclblasLtMatmulHeuristicResult_t result{};
-    EXPECT_EQ(aclblasLtMatmulAlgoCheck(LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a,
-                                       wl.layouts.b, wl.layouts.c, wl.layouts.d, &algo, &result),
-              ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCheck(
+            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
+            wl.layouts.d, &algo, &result),
+        ACLBLAS_STATUS_INVALID_VALUE);
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckRejectsUndecodableAlgoId)
@@ -1539,11 +1600,13 @@ TEST_F(LtMatmulArch35Test, AlgoCheckRejectsUndecodableAlgoId)
     ASSERT_TRUE(wl.Create());
     aclblasLtMatmulAlgo_t algo{};
     ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
-    SetAlgoBlobWord(algo, 4, 0x00800000u);  // 低 2 位为 0，落在 splitK 编码域 {1,2,3} 之外 → 不可解码
+    SetAlgoBlobWord(algo, 4, 0x00800000u); // 低 2 位为 0，落在 splitK 编码域 {1,2,3} 之外 → 不可解码
     aclblasLtMatmulHeuristicResult_t result{};
-    EXPECT_EQ(aclblasLtMatmulAlgoCheck(LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a,
-                                       wl.layouts.b, wl.layouts.c, wl.layouts.d, &algo, &result),
-              ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCheck(
+            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
+            wl.layouts.d, &algo, &result),
+        ACLBLAS_STATUS_INVALID_VALUE);
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckZeroDimNoOpReportsZeroWorkspace)
@@ -1553,10 +1616,12 @@ TEST_F(LtMatmulArch35Test, AlgoCheckZeroDimNoOpReportsZeroWorkspace)
     aclblasLtMatmulAlgo_t algo{};
     ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
     aclblasLtMatmulHeuristicResult_t result{};
-    ASSERT_EQ(aclblasLtMatmulAlgoCheck(LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a,
-                                       wl.layouts.b, wl.layouts.c, wl.layouts.d, &algo, &result),
-              ACLBLAS_STATUS_SUCCESS);
-    EXPECT_EQ(result.workspaceSize, 0u);  // 空问题不报 epilogue 的固定附加项
+    ASSERT_EQ(
+        aclblasLtMatmulAlgoCheck(
+            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
+            wl.layouts.d, &algo, &result),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(result.workspaceSize, 0u); // 空问题不报 epilogue 的固定附加项
     EXPECT_EQ(result.state, ACLBLAS_STATUS_SUCCESS);
 }
 
@@ -1565,14 +1630,17 @@ TEST_F(LtMatmulArch35Test, AlgoCheckRejectsColOrder)
     AlgoCheckWorkload wl;
     ASSERT_TRUE(wl.Create());
     const aclblasLtOrder_t col = ACLBLASLT_ORDER_COL;
-    ASSERT_EQ(aclblasLtMatrixLayoutSetAttribute(wl.layouts.a, ACLBLASLT_MATRIX_LAYOUT_ORDER, &col, sizeof(col)),
-              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatrixLayoutSetAttribute(wl.layouts.a, ACLBLASLT_MATRIX_LAYOUT_ORDER, &col, sizeof(col)),
+        ACLBLAS_STATUS_SUCCESS);
     aclblasLtMatmulAlgo_t algo{};
     ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
     aclblasLtMatmulHeuristicResult_t result{};
-    EXPECT_EQ(aclblasLtMatmulAlgoCheck(LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a,
-                                       wl.layouts.b, wl.layouts.c, wl.layouts.d, &algo, &result),
-              ACLBLAS_STATUS_NOT_SUPPORTED);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCheck(
+            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
+            wl.layouts.d, &algo, &result),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckRejectsConjugateTranspose)
@@ -1580,15 +1648,17 @@ TEST_F(LtMatmulArch35Test, AlgoCheckRejectsConjugateTranspose)
     AlgoCheckWorkload wl;
     ASSERT_TRUE(wl.Create());
     const int32_t opC = ACLBLAS_OP_C;
-    ASSERT_EQ(aclblasLtMatmulDescSetAttribute(wl.layouts.computeDesc, ACLBLASLT_MATMUL_DESC_TRANSA, &opC,
-                                              sizeof(opC)),
-              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatmulDescSetAttribute(wl.layouts.computeDesc, ACLBLASLT_MATMUL_DESC_TRANSA, &opC, sizeof(opC)),
+        ACLBLAS_STATUS_SUCCESS);
     aclblasLtMatmulAlgo_t algo{};
     ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
     aclblasLtMatmulHeuristicResult_t result{};
-    EXPECT_EQ(aclblasLtMatmulAlgoCheck(LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a,
-                                       wl.layouts.b, wl.layouts.c, wl.layouts.d, &algo, &result),
-              ACLBLAS_STATUS_NOT_SUPPORTED);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCheck(
+            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
+            wl.layouts.d, &algo, &result),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckWorkspaceIsMaxOfIntrinsicAndAlgoCap)
@@ -1601,22 +1671,26 @@ TEST_F(LtMatmulArch35Test, AlgoCheckWorkspaceIsMaxOfIntrinsicAndAlgoCap)
     // (a) 默认 algo：内在需求为 0（splitK=1、epilogue DEFAULT），报出的是 algo 自带的上限，
     //     使「按 result->workspaceSize 分配后直接调 aclblasLtMatmul」这条自然流程能通过其容量校验。
     aclblasLtMatmulHeuristicResult_t r1{};
-    ASSERT_EQ(aclblasLtMatmulAlgoCheck(LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a,
-                                       wl.layouts.b, wl.layouts.c, wl.layouts.d, &algo, &r1),
-              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatmulAlgoCheck(
+            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
+            wl.layouts.d, &algo, &r1),
+        ACLBLAS_STATUS_SUCCESS);
     EXPECT_EQ(r1.workspaceSize, algo.max_workspace_bytes);
     EXPECT_GT(r1.workspaceSize, 0u);
 
     // (b) 把上限压到 100 并令 splitK=2 → 内在需求 2*16*16*4 = 2048 > 100，报内在需求。
     algo.max_workspace_bytes = 100;
     const uint32_t splitK = 2;
-    ASSERT_EQ(aclblasLtMatmulAlgoConfigSetAttribute(&algo, ACLBLASLT_ALGO_CONFIG_SPLITK_NUM, &splitK,
-                                                    sizeof(splitK)),
-              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatmulAlgoConfigSetAttribute(&algo, ACLBLASLT_ALGO_CONFIG_SPLITK_NUM, &splitK, sizeof(splitK)),
+        ACLBLAS_STATUS_SUCCESS);
     aclblasLtMatmulHeuristicResult_t r2{};
-    ASSERT_EQ(aclblasLtMatmulAlgoCheck(LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a,
-                                       wl.layouts.b, wl.layouts.c, wl.layouts.d, &algo, &r2),
-              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatmulAlgoCheck(
+            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
+            wl.layouts.d, &algo, &r2),
+        ACLBLAS_STATUS_SUCCESS);
     EXPECT_EQ(r2.workspaceSize, 2u * 16u * 16u * sizeof(float));
 }
 
@@ -1628,15 +1702,17 @@ TEST_F(LtMatmulArch35Test, AlgoCheckEchoesAlgoUnchanged)
     ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
     const aclblasLtMatmulAlgo_t before = algo;
     aclblasLtMatmulHeuristicResult_t result{};
-    ASSERT_EQ(aclblasLtMatmulAlgoCheck(LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a,
-                                       wl.layouts.b, wl.layouts.c, wl.layouts.d, &algo, &result),
-              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatmulAlgoCheck(
+            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
+            wl.layouts.d, &algo, &result),
+        ACLBLAS_STATUS_SUCCESS);
     // 回显必须逐字节相同（含 max_workspace_bytes），调用方可安全复用或再序列化原 algo。
     for (size_t i = 0; i < sizeof(before.data); ++i) {
         ASSERT_EQ(result.algo.data[i], before.data[i]) << "algo.data[" << i << "] differs";
     }
     EXPECT_EQ(result.algo.max_workspace_bytes, before.max_workspace_bytes);
-    EXPECT_EQ(result.wavesCount, 1.0f);  // 占位值：本接口不做设备查询，不可用于排序
+    EXPECT_EQ(result.wavesCount, 1.0f); // 占位值：本接口不做设备查询，不可用于排序
     for (int i = 0; i < 4; ++i) {
         EXPECT_EQ(result.reserved[i], 0);
     }
@@ -1648,7 +1724,7 @@ TEST_F(LtMatmulArch35Test, AlgoCheckFailureLeavesResultUntouched)
     ASSERT_TRUE(wl.Create());
     aclblasLtMatmulAlgo_t algo{};
     ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
-    SetAlgoBlobWord(algo, 0, GetAlgoBlobWord(algo, 0) ^ 0xFFu);  // 令其在 Stage 2 失败
+    SetAlgoBlobWord(algo, 0, GetAlgoBlobWord(algo, 0) ^ 0xFFu); // 令其在 Stage 2 失败
 
     aclblasLtMatmulHeuristicResult_t result{};
     result.workspaceSize = 0xDEADBEEFu;
@@ -1661,9 +1737,11 @@ TEST_F(LtMatmulArch35Test, AlgoCheckFailureLeavesResultUntouched)
         result.reserved[i] = 0x5A5A5A5A;
     }
 
-    EXPECT_EQ(aclblasLtMatmulAlgoCheck(LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a,
-                                       wl.layouts.b, wl.layouts.c, wl.layouts.d, &algo, &result),
-              ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCheck(
+            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
+            wl.layouts.d, &algo, &result),
+        ACLBLAS_STATUS_INVALID_VALUE);
     // 失败路径不得回写 result：调用方只能按返回值判定，不能读 result.state
     // （其默认成员初始化值恰为 SUCCESS，失败后读它会误判为成功）。
     EXPECT_EQ(result.workspaceSize, 0xDEADBEEFu);
@@ -1691,14 +1769,16 @@ TEST_F(LtMatmulArch35Test, AlgoCheckHostFp32WithBf16OutputNotSupported)
     ASSERT_EQ(aclblasLtMatrixLayoutCreate(&d, ACL_BF16, 16, 16, 16), ACLBLAS_STATUS_SUCCESS);
     const aclblasLtOrder_t row = ACLBLASLT_ORDER_ROW;
     for (aclblasLtMatrixLayout_t* l : {&a, &b, &c, &d}) {
-        ASSERT_EQ(aclblasLtMatrixLayoutSetAttribute(*l, ACLBLASLT_MATRIX_LAYOUT_ORDER, &row, sizeof(row)),
-                  ACLBLAS_STATUS_SUCCESS);
+        ASSERT_EQ(
+            aclblasLtMatrixLayoutSetAttribute(*l, ACLBLASLT_MATRIX_LAYOUT_ORDER, &row, sizeof(row)),
+            ACLBLAS_STATUS_SUCCESS);
     }
     aclblasLtMatmulAlgo_t algo{};
     ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
     aclblasLtMatmulHeuristicResult_t result{};
-    EXPECT_EQ(aclblasLtMatmulAlgoCheck(LtMatmulArch35Test::ltHandle_, computeDesc, a, b, c, d, &algo, &result),
-              ACLBLAS_STATUS_NOT_SUPPORTED);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCheck(LtMatmulArch35Test::ltHandle_, computeDesc, a, b, c, d, &algo, &result),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
 
     aclblasLtMatrixLayoutDestroy(a);
     aclblasLtMatrixLayoutDestroy(b);
@@ -1721,9 +1801,9 @@ TEST_F(LtMatmulArch35Test, PreferenceCreateProductSurvivesSetAttributeThenDestro
     ASSERT_EQ(aclblasLtMatmulPreferenceCreate(&pref), ACLBLAS_STATUS_SUCCESS);
     ASSERT_NE(pref, nullptr);
     const uint64_t ws = 1024;
-    ASSERT_EQ(aclblasLtMatmulPreferenceSetAttribute(pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &ws,
-                                                    sizeof(ws)),
-              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &ws, sizeof(ws)),
+        ACLBLAS_STATUS_SUCCESS);
     // 来源标记必须能穿过 SetAttribute 的「整体读出—改一项—整体写回」，否则此路径会被误拒。
     EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(pref), ACLBLAS_STATUS_SUCCESS);
 }
@@ -1755,19 +1835,23 @@ TEST_F(LtMatmulArch35Test, PreferenceInitDefaultsMatchCreate)
     uint32_t modeInit = 0xDEADu, modeCreate = 0xDEADu;
     uint64_t wsInit = 0, wsCreate = 0;
     size_t written = 0;
-    ASSERT_EQ(aclblasLtMatmulPreferenceGetAttribute(&storage, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &modeInit,
-                                                    sizeof(modeInit), &written),
-              ACLBLAS_STATUS_SUCCESS);
-    ASSERT_EQ(aclblasLtMatmulPreferenceGetAttribute(heap, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &modeCreate,
-                                                    sizeof(modeCreate), &written),
-              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(
+            &storage, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &modeInit, sizeof(modeInit), &written),
+        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(
+            heap, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &modeCreate, sizeof(modeCreate), &written),
+        ACLBLAS_STATUS_SUCCESS);
     EXPECT_EQ(modeInit, modeCreate);
-    ASSERT_EQ(aclblasLtMatmulPreferenceGetAttribute(&storage, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &wsInit,
-                                                    sizeof(wsInit), &written),
-              ACLBLAS_STATUS_SUCCESS);
-    ASSERT_EQ(aclblasLtMatmulPreferenceGetAttribute(heap, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &wsCreate,
-                                                    sizeof(wsCreate), &written),
-              ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(
+            &storage, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &wsInit, sizeof(wsInit), &written),
+        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(
+            heap, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &wsCreate, sizeof(wsCreate), &written),
+        ACLBLAS_STATUS_SUCCESS);
     EXPECT_EQ(wsInit, wsCreate);
 
     ASSERT_EQ(aclblasLtMatmulPreferenceDestroy(heap), ACLBLAS_STATUS_SUCCESS);

@@ -487,7 +487,6 @@ aclblasStatus_t FillAlgoCheckResult(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-
 // ── AlgoCheck Stage helpers（每个 helper 各自打日志，主体只剩 Stage 调用与早退）──
 
 // Stage 0: name the first null argument precisely instead of
@@ -497,9 +496,8 @@ aclblasStatus_t FillAlgoCheckResult(
 // instead of matmul's NOT_INITIALIZED.
 bool AlgoCheckArgsAreNonNull(
     const aclblasLtMatmulHeuristicResult_t* result, const aclblasLtMatmulAlgo_t* algo,
-    const aclblasLtMatmulDesc_t operationDesc, const aclblasLtMatrixLayout_t Adesc,
-    const aclblasLtMatrixLayout_t Bdesc, const aclblasLtMatrixLayout_t Cdesc,
-    const aclblasLtMatrixLayout_t Ddesc)
+    const aclblasLtMatmulDesc_t operationDesc, const aclblasLtMatrixLayout_t Adesc, const aclblasLtMatrixLayout_t Bdesc,
+    const aclblasLtMatrixLayout_t Cdesc, const aclblasLtMatrixLayout_t Ddesc)
 {
     const char* firstNull = nullptr;
     if (result == nullptr) {
@@ -543,8 +541,7 @@ aclblasStatus_t CheckAlgoBlobStructural(const aclblasLtMatmulAlgo_t* algo, Packe
         uint16_t decL1nDiv16 = 0;
         uint32_t decL1k = 0;
         uint8_t decSplitK = 0;
-        if (!DecodeAlgoIdFields(
-                packed->algoId, &decPolicy, &decL1mDiv16, &decL1nDiv16, &decL1k, &decSplitK)) {
+        if (!DecodeAlgoIdFields(packed->algoId, &decPolicy, &decL1mDiv16, &decL1nDiv16, &decL1k, &decSplitK)) {
             AclBlasLt::LoggerManager::GetInstance().Log(
                 ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmulAlgoCheck", "algoId %u cannot be decoded",
                 static_cast<unsigned int>(packed->algoId));
@@ -573,11 +570,20 @@ aclblasStatus_t CheckScalarSemantics(const aclblasLtMatmulDescImpl* desc)
             "scaleType %d is not supported, only ACL_FLOAT scalars are parsed", static_cast<int>(desc->scaleType));
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-// No conjugate path.
+    // No conjugate path.
     if (!HasSupportedTransposeModes(desc)) {
         AclBlasLt::LoggerManager::GetInstance().Log(
             ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmulAlgoCheck",
             "transA/transB ACLBLAS_OP_C is not supported (no conjugate path)");
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
+    // issue #801: 执行链仅实现 DEFAULT epilogue，与 aclblasLtMatmul 入口 / heuristic 同口径
+    // 拒绝，保证「可校验的必可执行」。
+    if (desc->epilogue != ACLBLASLT_EPILOGUE_DEFAULT) {
+        AclBlasLt::LoggerManager::GetInstance().Log(
+            ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmulAlgoCheck",
+            "epilogue %d is not supported: only ACLBLASLT_EPILOGUE_DEFAULT is implemented",
+            static_cast<int>(desc->epilogue));
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
     return ACLBLAS_STATUS_SUCCESS;
@@ -611,9 +617,8 @@ aclblasStatus_t CheckMatrixSemantics(
     if (!HasRowMajorLayouts(aLayout, bLayout, cLayout, dLayout)) {
         AclBlasLt::LoggerManager::GetInstance().Log(
             ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmulAlgoCheck",
-            "only ACLBLASLT_ORDER_ROW layouts are supported (A=%d, B=%d, C=%d, D=%d)",
-            static_cast<int>(aLayout->order), static_cast<int>(bLayout->order), static_cast<int>(cLayout->order),
-            static_cast<int>(dLayout->order));
+            "only ACLBLASLT_ORDER_ROW layouts are supported (A=%d, B=%d, C=%d, D=%d)", static_cast<int>(aLayout->order),
+            static_cast<int>(bLayout->order), static_cast<int>(cLayout->order), static_cast<int>(dLayout->order));
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
     // MXFP k must be a non-zero multiple of 32.
@@ -876,6 +881,12 @@ aclblasStatus_t ValidateHeuristicTypePair(
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (IsGatedOffMxPair(A->type, B->type)) {
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
+    // issue #801: 执行链仅实现 DEFAULT epilogue（aclblasLtMatmul 入口对非 DEFAULT 返回
+    // NOT_SUPPORTED），heuristic 查询入口同口径拒绝，避免发放不可执行的算法及其
+    // epilogue workspace 附加量。
+    if (desc->epilogue != ACLBLASLT_EPILOGUE_DEFAULT) {
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
     return ACLBLAS_STATUS_SUCCESS;

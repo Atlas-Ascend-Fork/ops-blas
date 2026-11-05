@@ -126,6 +126,18 @@ aclblasStatus_t aclblasLtMatmul(
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
 
+    // issue #801: 执行链（engine → epilogue 内核）仅实现 alpha*D_raw + beta*C，MatmulProblem
+    // 无 epilogue 字段，BIAS/RELU/GELU 等属性此前被静默忽略按 DEFAULT 计算（错误结果无提示）；
+    // README 亦声明仅支持 DEFAULT。入口对非 DEFAULT epilogue 显式拒绝（与 MX gate-off 同口径），
+    // heuristic / AlgoCheck 同步收敛；具体 epilogue 能力按需求逐枚举评估落地。
+    if (desc->epilogue != ACLBLASLT_EPILOGUE_DEFAULT) {
+        AclBlasLt::LoggerManager::GetInstance().Log(
+            ACLBLASLT_LOG_MASK_ERROR, "aclblasLtMatmul",
+            "epilogue %d is not supported: only ACLBLASLT_EPILOGUE_DEFAULT is implemented",
+            static_cast<int>(desc->epilogue));
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
+
     // Get dimensions
     uint64_t m = DLayout->rows;
     uint64_t n = DLayout->cols;
