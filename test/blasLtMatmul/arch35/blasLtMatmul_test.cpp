@@ -422,6 +422,299 @@ TEST_F(LtMatmulArch35Test, HeuristicRejectsOversizedDimensions)
     aclblasLtMatmulDescDestroy(computeDesc);
 }
 
+// ── TEST_F: 算法选择链契约矩阵（issue #792）──
+TEST_F(LtMatmulArch35Test, AlgoGetIdsContract)
+{
+    // 正常查询：非空结果、升序、数量由 numAlgoIds 回传
+    std::vector<int> ids(64, -1);
+    int numIds = -1;
+    ASSERT_EQ(
+        aclblasLtMatmulAlgoGetIds(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            ids.data(), static_cast<int>(ids.size()), &numIds),
+        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_GT(numIds, 0);
+    for (int i = 1; i < numIds; i++) {
+        ASSERT_GT(ids[i], ids[i - 1]);
+    }
+
+    // scaleType 不参与类型组合校验：换 ACL_DOUBLE 结果与 ACL_FLOAT 一致
+    std::vector<int> idsAlt(64, -1);
+    int numIdsAlt = -1;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetIds(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_DOUBLE, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            idsAlt.data(), static_cast<int>(idsAlt.size()), &numIdsAlt),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(numIdsAlt, numIds);
+
+    // 失败路径写 numAlgoIds=0：数组为空、length<=0 均拒绝
+    int numIdsFail = 7;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetIds(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            nullptr, 8, &numIdsFail),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(numIdsFail, 0);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetIds(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            ids.data(), 0, &numIdsFail),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(numIdsFail, 0);
+}
+
+TEST_F(LtMatmulArch35Test, AlgoInitContract)
+{
+    std::vector<int> ids(16, -1);
+    int numIds = 0;
+    ASSERT_EQ(
+        aclblasLtMatmulAlgoGetIds(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            ids.data(), static_cast<int>(ids.size()), &numIds),
+        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_GT(numIds, 0);
+
+    // GetIds 返回的 ID 可被 AlgoInit 接受（algoId=0 默认配置亦可）
+    aclblasLtMatmulAlgo_t algo = nullptr;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoInit(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            ids[0], &algo),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_NE(algo, nullptr);
+    aclblasLtMatmulAlgo_t defaultAlgo = nullptr;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoInit(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            0, &defaultAlgo),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_NE(defaultAlgo, nullptr);
+
+    // 非法 ID 拒绝：负数、无法解码
+    aclblasLtMatmulAlgo_t badAlgo = nullptr;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoInit(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            -1, &badAlgo),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(badAlgo, nullptr);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoInit(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            0x7FFFFFFF, &badAlgo),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(badAlgo, nullptr);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoInit(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            0, nullptr),
+        ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+static aclblasLtMatmulDesc_t CreateFp32HeuristicFixture(
+    aclblasLtMatrixLayout_t* aLayout, aclblasLtMatrixLayout_t* bLayout, aclblasLtMatrixLayout_t* dLayout)
+{
+    aclblasLtMatmulDesc_t computeDesc = nullptr;
+    EXPECT_EQ(aclblasLtMatmulDescCreate(&computeDesc, ACLBLAS_COMPUTE_32F, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
+    if (computeDesc != nullptr) {
+        EXPECT_EQ(aclblasLtMatrixLayoutCreate(aLayout, ACL_FLOAT, 32, 16, 32), ACLBLAS_STATUS_SUCCESS);
+        EXPECT_EQ(aclblasLtMatrixLayoutCreate(bLayout, ACL_FLOAT, 16, 16, 16), ACLBLAS_STATUS_SUCCESS);
+        EXPECT_EQ(aclblasLtMatrixLayoutCreate(dLayout, ACL_FLOAT, 32, 16, 32), ACLBLAS_STATUS_SUCCESS);
+    }
+    return computeDesc;
+}
+
+static void DestroyFp32HeuristicFixture(
+    aclblasLtMatmulDesc_t computeDesc, aclblasLtMatrixLayout_t aLayout, aclblasLtMatrixLayout_t bLayout,
+    aclblasLtMatrixLayout_t dLayout)
+{
+    aclblasLtMatrixLayoutDestroy(aLayout);
+    aclblasLtMatrixLayoutDestroy(bLayout);
+    aclblasLtMatrixLayoutDestroy(dLayout);
+    aclblasLtMatmulDescDestroy(computeDesc);
+}
+
+TEST_F(LtMatmulArch35Test, AlgoGetHeuristicContract)
+{
+    aclblasLtMatrixLayout_t aLayout = nullptr;
+    aclblasLtMatrixLayout_t bLayout = nullptr;
+    aclblasLtMatrixLayout_t dLayout = nullptr;
+    aclblasLtMatmulDesc_t computeDesc = CreateFp32HeuristicFixture(&aLayout, &bLayout, &dLayout);
+    ASSERT_NE(computeDesc, nullptr);
+
+    // pref=nullptr 按默认偏好处理，正常返回候选且各项 state 为 SUCCESS
+    aclblasLtMatmulHeuristicResult_t results[4];
+    int returnCount = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetHeuristic(
+            LtMatmulArch35Test::ltHandle_, computeDesc, aLayout, bLayout, dLayout, dLayout, nullptr, 4, results,
+            &returnCount),
+        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_GT(returnCount, 0);
+    ASSERT_LE(returnCount, 4);
+    for (int i = 0; i < returnCount; i++) {
+        EXPECT_EQ(results[i].state, ACLBLAS_STATUS_SUCCESS);
+        EXPECT_GE(results[i].workspaceSize, size_t{0});
+    }
+
+    // requested=0 拒绝且 returnAlgoCount 写 0；returnAlgoCount 为空拒绝
+    returnCount = -1;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetHeuristic(
+            LtMatmulArch35Test::ltHandle_, computeDesc, aLayout, bLayout, dLayout, dLayout, nullptr, 0, results,
+            &returnCount),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(returnCount, 0);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetHeuristic(
+            LtMatmulArch35Test::ltHandle_, computeDesc, aLayout, bLayout, dLayout, dLayout, nullptr, 1, results,
+            nullptr),
+        ACLBLAS_STATUS_INVALID_VALUE);
+
+    DestroyFp32HeuristicFixture(computeDesc, aLayout, bLayout, dLayout);
+}
+
+TEST_F(LtMatmulArch35Test, AlgoGetHeuristicRejectsBadTypeAndTinyWorkspace)
+{
+    aclblasLtMatrixLayout_t aLayout = nullptr;
+    aclblasLtMatrixLayout_t bLayout = nullptr;
+    aclblasLtMatrixLayout_t dLayout = nullptr;
+    aclblasLtMatmulDesc_t computeDesc = CreateFp32HeuristicFixture(&aLayout, &bLayout, &dLayout);
+    ASSERT_NE(computeDesc, nullptr);
+
+    // 类型组合不兼容：返回 INVALID_VALUE 且 results[0].state 写 INVALID_VALUE
+    aclblasLtMatrixLayout_t int8Layout = nullptr;
+    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&int8Layout, ACL_INT8, 32, 16, 32), ACLBLAS_STATUS_SUCCESS);
+    aclblasLtMatmulHeuristicResult_t mismatchResult[1];
+    int mismatchCount = -1;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetHeuristic(
+            LtMatmulArch35Test::ltHandle_, computeDesc, int8Layout, bLayout, dLayout, dLayout, nullptr, 1,
+            mismatchResult, &mismatchCount),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(mismatchResult[0].state, ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(mismatchCount, 0);
+
+    // workspace 预算不足：候选全部被跳过 → NOT_SUPPORTED 且 returnCount=0
+    aclblasLtMatmulPreference_t pref = nullptr;
+    ASSERT_EQ(aclblasLtMatmulPreferenceCreate(&pref), ACLBLAS_STATUS_SUCCESS);
+    const size_t tinyWorkspace = 1;
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(
+            pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &tinyWorkspace, sizeof(tinyWorkspace)),
+        ACLBLAS_STATUS_SUCCESS);
+    int tinyCount = -1;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetHeuristic(
+            LtMatmulArch35Test::ltHandle_, computeDesc, aLayout, bLayout, dLayout, dLayout, pref, 4, mismatchResult,
+            &tinyCount),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
+    EXPECT_EQ(tinyCount, 0);
+    aclblasLtMatmulPreferenceDestroy(pref);
+
+    aclblasLtMatrixLayoutDestroy(int8Layout);
+    DestroyFp32HeuristicFixture(computeDesc, aLayout, bLayout, dLayout);
+}
+
+TEST_F(LtMatmulArch35Test, AlgoCapGetAttributeContract)
+{
+    aclblasLtMatmulAlgo_t algo = nullptr;
+    ASSERT_EQ(
+        aclblasLtMatmulAlgoInit(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            0, &algo),
+        ACLBLAS_STATUS_SUCCESS);
+
+    // 实现能力类：SPLITK_SUPPORT 恒 0（sizeWritten 允许为空）
+    uint32_t splitk = 9;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCapGetAttribute(algo, ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT, &splitk, sizeof(splitk), nullptr),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(splitk, 0U);
+
+    // 数组能力类：size=0 探长，sizeWritten 回传所需字节数
+    size_t stagesBytes = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCapGetAttribute(algo, ACLBLASLT_ALGO_CAP_STAGES_IDS, nullptr, 0, &stagesBytes),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_GT(stagesBytes, size_t{0});
+
+    // 枚举子集外（8~12、14 及以上含哨兵）→ NOT_SUPPORTED
+    uint32_t out = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCapGetAttribute(
+            algo, static_cast<aclblasLtMatmulAlgoCapAttributes_t>(8), &out, sizeof(out), nullptr),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCapGetAttribute(
+            algo, static_cast<aclblasLtMatmulAlgoCapAttributes_t>(ACLBLASLT_ALGO_CAP_MAX), &out, sizeof(out), nullptr),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
+
+    // null algo → INVALID_VALUE
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCapGetAttribute(nullptr, ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT, &out, sizeof(out), nullptr),
+        ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+TEST_F(LtMatmulArch35Test, MatmulPreferenceGetAttributeContract)
+{
+    aclblasLtMatmulPreference_t pref = nullptr;
+    ASSERT_EQ(aclblasLtMatmulPreferenceCreate(&pref), ACLBLAS_STATUS_SUCCESS);
+
+    // Set/Get 回读：SEARCH_MODE（sizeWritten 为空允许）
+    const uint32_t searchMode = 2;
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &searchMode, sizeof(searchMode)),
+        ACLBLAS_STATUS_SUCCESS);
+    uint32_t modeOut = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(
+            pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &modeOut, sizeof(modeOut), nullptr),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(modeOut, searchMode);
+
+    // MAX_WORKSPACE_BYTES：接受 4 字节写入（4/8 两种宽度均合法）
+    const uint32_t workspaceSmall = 1024;
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(
+            pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &workspaceSmall, sizeof(workspaceSmall)),
+        ACLBLAS_STATUS_SUCCESS);
+    size_t workspaceOut = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(
+            pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &workspaceOut, sizeof(workspaceOut), nullptr),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(workspaceOut, size_t{workspaceSmall});
+
+    // 值域校验：SEARCH_MODE>2 拒绝、workspace 超 INT64_MAX 拒绝
+    const uint32_t badMode = 3;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &badMode, sizeof(badMode)),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    const uint64_t hugeWorkspace = 0x8000000000000000ULL;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(
+            pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &hugeWorkspace, sizeof(hugeWorkspace)),
+        ACLBLAS_STATUS_INVALID_VALUE);
+
+    // 探测模式：size=0 不写 buf，sizeWritten 回传所需字节数
+    size_t probeBytes = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, nullptr, 0, &probeBytes),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(probeBytes, sizeof(uint32_t));
+
+    // 未识别 attr → NOT_SUPPORTED
+    uint32_t out = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(
+            pref, static_cast<aclblasLtMatmulPreferenceAttribute_t>(99), &out, sizeof(out), nullptr),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
+
+    aclblasLtMatmulPreferenceDestroy(pref);
+}
+
 TEST_F(LtMatmulArch35Test, RejectsMismatchedContractionDimension)
 {
     MatmulLayoutTestData layouts;
