@@ -526,12 +526,12 @@ aclblasStatus_t aclblasLtMatmulPreferenceSetAttribute(aclblasLtMatmulPreference_
                                                       size_t sizeInBytes);
 ```
 
-设置算法搜索偏好属性，如 `ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES`（允许的最大 workspace 字节数，默认 32MB）。
+设置算法搜索偏好属性，如 `ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES`（允许的最大 workspace 字节数，默认 32MB）。值域约束：`ACLBLASLT_MATMUL_PREF_SEARCH_MODE` 仅接受 0（启发式）/1（穷举）/2（快速），且写入缓冲须为 4 字节 `uint32_t`；`ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES` 接受 4 或 8 字节写入，值不得超过 `INT64_MAX`，越界返回 `INVALID_VALUE`。
 
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 设置成功。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | `buf` 为空，或 `sizeInBytes` 与属性所需大小不匹配。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `buf` 为空、`sizeInBytes` 与属性所需大小不匹配，或属性值超出上述值域。 |
 | `ACLBLAS_STATUS_NOT_SUPPORTED` | `attr` 不是已识别的属性。 |
 
 #### aclblasLtMatmulPreferenceGetAttribute()
@@ -544,12 +544,12 @@ aclblasStatus_t aclblasLtMatmulPreferenceGetAttribute(aclblasLtMatmulPreference_
                                                       size_t* sizeWritten);
 ```
 
-查询算法搜索偏好描述符属性。
+查询算法搜索偏好描述符属性。`sizeWritten` 允许为 `nullptr`（不回写所需大小）；`sizeInBytes=0` 时为探测模式，不写 `buf`，仅通过 `sizeWritten` 返回所需字节数。
 
 | 返回值 | 含义 |
 |---|---|
-| `ACLBLAS_STATUS_SUCCESS` | 查询成功。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | `pref` 或 `buf` 为空，或缓冲区过小。 |
+| `ACLBLAS_STATUS_SUCCESS` | 查询成功（含 `sizeInBytes=0` 探测）。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `pref` 为空，或 `buf` 非空但缓冲区过小（此时 `sizeWritten` 仍回传所需字节数）。 |
 | `ACLBLAS_STATUS_NOT_SUPPORTED` | `attr` 不是已识别的属性。 |
 
 #### aclblasLtMatmulAlgoInit()
@@ -644,14 +644,14 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(aclblasLtHandle_t lightHandle,
                                           int* numAlgoIds);
 ```
 
-查询指定计算类型与数据类型组合下 aclBLASLt 支持的全部算法 ID 集合，每个 ID 均可作为 `aclblasLtMatmulAlgoInit` 的合法 `algoId` 输入。ID 按升序写入 `algoIdsArray`；当 `algoIdsArrayLength` 小于可用 ID 数量时，仅写入前 `algoIdsArrayLength` 个，实际写入数量通过 `numAlgoIds` 返回。
+查询指定计算类型与数据类型组合下 aclBLASLt 支持的全部算法 ID 集合，每个 ID 均可作为 `aclblasLtMatmulAlgoInit` 的合法 `algoId` 输入。ID 按升序写入 `algoIdsArray`；当 `algoIdsArrayLength` 小于可用 ID 数量时，仅写入前 `algoIdsArrayLength` 个，实际写入数量通过 `numAlgoIds` 返回。`scaleType` 当前不参与类型组合校验（保留参数，语义与 `aclblasLtMatmulAlgoInit` 的 `scaleType` 不同：本接口的类型组合合法性仅由 `computeType` 与 A/B 及 C/D 决定）。`numAlgoIds` 在非空前提下总会被写入：任何失败返回路径写 0，成功时写实际数量。
 
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 查询成功。 |
 | `ACLBLAS_STATUS_NOT_INITIALIZED` | `lightHandle` 为空指针。 |
 | `ACLBLAS_STATUS_INVALID_VALUE` | `algoIdsArray` 或 `numAlgoIds` 为空指针，或 `algoIdsArrayLength <= 0`。 |
-| `ACLBLAS_STATUS_NOT_SUPPORTED` | 数据类型组合不支持。 |
+| `ACLBLAS_STATUS_NOT_SUPPORTED` | 数据类型组合不支持，或 `Ctype` 与 `Dtype` 不一致。 |
 
 #### aclblasLtMatmulAlgoGetHeuristic()
 
@@ -668,14 +668,15 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(aclblasLtHandle_t lightHandle,
                                                 int* returnAlgoCount);
 ```
 
-根据给定的 matmul 描述符与 A/B/C/D 矩阵 layout，检索可用的矩阵乘法算法启发式结果。结果按预估计算时间递增顺序写入 `heuristicResultsArray`；实际返回数量写入 `returnAlgoCount`。调用 `aclblasLtMatmul` 时可将 `heuristicResultsArray[i].algo` 传入 `algo` 参数。
+根据给定的 matmul 描述符与 A/B/C/D 矩阵 layout，检索可用的矩阵乘法算法启发式结果。结果按预估计算时间递增顺序写入 `heuristicResultsArray`；实际返回数量写入 `returnAlgoCount`。调用 `aclblasLtMatmul` 时可将 `heuristicResultsArray[i].algo` 传入 `algo` 参数。`pref` 允许为空：为空时不设置偏好，按内部默认值执行（最大 workspace 32MB、无 L0 tile 偏好），与显式传入默认偏好的行为一致。
 
-成功返回后应检查 `heuristicResultsArray[0 .. returnAlgoCount-1].state` 确认各候选算法是否可用。
+成功返回后应检查 `heuristicResultsArray[0 .. returnAlgoCount-1].state` 确认各候选算法是否可用。超过偏好中 workspace 预算的候选算法会被跳过（不计入返回数量，不写对应结果项）；计算类型与输入矩阵数据类型不兼容时返回 `INVALID_VALUE`，且 `heuristicResultsArray[0].state` 会被写为 `INVALID_VALUE`。无论返回码如何，`returnAlgoCount` 均会被写入（失败路径写 0）。结果项中 `wavesCount` 当前为固定填充值 1.0（不代表实测设备利用率），`reserved` 为保留字段（填 0，调用方忽略）。
 
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 查询成功（须进一步检查各结果项的 `state`）。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | 任一指针参数为空、`requestedAlgoCount` 小于等于 0，或计算类型与输入矩阵数据类型不兼容。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `lightHandle`、`matmulDesc`、`Adesc`、`Bdesc`、`Cdesc`、`Ddesc`、`heuristicResultsArray` 或 `returnAlgoCount` 为空，`requestedAlgoCount` 小于等于 0，或计算类型与输入矩阵数据类型不兼容。 |
+| `ACLBLAS_STATUS_NOT_SUPPORTED` | 无可用候选算法（此时 `returnAlgoCount` 为 0）。 |
 
 #### aclblasLtMatmulAlgoCheck()
 
@@ -774,12 +775,12 @@ aclblasStatus_t aclblasLtMatrixTransformDescGetAttribute(aclblasLtMatrixTransfor
                                                          size_t* sizeWritten);
 ```
 
-查询矩阵变换描述符属性。
+查询矩阵变换描述符属性。描述符须由 `aclblasLtMatrixTransformDescCreate` 创建且未销毁（内部 magic 校验，未初始化或已损坏的描述符返回 `INVALID_VALUE`）。`sizeWritten` 允许为 `nullptr`（不回写所需大小）；`sizeInBytes=0` 时为探测模式，不写 `buf`，仅通过 `sizeWritten` 返回所需字节数。
 
 | 返回值 | 含义 |
 |---|---|
-| `ACLBLAS_STATUS_SUCCESS` | 查询成功。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | 参数为空或缓冲区过小。 |
+| `ACLBLAS_STATUS_SUCCESS` | 查询成功（含 `sizeInBytes=0` 探测）。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `transformDesc` 或 `buf` 为空、描述符 magic 校验失败，或 `buf` 非空但缓冲区过小（此时 `sizeWritten` 仍回传所需字节数）。 |
 | `ACLBLAS_STATUS_NOT_SUPPORTED` | `attr` 不是已识别的属性。 |
 
 #### aclblasLtLoggerSetFile()
