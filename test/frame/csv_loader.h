@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -413,19 +414,111 @@ inline aclblasComputeType_t parseComputeType(const std::string& s)
 }
 
 // ── aclDataType string → int32_t parser ──
-//   ACL_FLOAT=0, ACL_FLOAT16=1, ACL_BF16=27, ACL_INT8=8 etc.
 //   Stored as int32_t so BlasFillMode / param structs can switch on it.
 using T_DtypeLocal = int32_t;
 
+// issue #838: dtype 符号 token 表。置于命名空间作用域（inline constexpr 数组，
+// C++17 跨翻译单元单一定义）而非函数内 unordered_map——后者使 parseDataType
+// 达 66 行 nbnc，超 CodeCheck 超大函数阈值（>50）。覆盖 aclDataType 全部合法
+// 成员（除 ACL_DT_UNDEFINED）及常用短别名；PR !887 复审补齐同仓测试在用的
+// ACL_COMPLEX64 / ACL_FLOAT8_E8M0 / ACL_FLOAT6_* / ACL_FLOAT4_E1M2 与
+// blasLtMatmul 的 MX 前缀别名。此前仅 FP16/FP32/BF16/INT8 四类时，未知
+// dtype 字符串静默回退 ACL_FLOAT 产生假测试；未知非数值 token 改为抛出，由
+// GetCasesFromCsv 的行级捕获（issue #643）报告行号并以失败用例形式可见；
+// 数值直通通道与 parseEnum 保持一致（负向注入用例按数值传非法 dtype，
+// !723 口径）。token 别名与 gemm_ex_param.h 的 parseAclDataType（issue #699）
+// 对齐，便于其后续回归框架统一解析。
+inline constexpr std::pair<const char*, T_DtypeLocal> kDtypeTokenTable[] = {
+    {"ACL_FLOAT", static_cast<T_DtypeLocal>(ACL_FLOAT)},
+    {"FP32", static_cast<T_DtypeLocal>(ACL_FLOAT)},
+    {"ACL_FLOAT16", static_cast<T_DtypeLocal>(ACL_FLOAT16)},
+    {"FP16", static_cast<T_DtypeLocal>(ACL_FLOAT16)},
+    {"ACL_DOUBLE", static_cast<T_DtypeLocal>(ACL_DOUBLE)},
+    {"FP64", static_cast<T_DtypeLocal>(ACL_DOUBLE)},
+    {"ACL_BF16", static_cast<T_DtypeLocal>(ACL_BF16)},
+    {"BF16", static_cast<T_DtypeLocal>(ACL_BF16)},
+    {"ACL_INT8", static_cast<T_DtypeLocal>(ACL_INT8)},
+    {"INT8", static_cast<T_DtypeLocal>(ACL_INT8)},
+    {"ACL_UINT8", static_cast<T_DtypeLocal>(ACL_UINT8)},
+    {"UINT8", static_cast<T_DtypeLocal>(ACL_UINT8)},
+    {"ACL_INT16", static_cast<T_DtypeLocal>(ACL_INT16)},
+    {"INT16", static_cast<T_DtypeLocal>(ACL_INT16)},
+    {"ACL_UINT16", static_cast<T_DtypeLocal>(ACL_UINT16)},
+    {"UINT16", static_cast<T_DtypeLocal>(ACL_UINT16)},
+    {"ACL_INT32", static_cast<T_DtypeLocal>(ACL_INT32)},
+    {"INT32", static_cast<T_DtypeLocal>(ACL_INT32)},
+    {"ACL_UINT32", static_cast<T_DtypeLocal>(ACL_UINT32)},
+    {"UINT32", static_cast<T_DtypeLocal>(ACL_UINT32)},
+    {"ACL_INT64", static_cast<T_DtypeLocal>(ACL_INT64)},
+    {"INT64", static_cast<T_DtypeLocal>(ACL_INT64)},
+    {"ACL_UINT64", static_cast<T_DtypeLocal>(ACL_UINT64)},
+    {"UINT64", static_cast<T_DtypeLocal>(ACL_UINT64)},
+    {"ACL_BOOL", static_cast<T_DtypeLocal>(ACL_BOOL)},
+    {"BOOL", static_cast<T_DtypeLocal>(ACL_BOOL)},
+    {"ACL_STRING", static_cast<T_DtypeLocal>(ACL_STRING)},
+    {"ACL_COMPLEX64", static_cast<T_DtypeLocal>(ACL_COMPLEX64)},
+    {"COMPLEX64", static_cast<T_DtypeLocal>(ACL_COMPLEX64)},
+    {"ACL_COMPLEX128", static_cast<T_DtypeLocal>(ACL_COMPLEX128)},
+    {"COMPLEX128", static_cast<T_DtypeLocal>(ACL_COMPLEX128)},
+    {"ACL_COMPLEX32", static_cast<T_DtypeLocal>(ACL_COMPLEX32)},
+    {"COMPLEX32", static_cast<T_DtypeLocal>(ACL_COMPLEX32)},
+    {"ACL_INT4", static_cast<T_DtypeLocal>(ACL_INT4)},
+    {"ACL_UINT1", static_cast<T_DtypeLocal>(ACL_UINT1)},
+    {"ACL_HIFLOAT8", static_cast<T_DtypeLocal>(ACL_HIFLOAT8)},
+    {"HIFLOAT8", static_cast<T_DtypeLocal>(ACL_HIFLOAT8)},
+    {"ACL_FLOAT8_E4M3FN", static_cast<T_DtypeLocal>(ACL_FLOAT8_E4M3FN)},
+    {"FP8_E4M3FN", static_cast<T_DtypeLocal>(ACL_FLOAT8_E4M3FN)},
+    {"FP8_E4M3", static_cast<T_DtypeLocal>(ACL_FLOAT8_E4M3FN)},
+    {"FP8_E4M3_FN", static_cast<T_DtypeLocal>(ACL_FLOAT8_E4M3FN)},
+    {"ACL_FLOAT8_E5M2", static_cast<T_DtypeLocal>(ACL_FLOAT8_E5M2)},
+    {"FP8_E5M2", static_cast<T_DtypeLocal>(ACL_FLOAT8_E5M2)},
+    {"FP8_E5M2_FN", static_cast<T_DtypeLocal>(ACL_FLOAT8_E5M2)},
+    {"MXFP8_E5M2", static_cast<T_DtypeLocal>(ACL_FLOAT8_E5M2)},
+    {"ACL_FLOAT8_E8M0", static_cast<T_DtypeLocal>(ACL_FLOAT8_E8M0)},
+    {"FP8_E8M0", static_cast<T_DtypeLocal>(ACL_FLOAT8_E8M0)},
+    {"E8M0", static_cast<T_DtypeLocal>(ACL_FLOAT8_E8M0)},
+    {"ACL_FLOAT6_E2M3", static_cast<T_DtypeLocal>(ACL_FLOAT6_E2M3)},
+    {"FP6_E2M3", static_cast<T_DtypeLocal>(ACL_FLOAT6_E2M3)},
+    {"FP6", static_cast<T_DtypeLocal>(ACL_FLOAT6_E2M3)},
+    {"ACL_FLOAT6_E3M2", static_cast<T_DtypeLocal>(ACL_FLOAT6_E3M2)},
+    {"FP6_E3M2", static_cast<T_DtypeLocal>(ACL_FLOAT6_E3M2)},
+    {"ACL_FLOAT4_E2M1", static_cast<T_DtypeLocal>(ACL_FLOAT4_E2M1)},
+    {"FP4_E2M1", static_cast<T_DtypeLocal>(ACL_FLOAT4_E2M1)},
+    {"FP4", static_cast<T_DtypeLocal>(ACL_FLOAT4_E2M1)},
+    {"MXFP4_E2M1", static_cast<T_DtypeLocal>(ACL_FLOAT4_E2M1)},
+    {"ACL_FLOAT4_E1M2", static_cast<T_DtypeLocal>(ACL_FLOAT4_E1M2)},
+    {"FP4_E1M2", static_cast<T_DtypeLocal>(ACL_FLOAT4_E1M2)},
+    {"ACL_HIFLOAT4", static_cast<T_DtypeLocal>(ACL_HIFLOAT4)},
+    {"HIFLOAT4", static_cast<T_DtypeLocal>(ACL_HIFLOAT4)},
+};
+
 inline T_DtypeLocal parseDataType(const std::string& s)
 {
-    static const std::unordered_map<std::string, T_DtypeLocal> t = {
-        {"ACL_FLOAT16", static_cast<int32_t>(ACL_FLOAT16)}, {"FP16", static_cast<int32_t>(ACL_FLOAT16)},
-        {"ACL_FLOAT", static_cast<int32_t>(ACL_FLOAT)},     {"FP32", static_cast<int32_t>(ACL_FLOAT)},
-        {"ACL_BF16", static_cast<int32_t>(ACL_BF16)},       {"BF16", static_cast<int32_t>(ACL_BF16)},
-        {"ACL_INT8", static_cast<int32_t>(ACL_INT8)},       {"INT8", static_cast<int32_t>(ACL_INT8)},
-    };
-    return parseEnum<T_DtypeLocal>(s, t, static_cast<int32_t>(ACL_FLOAT));
+    if (s.empty()) {
+        return static_cast<T_DtypeLocal>(ACL_FLOAT);
+    }
+    for (const auto& kv : kDtypeTokenTable) {
+        if (s == kv.first) {
+            return kv.second;
+        }
+    }
+    try {
+        const int v = std::stoi(s);
+        bool legal = false;
+        for (const auto& kv : kDtypeTokenTable) {
+            if (static_cast<int>(kv.second) == v) {
+                legal = true;
+                break;
+            }
+        }
+        if (!legal) {
+            std::cout << "[csv_loader] numeric dtype fallback '" << s
+                      << "' is not in the legal aclDataType value set (negative-injection row?)\n";
+        }
+        return static_cast<T_DtypeLocal>(v);
+    } catch (...) {
+        throw std::runtime_error("parseDataType: unknown dtype token '" + s + "'");
+    }
 }
 
 // ── Array parsers: semicolon-separated values for grouped batched operators ──

@@ -87,8 +87,7 @@ TEST_F(CtbmvArch22Test, SupplementalRejectMaxBandwidth)
     for (const int lda : {1, maxInt}) {
         EXPECT_EQ(
             aclblasCtbmv(
-                CtbmvArch22Test::handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 1, maxInt,
-                &a, lda, &x, 1),
+                CtbmvArch22Test::handle_, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 1, maxInt, &a, lda, &x, 1),
             ACLBLAS_STATUS_INVALID_VALUE);
     }
 }
@@ -129,6 +128,41 @@ TEST_F(CtbmvArch22Test, SupplementalUnitDiagBandSentinelsAndNegativeStride)
 INSTANTIATE_TEST_SUITE_P(
     Ctbmv, CtbmvArch22Test, ::testing::ValuesIn(GetCasesFromCsv<CtbmvParam>(CtbmvCasePath())),
     PrintCaseInfoString<CtbmvParam>);
+
+// issue #838: 框架级用例——parseDataType 枚举表全集与未知 token 报错语义。
+// 挂载于 ctbmv arch22（本二进制经 csv_loader.h 消费框架解析器）。
+TEST_F(CtbmvArch22Test, ParseDataTypeCoversFullEnumSet)
+{
+    // 原表缺失的 dtype 全部可解析
+    EXPECT_EQ(parseDataType("INT32"), static_cast<int32_t>(ACL_INT32));
+    EXPECT_EQ(parseDataType("ACL_INT32"), static_cast<int32_t>(ACL_INT32));
+    EXPECT_EQ(parseDataType("FP8_E4M3FN"), static_cast<int32_t>(ACL_FLOAT8_E4M3FN));
+    EXPECT_EQ(parseDataType("ACL_FLOAT8_E4M3FN"), static_cast<int32_t>(ACL_FLOAT8_E4M3FN));
+    EXPECT_EQ(parseDataType("FP8_E5M2"), static_cast<int32_t>(ACL_FLOAT8_E5M2));
+    EXPECT_EQ(parseDataType("FP4"), static_cast<int32_t>(ACL_FLOAT4_E2M1));
+    EXPECT_EQ(parseDataType("ACL_FLOAT4_E2M1"), static_cast<int32_t>(ACL_FLOAT4_E2M1));
+    EXPECT_EQ(parseDataType("HIFLOAT8"), static_cast<int32_t>(ACL_HIFLOAT8));
+    EXPECT_EQ(parseDataType("ACL_DOUBLE"), static_cast<int32_t>(ACL_DOUBLE));
+    // !887 复审补齐的同仓在用扩展 dtype（blasLtMatrixTransform/blasLtMatmul 侧成员）
+    EXPECT_EQ(parseDataType("COMPLEX64"), static_cast<int32_t>(ACL_COMPLEX64));
+    EXPECT_EQ(parseDataType("ACL_COMPLEX64"), static_cast<int32_t>(ACL_COMPLEX64));
+    EXPECT_EQ(parseDataType("ACL_FLOAT8_E8M0"), static_cast<int32_t>(ACL_FLOAT8_E8M0));
+    EXPECT_EQ(parseDataType("E8M0"), static_cast<int32_t>(ACL_FLOAT8_E8M0));
+    EXPECT_EQ(parseDataType("FP6"), static_cast<int32_t>(ACL_FLOAT6_E2M3));
+    EXPECT_EQ(parseDataType("ACL_FLOAT6_E3M2"), static_cast<int32_t>(ACL_FLOAT6_E3M2));
+    EXPECT_EQ(parseDataType("ACL_FLOAT4_E1M2"), static_cast<int32_t>(ACL_FLOAT4_E1M2));
+    EXPECT_EQ(parseDataType("MXFP8_E5M2"), static_cast<int32_t>(ACL_FLOAT8_E5M2));
+    EXPECT_EQ(parseDataType("MXFP4_E2M1"), static_cast<int32_t>(ACL_FLOAT4_E2M1));
+    // 既有 token 行为不变
+    EXPECT_EQ(parseDataType("FP32"), static_cast<int32_t>(ACL_FLOAT));
+    EXPECT_EQ(parseDataType("ACL_FLOAT16"), static_cast<int32_t>(ACL_FLOAT16));
+    EXPECT_EQ(parseDataType("BF16"), static_cast<int32_t>(ACL_BF16));
+    EXPECT_EQ(parseDataType(""), static_cast<int32_t>(ACL_FLOAT));
+    // 数值直通通道保留（负向注入口径）
+    EXPECT_EQ(parseDataType("999"), 999);
+    // 未知非数值 token 不再静默回退 ACL_FLOAT，必须抛出
+    EXPECT_THROW(parseDataType("FP9_E9M9"), std::runtime_error);
+}
 
 TEST_P(CtbmvArch22Test, CsvDriven)
 {
