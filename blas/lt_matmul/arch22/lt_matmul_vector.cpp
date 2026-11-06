@@ -87,41 +87,12 @@ __aicore__ inline void CopyRowsOut(
     }
 }
 
-// For H1's default copy, read the padded product rows as one continuous DMA.
-// The caller checks n<=512 and productLd=ceil16(n), so an eight-row transfer
-// uses at most 4096 floats, with a 64-byte-aligned length and 16 KiB UB.
-__aicore__ inline void CopyPaddedProductOutput(
-    GM_ADDR product, GM_ADDR d, const LtMatmul22Tiling& t, uint64_t firstRow, TPipe& pipe)
-{
-    TBuf<TPosition::VECCALC> valueBuffer;
-    pipe.InitBuffer(valueBuffer, OUTPUT_ROWS * OUTPUT_CHUNK * FLOAT_BYTES);
-    auto value = valueBuffer.Get<float>();
-    GlobalTensor<float> productGm, dGm;
-    productGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(product));
-    dGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(d));
-    const uint32_t rowBytes = t.n * FLOAT_BYTES;
-    // DataCopyPad consumes ceil32(rowBytes) UB bytes per row before srcStride.
-    // Its UB stride is in 32-byte blocks, while its GM stride is in bytes.
-    const uint32_t srcStride = (t.productLd - AlignFloatRow(t.n)) / FLOATS_PER_BLOCK;
-    const uint64_t dstGap = (static_cast<uint64_t>(t.ldd) - t.n) * FLOAT_BYTES;
-    for (uint64_t row = firstRow; row < t.m; row += static_cast<uint64_t>(GetBlockNum()) * OUTPUT_ROWS) {
-        const uint32_t rows = MinOf(OUTPUT_ROWS, t.m - static_cast<uint32_t>(row));
-        DataCopy(value, productGm[row * t.productLd], rows * t.productLd);
-        SyncPipe<HardEvent::MTE2_MTE3>();
-        if (dstGap <= 0xFFFFFFFFULL) {
-            const DataCopyExtParams copy{
-                static_cast<uint16_t>(rows), rowBytes, srcStride, static_cast<uint32_t>(dstGap), 0U};
-            DataCopyPad(dGm[row * t.ldd], value, copy);
-        } else {
-            // Keep 64-bit GM offsets and the full productLd UB pitch when
-            // the destination byte gap does not fit the 32-bit DMA field.
-            for (uint32_t r = 0U; r < rows; ++r) {
-                CopyOut(dGm, (row + r) * t.ldd, value[r * t.productLd], t.n);
-            }
-        }
-        SyncPipe<HardEvent::MTE3_MTE2>();
-    }
-}
+// issue #836: 原 CopyPaddedProductOutput 快速拷贝路径已删除——其唯一调用点位于
+// lt_matmul22_epilogue 的 !SCALE_ONLY 分支内，且以 t.alpha == 1.0F && t.beta == 0.0F
+// 为前置，而该 epilogue 的全部发射条件（各计划的 staging 判定，见 lt_matmul_host.cpp
+// 中 alpha != 1.0f || beta != 0.0f 的各发射点）均要求标量非平凡，条件恒假，
+// 约 40 行不可达死代码；其中裸 DataCopy 还隐含 GM 源 32B 对齐前提（公开契约仅承诺
+// 16B），一旦未来激活即为对齐缺陷。平凡标量路径不经 epilogue 直写 D。
 
 __aicore__ inline void ScaleOutputTile(
     const LocalTensor<float>& value, const GlobalTensor<float>& cGm, uint64_t cOffset, uint32_t rows, uint32_t columns,
@@ -195,15 +166,8 @@ __aicore__ inline void ComputeOutput(GM_ADDR product, GM_ADDR c, GM_ADDR d, cons
     if (firstRow >= t.m || width == 0U) {
         return;
     }
-    if constexpr (!SCALE_ONLY) {
-        // Bound n before rounding/multiplying it. H1 owns every padded R row;
-        // this path reads neither C nor the previous D values.
-        if (t.n <= OUTPUT_CHUNK && t.n != 0U && t.nCube == t.n && t.ldd >= t.n &&
-            t.productLd == (t.n + 15U) / 16U * 16U && t.alpha == 1.0F && t.beta == 0.0F) {
-            CopyPaddedProductOutput(product, d, t, firstRow, pipe);
-            return;
-        }
-    }
+    // issue #836: 恒假的 CopyPaddedProductOutput 快速路径（要求平凡标量，但
+    // epilogue 仅在标量非平凡时发射）已删除，全部输出走下方通用 tile 路径。
     // Two 8*512 FP32 planes occupy 32,768 bytes. The short final column
     // tile uses ceil8(width) UB pitch, including its zero-filled padding.
     TBuf<TPosition::VECCALC> valueBuffer, oldBuffer;
