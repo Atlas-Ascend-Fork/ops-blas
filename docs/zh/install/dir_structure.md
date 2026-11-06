@@ -14,11 +14,14 @@
 
 ```text
 ├── cmake                                               # 工程辅助 CMake 脚本（版本、打包、第三方获取等）
+│   ├── asc_devkit_version.cmake                        # CANN asc-devkit 版本探测（#648 等）
 │   ├── test.cmake                                      # 测试 target 注册
 │   ├── package.cmake                                   # CPack/安装包相关逻辑
 │   ├── version.cmake
 │   ├── makeself.cmake
-│   └── third_party                                     # 第三方工具脚本
+│   └── third_party                                     # 第三方依赖获取
+│       ├── makeself-fetch.cmake                        # makeself 打包器拉取
+│       └── ops-tensor.cmake                            # ops-tensor 源码拉取（pinned tag，仅消费头文件）
 ├── blas                                                # aclBLAS 算子源码目录
 │   ├── CMakeLists.txt                                  # blas 源文件收集、平台排除与架构子目录参与规则
 │   ├── common                                          # 算子公共头文件与工具（类型、迭代器、内存与布局等）
@@ -45,12 +48,19 @@
 │   ├── QUICKSTART.md                                   # 快速入门
 │   └── zh
 │       ├── api_list.md                                 # 接口列表
+│       ├── develop                                     # 开发/设计文档（编译运行样例、算子设计与 ST 开发指南等）
+│       ├── figures                                     # 文档图片资源
 │       └── install
 │           ├── quick_install.md                        # 环境部署
 │           └── dir_structure.md                        # 目录结构
 ├── scripts                                             # 辅助脚本（打包安装说明、版本信息生成等）
-│   ├── package
-│   └── util
+│   ├── ci                                              # CI 辅助脚本（run_example、check_pragma_once 等）
+│   ├── package                                         # 打包相关脚本
+│   ├── tests                                           # 脚本自测
+│   ├── util                                            # 工具脚本
+│   ├── format_cpp.sh                                   # clang-format 格式化辅助
+│   ├── oat_check.sh                                    # OAT 合规检查
+│   └── select_device.py                                # 测试设备选择（--device/--devices）
 ├── test                                                # 算子级测试（BUILD_TEST=ON 且配置 TEST_NAMES 时参与构建）
 │   ├── CMakeLists.txt                                  # 按 TEST_NAMES 批量 add_subdirectory
 │   └── ${op}                                           # 算子目录（如 gbmv、dot、scal）
@@ -66,9 +76,12 @@
 ├── CMakeLists.txt                                      # 工程入口：ops_blas / ops_blasLt 库、安装规则、可选测试与打包
 ├── CONTRIBUTING.md                                     # 贡献指南
 ├── LICENSE                                             # 开源许可证
+├── OAT.xml                                             # OAT 合规扫描配置
 ├── README.md                                           # 项目总览
 ├── SECURITY.md                                         # 安全声明
 ├── build.sh                                            # 编译脚本
 ├── install_deps.sh                                     # 依赖安装脚本
+├── requirements.txt                                    # Python 依赖清单
+├── .pre-commit-config.yaml                             # pre-commit 钩子配置
 └── ...
 ```

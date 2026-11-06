@@ -13,7 +13,7 @@
 | 层次 | 职责 | 由谁承担 |
 |------|------|----------|
 | 用例参数 | 维度、系数、步长、fill mode、期望返回码、精度阈值等 | `<op>_test.csv` |
-| 框架公共能力 | CSV 解析、枚举解析、数组填充、精度验证、GTest 基类 | `test/frame/*.h`（9 个头文件） |
+| 框架公共能力 | CSV 解析、枚举解析、数组填充、精度验证、GTest 基类 | `test/frame/*.h`（9 个头文件，#833 删除旧式 data.h、#847 补入 mixed_tolerance.h 后与实际一致） |
 | 算子专属逻辑 | 参数结构体、CPU golden、NPU wrapper | `<op>_param.h` / `<op>_golden.h` / `<op>_npu_wrapper.h` |
 
 设计原则：
@@ -76,17 +76,17 @@ TC_L0_001,Small square banded matrix,ACLBLAS_OP_N,8,8,2,2,1.5,random,5,random,1,
 ```
 ops-blas/
   test/
-    frame/                          # ST 框架公共头文件（9 个，header-only）
+    frame/                          # ST 框架公共头文件（9 个 .h，header-only；另含共享 main）
       csv_loader.h                  # csv_map、ReadMap、GetCasesFromCsv、PrintCaseInfoString、枚举解析
       blas_test.h                   # BlasTest<Param> 模板基类（SetUpTestSuite/TearDownTestSuite）
       fill.h                        # BlasDataFill、makeBlasArray、makeBlasTriangular、makeBlasBanded、makeBlasStrided
       verify.h                      # Verifier 精度引擎
       types.h                       # VerifyConfig、PrecisionMode
-      data.h                        # DataGenerator（旧式算子兼容）
+      mixed_tolerance.h             # MIXED_TOLERANCE 精度标准阈值（per-element max(固定值, 32*ULP)，#847 补列）
       device.h                      # DeviceBuffer、allocAndCopyToDevice、adjustStridedBase（旧式算子兼容）
       dtype_utils.h                 # dtype 工具（bf16/fp8 转换等）
       npu_event_timer.h             # NPU 事件计时（性能用例）
-      test_main.cpp                 # 共享 main() 入口
+      test_main.cpp                 # 共享 main() 入口（非头文件）
     tpttr/                          # 家族目录（family）
       stpttr/                       # 接口子目录（精度变体），param/golden 在本层
         stpttr_param.h              # StpttrParam（继承 BlasTestParamBase）
