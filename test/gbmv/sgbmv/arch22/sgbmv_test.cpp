@@ -35,6 +35,27 @@ INSTANTIATE_TEST_SUITE_P(
     Gbmv, SgbmvTest, ::testing::ValuesIn(GetCasesFromCsv<GbmvParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<GbmvParam>);
 
+// issue #818: 框架级用例——默认策略与 MERE_MARE 不得把异号 Inf 判为通过。
+// 挂载于 sgbmv（本二进制已直接消费 verify.h 框架策略）。
+TEST_F(SgbmvTest, VerifyFrameRejectsOppositeSignInf)
+{
+    const float oppositeOut[2] = {INFINITY, 1.0f};
+    const float oppositeGold[2] = {-INFINITY, 1.0f};
+    VerifyConfig absCfg;
+    EXPECT_FALSE(Verifier::verifyVector(oppositeOut, oppositeGold, 2, 1, absCfg, "frame-inf-sign-abs"));
+    VerifyConfig exactCfg;
+    exactCfg.mode = PrecisionMode::EXACT;
+    EXPECT_FALSE(Verifier::verifyVector(oppositeOut, oppositeGold, 2, 1, exactCfg, "frame-inf-sign-exact"));
+    MereMareStrategy mereMare(1.0 / 8192.0, 10.0);
+    EXPECT_FALSE(mereMare.verify(oppositeOut, oppositeGold, 2, 1, "frame-inf-sign-meremare"));
+    // 同号 Inf（双方同向溢出）维持既有成对跳过口径；策略对象按次校验持有
+    // mismatch 等计数状态，须用全新实例断言（复用对象会沿袭上一轮的计数）
+    const float sameOut[2] = {INFINITY, 1.0f};
+    const float sameGold[2] = {INFINITY, 1.0f};
+    MereMareStrategy sameSignMereMare(1.0 / 8192.0, 10.0);
+    EXPECT_TRUE(sameSignMereMare.verify(sameOut, sameGold, 2, 1, "frame-inf-samesign-meremare"));
+}
+
 // Degenerate-mode profile (Inf/NaN fills): when Inf/NaN fills degenerate the
 // stock MERE/MARE statistics, print the finite-pair subset MERE/MARE plus the
 // non-finite census on both sides. Informational evidence only -- the main-gate
@@ -141,8 +162,7 @@ TEST_P(SgbmvTest, CsvDriven)
 
     // Route evidence line: every case runs the
     // real aclblasSgbmv implementation on the real NPU backend via this GTest frame
-    std::cout << "[SGBMV-ST][route] case=" << p.caseName
-              << " backend=NPU(real) decision=EXEC" << std::endl;
+    std::cout << "[SGBMV-ST][route] case=" << p.caseName << " backend=NPU(real) decision=EXEC" << std::endl;
 
     const bool isTransN = (p.trans == ACLBLAS_OP_N);
     const int xCount = isTransN ? p.n : p.m;
@@ -161,8 +181,8 @@ TEST_P(SgbmvTest, CsvDriven)
     float* yPtr = p.nullY ? nullptr : result.data();
 
     aclblasStatus_t ret = aclblasSgbmv_npu(
-        p.nullHandle ? nullptr : SgbmvTest::handle_, p.trans, p.m, p.n, p.kl, p.ku, alphaPtr, aPtr, p.lda, xPtr,
-        p.incx, betaPtr, yPtr, p.incy);
+        p.nullHandle ? nullptr : SgbmvTest::handle_, p.trans, p.m, p.n, p.kl, p.ku, alphaPtr, aPtr, p.lda, xPtr, p.incx,
+        betaPtr, yPtr, p.incy);
 
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
         EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
@@ -185,8 +205,7 @@ TEST_P(SgbmvTest, CsvDriven)
     } else {
         applyMixedTolerance(cfg, ACL_FLOAT, goldPtr, static_cast<size_t>(yCount));
     }
-    const bool mainOk =
-        Verifier::verifyVector(outPtr, goldPtr, static_cast<size_t>(yCount), p.incy, cfg, p.caseName);
+    const bool mainOk = Verifier::verifyVector(outPtr, goldPtr, static_cast<size_t>(yCount), p.incy, cfg, p.caseName);
     EXPECT_TRUE(mainOk);
     if (!mainOk && cfg.mode == PrecisionMode::MIXED_TOLERANCE) {
         // On a main-gate FAILURE, additionally print the framework MERE/MARE
@@ -195,7 +214,7 @@ TEST_P(SgbmvTest, CsvDriven)
         // verdict line above is preserved (never silent).
         MereMareStrategy oodMereMare(p.mereThreshold, p.mareMultiplier);
         oodMereMare.verify(outPtr, goldPtr, static_cast<size_t>(yCount), p.incy, p.caseName);
-        PrintSgbmvOodDegenerateProfile(outPtr, goldPtr, static_cast<size_t>(yCount), p.incy, p.mereThreshold,
-                                       p.mareMultiplier, p.caseName);
+        PrintSgbmvOodDegenerateProfile(
+            outPtr, goldPtr, static_cast<size_t>(yCount), p.incy, p.mereThreshold, p.mareMultiplier, p.caseName);
     }
 }

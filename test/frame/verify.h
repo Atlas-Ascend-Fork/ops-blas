@@ -90,7 +90,9 @@ protected:
             return true;
         if (std::isnan(outVal) && std::isnan(goldVal))
             return true;
-        if (std::isinf(outVal) && std::isinf(goldVal))
+        // issue #818: 成对跳过仅限同号 Inf（双方同向溢出）；异号 Inf 属符号翻转类
+        // 错误，必须落入 processElement 判失败，与 MixedToleranceStrategy 的口径一致。
+        if (std::isinf(outVal) && std::isinf(goldVal) && (std::signbit(outVal) == std::signbit(goldVal)))
             return true;
         return false;
     }
@@ -214,7 +216,10 @@ protected:
 
     void processElement(float outVal, float goldVal) override
     {
-        if ((std::isnan(outVal) && std::isnan(goldVal)) || (std::isinf(outVal) && std::isinf(goldVal))) {
+        // issue #818: 成对 Inf 跳过 MERE/MARE 统计仅限同号；异号 Inf 落入下方
+        // 非有限值分支计为 mismatch，避免符号翻转错误被静默放过。
+        if ((std::isnan(outVal) && std::isnan(goldVal)) ||
+            (std::isinf(outVal) && std::isinf(goldVal) && (std::signbit(outVal) == std::signbit(goldVal)))) {
             return;
         }
         if (std::isinf(outVal) || std::isinf(goldVal) || std::isnan(outVal) || std::isnan(goldVal)) {
