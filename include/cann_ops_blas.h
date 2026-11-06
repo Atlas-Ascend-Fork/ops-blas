@@ -111,6 +111,11 @@ aclblasStatus_t aclblasGetVersion(aclblasHandle_t handle, int* version);
 
 /**
  * @brief Configures logging for the ops-blas library.
+ * @note Reserved interface: the configuration is stored but currently has no
+ *       effect on the library's log output. Library logging is performed by
+ *       the external logging framework (log/log.h OP_LOGx), which does not
+ *       read this configuration. Do not rely on it to switch, redirect or
+ *       suppress logs.
  * @param logIsOn Whether to turn logging on/off completely (non-zero = on, 0 = off).
  * @param logToStdOut Whether to write logs to standard output (non-zero = yes, 0 = no).
  * @param logToStdErr Whether to write logs to standard error (non-zero = yes, 0 = no).
@@ -123,6 +128,10 @@ aclblasStatus_t aclblasLoggerConfigure(int logIsOn, int logToStdOut, int logToSt
 
 /**
  * @brief Sets the log callback function.
+ * @note Reserved interface: the callback is stored (and readable back via
+ *       aclblasGetLoggerCallback) but is currently never invoked. Library
+ *       logging is performed by the external logging framework (log/log.h
+ *       OP_LOGx), which does not call back into user code.
  * @param userCallback User-defined log callback function. Pass nullptr to clear
  *                     the previously installed callback.
  * @return ACLBLAS_STATUS_SUCCESS on success.

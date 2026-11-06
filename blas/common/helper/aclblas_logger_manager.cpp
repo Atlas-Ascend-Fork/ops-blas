@@ -23,9 +23,10 @@ namespace AclBlas {
 
 aclblasStatus_t aclblasLoggerConfigure(int logIsOn, int logToStdOut, int logToStdErr, const char* logFile)
 {
-    // Configuration is stored for consumption by the logging output path.
+    // issue #817: 配置仅做存储（预留接口），当前日志输出由外部框架 log/log.h 的
+    // OP_LOGx 完成，不读取该配置对象；对外口径见 include/cann_ops_blas.h 的接口注释。
     // issue #601: logFile 以值拷贝保存（C ABI 边界不长期持有调用方裸指针），
-    // 调用方在配置返回后释放/复用原缓冲不影响后续日志输出。
+    // 调用方在配置返回后释放/复用原缓冲不影响后续读取。
     configure.logIsOn = logIsOn;
     configure.logToStdOut = logToStdOut;
     configure.logToStdErr = logToStdErr;
