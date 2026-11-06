@@ -72,7 +72,7 @@ struct gm_to_l1<ArchTag, DataType, DataFormat::NZ, DataFormat::NZ> {
     };
 };
 
-// Partial specialization for V220, ND_in, ND_out
+// Partial specialization for V220, ND_in, NZ_out
 template <ArchType ArchTag, typename DataType>
 struct gm_to_l1<ArchTag, DataType, DataFormat::ND, DataFormat::NZ> {
     using HardwareParams = HardwareInfo<ArchTag>;
@@ -115,7 +115,7 @@ struct gm_to_l1<ArchTag, DataType, DataFormat::ND, DataFormat::NZ> {
     };
 };
 
-// Partial specialization for V220, ND_in, NZ_out
+// Partial specialization for V220, ND_in, ZN_out
 template <ArchType ArchTag, typename DataType>
 struct gm_to_l1<ArchTag, DataType, DataFormat::ND, DataFormat::ZN> {
     using HardwareParams = HardwareInfo<ArchTag>;
@@ -142,9 +142,12 @@ struct gm_to_l1<ArchTag, DataType, DataFormat::ND, DataFormat::ZN> {
                                                    1,           // dstNzNStride
                                                    0));         // dstNzMatrixStride, unused
         } else {
+            // issue #824: 慢路径按行推进 l1Tensor/gmTensor 偏移（参照同文件
+            // ND->NZ 特化的写法），此前循环体每次拷贝同一块数据，第 1..nTileActual-1
+            // 行不会被搬运，一旦实例化即静默产生错误数据。
             for (uint32_t i = 0; i < nTileActual; ++i) {
-                AscendC::DataCopy(l1Tensor,
-                                  gmTensor,
+                AscendC::DataCopy(l1Tensor[i * BLOCK_SIZE],
+                                  gmTensor[i * dVal],
                                   AscendC::Nd2NzParams(1,           // ndNum
                                                        1,           // nValue
                                                        dTileActual, // dValue
