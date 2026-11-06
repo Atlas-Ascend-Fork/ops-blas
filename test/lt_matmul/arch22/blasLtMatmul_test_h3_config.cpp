@@ -18,7 +18,7 @@ inline void CheckLegacyCapsules(aclblasLtHandle_t handle_)
     int ids[5]{}, count = 0;
     ASSERT_EQ(
         aclblasLtMatmulAlgoGetIds(
-            handle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ids, 5, &count),
+            handle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, 5, ids, &count),
         ACLBLAS_STATUS_SUCCESS);
     ASSERT_EQ(count, 5);
     for (int index = 0; index < count; ++index) {

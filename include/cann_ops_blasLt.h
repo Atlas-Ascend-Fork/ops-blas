@@ -174,17 +174,26 @@ typedef enum aclblasLtEpilogue {
 
 /*! \ingroup types_module
  *  \brief Matrix layout attributes.
+ *
+ *  \details
+ *  Values map 1:1 onto the measured authoritative values of the cuBLASLt
+ *  ``cublasLtMatrixLayoutAttribute_t`` subset 0~6 (stable across CUDA
+ *  11.0.3 ~ 13.2.0), so migration code passing cuBLASLt numeric values keeps
+ *  its assumptions. The remaining cuBLASLt attributes (7 = PLANE_OFFSET,
+ *  8 = BATCH_MODE) have no counterpart in this library and are intentionally
+ *  not enumerated; setting or querying any value outside this subset returns
+ *  ``ACLBLAS_STATUS_NOT_SUPPORTED``.
  */
 typedef enum aclblasLtMatrixLayoutAttribute {
-    ACLBLASLT_MATRIX_LAYOUT_BATCH_COUNT = 0, /**< Batch count. Default: 1. Type: ``int32_t``. */
-    ACLBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET =
-        1,                            /**< Strided-batch offset (elements). Default: 0. Type: ``int64_t``. */
-    ACLBLASLT_MATRIX_LAYOUT_TYPE = 2, /**< Matrix data type. See ``aclDataType``. Type: ``uint32_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_TYPE = 0, /**< Matrix data type. See ``aclDataType``. Type: ``uint32_t``. */
     ACLBLASLT_MATRIX_LAYOUT_ORDER =
-        3, /**< Memory order. See ``aclblasLtOrder_t``. Default: ``ACLBLASLT_ORDER_COL``. Type: ``int32_t``. */
-    ACLBLASLT_MATRIX_LAYOUT_ROWS = 4, /**< Row count. Type: ``uint64_t``. */
-    ACLBLASLT_MATRIX_LAYOUT_COLS = 5, /**< Column count. Type: ``uint64_t``. */
-    ACLBLASLT_MATRIX_LAYOUT_LD = 6,   /**< Leading dimension (elements). Type: ``int64_t``. */
+        1, /**< Memory order. See ``aclblasLtOrder_t``. Default: ``ACLBLASLT_ORDER_COL``. Type: ``int32_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_ROWS = 2,        /**< Row count. Type: ``uint64_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_COLS = 3,        /**< Column count. Type: ``uint64_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_LD = 4,          /**< Leading dimension (elements). Type: ``int64_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_BATCH_COUNT = 5, /**< Batch count. Default: 1. Type: ``int32_t``. */
+    ACLBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET =
+        6, /**< Strided-batch offset (elements). Default: 0. Type: ``int64_t``. */
 } aclblasLtMatrixLayoutAttribute_t;
 
 /*! \ingroup types_module
@@ -1054,9 +1063,11 @@ aclblasStatus_t aclblasLtMatmulAlgoCapGetAttribute(const aclblasLtMatmulAlgo_t* 
  *  This function returns the set of algorithm IDs supported by aclBLASLt for
  *  the given compute and data type combination. Each returned ID is a valid
  *  input to aclblasLtMatmulAlgoInit(). The IDs are returned in ascending
- *  order. If \p algoIdsArrayLength is smaller than the number of available
- *  IDs, only the first \p algoIdsArrayLength IDs are written, and
- *  \p numAlgoIds reports how many were written.
+ *  order. If \p requestedAlgoCount is smaller than the number of available
+ *  IDs, only the first \p requestedAlgoCount IDs are written, and
+ *  \p returnAlgoCount reports how many were written. The parameter list is
+ *  aligned parameter-by-parameter with the cuBLASLt
+ *  ``cublasLtMatmulAlgoGetIds``.
  *
  *  @param[in]
  *  lightHandle Pointer to the allocated aclBLASLt handle. See \ref aclblasLtHandle_t.
@@ -1066,24 +1077,25 @@ aclblasStatus_t aclblasLtMatmulAlgoCapGetAttribute(const aclblasLtMatmulAlgo_t* 
  *  scaleType Scale data type. See \ref aclDataType.
  *  @param[in]
  *  Atype,Btype,Ctype,Dtype Data types of the A, B, C, and D matrices.
+ *  @param[in]
+ *  requestedAlgoCount Number of algorithms requested, that is, the capacity of
+ *  \p algoIdsArray in elements. Must be greater than zero.
  *  @param[out]
  *  algoIdsArray Output array receiving the supported algorithm IDs.
- *  @param[in]
- *  algoIdsArrayLength Capacity of \p algoIdsArray (in elements).
  *  @param[out]
- *  numAlgoIds Number of algorithm IDs written into \p algoIdsArray.
+ *  returnAlgoCount Number of algorithm IDs written into \p algoIdsArray.
  *
  *  \retval ACLBLAS_STATUS_SUCCESS If the query was successful.
  *  \retval ACLBLAS_STATUS_NOT_INITIALIZED If \p lightHandle is NULL.
- *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p algoIdsArray or \p numAlgoIds is
- *  NULL, or \p algoIdsArrayLength is less than or equal to zero.
+ *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p algoIdsArray or \p returnAlgoCount
+ *  is NULL, or \p requestedAlgoCount is less than or equal to zero.
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If the data type combination is
  *  unsupported.
  */
 aclblasStatus_t aclblasLtMatmulAlgoGetIds(
     aclblasLtHandle_t lightHandle, aclblasComputeType_t computeType, aclDataType scaleType, aclDataType Atype,
-    aclDataType Btype, aclDataType Ctype, aclDataType Dtype, int* algoIdsArray, int algoIdsArrayLength,
-    int* numAlgoIds);
+    aclDataType Btype, aclDataType Ctype, aclDataType Dtype, int requestedAlgoCount, int algoIdsArray[],
+    int* returnAlgoCount);
 
 /*! \ingroup library_module
  *  \brief Retrieve the possible algorithms.

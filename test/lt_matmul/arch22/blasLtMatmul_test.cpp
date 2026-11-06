@@ -845,7 +845,7 @@ class H1Workspace16ByteAlignmentAndFusedLayoutsChecks {
         int enumeratedCount = 0;
         ASSERT_EQ(
             aclblasLtMatmulAlgoGetIds(
-                handle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, enumerated, 16,
+                handle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, 16, enumerated,
                 &enumeratedCount),
             ACLBLAS_STATUS_SUCCESS);
         EXPECT_GE(enumeratedCount, 4);

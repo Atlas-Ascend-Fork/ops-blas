@@ -639,18 +639,18 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(aclblasLtHandle_t lightHandle,
                                           aclDataType Btype,
                                           aclDataType Ctype,
                                           aclDataType Dtype,
-                                          int* algoIdsArray,
-                                          int algoIdsArrayLength,
-                                          int* numAlgoIds);
+                                          int requestedAlgoCount,
+                                          int algoIdsArray[],
+                                          int* returnAlgoCount);
 ```
 
-查询指定计算类型与数据类型组合下 aclBLASLt 支持的全部算法 ID 集合，每个 ID 均可作为 `aclblasLtMatmulAlgoInit` 的合法 `algoId` 输入。ID 按升序写入 `algoIdsArray`；当 `algoIdsArrayLength` 小于可用 ID 数量时，仅写入前 `algoIdsArrayLength` 个，实际写入数量通过 `numAlgoIds` 返回。`scaleType` 当前不参与类型组合校验（保留参数，语义与 `aclblasLtMatmulAlgoInit` 的 `scaleType` 不同：本接口的类型组合合法性仅由 `computeType` 与 A/B 及 C/D 决定）。`numAlgoIds` 在非空前提下总会被写入：任何失败返回路径写 0，成功时写实际数量。
+查询指定计算类型与数据类型组合下 aclBLASLt 支持的全部算法 ID 集合，每个 ID 均可作为 `aclblasLtMatmulAlgoInit` 的合法 `algoId` 输入。ID 按升序写入 `algoIdsArray`；当 `requestedAlgoCount` 小于可用 ID 数量时，仅写入前 `requestedAlgoCount` 个，实际写入数量通过 `returnAlgoCount` 返回。`scaleType` 当前不参与类型组合校验（保留参数，语义与 `aclblasLtMatmulAlgoInit` 的 `scaleType` 不同：本接口的类型组合合法性仅由 `computeType` 与 A/B 及 C/D 决定）。`returnAlgoCount` 在非空前提下总会被写入：任何失败返回路径写 0，成功时写实际数量。
 
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 查询成功。 |
 | `ACLBLAS_STATUS_NOT_INITIALIZED` | `lightHandle` 为空指针。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | `algoIdsArray` 或 `numAlgoIds` 为空指针，或 `algoIdsArrayLength <= 0`。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `algoIdsArray` 或 `returnAlgoCount` 为空指针，或 `requestedAlgoCount <= 0`。 |
 | `ACLBLAS_STATUS_NOT_SUPPORTED` | 数据类型组合不支持，或 `Ctype` 与 `Dtype` 不一致。 |
 
 #### aclblasLtMatmulAlgoGetHeuristic()
@@ -1136,17 +1136,17 @@ aclBLASLt 日志掩码位标志枚举，按位组合控制各类消息的输出�
 
 ### aclblasLtMatrixLayoutAttribute_t
 
-矩阵 layout 描述符的可配置属性，用于 `aclblasLtMatrixLayoutSetAttribute` / `aclblasLtMatrixLayoutGetAttribute`。
+矩阵 layout 描述符的可配置属性，用于 `aclblasLtMatrixLayoutSetAttribute` / `aclblasLtMatrixLayoutGetAttribute`。数值与 cuBLASLt `cublasLtMatrixLayoutAttribute_t` 子集 0~6 实测权威值一一对应（跨 CUDA 11.0.3~13.2.0 稳定，迁移友好）；cuBLASLt 的 `PLANE_OFFSET`(7)/`BATCH_MODE`(8) 无仓内对应物、有意不纳入枚举，子集外任何取值 Set/Get 一律返回 `NOT_SUPPORTED`。
 
 | 取值 | 含义 | 数据类型 | 默认值 |
 |---|---|---|---|
-| `ACLBLASLT_MATRIX_LAYOUT_BATCH_COUNT` (0) | batch 数量。 | `int32_t` | 1 |
-| `ACLBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET` (1) | strided-batch 偏移（元素数）。 | `int64_t` | 0 |
-| `ACLBLASLT_MATRIX_LAYOUT_TYPE` (2) | 矩阵数据类型，见 `aclDataType`。 | `uint32_t` | 创建时指定 |
-| `ACLBLASLT_MATRIX_LAYOUT_ORDER` (3) | 内存 order，见 `aclblasLtOrder_t`。 | `int32_t` | `ACLBLASLT_ORDER_COL` |
-| `ACLBLASLT_MATRIX_LAYOUT_ROWS` (4) | 行数。 | `uint64_t` | 创建时指定 |
-| `ACLBLASLT_MATRIX_LAYOUT_COLS` (5) | 列数。 | `uint64_t` | 创建时指定 |
-| `ACLBLASLT_MATRIX_LAYOUT_LD` (6) | leading dimension（元素数）。 | `int64_t` | 创建时指定 |
+| `ACLBLASLT_MATRIX_LAYOUT_TYPE` (0) | 矩阵数据类型，见 `aclDataType`。 | `uint32_t` | 创建时指定 |
+| `ACLBLASLT_MATRIX_LAYOUT_ORDER` (1) | 内存 order，见 `aclblasLtOrder_t`。 | `int32_t` | `ACLBLASLT_ORDER_COL` |
+| `ACLBLASLT_MATRIX_LAYOUT_ROWS` (2) | 行数。 | `uint64_t` | 创建时指定 |
+| `ACLBLASLT_MATRIX_LAYOUT_COLS` (3) | 列数。 | `uint64_t` | 创建时指定 |
+| `ACLBLASLT_MATRIX_LAYOUT_LD` (4) | leading dimension（元素数）。 | `int64_t` | 创建时指定 |
+| `ACLBLASLT_MATRIX_LAYOUT_BATCH_COUNT` (5) | batch 数量。 | `int32_t` | 1 |
+| `ACLBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET` (6) | strided-batch 偏移（元素数）。 | `int64_t` | 0 |
 
 ### aclblasLtMatmulDescAttribute_t
 

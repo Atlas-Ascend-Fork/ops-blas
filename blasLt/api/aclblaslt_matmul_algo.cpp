@@ -820,16 +820,17 @@ aclblasStatus_t aclblasLtMatmulAlgoCapGetAttribute(
 
 aclblasStatus_t aclblasLtMatmulAlgoGetIds(
     aclblasLtHandle_t lightHandle, aclblasComputeType_t computeType, aclDataType scaleType, aclDataType Atype,
-    aclDataType Btype, aclDataType Ctype, aclDataType Dtype, int* algoIdsArray, int algoIdsArrayLength, int* numAlgoIds)
+    aclDataType Btype, aclDataType Ctype, aclDataType Dtype, int requestedAlgoCount, int algoIdsArray[],
+    int* returnAlgoCount)
 {
-    if (numAlgoIds == nullptr) {
+    if (returnAlgoCount == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    *numAlgoIds = 0;
+    *returnAlgoCount = 0;
     if (lightHandle == nullptr) {
         return ACLBLAS_STATUS_NOT_INITIALIZED;
     }
-    if (algoIdsArray == nullptr || algoIdsArrayLength <= 0) {
+    if (algoIdsArray == nullptr || requestedAlgoCount <= 0) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 #ifdef OPS_BLASLT_ARCH22
@@ -840,8 +841,8 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(
     const uint32_t ids[] = {LT_MATMUL22_ALGO_H0,  LT_MATMUL22_ALGO_H1, LT_MATMUL22_ALGO_H2, LT_MATMUL22_ALGO_H3,
                             LT_MATMUL22_ALGO_H4,  LT_MATMUL22_ALGO_H5, LT_MATMUL22_ALGO_H9, LT_MATMUL22_ALGO_H10,
                             LT_MATMUL22_ALGO_H11, LT_MATMUL22_ALGO_H12};
-    *numAlgoIds = std::min(algoIdsArrayLength, static_cast<int>(sizeof(ids) / sizeof(ids[0])));
-    for (int i = 0; i < *numAlgoIds; ++i) {
+    *returnAlgoCount = std::min(requestedAlgoCount, static_cast<int>(sizeof(ids) / sizeof(ids[0])));
+    for (int i = 0; i < *returnAlgoCount; ++i) {
         algoIdsArray[i] = static_cast<int>(ids[i]);
     }
     return ACLBLAS_STATUS_SUCCESS;
@@ -855,11 +856,11 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(
     }
 
     const std::vector<int> ids = EnumerateValidAlgoIds();
-    const int count = std::min(algoIdsArrayLength, static_cast<int>(ids.size()));
+    const int count = std::min(requestedAlgoCount, static_cast<int>(ids.size()));
     for (int i = 0; i < count; ++i) {
         algoIdsArray[i] = ids[static_cast<size_t>(i)];
     }
-    *numAlgoIds = count;
+    *returnAlgoCount = count;
     return ACLBLAS_STATUS_SUCCESS;
 #endif
 }

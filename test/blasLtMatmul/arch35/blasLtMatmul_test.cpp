@@ -481,13 +481,13 @@ TEST_F(LtMatmulArch35Test, HeuristicRejectsOversizedDimensions)
 // ── TEST_F: 算法选择链契约矩阵（issue #792）──
 TEST_F(LtMatmulArch35Test, AlgoGetIdsContract)
 {
-    // 正常查询：非空结果、升序、数量由 numAlgoIds 回传
+    // 正常查询：非空结果、升序、数量由 returnAlgoCount 回传
     std::vector<int> ids(64, -1);
     int numIds = -1;
     ASSERT_EQ(
         aclblasLtMatmulAlgoGetIds(
             LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
-            ids.data(), static_cast<int>(ids.size()), &numIds),
+            static_cast<int>(ids.size()), ids.data(), &numIds),
         ACLBLAS_STATUS_SUCCESS);
     ASSERT_GT(numIds, 0);
     for (int i = 1; i < numIds; i++) {
@@ -500,24 +500,43 @@ TEST_F(LtMatmulArch35Test, AlgoGetIdsContract)
     EXPECT_EQ(
         aclblasLtMatmulAlgoGetIds(
             LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_DOUBLE, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
-            idsAlt.data(), static_cast<int>(idsAlt.size()), &numIdsAlt),
+            static_cast<int>(idsAlt.size()), idsAlt.data(), &numIdsAlt),
         ACLBLAS_STATUS_SUCCESS);
     EXPECT_EQ(numIdsAlt, numIds);
 
-    // 失败路径写 numAlgoIds=0：数组为空、length<=0 均拒绝
+    // 失败路径写 returnAlgoCount=0：algoIdsArray 为空、requestedAlgoCount<=0 均拒绝
     int numIdsFail = 7;
     EXPECT_EQ(
         aclblasLtMatmulAlgoGetIds(
             LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
-            nullptr, 8, &numIdsFail),
+            8, nullptr, &numIdsFail),
         ACLBLAS_STATUS_INVALID_VALUE);
     EXPECT_EQ(numIdsFail, 0);
     EXPECT_EQ(
         aclblasLtMatmulAlgoGetIds(
             LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
-            ids.data(), 0, &numIdsFail),
+            0, ids.data(), &numIdsFail),
         ACLBLAS_STATUS_INVALID_VALUE);
     EXPECT_EQ(numIdsFail, 0);
+}
+
+// 哨兵毒化：失败路径不得回写 *algo，先整体填毒值，调用后校验毒值原封不动，
+// 以区分「未写」与「写了 0」（范式同本文件 AlgoCheckFailureLeavesResultUntouched）。
+static void PoisonAlgoSentinel(aclblasLtMatmulAlgo_t& algo)
+{
+    algo.max_workspace_bytes = 0xDEADBEEFu;
+    for (auto& byte : algo.data) {
+        byte = 0xDEu;
+    }
+}
+
+// 逐字节校验哨兵毒值原封不动；EXPECT 非致命断言，失败时报出被回写的字节下标。
+static void ExpectAlgoSentinelUntouched(const aclblasLtMatmulAlgo_t& algo)
+{
+    EXPECT_EQ(algo.max_workspace_bytes, 0xDEADBEEFu);
+    for (size_t i = 0; i < sizeof(algo.data); ++i) {
+        EXPECT_EQ(algo.data[i], 0xDEu) << "algo.data[" << i << "] was written on failure";
+    }
 }
 
 TEST_F(LtMatmulArch35Test, AlgoInitContract)
@@ -527,40 +546,42 @@ TEST_F(LtMatmulArch35Test, AlgoInitContract)
     ASSERT_EQ(
         aclblasLtMatmulAlgoGetIds(
             LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
-            ids.data(), static_cast<int>(ids.size()), &numIds),
+            static_cast<int>(ids.size()), ids.data(), &numIds),
         ACLBLAS_STATUS_SUCCESS);
     ASSERT_GT(numIds, 0);
 
     // GetIds 返回的 ID 可被 AlgoInit 接受（algoId=0 默认配置亦可）
-    aclblasLtMatmulAlgo_t algo = nullptr;
+    aclblasLtMatmulAlgo_t algo{};
     EXPECT_EQ(
         aclblasLtMatmulAlgoInit(
             LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
             ids[0], &algo),
         ACLBLAS_STATUS_SUCCESS);
-    EXPECT_NE(algo, nullptr);
-    aclblasLtMatmulAlgo_t defaultAlgo = nullptr;
+    EXPECT_NE(algo.max_workspace_bytes, size_t{0});
+    aclblasLtMatmulAlgo_t defaultAlgo{};
     EXPECT_EQ(
         aclblasLtMatmulAlgoInit(
             LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
             0, &defaultAlgo),
         ACLBLAS_STATUS_SUCCESS);
-    EXPECT_NE(defaultAlgo, nullptr);
+    EXPECT_NE(defaultAlgo.max_workspace_bytes, size_t{0});
 
-    // 非法 ID 拒绝：负数、无法解码
-    aclblasLtMatmulAlgo_t badAlgo = nullptr;
+    // 非法 ID 拒绝：负数、无法解码。失败路径不得回写 *algo（哨兵毒化校验，
+    // 范式见上方 PoisonAlgoSentinel / ExpectAlgoSentinelUntouched）。
+    aclblasLtMatmulAlgo_t badAlgo{};
+    PoisonAlgoSentinel(badAlgo);
     EXPECT_EQ(
         aclblasLtMatmulAlgoInit(
             LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
             -1, &badAlgo),
         ACLBLAS_STATUS_INVALID_VALUE);
-    EXPECT_EQ(badAlgo, nullptr);
+    ExpectAlgoSentinelUntouched(badAlgo);
     EXPECT_EQ(
         aclblasLtMatmulAlgoInit(
             LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
             0x7FFFFFFF, &badAlgo),
         ACLBLAS_STATUS_INVALID_VALUE);
-    EXPECT_EQ(badAlgo, nullptr);
+    ExpectAlgoSentinelUntouched(badAlgo);
     EXPECT_EQ(
         aclblasLtMatmulAlgoInit(
             LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
@@ -675,7 +696,7 @@ TEST_F(LtMatmulArch35Test, AlgoGetHeuristicRejectsBadTypeAndTinyWorkspace)
 
 TEST_F(LtMatmulArch35Test, AlgoCapGetAttributeContract)
 {
-    aclblasLtMatmulAlgo_t algo = nullptr;
+    aclblasLtMatmulAlgo_t algo{};
     ASSERT_EQ(
         aclblasLtMatmulAlgoInit(
             LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
@@ -685,14 +706,14 @@ TEST_F(LtMatmulArch35Test, AlgoCapGetAttributeContract)
     // 实现能力类：SPLITK_SUPPORT 恒 0（sizeWritten 允许为空）
     uint32_t splitk = 9;
     EXPECT_EQ(
-        aclblasLtMatmulAlgoCapGetAttribute(algo, ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT, &splitk, sizeof(splitk), nullptr),
+        aclblasLtMatmulAlgoCapGetAttribute(&algo, ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT, &splitk, sizeof(splitk), nullptr),
         ACLBLAS_STATUS_SUCCESS);
     EXPECT_EQ(splitk, 0U);
 
     // 数组能力类：size=0 探长，sizeWritten 回传所需字节数
     size_t stagesBytes = 0;
     EXPECT_EQ(
-        aclblasLtMatmulAlgoCapGetAttribute(algo, ACLBLASLT_ALGO_CAP_STAGES_IDS, nullptr, 0, &stagesBytes),
+        aclblasLtMatmulAlgoCapGetAttribute(&algo, ACLBLASLT_ALGO_CAP_STAGES_IDS, nullptr, 0, &stagesBytes),
         ACLBLAS_STATUS_SUCCESS);
     EXPECT_GT(stagesBytes, size_t{0});
 
@@ -700,11 +721,11 @@ TEST_F(LtMatmulArch35Test, AlgoCapGetAttributeContract)
     uint32_t out = 0;
     EXPECT_EQ(
         aclblasLtMatmulAlgoCapGetAttribute(
-            algo, static_cast<aclblasLtMatmulAlgoCapAttributes_t>(8), &out, sizeof(out), nullptr),
+            &algo, static_cast<aclblasLtMatmulAlgoCapAttributes_t>(8), &out, sizeof(out), nullptr),
         ACLBLAS_STATUS_NOT_SUPPORTED);
     EXPECT_EQ(
         aclblasLtMatmulAlgoCapGetAttribute(
-            algo, static_cast<aclblasLtMatmulAlgoCapAttributes_t>(ACLBLASLT_ALGO_CAP_MAX), &out, sizeof(out), nullptr),
+            &algo, static_cast<aclblasLtMatmulAlgoCapAttributes_t>(ACLBLASLT_ALGO_CAP_MAX), &out, sizeof(out), nullptr),
         ACLBLAS_STATUS_NOT_SUPPORTED);
 
     // null algo → INVALID_VALUE
