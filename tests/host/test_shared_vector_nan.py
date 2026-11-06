@@ -101,7 +101,7 @@ int main()
         {"negative_inf_finite", -inf, 1, false, false},
         {"nan_inf", nan, inf, false, false},
         {"inf_nan", inf, nan, false, false},
-        {"existing_opposite_inf_policy", inf, -inf, true, false}
+        {"opposite_inf_fails", inf, -inf, false, false}
     }};
     int cases = 0;
     int mismatches = 0;

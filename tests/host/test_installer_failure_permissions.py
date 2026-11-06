@@ -34,6 +34,15 @@ def command_path(name):
     return path
 
 
+def c_compiler_path():
+    for name in ("clang", "gcc", "cc"):
+        path = shutil.which(name)
+        if path is not None:
+            assert Path(path).is_absolute(), path
+            return path
+    raise AssertionError("Required Host C compiler not found: clang, gcc or cc")
+
+
 def create_package(tmp_path, scenario):
     package = tmp_path / "package"
     script = package / "share/info/ops_blas/install.sh"
@@ -51,7 +60,7 @@ def create_package(tmp_path, scenario):
         # Real Host shared-library bytes are copied only, never loaded or used
         # as an ACL/CANN runtime, compiler or device API replacement.
         command = [
-            command_path("clang"),
+            c_compiler_path(),
             "-shared",
             "-fPIC",
             str(source),
