@@ -119,6 +119,13 @@ while IFS= read -r filepath; do
         include_ops="${include_ops}${header_ops}"
         continue
     fi
+    # BLASLt API、公共头和内核位于独立源码树，目录名不能直接映射测试名。
+    # 保守回退全仓选测，避免默认追加的 Matmul 掩盖 MatrixTransform 漏测。
+    if [[ "$filepath" =~ ^blasLt/ ]]; then
+        echo "Warning: BLASLt code changed ($filepath), fallback to run all."
+        run_all=true
+        break
+    fi
     # issue #627: 取反符必须与操作数空格分隔（!"$filepath" 会粘成单词 "!<path>"
     # 使取反语义丢失），blas*/test* 为子串正则而非前缀匹配，均按目录前缀锚定修正
     if [[ ! "$filepath" =~ ^blas/ ]] && [[ ! "$filepath" =~ ^test/ ]]; then
@@ -134,7 +141,10 @@ while IFS= read -r filepath; do
         break
     fi
 
-    if [[ -n "$second_dir" ]] && [[ -d "./test/$first_dir/$second_dir" ]]; then
+    # 家族成员必须有测试构建入口；archXX 是架构目录，即使有 CMakeLists
+    # （如 test/isamax/arch22）也不是算子。混合布局仍优先选择具体成员。
+    if [[ -n "$second_dir" ]] && [[ ! "$second_dir" =~ ^arch[0-9]+$ ]] && \
+        [[ -f "./test/$first_dir/$second_dir/CMakeLists.txt" ]]; then
         op=$second_dir
     elif [[ -n "$first_dir" ]] && [[ -d "./test/$first_dir" ]]; then
         op=$first_dir
