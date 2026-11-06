@@ -40,14 +40,26 @@ class TestCsvInputFormats(unittest.TestCase):
             "#include <fstream>\n#include <iostream>\n#include <stdexcept>\n"
             "#include <string>\n#include <unordered_map>\n#include <vector>\n"
         )
+        # Preserve GTest's nonfatal failure behavior without requiring GTest/ACL.
+        # In particular, a reported CSV error must make the reader fail.
+        source += r'''
+int failureCount = 0;
+std::ostream& ADD_FAILURE() {
+    ++failureCount;
+    return std::cerr;
+}
+'''
         source += header[start:end]
         source += r'''
-struct Row { csv_map fields; explicit Row(const csv_map& data) : fields(data) {} };
+struct Row {
+    std::string caseName;
+    explicit Row(const csv_map& data) : caseName(data.at("case_name")) {}
+};
 int main(int argc, char** argv) {
     try {
         for (const auto& row : GetCasesFromCsv<Row>(argv[1]))
-            std::cout << ReadMap(row.fields, std::string("case_name"), std::string("<missing>")) << '\n';
-        return 0;
+            std::cout << row.caseName << '\n';
+        return failureCount == 0 ? 0 : 1;
     } catch (const std::exception& error) {
         std::cerr << error.what(); return 2;
     }
@@ -103,6 +115,22 @@ int main(int argc, char** argv) {
                 result = subprocess.run([str(self.reader), str(path)], capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.splitlines(), NAMES)
+
+    def test_native_csv_failures_are_nonfatal_but_fail_the_reader(self):
+        cases = (
+            ("broken", "malformed csv row (fields=1, header=2)", ["after"]),
+            ("broken,SUCCESS,extra", "extra fields from index 2", ["broken", "after"]),
+            (",SUCCESS", "failed to construct a test case", ["after"]),
+        )
+        path = self.root / "invalid.csv"
+        for row, diagnostic, expected_names in cases:
+            with self.subTest(row=row):
+                path.write_text("case_name,expect_result\n" + row + "\nafter,SUCCESS\n", encoding="utf-8")
+                result = subprocess.run([str(self.reader), str(path)], capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(diagnostic, result.stderr)
+                names = [line for line in result.stdout.splitlines() if not line.startswith("[csv_loader]")]
+                self.assertEqual(names, expected_names)
 
     def test_missing_and_empty_controls(self):
         path = self.write_cases("plain")
