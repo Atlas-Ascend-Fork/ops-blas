@@ -370,13 +370,15 @@ class GemmBatchedExArch22Test : public BlasTest<Case> {
 protected:
     void TearDown() override
     {
+        // issue #826: 普通断言失败（CSV 期望码不匹配等）仅记录并继续执行其余用例，
+        // 不再 _Exit 终止整进程——此前一条脏数据使 2300+ 用例失去执行与上报机会。
+        // 运行时/守护区错误（Require/AclCheck 抛出）在 CsvDriven 内被捕获后仍立即
+        // 终止（保留 GEMM_CENSUS_STOP_RUNTIME_OR_GUARD 语义）。
         if (HasFailure()) {
             if (censusNumericalFailure && censusTestCompleted) {
                 std::cout << "GEMM_COLLECTED_NUMERICAL_FAILURE" << std::endl;
             } else {
-                std::cout << "GEMM_CENSUS_STOP_RUNTIME_OR_GUARD" << std::endl;
-                std::cerr.flush();
-                std::_Exit(2);
+                std::cout << "GEMM_CENSUS_CONTINUED_AFTER_EXPECT_FAILURE" << std::endl;
             }
         }
     }
@@ -501,7 +503,9 @@ void CheckQuickReturn(const Case& p, const Invoke& invoke, aclrtStream stream_, 
         p.alphaNull ? nullptr : &p.alpha, p.betaNull ? nullptr : &p.beta);
     ASSERT_EQ(status, p.expectResult);
     AclCheck(aclrtSynchronizeStream(stream_));
-    ASSERT_EQ(value, 23.0f);
+    // 快速返回不得写用户缓冲：属守护区类违例（而非普通断言失败），走 Require
+    // 抛出后由 CsvDriven 的 catch 保持立即终止语义。
+    Require(value == 23.0f, "quick return modified user buffer");
     workspace->checkGuards();
 }
 
@@ -714,11 +718,20 @@ TEST_P(GemmBatchedExArch22Test, CsvDriven)
             static_cast<const void* const*>(bp), p.Btype, p.ldb, beta, static_cast<void* const*>(cp), p.Ctype, p.ldc,
             p.batchCount, p.computeType, p.algo);
     };
-    if (p.expectResult != ACLBLAS_STATUS_SUCCESS || p.m == 0 || p.n == 0 || p.batchCount == 0) {
-        ASSERT_NO_FATAL_FAILURE(CheckQuickReturn(p, invoke, stream_, workspace.get()));
-        return;
+    try {
+        if (p.expectResult != ACLBLAS_STATUS_SUCCESS || p.m == 0 || p.n == 0 || p.batchCount == 0) {
+            ASSERT_NO_FATAL_FAILURE(CheckQuickReturn(p, invoke, stream_, workspace.get()));
+            return;
+        }
+        RunValidCase(p, root, performance, invoke, stream_, workspace.get());
+    } catch (const std::runtime_error& e) {
+        // issue #826: Require/AclCheck（设备错误码、guard 区踩踏、文件/证据校验失败
+        // 等）抛出的 runtime_error 家族维持"运行时/守护区错误立即停"的原有设计，
+        // 打印原标记并以退出码 2 终止整进程。
+        std::cout << "GEMM_CENSUS_STOP_RUNTIME_OR_GUARD " << e.what() << std::endl;
+        std::cerr.flush();
+        std::_Exit(2);
     }
-    RunValidCase(p, root, performance, invoke, stream_, workspace.get());
 }
 
 } // namespace
