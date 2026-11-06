@@ -222,6 +222,14 @@ class FusedShortBudgetCapsulesAndBoundsChecks {
             p.misalignWorkspace = true;
             p.expectResult = ACLBLAS_STATUS_INVALID_VALUE;
         }
+        if (kind == 14) {
+            // issue #837: 显式 H10（heuristic 序列化）+ 非平凡标量实际走 ordered
+            // 路径（无 caller workspace 需求），小于 fused 容量的 workspace
+            // 不再被误拒 INVALID_VALUE，数值照常通过
+            p.alpha = 2.0f;
+            p.beta = 0.5f;
+            p.workspaceBytes = "16";
+        }
         return p;
     }
 
@@ -273,11 +281,11 @@ public:
     {}
     void Run()
     {
-        for (int kind = 0; kind < 14; ++kind) {
+        for (int kind = 0; kind < 15; ++kind) {
             ASSERT_NO_FATAL_FAILURE(CheckScenario1(kind));
         }
         std::cout << "FUSED_SHORT_CONTRACT_OBSERVATIONS=" << observations << std::endl;
-        EXPECT_EQ(observations, 14);
+        EXPECT_EQ(observations, 15);
     }
 };
 

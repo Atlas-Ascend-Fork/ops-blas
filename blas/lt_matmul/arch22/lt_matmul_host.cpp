@@ -517,6 +517,14 @@ aclblasStatus_t ValidateWorkspace(
         bytes >= h1.bytes) {
         id = LT_MATMUL22_ALGO_H1;
     }
+    // issue #837: 显式 H10 算法 + 非平凡标量（alpha!=1 或 beta!=0）时实际路由
+    // ordered 路径（见 RequiresOrdered 的 fusedShortOrdered 判定），该路径不使用
+    // caller workspace——此处按实际路由校验：不构建 fused 存储、不受其容量与
+    // 序列化 algo 的 max_workspace_bytes 约束、允许空 workspace，避免本可执行的
+    // 调用被误报 INVALID_VALUE。
+    if (id == LT_MATMUL22_ALGO_H10 && (t.alpha != 1.0f || t.beta != 0.0f)) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
     size_t required = 0;
     const aclblasStatus_t requiredStatus = RequiredPlanWorkspace(id, t, h1, h1Status, required);
     if (requiredStatus != ACLBLAS_STATUS_SUCCESS)
@@ -1341,6 +1349,9 @@ aclblasStatus_t LtMatmul22AlgoCheck(
     const auto& dLayout = *reinterpret_cast<const Layout*>(dDesc);
     // 执行链契约：空矩阵先于布局/类型校验短路成功；AlgoCheck 需回填 result，按 legacy
     // no-op 口径回填 workspaceSize=0。
+    // issue #835: 该校验顺序（legacy 链路为标量校验先于 no-op）与 OP_C 放行、非 FP32
+    // scaleType 错误码同属已声明的 per-arch 差异，见 blasLt/README.md"架构支持域与
+    // 描述符约定"对照表（含空矩阵行为行）与 blas/lt_matmul/README.md 校验顺序声明。
     if (dLayout.rows == 0U || dLayout.cols == 0U) {
         *result = aclblasLtMatmulHeuristicResult_t{};
         result->algo = *algo;
@@ -1399,6 +1410,8 @@ aclblasStatus_t LtMatmul22Api(
     const auto& cLayout = *reinterpret_cast<const Layout*>(cDesc);
     const auto& dLayout = *reinterpret_cast<const Layout*>(dDesc);
     // The contract intentionally places this before layout/type/enum validation.
+    // issue #835: 空矩阵 no-op 先于标量/枚举校验的顺序差异已显式声明，见
+    // blasLt/README.md 架构支持域对照表的"空矩阵"行与 arch22 算子说明。
     if (dLayout.rows == 0U || dLayout.cols == 0U) {
         return ACLBLAS_STATUS_SUCCESS;
     }

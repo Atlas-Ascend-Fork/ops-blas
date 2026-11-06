@@ -30,7 +30,7 @@ D = alpha * op(A) * op(B) + beta * C
 
 #### 架构支持域与描述符约定
 
-以下差异按构建架构区分；状态码比较针对其他参数合法的非空矩阵调用。
+以下差异按构建架构区分；除"空矩阵"行外，状态码比较针对其他参数合法的非空矩阵调用。
 各产品复用 `include/cann_ops_blasLt.h` 中相同的公开接口和描述符结构。
 
 | 项目 | Atlas A2/A3（arch22） | Ascend 950PR/950DT（arch35） |
@@ -40,6 +40,7 @@ D = alpha * op(A) * op(B) + beta * C
 | 转置 | N/T/C；FP32 实数的 C 按 T 执行 | N/T；C 返回 `ACLBLAS_STATUS_NOT_SUPPORTED` |
 | 标量 pointerMode | FP32 HOST；DEVICE 返回 `ACLBLAS_STATUS_INVALID_VALUE` | FP32 HOST；DEVICE 返回 `ACLBLAS_STATUS_NOT_SUPPORTED` |
 | 非 FP32 scaleType | `ACLBLAS_STATUS_NOT_SUPPORTED` | `ACLBLAS_STATUS_INVALID_VALUE` |
+| 空矩阵（m=0 或 n=0）+ 非法描述符 | 空矩阵 no-op 先于布局/类型/枚举校验短路成功（issue #835 补充声明；见[arch22 算子说明](../blas/lt_matmul/README.md)的校验顺序） | 标量校验（转置/epilogue/scaleType）先于 no-op，非法描述符返回对应错误码 |
 | `MatrixLayoutCreate(..., ld=0)` 后读取 LD | 返回原始值 0，执行 ROW 计划时按 `max(1, cols)` 解析 | 创建时归一为 rows，读取返回 rows |
 
 `ld=0` 的描述符默认值存在上述差异。需要按 LD 计算实际 stride 的调用方应显式传入
