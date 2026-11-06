@@ -90,14 +90,19 @@ if(EXISTS "${CANN_3RD_LIB_PATH}/ops-tensor")
 else()
   include(FetchContent)
 
+  # issue #844: 单参数 FetchContent_Populate 自 CMake 3.30 起弃用。迁移为
+  # FetchContent_MakeAvailable + SOURCE_SUBDIR 指向不含 CMakeLists.txt 的目录
+  # （docs/），保持"仅拉取源码、不接入本构建"的既有语义——本仓只消费其
+  # 头文件（OPTENSOR_INCLUDE_DIR），不构建 ops-tensor 自身目标。
   FetchContent_Declare(
     ops-tensor
     GIT_REPOSITORY https://gitcode.com/cann/ops-tensor.git
     GIT_TAG ${OPTENSOR_TAG_ID}
     GIT_PROGRESS TRUE
-    SOURCE_DIR ${CANN_3RD_LIB_PATH}/ops-tensor)
+    SOURCE_DIR ${CANN_3RD_LIB_PATH}/ops-tensor
+    SOURCE_SUBDIR docs)
 
-  FetchContent_Populate(ops-tensor)
+  FetchContent_MakeAvailable(ops-tensor)
 
   set(OPTENSOR_SOURCE_PATH ${CANN_3RD_LIB_PATH}/ops-tensor)
 

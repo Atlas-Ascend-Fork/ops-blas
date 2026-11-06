@@ -20,7 +20,7 @@
 
     编译成功后，安装包生成在 `build_out/` 目录下，文件名类似 `cann-950-ops-blas_<cann_version>_linux-<arch>.run`。
 
-    - `${cann_version}`：表示 toolkit 安装包版本号，需满足上文的最低版本要求。
+    - `${cann_version}`：取自仓库 `cmake/version.cmake` 的 `OPS_BLAS_RUN_VERSION`（当前固定为 9.0.0），与本地安装的 CANN toolkit 版本无关（issue #846 修正口径）。
     - `${arch}`：表示 CPU 架构，如 `aarch64`、`x86_64`。
     
 

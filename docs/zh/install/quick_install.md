@@ -110,7 +110,8 @@ docker run --name cann_container --device /dev/davinci0 --device /dev/davinci_ma
 
 - python >= 3.7.0（建议版本 <= 3.10）
 - gcc >= 7.3.0
-- cmake >= 3.16.0
+- cmake >= 3.20.0
+- gawk（install_deps.sh 的第一个强制依赖，缺失时安装脚本会中止）
 - pigz（可选，安装后可提升打包速度，建议版本 >= 2.4）
 - dos2unix
 - make

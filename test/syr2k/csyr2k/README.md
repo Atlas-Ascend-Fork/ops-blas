@@ -58,4 +58,4 @@ CSYR2K_RUN_PERF=1 ASCEND_DEVICE_ID=0 \
   --gtest_color=no
 ```
 
-性能验收必须使用 `-O3` 编译的 Ascend 设备代码；仓库默认 Debug `-O0` 结果不可作为任务书性能结论。
+性能验收必须使用 `-O3` 编译的 Ascend 设备代码；显式 `-DCMAKE_BUILD_TYPE=Debug`（`-O0`）的结果不可作为任务书性能结论。仓库未指定构建类型时默认 Release（#363 修复后口径，#831 同步修正本处过期表述）。

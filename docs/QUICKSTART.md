@@ -43,7 +43,7 @@ ${soc_version}设置方法如下：
 ```bash
 Self-extractable archive "cann-<芯片名>-ops-blas_${cann_version}_linux-${arch}.run" successfully created.
 ```
-编译成功后，run包存放于项目根目录的build_out目录下。文件名中的 <芯片名> 随 --soc 参数变化（如 ascend910b 对应 910b、ascend950 对应 950），可直接用通配 cann-*-ops-blas_*.run 定位安装包。
+编译成功后，run包存放于项目根目录的build_out目录下。文件名中的 <芯片名> 随 --soc 参数变化（如 ascend910b 对应 910b、ascend950 对应 950），可直接用通配 cann-*-ops-blas_*.run 定位安装包。注意 `${cann_version}` 取自仓库 `cmake/version.cmake` 的 `OPS_BLAS_RUN_VERSION`（当前固定为 9.0.0），与本地安装的 CANN toolkit 版本无关（issue #846 修正口径）。
 
 ### 2. 安装scopy算子包
 

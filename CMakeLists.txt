@@ -8,8 +8,13 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
-cmake_minimum_required(VERSION 3.16.0)
+# issue #844: 最低版本由 3.16.0 提升至 3.20.0——FetchContent 的 SOURCE_SUBDIR
+# 选项自 3.18 起可用（ops-tensor 拉取迁移至 FetchContent_MakeAvailable），
+# 同时收敛 3.17~3.20 间新策略按 OLD 行为处理的兼容债；依赖文档同步为 >= 3.20.0
+cmake_minimum_required(VERSION 3.20.0)
 
+# issue #846: project() 版本（库自身语义版本）与 run 包文件名版本
+# （cmake/version.cmake 的 OPS_BLAS_RUN_VERSION）语义独立，勿混用
 project(ops_blas VERSION 1.0.0)
 
 # ========= 基本配置 =========
@@ -92,7 +97,8 @@ add_library(${OPS_BLASLT} SHARED ${ALL_BLASLT_SRC_FILES})
 # （该变量在 blas 子目录加入后才填充，真正生效的调用位于 add_library(${OPS_BLAS}) 之前）
 
 # cgerc has task-level microsecond latency targets. Keep its arch35 device
-# implementation optimized even when the repository's test build uses Debug.
+# implementation optimized even when the repository's test build is explicitly
+# configured as Debug (the default build type is Release, see CMAKE_BUILD_TYPE above).
 if("arch35" IN_LIST SOC_ARCH_DIRS)
     set_source_files_properties(
         ${CMAKE_CURRENT_SOURCE_DIR}/blas/gerc/arch35/cgerc_kernel.cpp
@@ -266,8 +272,9 @@ set_source_files_properties(
 )
 
 if(SOC_VERSION_LOWER MATCHES "^ascend950")
-    # CSYMV's register-tiled hot loops need optimization even though this project
-    # intentionally defaults to a Debug build for the remaining operators.
+    # CSYMV's register-tiled hot loops need optimization even when the test build
+    # is explicitly configured as Debug; the default build type is Release
+    # (issue #831: 与 CMAKE_BUILD_TYPE 的实际默认值保持一致，原文误写为 Debug).
     set_source_files_properties(
         "${CMAKE_CURRENT_LIST_DIR}/blas/symv/arch35/csymv_kernel.cpp"
         PROPERTIES COMPILE_OPTIONS "-O3;-DNDEBUG"

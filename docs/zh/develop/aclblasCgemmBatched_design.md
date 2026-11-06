@@ -112,5 +112,6 @@ Kahan 补偿累加；`m <= 2` 或 `n <= 2` 时采用与任务参考实现一致�
 
 ### 兼容性
 
-构建配置在未指定类型时仍默认 Debug；显式传入 `-DCMAKE_BUILD_TYPE=Release` 时予以保留，
-用于真实性能评测。变更限定于 arch35 batched GEMM、对应测试和文档，不改变 API ABI。
+构建配置在未指定类型时默认 Release（与根 CMakeLists.txt 对 `CMAKE_BUILD_TYPE` 的强制默认一致，
+#363 修复后口径）；显式传入 `-DCMAKE_BUILD_TYPE=Debug` 时予以保留。性能评测按 Release 默认口径执行，
+无需额外传参。变更限定于 arch35 batched GEMM、对应测试和文档，不改变 API ABI。
