@@ -325,6 +325,54 @@ uint32_t TestCgercNegative(aclblasHandle_t handle, const aclblasComplex& alpha)
     return negativeErrors;
 }
 
+// issue #828: complex.h 复数除法 Smith 缩放边界用例（纯 host 侧，无需 NPU）。
+// 挂载于 cgerc arch22（本二进制直接消费 complex.h 做复数运算）。
+// 大模长除数（1e30 级）下 c^2+d^2 在 float 域上溢为 inf，原实现把有限结果
+// 错误归零；修复后须得到非零的正确量级。
+uint32_t TestComplexDivisionBoundary()
+{
+    uint32_t errors = 0;
+
+    const aclblasComplex numerator{1.0f, 2.0f};
+    const aclblasComplex bigDivisor{1e30f, 1e30f};
+    const aclblasComplex q = numerator / bigDivisor;
+    const float expectReal = 1.5e-30f;
+    const float expectImag = 5e-31f;
+    const float relTol = 1e-5f;
+    if (q.real == 0.0f || q.imag == 0.0f || std::fabs(q.real - expectReal) > relTol * expectReal ||
+        std::fabs(q.imag - expectImag) > relTol * expectImag) {
+        std::cout << "[Failed] complex division large-divisor: got {" << q.real << ", " << q.imag << "}, expected {"
+                  << expectReal << ", " << expectImag << "}" << std::endl;
+        errors++;
+    }
+
+    // 常规量级除法保持既有结果（Smith 公式数学等价）
+    const aclblasComplex normal = aclblasComplex{1.0f, 2.0f} / aclblasComplex{3.0f, 4.0f};
+    if (std::fabs(normal.real - 0.44f) > 1e-6f || std::fabs(normal.imag - 0.08f) > 1e-6f) {
+        std::cout << "[Failed] complex division normal-range: got {" << normal.real << ", " << normal.imag << "}"
+                  << std::endl;
+        errors++;
+    }
+
+    // 零除数维持 {NaN, NaN} 口径
+    const aclblasComplex zeroDiv = aclblasComplex{1.0f, 1.0f} / aclblasComplex{0.0f, 0.0f};
+    if (!std::isnan(zeroDiv.real) || !std::isnan(zeroDiv.imag)) {
+        std::cout << "[Failed] complex division zero-divisor must be NaN" << std::endl;
+        errors++;
+    }
+
+    // double 版本：1e300 级除数（double 域 c^2 上溢同理）
+    const aclblasDoubleComplex qd = aclblasDoubleComplex{1.0, 2.0} / aclblasDoubleComplex{1e300, 1e300};
+    if (qd.real == 0.0 || qd.imag == 0.0 || std::fabs(qd.real - 1.5e-300) > 1e-5 * 1.5e-300 ||
+        std::fabs(qd.imag - 5e-301) > 1e-5 * 5e-301) {
+        std::cout << "[Failed] complex division large-divisor (double): got {" << qd.real << ", " << qd.imag << "}"
+                  << std::endl;
+        errors++;
+    }
+
+    return errors;
+}
+
 // issue #809: 测试数据初始化独立成函数，控制 TestCgercContiguous 规模
 static void InitCgercTestData(
     std::vector<aclblasComplex>& xHost, std::vector<aclblasComplex>& yHost, std::vector<aclblasComplex>& AHost,
@@ -418,10 +466,12 @@ int32_t main(int32_t argc, char* argv[])
 
     const uint32_t minimalCaseErrors = RunMinimalValidCase(handle, stream);
 
+    const uint32_t complexDivisionErrors = TestComplexDivisionBoundary();
+
     aclblasDestroy(handle);
     aclrtDestroyStream(stream);
     aclrtResetDevice(deviceId);
     aclFinalize();
 
-    return contiguousResult + strideErrors + negativeErrors + minimalCaseErrors;
+    return contiguousResult + strideErrors + negativeErrors + minimalCaseErrors + complexDivisionErrors;
 }
