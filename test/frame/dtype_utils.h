@@ -73,8 +73,13 @@ inline uint8_t floatToFp8E4m3(float val)
 
     eExp += 7;
     if (eExp >= 15) {
+        // issue #819: E4M3FN 无 Inf 编码，指数域上限 15 仍为有限值区间：
+        // 256~448（含 248 的 RNE 进位路径）按正常有限值编码，
+        // 仅进位超出可表示域时饱和到 0x7E=448，不再一律写成 0x7F=NaN。
         eExp = 15;
-        eMant = 7;
+        if (eMant > 6) {
+            eMant = 6;
+        }
     }
     if (eExp <= 0) {
         float subVal = absVal / std::pow(2.0f, -6.0f);
@@ -94,8 +99,10 @@ inline float fp8E4m3ToFloat(uint8_t fp8)
     float val;
     if (exp == 0 && mant == 0) {
         val = 0.0f;
-    } else if (exp == 15) {
-        val = (mant == 0) ? INFINITY : NAN;
+    } else if (exp == 15 && mant == 7) {
+        // issue #819: E4M3FN 仅 0x7F/0xFF 为 NaN，无 Inf 编码语义；
+        // exp==15 且 mant 0~6 为 256~448 的合法有限值，走下方正常解码公式。
+        val = NAN;
     } else if (exp == 0) {
         val = static_cast<float>(mant) / 8.0f * std::pow(2.0f, -6.0f);
     } else {

@@ -105,6 +105,29 @@ TEST_F(TpsvTest, OrderAboveSupportedMaximum)
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_NOT_SUPPORTED));
 }
 
+// issue #819: 框架级用例——dtype_utils.h 的 E4M3FN 编码/解码往返。
+// 挂载于 stpsv arch22（本二进制经 fill.h 消费 dtype_utils.h；FP8 用例本体在
+// gemm_ex arch35，910B3 无该测试目标）。0x08~0x7E 全部有限位型必须：
+// 解码为有限值（无虚假 Inf/NaN）、回编回到同一位型；0x7F 保持 NaN 语义。
+TEST_F(TpsvTest, Fp8E4m3fnRoundTripFinitePatterns)
+{
+    for (uint32_t bits = 0x08; bits <= 0x7E; ++bits) {
+        const auto pattern = static_cast<uint8_t>(bits);
+        const float decoded = fp8E4m3ToFloat(pattern);
+        EXPECT_TRUE(std::isfinite(decoded)) << "pattern 0x" << std::hex << bits << " decoded non-finite";
+        EXPECT_EQ(floatToFp8E4m3(decoded), pattern) << "pattern 0x" << std::hex << bits << " round-trip mismatch";
+    }
+    // 上限 448 可表示（0x7E），不再被编码为 NaN
+    EXPECT_EQ(fp8E4m3ToFloat(0x7E), 448.0f);
+    EXPECT_EQ(floatToFp8E4m3(448.0f), 0x7E);
+    EXPECT_EQ(floatToFp8E4m3(-448.0f), 0xFE);
+    // 248 的 RNE 进位路径：舍入到 256（0x78），此前被错误编码为 0x7F=NaN
+    EXPECT_EQ(floatToFp8E4m3(248.0f), 0x78);
+    EXPECT_EQ(fp8E4m3ToFloat(0x78), 256.0f);
+    // 0x7F 为 E4M3FN 唯一正 NaN 位型
+    EXPECT_TRUE(std::isnan(fp8E4m3ToFloat(0x7F)));
+}
+
 namespace {
 
 // Largest magnitude the fill generator can emit, used to size the diagonal boost.
