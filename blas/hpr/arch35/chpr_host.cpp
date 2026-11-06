@@ -35,6 +35,28 @@ static aclblasStatus_t ValidateChprParams(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// issue #849: 对齐 csyr/cher 的 Host/Device 双支持口径（同 ssyr/sspr 的
+// ReadHostScalarFromDevice 模式——tiling 携带 host 标量）：Host 指针直接读取；
+// Device 指针经 D2H 回读，避免对设备地址做 Host 解引用的非法访问/偶发崩溃。
+static aclblasStatus_t ResolveChprAlpha(aclblasHandle_t handle, const float* alpha, float& alphaVal, bool& quickReturn)
+{
+    bool alphaIsDevice = false;
+    aclblasStatus_t st = CheckPtrLocation(alpha, &alphaIsDevice);
+    if (st != ACLBLAS_STATUS_SUCCESS) {
+        return st;
+    }
+    if (!alphaIsDevice) {
+        alphaVal = *alpha;
+        quickReturn = (alphaVal == 0.0f);
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    st = ReadHostScalarFromDevice(alpha, alphaVal, handle->stream, "aclblasChpr");
+    if (st == ACLBLAS_STATUS_SUCCESS) {
+        quickReturn = (alphaVal == 0.0f);
+    }
+    return st;
+}
+
 static aclblasStatus_t LaunchChprKernel(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, float alpha, const aclblasComplex* x, int incx,
     aclblasComplex* ap)
@@ -71,8 +93,15 @@ aclblasStatus_t aclblasChpr(
     if (status != ACLBLAS_STATUS_SUCCESS) {
         return status;
     }
-    const float alphaValue = *alpha;
-    if (alphaValue == 0.0f) {
+    // issue #849: alpha 位置经 CheckPtrLocation 判定，Device 指针 D2H 回读；
+    // 零系数快速返回判定同样基于回读值。
+    float alphaValue = 0.0f;
+    bool alphaQuickReturn = false;
+    const aclblasStatus_t alphaStatus = ResolveChprAlpha(handle, alpha, alphaValue, alphaQuickReturn);
+    if (alphaStatus != ACLBLAS_STATUS_SUCCESS) {
+        return alphaStatus;
+    }
+    if (alphaQuickReturn) {
         return ACLBLAS_STATUS_SUCCESS;
     }
     return LaunchChprKernel(handle, uplo, n, alphaValue, x, incx, ap);

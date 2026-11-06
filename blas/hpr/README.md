@@ -40,7 +40,7 @@ aclblasStatus_t aclblasChpr(aclblasHandle_t handle, aclblasFillMode_t uplo, int 
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
 | uplo | 输入 | aclblasFillMode_t | ACLBLAS_UPPER(121) 或 ACLBLAS_LOWER(122)，指定更新的三角区域，Host 内存 |
 | n | 输入 | int | 矩阵阶数，n >= 0，Host 内存 |
-| alpha | 输入 | const float*（FP32） | 实数标量乘数指针，Host 内存 |
+| alpha | 输入 | const float*（FP32） | 实数标量乘数指针，Host/Device 内存 |
 | x | 输入 | const aclblasComplex* | 输入向量指针，长度至少 1 + (n-1) * abs(incx)，Device 内存 |
 | incx | 输入 | int | x 的元素间步长，incx != 0 且 incx != INT_MIN，Host 内存 |
 | ap | 输入/输出 | aclblasComplex* | packed Hermitian 矩阵指针，长度 n*(n+1)/2，Device 内存 |
@@ -50,6 +50,7 @@ aclblasStatus_t aclblasChpr(aclblasHandle_t handle, aclblasFillMode_t uplo, int 
 - n >= 0
 - incx != 0 且 incx != INT_MIN；负步长从物理偏移 `(n-1)*abs(incx)` 开始反向遍历。
 - alpha 为实数标量
+- alpha 支持 Host/Device 指针传入（issue #849 对齐 csyr/cher 口径）：Host 指针直接读取；Device 指针内部做 D2H 回读
 - `ap` 按列压缩存储：上三角 `A(i,j)` 的偏移为 `j*(j+1)/2+i`，下三角为 `j*(2*n-j+1)/2+i-j`。
 - 更新时忽略对角元素的输入虚部，输出对角虚部为零；`x` 保持只读。
 - arch35 按 handle、`n<0`、`n=0`、uplo、incx、alpha/x/ap 的顺序处理参数。空 handle 优先返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`；handle 有效且 `n=0` 时直接成功且不访问其余参数；`n>0` 的 `alpha=0` 在参数校验成功后直接返回，`ap` 保持原样。
