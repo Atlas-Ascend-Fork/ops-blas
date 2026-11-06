@@ -1,7 +1,17 @@
 /**
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
- * csscal_host.cpp - Host-side API implementation for aclblasCsscal
- * 功能：x[j] = alpha * x[j]（实数标量 alpha 乘以复数向量 x）
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
+
+/*!
+ * \file csscal_host.cpp
+ * \brief Host-side API implementation for aclblasCsscal:
+ *        x[j] = alpha * x[j]（实数标量 alpha 乘以复数向量 x）
  */
 
 #include <cstdint>
@@ -24,8 +34,7 @@ static uint32_t GetCachedAivCoreCount()
     static thread_local uint32_t cachedCores = 0;
     int32_t device = -1;
     aclrtContext context = nullptr;
-    if (aclrtGetDevice(&device) != ACL_SUCCESS ||
-        aclrtGetCurrentContext(&context) != ACL_SUCCESS) {
+    if (aclrtGetDevice(&device) != ACL_SUCCESS || aclrtGetCurrentContext(&context) != ACL_SUCCESS) {
         return 0;
     }
     if (cachedCores != 0 && cachedDevice == device && cachedContext == context) {
@@ -59,8 +68,7 @@ static CsscalTilingData CalCsscalTilingDataContiguous(uint32_t totalComplexNum, 
     // One in-place UB region, clamped to the largest actual core workload.
     // A core requiring multiple tiles always uses CSSCAL_TILE_CAPACITY.
     uint32_t maxCoreN = tiling.perCoreN + tiling.remainder;
-    tiling.tileSize = std::min(CSSCAL_TILE_CAPACITY,
-        ((maxCoreN + alignUnit - 1) / alignUnit) * alignUnit);
+    tiling.tileSize = std::min(CSSCAL_TILE_CAPACITY, ((maxCoreN + alignUnit - 1) / alignUnit) * alignUnit);
 
     tiling.alpha = alpha;
     tiling.nthreads = 0;
@@ -82,7 +90,7 @@ static CsscalTilingData CalCsscalTilingDataStrided(int64_t n, int64_t incx, uint
         useCoreNum = CSSCAL_MAX_CORE_NUM;
     }
     if (useCoreNum == 0U) {
-        useCoreNum = 1U;  // 调用点已保证非零，防御性检查
+        useCoreNum = 1U; // 调用点已保证非零，防御性检查
     }
     tiling.useCoreNum = useCoreNum;
 
@@ -90,11 +98,16 @@ static CsscalTilingData CalCsscalTilingDataStrided(int64_t n, int64_t incx, uint
     tiling.baseCount = static_cast<uint32_t>(n) / useCoreNum;
     tiling.remain = static_cast<uint32_t>(n) % useCoreNum;
 
-    constexpr uint32_t SIMT_MIN_THREAD_NUM = 32;
-    constexpr uint32_t SIMT_MAX_THREAD_NUM = 256;
+    // issue #834: csscal 实测优选的线程排布（每线程处理 1 个复数=2 个 float 分量，
+    // 32 线程起步/256 封顶），与全局 kernel_constant.h 的 SIMT_MIN/MAX_THREAD_NUM
+    // （128/2048，面向 float 分量粒度的排布）取值不同。此前函数内重定义与全局
+    // 同名常量互相遮蔽，重构时极易误删/误改导致线程数静默变化——改用 CSSCAL_
+    // 前缀显式命名并注明差异原因，行为不变。
+    constexpr uint32_t CSSCAL_SIMT_MIN_THREAD_NUM = 32;
+    constexpr uint32_t CSSCAL_SIMT_MAX_THREAD_NUM = 256;
     tiling.nthreads = std::min(
-        CeilAlign<uint32_t>(CeilDiv<uint32_t>(static_cast<uint32_t>(n), useCoreNum), SIMT_MIN_THREAD_NUM),
-        SIMT_MAX_THREAD_NUM);
+        CeilAlign<uint32_t>(CeilDiv<uint32_t>(static_cast<uint32_t>(n), useCoreNum), CSSCAL_SIMT_MIN_THREAD_NUM),
+        CSSCAL_SIMT_MAX_THREAD_NUM);
 
     tiling.perCoreN = 0;
     tiling.remainder = 0;
