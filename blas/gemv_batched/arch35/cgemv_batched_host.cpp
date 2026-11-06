@@ -35,17 +35,10 @@ namespace {
 
 inline bool IsComplexZero(const aclblasComplex& v) { return v.real == 0.0f && v.imag == 0.0f; }
 
-// Validate the public API arguments in the fixed order required by the task spec.
-// Returns the first failing status code, or ACLBLAS_STATUS_SUCCESS.
-aclblasStatus_t ValidateCgemvBatchedParams(
-    aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, int lda, int incx, int incy, int batchCount,
-    const aclblasComplex* const* Aarray, const aclblasComplex* const* xarray, const aclblasComplex* const* yarray,
-    const aclblasComplex* alpha, const aclblasComplex* beta)
+// 基础标量域校验（独立成段以控制校验主函数的圈复杂度）：维度/lda/步长/批数。
+// 前置：已过 handle 非空校验（错误码语义与任务书校验顺序保持一致）。
+aclblasStatus_t ValidateCgemvBatchedScalars(int m, int n, int lda, int incx, int incy, int batchCount)
 {
-    if (handle == nullptr) {
-        OP_LOGE("aclblasCgemvBatched", "handle is nullptr");
-        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
-    }
     if (m <= 0 || n <= 0) {
         OP_LOGE("aclblasCgemvBatched", "invalid m=%d or n=%d", m, n);
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -57,6 +50,61 @@ aclblasStatus_t ValidateCgemvBatchedParams(
     if (incx == 0 || incy == 0 || incx == INT_MIN || incy == INT_MIN || batchCount <= 0) {
         OP_LOGE("aclblasCgemvBatched", "invalid incx=%d incy=%d batchCount=%d", incx, incy, batchCount);
         return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+// issue #848: 形状跨度 int64 域校验（独立成段以控制校验主函数的圈复杂度，
+// 对齐 cher_host 的显式拒绝口径）。kernel 侧 A/x/y 下标与总输出的 32 位
+// 安全上界：
+//  - A 单批元素跨度（两种 trans 布局的 A 下标最大值同式）：(n-1)*lda + m
+//  - x 跨度 1 + (dotDim-1)*|incx|、y 跨度 1 + (outDim-1)*|incy|
+//    （dotDim = N ? n : m，outDim = N ? m : n）
+//  - 总输出 batchCount * outDim（驱动 uint32 核间切分算术，上界取 INT32_MAX）
+// 复数元素在 kernel 侧按 2×float 寻址（元素下标 *2 放大），跨度以元素计
+// 需预留 ×2 余量；SIMT 路径的 AIndex/xOff/yOff/totalOutputs 已同步 64 位
+// 化作双保险，超限形状在此直接拒绝而不进入 kernel。
+// 前置：incx/incy 非 0 且非 INT_MIN、batchCount > 0（由调用方先行校验）。
+aclblasStatus_t ValidateCgemvBatchedSpans(
+    aclblasOperation_t trans, int m, int n, int lda, int incx, int incy, int batchCount)
+{
+    const int64_t dotDimSpan = (trans == ACLBLAS_OP_N) ? static_cast<int64_t>(n) : static_cast<int64_t>(m);
+    const int64_t outDimSpan = (trans == ACLBLAS_OP_N) ? static_cast<int64_t>(m) : static_cast<int64_t>(n);
+    const int64_t absIncx64 = (incx >= 0) ? static_cast<int64_t>(incx) : -static_cast<int64_t>(incx);
+    const int64_t absIncy64 = (incy >= 0) ? static_cast<int64_t>(incy) : -static_cast<int64_t>(incy);
+    const int64_t aSpan = (static_cast<int64_t>(n) - 1) * static_cast<int64_t>(lda) + static_cast<int64_t>(m);
+    const int64_t xSpan = (dotDimSpan - 1) * absIncx64 + 1;
+    const int64_t ySpan = (outDimSpan - 1) * absIncy64 + 1;
+    const int64_t totalOutputs = static_cast<int64_t>(batchCount) * outDimSpan;
+    if (aSpan * 2 > INT32_MAX || xSpan * 2 > INT32_MAX || ySpan * 2 > INT32_MAX || totalOutputs > INT32_MAX) {
+        OP_LOGE(
+            "aclblasCgemvBatched",
+            "shape span exceeds kernel 32-bit index domain: trans=%d m=%d n=%d lda=%d incx=%d incy=%d batchCount=%d",
+            static_cast<int>(trans), m, n, lda, incx, incy, batchCount);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+// Validate the public API arguments in the fixed order required by the task spec.
+// Returns the first failing status code, or ACLBLAS_STATUS_SUCCESS.
+aclblasStatus_t ValidateCgemvBatchedParams(
+    aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, int lda, int incx, int incy, int batchCount,
+    const aclblasComplex* const* Aarray, const aclblasComplex* const* xarray, const aclblasComplex* const* yarray,
+    const aclblasComplex* alpha, const aclblasComplex* beta)
+{
+    if (handle == nullptr) {
+        OP_LOGE("aclblasCgemvBatched", "handle is nullptr");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    const aclblasStatus_t scalarStatus = ValidateCgemvBatchedScalars(m, n, lda, incx, incy, batchCount);
+    if (scalarStatus != ACLBLAS_STATUS_SUCCESS) {
+        return scalarStatus;
+    }
+    // issue #848: 超限形状直接拒绝（跨度上界与推导见 ValidateCgemvBatchedSpans）
+    const aclblasStatus_t spanStatus = ValidateCgemvBatchedSpans(trans, m, n, lda, incx, incy, batchCount);
+    if (spanStatus != ACLBLAS_STATUS_SUCCESS) {
+        return spanStatus;
     }
     if (Aarray == nullptr || xarray == nullptr || yarray == nullptr) {
         OP_LOGE("aclblasCgemvBatched", "array pointer is nullptr");
@@ -101,7 +149,7 @@ uint32_t CalcBatchPerCore(uint32_t coreNum, uint32_t batchCount, uint32_t outSiz
 CgemvBatchedTilingData CalTilingData(
     uint32_t batchCount, uint32_t m, uint32_t n, uint32_t trans, const aclblasComplex& alpha,
     const aclblasComplex& beta, int32_t lda, int32_t incx, int32_t incy, uint32_t coreNum, uint32_t usedCoreNum,
-    uint32_t maxPerCore, uint32_t totalWork)
+    uint32_t maxPerCore)
 {
     CgemvBatchedTilingData td = {};
     td.trans = trans;
@@ -126,14 +174,16 @@ CgemvBatchedTilingData CalTilingData(
     td.usedCoreNum = usedCoreNum;
     td.batchCount = batchCount;
     td.batchPerCore = maxPerCore;
-    td.batchTail = totalWork - (usedCoreNum - 1u) * maxPerCore;
 
+    // issue #850: batchTail 字段已删除——原值仅随 tiling 下发并打印日志，
+    // cgemv kernel 全文零消费（末核范围由入口的 usedCoreNum/totalOutputs
+    // 推导）；同目录 gemv_batched 姐妹实现消费的是其自身 tiling 的同名字段。
     OP_LOGD(
         "aclblasCgemvBatched",
         "tiling: trans=%u alpha=(%.3f,%.3f) beta=(%.3f,%.3f) m=%u n=%u lda=%u incx=%d incy=%d "
-        "outSize=%u dotSize=%u tileRed=%u batchCount=%u coreNum=%u usedCoreNum=%u batchPerCore=%u batchTail=%u",
+        "outSize=%u dotSize=%u tileRed=%u batchCount=%u coreNum=%u usedCoreNum=%u batchPerCore=%u",
         td.trans, td.alphaR, td.alphaI, td.betaR, td.betaI, td.m, td.n, td.lda, td.incx, td.incy, td.outSize,
-        td.dotSize, td.tileRed, td.batchCount, td.coreNum, td.usedCoreNum, td.batchPerCore, td.batchTail);
+        td.dotSize, td.tileRed, td.batchCount, td.coreNum, td.usedCoreNum, td.batchPerCore);
     return td;
 }
 
@@ -191,8 +241,6 @@ aclblasStatus_t aclblasCgemvBatched(
     }
     uint32_t transUint = (trans == ACLBLAS_OP_N) ? 0u : ((trans == ACLBLAS_OP_C) ? 2u : 1u);
     uint32_t outSizeCalc = (transUint != 0u) ? static_cast<uint32_t>(n) : static_cast<uint32_t>(m);
-    uint32_t dotSizeCalc = (transUint != 0u) ? static_cast<uint32_t>(m) : static_cast<uint32_t>(n);
-    (void)dotSizeCalc;
 
     uint32_t batchCountU = static_cast<uint32_t>(batchCount);
     uint32_t totalWork = batchCountU * outSizeCalc;
@@ -201,7 +249,7 @@ aclblasStatus_t aclblasCgemvBatched(
 
     CgemvBatchedTilingData tiling = CalTilingData(
         batchCountU, static_cast<uint32_t>(m), static_cast<uint32_t>(n), transUint, *alpha, *beta,
-        static_cast<int32_t>(lda), incx, incy, coreNum, usedCoreNum, maxPerCore, totalWork);
+        static_cast<int32_t>(lda), incx, incy, coreNum, usedCoreNum, maxPerCore);
 
     ApplyColSplit2D(tiling, coreNum, batchCountU);
     usedCoreNum = tiling.usedCoreNum;

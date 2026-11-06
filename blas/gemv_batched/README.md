@@ -785,6 +785,10 @@ aclblasStatus_t aclblasCgemvBatched(aclblasHandle_t handle, aclblasOperation_t t
 - lda >= max(1, m)
 - incx != 0, incy != 0
 - trans 必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C
+- 形状跨度上限（issue #848，对齐 cher 的显式拒绝口径）：以下任一超限时返回 `ACLBLAS_STATUS_INVALID_VALUE`（不进入 kernel）：
+  - 单批 A 元素跨度 `(n-1)*lda + m`（复数元素在 kernel 侧按 2×float 寻址，跨度上限为 INT32_MAX/2 元素，即约 1.07e9）
+  - x 跨度 `1 + (dotDim-1)*|incx|`、y 跨度 `1 + (outDim-1)*|incy|`（dotDim = N?n:m，outDim = N?m:n，上限同上）
+  - 总输出 `batchCount * outDim` 上限 INT32_MAX（kernel 侧核间切分为 uint32 算术）
 
 #### 调用示例
 

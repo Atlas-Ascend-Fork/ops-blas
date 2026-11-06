@@ -481,6 +481,35 @@ TEST_F(CgemvBatchedTest, NullHandle)
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_HANDLE_IS_NULLPTR));
 }
 
+// issue #848: 超限形状在 host 跨度校验阶段拒绝（INVALID_VALUE，不进入
+// kernel）。直接调用公开 API（RunErrorCase 路径的缓冲随维度分配，超限形状
+// 无法经 CSV 承载）；校验先于任何指针解引用与 kernel 下发，用小哑指针即可。
+TEST_F(CgemvBatchedTest, OversizeShapeSpanRejected)
+{
+    const aclblasComplex alpha{1.0f, 0.0f};
+    const aclblasComplex beta{0.0f, 0.0f};
+    aclblasComplex dummy{};
+    const aclblasComplex* const arrays[1] = {&dummy};
+    auto* yArrays = const_cast<aclblasComplex* const*>(arrays);
+
+    // A 元素跨度 (n-1)*lda+m ≈ 4.3e9（×2 float 寻址后超 INT32_MAX）
+    aclblasStatus_t ret = aclblasCgemvBatched(
+        handle_, ACLBLAS_OP_T, 65536, 65536, &alpha, arrays, 65536, arrays, 2, &beta, yArrays, 2, 1);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_INVALID_VALUE));
+
+    // x 跨度 1+(dotDim-1)*|incx| 超界（trans=N 时 dotDim=n）
+    ret = aclblasCgemvBatched(handle_, ACLBLAS_OP_N, 4, 4, &alpha, arrays, 4, arrays, 800000000, &beta, yArrays, 1, 2);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_INVALID_VALUE));
+
+    // y 跨度 1+(outDim-1)*|incy| 超界（trans=N 时 outDim=m）
+    ret = aclblasCgemvBatched(handle_, ACLBLAS_OP_N, 4, 4, &alpha, arrays, 4, arrays, 1, &beta, yArrays, 800000000, 2);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_INVALID_VALUE));
+
+    // 总输出 batchCount*outSize 超 INT32_MAX
+    ret = aclblasCgemvBatched(handle_, ACLBLAS_OP_N, 4, 4, &alpha, arrays, 4, arrays, 1, &beta, yArrays, 1, 600000000);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_INVALID_VALUE));
+}
+
 INSTANTIATE_TEST_SUITE_P(
     CgemvBatched, CgemvBatchedTest,
     ::testing::ValuesIn(LoadCgemvBatchedCasesWithAssert(ReplaceFileExtension2Csv(__FILE__))),

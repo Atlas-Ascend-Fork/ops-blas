@@ -26,8 +26,11 @@ constexpr uint32_t CGEMV_BATCHED_CPLX_BYTES = 2u * sizeof(float);
 // 32-byte alignment granularity in complex elements (32B / 8B = 4).
 constexpr uint32_t CGEMV_BATCHED_ALIGN_CPLX = 4u;
 
-// Core dispatch: each core handles batchPerCore batches; the last core handles
-// the remainder (batchTail). startMatId = coreIdx * batchPerCore.
+// Core dispatch: outputs are split into batchPerCore-sized slices per core;
+// the last core's range is derived in-kernel from usedCoreNum/totalOutputs
+// (issue #850: the batchTail field was removed — it was computed and logged
+// on the host but never consumed by the cgemv_batched kernel, unlike the
+// gemv_batched sister implementation which reads its own tiling's batchTail).
 #pragma pack(push, 4)
 struct CgemvBatchedTilingData {
     uint32_t trans;        // 0 = N, 1 = T, 2 = C (conjugate transpose)
@@ -46,7 +49,6 @@ struct CgemvBatchedTilingData {
     uint32_t coreNum;      // platform AIV core count
     uint32_t usedCoreNum;  // cores actually used
     uint32_t batchPerCore; // batches per core (base)
-    uint32_t batchTail;    // batches on the last core
     uint32_t tileRed;      // reduction tile size (complex elements)
     uint32_t alphaIsZero;  // alpha == (0,0): scale-only path
     uint32_t betaIsZero;   // beta == (0,0): y input not read

@@ -1089,31 +1089,34 @@ __aicore__ inline void CgemvRunBatchRange(
 
 // Linear A index of dot element (dotIdx + lane) for output outIdx.
 // trans==0 walks columns (A[i + j*lda]), the transpose modes walk rows.
-__simt_callee__ __aicore__ inline int32_t CgemvSimtAIndex(
+// issue #848: int64 域计算——大形状下 dotIdx*lda / outIdx*lda 可超 INT32_MAX，
+// host 已按跨度上限显式拒绝超限形状，此处 64 位化作双保险。
+__simt_callee__ __aicore__ inline int64_t CgemvSimtAIndex(
     uint32_t dotIdx, uint32_t lane, uint32_t outIdx, int32_t lda, uint32_t trans)
 {
     if (trans == 0u) {
-        return (int32_t)(dotIdx + lane) * lda + (int32_t)outIdx;
+        return static_cast<int64_t>(dotIdx + lane) * lda + static_cast<int64_t>(outIdx);
     }
-    return (int32_t)outIdx * lda + (int32_t)(dotIdx + lane);
+    return static_cast<int64_t>(outIdx) * lda + static_cast<int64_t>(dotIdx + lane);
 }
 
 // Dot reduction over the vectorised (4-way unrolled) part of the dot dimension.
 // trans selects the A index mapping, trans==2 additionally conjugates A.
+// issue #848: xOff 与 A/x 下标按 int64 域计算（host 跨度校验的双保险）。
 __simt_callee__ __aicore__ inline void CgemvSimtDot4(
     const __gm__ float* batchA, const __gm__ float* batchX, uint32_t outIdx, uint32_t dotDim, int32_t lda, int32_t incx,
-    int32_t xOff, uint32_t trans, float& accR, float& accI)
+    int64_t xOff, uint32_t trans, float& accR, float& accI)
 {
     uint32_t dot4 = dotDim & ~3u;
     for (uint32_t dotIdx = 0; dotIdx < dot4; dotIdx += 4u) {
-        int32_t aIdx0 = CgemvSimtAIndex(dotIdx, 0u, outIdx, lda, trans);
-        int32_t aIdx1 = CgemvSimtAIndex(dotIdx, 1u, outIdx, lda, trans);
-        int32_t aIdx2 = CgemvSimtAIndex(dotIdx, 2u, outIdx, lda, trans);
-        int32_t aIdx3 = CgemvSimtAIndex(dotIdx, 3u, outIdx, lda, trans);
-        int32_t xIdx0 = (int32_t)dotIdx * incx;
-        int32_t xIdx1 = (int32_t)(dotIdx + 1u) * incx;
-        int32_t xIdx2 = (int32_t)(dotIdx + 2u) * incx;
-        int32_t xIdx3 = (int32_t)(dotIdx + 3u) * incx;
+        int64_t aIdx0 = CgemvSimtAIndex(dotIdx, 0u, outIdx, lda, trans);
+        int64_t aIdx1 = CgemvSimtAIndex(dotIdx, 1u, outIdx, lda, trans);
+        int64_t aIdx2 = CgemvSimtAIndex(dotIdx, 2u, outIdx, lda, trans);
+        int64_t aIdx3 = CgemvSimtAIndex(dotIdx, 3u, outIdx, lda, trans);
+        int64_t xIdx0 = static_cast<int64_t>(dotIdx) * incx;
+        int64_t xIdx1 = static_cast<int64_t>(dotIdx + 1u) * incx;
+        int64_t xIdx2 = static_cast<int64_t>(dotIdx + 2u) * incx;
+        int64_t xIdx3 = static_cast<int64_t>(dotIdx + 3u) * incx;
 
         float ar0 = batchA[aIdx0 * 2];
         float ai0 = batchA[aIdx0 * 2 + 1];
@@ -1152,12 +1155,11 @@ __simt_callee__ __aicore__ inline void CgemvSimtDot4(
 // Dot reduction over the trailing (dotDim % 4) elements.
 __simt_callee__ __aicore__ inline void CgemvSimtDotTail(
     const __gm__ float* batchA, const __gm__ float* batchX, uint32_t outIdx, uint32_t dotDim, int32_t lda, int32_t incx,
-    int32_t xOff, uint32_t trans, float& accR, float& accI)
+    int64_t xOff, uint32_t trans, float& accR, float& accI)
 {
     for (uint32_t dotIdx = dotDim & ~3u; dotIdx < dotDim; dotIdx++) {
-        int32_t aIdx =
-            (trans == 0u) ? ((int32_t)dotIdx * lda + (int32_t)outIdx) : ((int32_t)outIdx * lda + (int32_t)dotIdx);
-        int32_t xIdx = (int32_t)dotIdx * incx;
+        int64_t aIdx = CgemvSimtAIndex(dotIdx, 0u, outIdx, lda, trans);
+        int64_t xIdx = static_cast<int64_t>(dotIdx) * incx;
         float ar = batchA[aIdx * 2];
         float ai = batchA[aIdx * 2 + 1];
         if (trans == 2u) {
@@ -1173,7 +1175,7 @@ __simt_callee__ __aicore__ inline void CgemvSimtDotTail(
 // Reduce one output of one batch through the dot dimension.
 __simt_callee__ __aicore__ inline void CgemvSimtDotAll(
     const __gm__ float* batchA, const __gm__ float* batchX, uint32_t outIdx, uint32_t dotDim, int32_t lda, int32_t incx,
-    int32_t xOff, uint32_t trans, uint32_t alphaIsZero, float& accR, float& accI)
+    int64_t xOff, uint32_t trans, uint32_t alphaIsZero, float& accR, float& accI)
 {
     accR = 0.0f;
     accI = 0.0f;
@@ -1184,13 +1186,14 @@ __simt_callee__ __aicore__ inline void CgemvSimtDotAll(
 }
 
 // Scale the reduced accumulator by alpha, fold in beta*y and store back.
+// issue #848: yOff/yIdx 按 int64 域计算（host 跨度校验的双保险）。
 __simt_callee__ __aicore__ inline void CgemvSimtWriteOut(
     __gm__ float* batchY, uint32_t outIdx, float accR, float accI, float alphaR, float alphaI, float betaR, float betaI,
-    uint32_t betaIsZero, int32_t incy, int32_t yOff)
+    uint32_t betaIsZero, int32_t incy, int64_t yOff)
 {
     float outR = alphaR * accR - alphaI * accI;
     float outI = alphaR * accI + alphaI * accR;
-    int32_t yIdx = (int32_t)outIdx * incy;
+    int64_t yIdx = static_cast<int64_t>(outIdx) * incy;
     if (betaIsZero == 0u) {
         float yOldR = batchY[(yOff + yIdx) * 2];
         float yOldI = batchY[(yOff + yIdx) * 2 + 1];
@@ -1202,29 +1205,30 @@ __simt_callee__ __aicore__ inline void CgemvSimtWriteOut(
 }
 
 __simt_vf__ __aicore__ LAUNCH_BOUND(CGEMV_SIMT_MAX_THREADS) inline void CgemvSimt(
-    uint32_t m, uint32_t n, uint32_t startOut, uint32_t numOuts, float alphaR, float alphaI, float betaR, float betaI,
+    uint32_t m, uint32_t n, uint64_t startOut, uint64_t numOuts, float alphaR, float alphaI, float betaR, float betaI,
     uint32_t alphaIsZero, uint32_t betaIsZero, int32_t lda, int32_t incx, int32_t incy, uint32_t trans,
     GM_ADDR AarrayBase, GM_ADDR xarrayBase, GM_ADDR yarrayBase)
 {
     uint32_t outDim = (trans == 0u) ? m : n;
     uint32_t dotDim = (trans == 0u) ? n : m;
 
-    for (uint32_t tid = threadIdx.x; tid < numOuts; tid += blockDim.x) {
-        uint32_t globalOut = startOut + tid;
-        uint32_t b = globalOut / outDim;
-        uint32_t outIdx = globalOut % outDim;
+    for (uint64_t tid = threadIdx.x; tid < numOuts; tid += blockDim.x) {
+        uint64_t globalOut = startOut + tid;
+        uint32_t b = static_cast<uint32_t>(globalOut / outDim);
+        uint32_t outIdx = static_cast<uint32_t>(globalOut % outDim);
 
         __gm__ float* batchA = CgemvReadPtrFromArray<float>(AarrayBase, b);
         __gm__ float* batchX = CgemvReadPtrFromArray<float>(xarrayBase, b);
         __gm__ float* batchY = CgemvReadPtrFromArray<float>(yarrayBase, b);
 
-        int32_t xOff = 0;
-        int32_t yOff = 0;
+        // issue #848: 负步长基址偏移按 int64 域计算，避免 uint32 乘法截断
+        int64_t xOff = 0;
+        int64_t yOff = 0;
         if (incx < 0) {
-            xOff += (int32_t)((dotDim - 1u) * (uint32_t)(-incx));
+            xOff += static_cast<int64_t>(dotDim - 1u) * static_cast<int64_t>(-incx);
         }
         if (incy < 0) {
-            yOff += (int32_t)((outDim - 1u) * (uint32_t)(-incy));
+            yOff += static_cast<int64_t>(outDim - 1u) * static_cast<int64_t>(-incy);
         }
 
         float accR = 0.0f;
@@ -1279,8 +1283,12 @@ extern "C" __global__ __aicore__ void cgemv_batched(
     }
 
     uint32_t startOut = GetBlockIdx() * td.batchPerCore;
-    uint32_t totalOutputs = td.batchCount * td.outSize;
-    uint32_t endOut = (GetBlockIdx() == td.usedCoreNum - 1u) ? totalOutputs : (startOut + td.batchPerCore);
+    // issue #848: totalOutputs 乘法在 uint64 域计算，消除 uint32 回绕；
+    // host 已限 batchCount*outSize <= INT32_MAX，uint32 切片算术（含
+    // startOut+batchPerCore 的非末核上界推导）在该域内安全。
+    const uint64_t totalOutputs = static_cast<uint64_t>(td.batchCount) * td.outSize;
+    const uint32_t endOut =
+        (GetBlockIdx() == td.usedCoreNum - 1u) ? static_cast<uint32_t>(totalOutputs) : (startOut + td.batchPerCore);
     if (startOut >= totalOutputs)
         return;
 
