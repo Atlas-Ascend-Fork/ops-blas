@@ -8,45 +8,61 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef CAXPY_GOLDEN_H
-#define CAXPY_GOLDEN_H
+#pragma once
 
 #include <cstdint>
 
 #include "cann_ops_blas.h"
 
-inline int64_t caxpyCpuOffset(int n, int increment, int logicalIndex)
-{
-    int64_t absIncrement = increment >= 0 ? static_cast<int64_t>(increment) : -static_cast<int64_t>(increment);
-    return increment >= 0 ? static_cast<int64_t>(logicalIndex) * absIncrement :
-                            static_cast<int64_t>(n - 1 - logicalIndex) * absIncrement;
-}
-
-inline aclblasStatus_t aclblasCaxpy_cpu(
+inline aclblasStatus_t CaxpyValidateParams(
     aclblasHandle_t handle, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,
-    aclblasComplex* y, int incy)
+    const aclblasComplex* y, int incy)
 {
-    if (handle == nullptr) {
+    if (handle == nullptr || alpha == nullptr) {
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
-    if (n < 0) {
+    if (n < 0 || incx == 0 || incy == 0) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (n == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-    if (alpha == nullptr || x == nullptr || y == nullptr || incx == 0 || incy == 0) {
+    if (n > 0 && (x == nullptr || y == nullptr)) {
         return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    for (int i = 0; i < n; ++i) {
-        const aclblasComplex& xValue = x[caxpyCpuOffset(n, incx, i)];
-        aclblasComplex& yValue = y[caxpyCpuOffset(n, incy, i)];
-        float yReal = alpha->real * xValue.real - alpha->imag * xValue.imag + yValue.real;
-        float yImag = alpha->real * xValue.imag + alpha->imag * xValue.real + yValue.imag;
-        yValue.real = yReal;
-        yValue.imag = yImag;
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-#endif // CAXPY_GOLDEN_H
+inline aclblasComplex CaxpyComplexMac(aclblasComplex alpha, aclblasComplex x, aclblasComplex y)
+{
+    return {alpha.real * x.real - alpha.imag * x.imag + y.real, alpha.real * x.imag + alpha.imag * x.real + y.imag};
+}
+
+// Logical-index -> physical storage index for a strided complex vector.
+// Positive stride reads forward from the base; negative stride is BLAS
+// convention: the last logical element is physically first.
+inline int64_t CaxpyStorageIndex(int64_t logicalIndex, int64_t n, int64_t increment)
+{
+    const uint64_t absIncrement = increment > 0 ? static_cast<uint64_t>(increment) : static_cast<uint64_t>(-increment);
+    return increment > 0 ? logicalIndex * static_cast<int64_t>(absIncrement) :
+                           (n - 1 - logicalIndex) * static_cast<int64_t>(absIncrement);
+}
+
+// y = alpha * x + y, complex, arbitrary (possibly negative) incx/incy.
+// x and y are the caller-owned base storage pointers (not offset by any guard region).
+inline aclblasStatus_t aclblasCaxpy_cpu(
+    aclblasHandle_t handle, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx, aclblasComplex* y,
+    int incy)
+{
+    aclblasStatus_t st = CaxpyValidateParams(handle, n, alpha, x, incx, y, incy);
+    if (st != ACLBLAS_STATUS_SUCCESS) {
+        return st;
+    }
+    if (n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+
+    for (int64_t i = 0; i < n; i++) {
+        const int64_t xIdx = CaxpyStorageIndex(i, n, incx);
+        const int64_t yIdx = CaxpyStorageIndex(i, n, incy);
+        y[yIdx] = CaxpyComplexMac(*alpha, x[xIdx], y[yIdx]);
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}

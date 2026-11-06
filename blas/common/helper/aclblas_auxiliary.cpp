@@ -71,6 +71,26 @@ aclblasStatus_t aclblasDestroy(aclblasHandle_t handle)
     }
     FreeLibraryWorkspace(h);
 
+    if (h->caxpy_mask_cache != nullptr) {
+        aclrtFree(h->caxpy_mask_cache);
+        h->caxpy_mask_cache = nullptr;
+        h->caxpy_mask_cache_incx = 0;
+        h->caxpy_mask_cache_incy = 0;
+    }
+    while (h->caxpy_uploads != nullptr) {
+        auto* upload = h->caxpy_uploads;
+        h->caxpy_uploads = upload->next;
+        aclrtDestroyEvent(upload->event);
+        aclrtFreeHost(upload->host);
+        delete upload;
+    }
+    if (h->caxpy_packed_x != nullptr) {
+        aclrtFree(h->caxpy_packed_x);
+    }
+    if (h->caxpy_packed_y != nullptr) {
+        aclrtFree(h->caxpy_packed_y);
+    }
+
     h->stream = nullptr;
 
     delete h;

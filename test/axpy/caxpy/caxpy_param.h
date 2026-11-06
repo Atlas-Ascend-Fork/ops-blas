@@ -8,11 +8,11 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef CAXPY_PARAM_H
-#define CAXPY_PARAM_H
+#pragma once
 
+#include <string>
+#include "cann_ops_blas.h"
 #include "csv_loader.h"
-#include "fill.h"
 
 struct CaxpyParam : public BlasTestParamBase {
     int n = 0;
@@ -20,19 +20,23 @@ struct CaxpyParam : public BlasTestParamBase {
     int incy = 1;
     float alphaReal = 1.0f;
     float alphaImag = 0.0f;
-    BlasFillMode x = parseFill("RANDOM_NORM_N1_1");
-    BlasFillMode y = parseFill("RANDOM_NORM_N1_1");
+    int nullx = 0;
+    int nully = 0;
+    int measure = 0;
+    int warmup = 30;
+    int measurements = 50;
 
-    explicit CaxpyParam(const csv_map& map) : BlasTestParamBase(map)
+    CaxpyParam(const csv_map& csv) : BlasTestParamBase(csv)
     {
-        n = parseInt(ReadMap(map, "n", "0"));
-        incx = parseInt(ReadMap(map, "incx", "1"));
-        incy = parseInt(ReadMap(map, "incy", "1"));
-        alphaReal = parseFloat(ReadMap(map, "alpha_real", "1"));
-        alphaImag = parseFloat(ReadMap(map, "alpha_imag", "0"));
-        x = parseFill(ReadMap(map, "x_fill", "RANDOM_NORM_N1_1"));
-        y = parseFill(ReadMap(map, "y_fill", "RANDOM_NORM_N1_1"));
+        n = parseInt(ReadMap(csv, "n", "0"));
+        incx = parseInt(ReadMap(csv, "incx", "1"));
+        incy = parseInt(ReadMap(csv, "incy", "1"));
+        alphaReal = parseFloat(ReadMap(csv, "alpha_real", "1.0"));
+        alphaImag = parseFloat(ReadMap(csv, "alpha_imag", "0.0"));
+        nullx = parseInt(ReadMap(csv, "nullx", "0"));
+        nully = parseInt(ReadMap(csv, "nully", "0"));
+        measure = parseInt(ReadMap(csv, "measure", "0"));
+        warmup = parseInt(ReadMap(csv, "warmup", "30"));
+        measurements = parseInt(ReadMap(csv, "measurements", "50"));
     }
 };
-
-#endif // CAXPY_PARAM_H

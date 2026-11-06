@@ -1,0 +1,79 @@
+case_name,description,n,incx,incy,alpha_real,alpha_imag,nullx,nully,expect_result,mere_threshold,mare_multiplier,random_seed,measure,warmup,measurements,classification,flops,profile
+TC_zero,zero,0,1,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_one,one,1,1,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_lane_2,lane 2,2,1,1,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_lane_3,lane 3,3,1,1,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_lane_31,lane 31,31,1,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_lane_32,lane 32,32,1,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_lane_33,lane 33,33,1,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_lane_63,lane 63,63,1,1,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_lane_64,lane 64,64,1,1,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_lane_65,lane 65,65,1,1,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_core_39,core 39,39,1,1,0.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_core_40,core 40,40,1,1,0.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_core_41,core 41,41,1,1,0.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_strided_x,strided x,257,2,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_vector_reorder_tail_1,vector reorder tail 1,1,2,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_vector_reorder_tail_7,vector reorder tail 7,7,2,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_vector_reorder_tail_8,vector reorder tail 8,8,2,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_vector_reorder_tail_9,vector reorder tail 9,9,2,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_vector_reorder_tile,vector reorder tile,512,2,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_scalar_block_15,scalar block 15,600,2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_mixed_scalar_block_15_16,mixed scalar block 15 16,601,-2,3,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_scalar_block_16,scalar block 16,640,2,-3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_mixed_scalar_block_16_17,mixed scalar block 16 17,641,5,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_scalar_upper_bound_16_17,scalar upper bound 16 17,679,-5,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_scalar_wide_increment,scalar wide increment,17,65537,-32769,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_vector_reorder_negative_tail,vector reorder negative tail,513,-10,-11,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_strided_y,strided y,257,1,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_strided_xy,strided xy,257,2,3,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_stride_5_x,stride 5 x,257,5,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_stride_5_y,stride 5 y,257,1,5,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_stride_5_9,stride 5 9,257,5,9,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_stride_9_x,stride 9 x,257,9,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_stride_10_x_fallback,stride 10 x fallback,257,10,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_stride_5_multicore,stride 5 multicore,4097,5,5,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_shared_raw_inc2_multitile_tail,shared raw inc2 multitile tail,40961,2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_shared_tail_1,shared tail 1,41000,2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_shared_tail_8,shared tail 8,41280,2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_shared_tail_9,shared tail 9,41320,2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_shared_tail_16,shared tail 16,41600,2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_shared_tail_17,shared tail 17,41640,2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_shared_tail_1_incy1,shared tail 1 incy1,41000,2,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_shared_tail_1_negative,shared tail 1 negative,41000,-2,-3,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_shared_tail_multi_4tile,shared tail multi 4tile,61441,2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_shared_raw_inc5_multitile_tail,shared raw inc5 multitile tail,40961,5,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_shared_raw_inc9_multitile_tail,shared raw inc9 multitile tail,40961,9,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_negative_x,negative x,257,-2,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_negative_unit_y,negative unit y,257,2,-1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_negative_unit_y_multitile,negative unit y multitile,4097,2,-1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_negative_y,negative y,257,1,-3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_negative_x_positive_y,negative x positive y,257,-2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_positive_x_negative_y,positive x negative y,257,5,-3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_negative_xy,negative xy,257,-2,-3,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_negative_9_x,negative 9 x,257,-9,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_negative_x_multicore,negative x multicore,4097,-2,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_negative_y_multicore,negative y multicore,4097,1,-3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_opposite_sign_multicore,opposite sign multicore,4097,-2,3,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_negative_xy_multicore,negative xy multicore,4097,-2,-3,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_wide_stride_multitile,wide stride multitile,40961,10,11,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_wide_stride_negative_multitile,wide stride negative multitile,40963,-10,-11,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_dynamic_shared_incx16,dynamic shared incx16,40961,16,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_dynamic_shared_incx32,dynamic shared incx32,40961,32,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_dynamic_shared_incx41,dynamic shared incx41,40961,41,3,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_dynamic_shared_boundary_usable,dynamic shared boundary usable,8000,60,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_dynamic_shared_boundary_disjoint,dynamic shared boundary disjoint,8000,61,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_strided_tile_plus_1,strided tile plus 1,194561,2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_multiwave_strided,multiwave strided,400000,2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_multiwave_negative,multiwave negative,400001,-2,-3,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_multiwave_3_waves,multiwave 3 waves,700000,1,2,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_pipeline_full_wave,pipeline full wave,327680,2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_hybrid_tail_1,hybrid tail 1,327681,2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_hybrid_tail_1_negative_y,hybrid tail 1 negative y,327681,2,-3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_hybrid_tail_679_negative_x,hybrid tail 679 negative x,328359,-2,3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_hybrid_tail_679_negative_xy,hybrid tail 679 negative xy,328359,-2,-3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_pipeline_tail_680_negative_y,pipeline tail 680 negative y,328360,2,-3,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_regular,regular,16384,1,1,0.75,-0.25,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,1,100,200,comparison,131072,1
+TC_tile_minus_1,tile minus 1,194559,1,1,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0
+TC_tile,tile,194560,1,1,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,1,100,200,comparison,1556480,0
+TC_tile_plus_1,tile plus 1,194561,1,1,2.0,1.0,0,0,ACLBLAS_STATUS_SUCCESS,0.0001220703125,10.0,42,0,30,50,smoke,0,0

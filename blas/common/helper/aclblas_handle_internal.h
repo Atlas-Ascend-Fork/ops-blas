@@ -18,6 +18,7 @@
 #include <acl/acl.h>
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include "log/log.h"
 
 #include "cann_ops_blas_common.h"
@@ -32,6 +33,17 @@ constexpr size_t ACLBLAS_MAX_WORKSPACE_SIZE = 2ULL * 1024ULL * 1024ULL * 1024ULL
 enum class AclblasWorkspaceOwner {
     Library, /**< Allocated and freed by the library; may grow in place. */
     User,    /**< Injected by the user via aclblasSetWorkspace; never freed by the library. */
+};
+
+// Pinned upload sources must remain alive until their stream copy completes.
+// Slots without a successfully recorded event are retained until destruction.
+struct CaxpyUploadBuffer {
+    void* host = nullptr;
+    size_t size = 0;
+    aclrtEvent event = nullptr;
+    bool pending = false;
+    bool recorded = false;
+    CaxpyUploadBuffer* next = nullptr;
 };
 
 /**
@@ -55,6 +67,17 @@ struct _aclblas_handle {
 
     /** Size of the last library-managed workspace buffer (preserved across user switches). */
     size_t library_workspace_size = 0;
+
+    void* caxpy_mask_cache = nullptr;
+    uint64_t caxpy_mask_cache_incx = 0;
+    uint64_t caxpy_mask_cache_incy = 0;
+    CaxpyUploadBuffer* caxpy_uploads = nullptr;
+
+    // Packing scratch is handle-owned, including after a failed submission.
+    void* caxpy_packed_x = nullptr;
+    void* caxpy_packed_y = nullptr;
+    size_t caxpy_packed_x_size = 0;
+    size_t caxpy_packed_y_size = 0;
 
     // Immutable CHERK transpose/interleave/mask metadata. It is initialized
     // lazily and shared by every AIV block instead of being rebuilt per launch.
