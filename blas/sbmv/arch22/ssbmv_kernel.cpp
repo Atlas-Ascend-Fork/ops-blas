@@ -1226,9 +1226,13 @@ __aicore__ inline void SsbmvKernel::HandleAlphaZero()
 /*! \brief 行-对角形式所需的 span 元素个数（含前置零哨兵）。两个 kernel 共用，故做成自由函数。
  *
  * 全程用 32 位算术：AI Core 的标量单元没有 64 位乘法指令，`uint64_t` 乘法要调软件例程，
- * 而这里是在每次下发的 Init 路径上（小 shape 的固定开销里这一项可观）。取值范围受规格约束：
- * lda <= k + 1 <= 8192、chunkRows <= 2048，故 lda * (chunkRows + k) <= 8192 * 10240 ≈ 8.4e7，
- * 32 位足够（UB 只有 196KB，能通过准入的 span 必然远小于此）。 */
+ * 而这里是在每次下发的 Init 路径上（小 shape 的固定开销里这一项可观）。
+ * issue #841 修正安全依据：host 的 ValidateSsbmvArgs 并不存在 n/lda <= 8192 的
+ * 规格约束（n=3e8、k=7、lda=8 的形状可合法进入 diag-only 入口）；32 位不回绕的
+ * 真实依据是准入链自身的乘积上界——本函数返回的 span 必须完整装入 UB
+ * （与 host 的 SsbmvDiagSpanFloats 逐字一致、按 UB 容量装箱准入），即
+ * lda * (chunkRows + k) + k + 1 连同 guard/对齐/余量以 UB 量级（约 50K floats）
+ * 为上界，远小于 2^32；后续放宽准入或改 UB 容量时须同步复核此处的 32 位域。 */
 __aicore__ inline uint32_t DiagSpanFloats(uint32_t chunkRows, uint32_t k, uint32_t lda)
 {
     const uint32_t spanMax = lda * (chunkRows + k) + k + 1U;
@@ -1713,8 +1717,14 @@ template <bool kPhase>
 __aicore__ inline void SsbmvDiagOnly<kPhase>::Pass(uint32_t c0, uint32_t c1, int32_t e, bool accumulate)
 {
     /* 这里全部用 32 位算术：AI Core 标量单元没有 64 位乘法指令，int64_t 的乘要调软件例程，
-     * 而这段代码每条对角线都要跑一遍（小 shape 上 pass 数占比不低）。取值都在 int32 内：
-     * n <= 8192、e ∈ [-k, k]、lda <= 8193，故 e*lda 与 row0*lda 都 <= 6.7e7，差也在同一量级。 */
+     * 而这段代码每条对角线都要跑一遍（小 shape 上 pass 数占比不低）。
+     * issue #841 修正安全依据：host 并未校验 n <= 8192（n 可达 3e8 量级）。本函数
+     * 的乘法项均以 span 窗口内的局部量为界——cE 的 e*(ldaI-1) 与 aRel 的
+     * (row0 - spanCol0)*lda 都以准入 span（lda*(chunkRows+k) 级、必须完整装入
+     * UB，见 DiagSpanFloats 注释）为上界；row0 本身虽为全局行号（int32 域内），
+     * 但只作差参与局部下标；nI 仅参与与 c1i 的 min 截断。GM 侧全局地址换算在
+     * 拷贝点用 uint64（见 aGM[static_cast<uint64_t>(lda) * sc]）。后续放宽准入
+     * 或改 UB 容量时须同步复核此处。 */
     const int32_t c0i = static_cast<int32_t>(c0);
     const int32_t eAbs = (e >= 0) ? e : -e;
     const int32_t loRaw = (e >= 0) ? c0i : ((eAbs > c0i) ? eAbs : c0i);
