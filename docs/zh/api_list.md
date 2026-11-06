@@ -951,6 +951,7 @@ Level 2 接口在矩阵与向量之间进行运算，典型操作包括通用矩
 | [aclblasCgerc](../../blas/gerc/README.md) | 复数矩阵共轭秩-1 更新 |
 | [aclblasSsbmv](../../blas/sbmv/README.md) | 单精度浮点对称带状矩阵-向量乘法 |
 | [aclblasSspmv](../../blas/spmv/README.md) | 单精度浮点对称 packed 矩阵-向量乘法 |
+| [aclblasChpmv](../../blas/spmv/README.md#aclblaschpmv) | 单精度复数 Hermitian packed 矩阵-向量乘法 |
 | [aclblasSspr](../../blas/spr/README.md) | 单精度对称 packed 秩-1 更新 |
 | [aclblasChpr](../../blas/hpr/README.md) | 单精度复数 Hermitian packed 秩-1 更新 |
 | [aclblasSspr2](../../blas/spr2/README.md) | 单精度对称矩阵 packed 格式秩-2 更新 |
