@@ -182,6 +182,34 @@ __aicore__ inline void CopyAIV<T>::SingleIterationAligned(uint32_t curOffset, ui
   // 打印outLocal前32个元素的信息
   AscendC::DumpTensor(outLocal, 0, 32);
   ```
+
+  > **输出位置与启用条件**
+  >
+  > `DumpTensor`默认启用；若编译时定义了`ASCENDC_DUMP=0`，输出会被关闭。实际输出位置与执行方式、CANN版本有关：
+  >
+  > - 本QuickStart的ST流程是单算子直调，测试框架使用`aclInit(nullptr)`，不加载dump配置，输出通常直接显示在进程终端。若看不到，先打开日志打屏后重跑：
+  >   ```bash
+  >   export ASCEND_GLOBAL_LOG_LEVEL=1          # INFO；仍看不到可试 0（DEBUG）
+  >   export ASCEND_LOG_PRINT_TO_STDOUT=1       # 新版本；旧版本使用 ASCEND_SLOG_PRINT_TO_STDOUT=1
+  >   ```
+  >   未打屏时，host日志默认在`$HOME/ascend/log/debug/plog/plog-*.log`。
+  > - 如需落盘，配置`acl.json`并在调用`aclInit`时传入：
+  >   ```json
+  >   {
+  >     "dump": {
+  >       "dump_kernel_data": "tensor",
+  >       "dump_path": "./dump"
+  >     }
+  >   }
+  >   ```
+  >   当前ST框架使用`aclInit(nullptr)`，不会读取该文件；未开启Data Dump时，部分版本会写到`ASCEND_WORK_PATH/printf`或当前目录的`printf/`下。落盘文件需用`show_kernel_debug_data <bin> <out_dir>`解析。
+  > - 单次调用受每核Dump数据量限制（SIMD默认30KB，部分版本为1MB），超出不会打印。
+  >
+  > 若以上位置仍无输出，依次检查：
+  > 1. 编译时未定义`ASCENDC_DUMP=0`；
+  > 2. 运行的是本次构建的`libops_blas.so`：`source set_env.sh`后`${ASCEND_HOME_PATH}/lib64`优先于构建目录，旧库会让插桩完全不生效，可先执行`export LD_LIBRARY_PATH=$(pwd)/build:$(pwd)/out/lib64:$LD_LIBRARY_PATH`；
+  > 3. 插桩代码确实执行（默认样例会走`SingleIterationAligned`）；
+  > 4. `dumpSize`不超过Tensor实际长度。
 ### 2. 性能采集
 
 当算子功能验证正确后，可通过`msprof`工具采集算子性能数据。
