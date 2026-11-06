@@ -49,8 +49,10 @@ inline aclblasStatus_t LoadLayoutField(const void* buf, size_t sizeInBytes, T& f
     if (sizeInBytes != sizeof(T)) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    field = *reinterpret_cast<const T*>(buf);
-    return ACLBLAS_STATUS_SUCCESS;
+    // issue #823: 属性值经 memcpy_s 装载，不依赖用户缓冲的 8 字节对齐
+    // （uint64 维度属性在非对齐缓冲上 reinterpret_cast 直读属 UB），
+    // 与 matmul desc/preference 模块的属性读写口径一致。
+    return CheckedMemcpyS(&field, sizeof(field), buf, sizeof(T));
 }
 
 template <typename T>
@@ -68,8 +70,8 @@ inline aclblasStatus_t StoreLayoutFieldOut(void* buf, size_t sizeInBytes, const 
     if (buf == nullptr || sizeInBytes < requiredSize) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    *reinterpret_cast<T*>(buf) = field;
-    return ACLBLAS_STATUS_SUCCESS;
+    // issue #823: 属性值经 memcpy_s 写出，不依赖用户缓冲对齐（见 LoadLayoutField）。
+    return CheckedMemcpyS(buf, sizeInBytes, &field, requiredSize);
 }
 
 aclblasStatus_t ApplyLayoutSetAttr(
