@@ -35,17 +35,17 @@ private:
 private:
     TPipe pipe;
 
-    __aicore__ inline void CopyInV2(uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount);
+    // issue #840: PadV2 变体与 V2 逐行比对仅 DataCopy/DataCopyPad 及 pad 参数之别
+    // （Compute 两版完全相同），合并为单一实现以 needPad 参数区分；同批删除无
+    // 调用点的 CopyInVec/ComputeVec/CopyOutVec 旧路径（两阶段改造前遗留，
+    // ComputeVec 的 betaMinusOne 语义与现行 phase 0 直接乘 beta 不一致）。
+    // CopyOut 的 V2/PadV2 两版逐行比对仅 sizeof(T) 的 cast 写法不同（uint32 宽化
+    // vs uint16，字段实际为 uint16_t，语义等价），z/z2 半段完全一致，直接合一
+    // 并统一为 uint16，无 needPad 参数。
+    __aicore__ inline void CopyInV2(
+        uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount, bool needPad);
     __aicore__ inline void ComputeV2(uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount);
     __aicore__ inline void CopyOutV2(uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount);
-
-    __aicore__ inline void CopyInPadV2(uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount);
-    __aicore__ inline void ComputePadV2(uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount);
-    __aicore__ inline void CopyOutPadV2(uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount);
-
-    __aicore__ inline void CopyInVec(uint32_t curOffset, uint32_t dataCount, bool needPad);
-    __aicore__ inline void ComputeVec(uint32_t curOffset, uint32_t dataCount);
-    __aicore__ inline void CopyOutVec(uint32_t curOffset, uint32_t dataCount, bool needPad);
 
     __aicore__ inline void LoadX2(uint32_t rowOffset)
     {
@@ -150,16 +150,30 @@ __aicore__ inline void SymvAIV<T>::Init(GM_ADDR a, GM_ADDR x, GM_ADDR y, const S
 
 template <typename T>
 __aicore__ inline void SymvAIV<T>::CopyInV2(
-    uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount)
+    uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount, bool needPad)
 {
     uint64_t r = static_cast<uint64_t>(rowOffset) * lda + colOffset;
     LocalTensor<T> LocalA = aQueue.AllocTensor<T>();
-    DataCopy(LocalA, aGM[r], dataCount);
+    if (!needPad) {
+        DataCopy(LocalA, aGM[r], dataCount);
+    } else {
+        uint8_t paddingNum = elementsPerBlock - dataCount % elementsPerBlock;
+        DataCopyExtParams copyParams{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
+        DataCopyPadExtParams<T> padParams{true, 0, paddingNum, 0};
+        DataCopyPad(LocalA, aGM[r], copyParams, padParams);
+    }
     aQueue.EnQue<T>(LocalA);
 
     LocalTensor<T> LocalX = xQueue.AllocTensor<T>();
     if (incx == 1) {
-        DataCopy(LocalX, xGM[colOffset], dataCount);
+        if (!needPad) {
+            DataCopy(LocalX, xGM[colOffset], dataCount);
+        } else {
+            uint8_t paddingNum = elementsPerBlock - dataCount % elementsPerBlock;
+            DataCopyExtParams copyParams{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
+            DataCopyPadExtParams<T> padParams{true, 0, paddingNum, 0};
+            DataCopyPad(LocalX, xGM[colOffset], copyParams, padParams);
+        }
     } else {
         for (uint32_t i = 0; i < dataCount; i++) {
             LocalX.SetValue(i, xGM.GetValue(XPhysicalPos(colOffset + i)));
@@ -207,7 +221,9 @@ __aicore__ inline void SymvAIV<T>::CopyOutV2(
 {
     LocalTensor<T> zLocal = zQueue.DeQue<T>();
     if (incy == 1) {
-        DataCopyExtParams copyParams{1, static_cast<uint32_t>(sizeof(T)), 0, 0, 0};
+        // issue #840: 统一 cast 类型（DataCopyExtParams 的 blockLen 字段为
+        // uint16_t，原 V2 用 uint32 宽化、PadV2 用 uint16，同语义不同写法）
+        DataCopyExtParams copyParams{1, static_cast<uint16_t>(sizeof(T)), 0, 0, 0};
         DataCopyPad(yGM[rowOffset], zLocal, copyParams);
     } else {
         uint64_t pos = YPhysicalPos(rowOffset);
@@ -242,184 +258,6 @@ __aicore__ inline void SymvAIV<T>::CopyOutV2(
         }
     }
     z2Queue.FreeTensor(z2Local);
-}
-
-template <typename T>
-__aicore__ inline void SymvAIV<T>::CopyInPadV2(
-    uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount)
-{
-    uint8_t paddingNum = elementsPerBlock - dataCount % elementsPerBlock;
-    DataCopyExtParams copyParams{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
-    DataCopyPadExtParams<T> padParams{true, 0, paddingNum, 0};
-
-    uint64_t r = static_cast<uint64_t>(rowOffset) * lda + colOffset;
-    LocalTensor<T> LocalA = aQueue.AllocTensor<T>();
-    DataCopyPad(LocalA, aGM[r], copyParams, padParams);
-    aQueue.EnQue<T>(LocalA);
-
-    LocalTensor<T> LocalX = xQueue.AllocTensor<T>();
-    if (incx == 1) {
-        DataCopyPad(LocalX, xGM[colOffset], copyParams, padParams);
-    } else {
-        for (uint32_t i = 0; i < dataCount; i++) {
-            LocalX.SetValue(i, xGM.GetValue(XPhysicalPos(colOffset + i)));
-        }
-    }
-    xQueue.EnQue<T>(LocalX);
-
-    LoadX2(rowOffset);
-}
-
-template <typename T>
-__aicore__ inline void SymvAIV<T>::ComputePadV2(
-    uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount)
-{
-    LocalTensor<T> LocalA = aQueue.DeQue<T>();
-    LocalTensor<T> LocalX = xQueue.DeQue<T>();
-    LocalTensor<T> LocalX2 = x2Queue.DeQue<T>();
-    LocalTensor<T> LocalZ = zQueue.AllocTensor<T>();
-    LocalTensor<T> LocalZ2 = z2Queue.AllocTensor<T>();
-    LocalTensor<T> workLocal = workspaceQueue.AllocTensor<T>();
-
-    int32_t eventIDMTE3ToV = static_cast<int32_t>(GetTPipePtr()->FetchEventID(AscendC::HardEvent::MTE3_V));
-    AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(eventIDMTE3ToV);
-    AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(eventIDMTE3ToV);
-    Mul(LocalZ, LocalA, LocalX, dataCount);
-    ReduceSum(LocalZ, LocalZ, LocalZ, dataCount);
-    Muls(LocalZ, LocalZ, alpha, 1);
-    auto scalar = LocalX2(0) * alpha;
-    if (IsPureTriangleChunk(rowOffset, colOffset, dataCount)) {
-        Muls(LocalZ2, LocalA, scalar, dataCount);
-    } else if (dataCount > 1) {
-        Muls(LocalZ2, LocalA, scalar, dataCount - 1);
-    }
-    zQueue.EnQue<T>(LocalZ);
-    z2Queue.EnQue<T>(LocalZ2);
-    aQueue.FreeTensor(LocalA);
-    xQueue.FreeTensor(LocalX);
-    x2Queue.FreeTensor(LocalX2);
-    workspaceQueue.FreeTensor(workLocal);
-}
-
-template <typename T>
-__aicore__ inline void SymvAIV<T>::CopyOutPadV2(
-    uint32_t taskIdx, uint32_t rowOffset, uint32_t colOffset, uint32_t dataCount)
-{
-    uint8_t paddingNum = elementsPerBlock - dataCount % elementsPerBlock;
-    DataCopyExtParams copyParams{1, static_cast<uint16_t>(sizeof(T)), 0, 0, 0};
-    DataCopyPadExtParams<T> padParams{true, 0, paddingNum, 0};
-
-    LocalTensor<T> zLocal = zQueue.DeQue<T>();
-    if (incy == 1) {
-        DataCopyPad(yGM[rowOffset], zLocal, copyParams);
-    } else {
-        uint64_t pos = YPhysicalPos(rowOffset);
-        yGM.SetValue(pos, yGM.GetValue(pos) + zLocal.GetValue(0));
-    }
-    zQueue.FreeTensor(zLocal);
-
-    LocalTensor<T> z2Local = z2Queue.DeQue<T>();
-    if (incy == 1) {
-        if (IsPureTriangleChunk(rowOffset, colOffset, dataCount)) {
-            uint8_t paddingNum2 = elementsPerBlock - dataCount % elementsPerBlock;
-            DataCopyExtParams copyParams2{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
-            DataCopyPadExtParams<T> padParams2{true, 0, paddingNum2, 0};
-            DataCopyPad(yGM[colOffset], z2Local, copyParams2);
-        } else {
-            uint8_t paddingNum2 = elementsPerBlock - (dataCount - 1) % elementsPerBlock;
-            DataCopyExtParams copyParams2{1, (dataCount - 1) * BYTENUM_PER_FLOAT32, 0, 0, 0};
-            DataCopyPadExtParams<T> padParams2{true, 0, paddingNum2, 0};
-            DataCopyPad(yGM[colOffset], z2Local, copyParams2);
-        }
-    } else {
-        if (IsPureTriangleChunk(rowOffset, colOffset, dataCount)) {
-            for (uint32_t i = 0; i < dataCount; i++) {
-                uint64_t pos = YPhysicalPos(colOffset + i);
-                yGM.SetValue(pos, yGM.GetValue(pos) + z2Local.GetValue(i));
-            }
-        } else if (dataCount > 1) {
-            for (uint32_t i = 0; i < dataCount - 1; i++) {
-                uint64_t pos = YPhysicalPos(colOffset + i);
-                yGM.SetValue(pos, yGM.GetValue(pos) + z2Local.GetValue(i));
-            }
-        }
-    }
-    z2Queue.FreeTensor(z2Local);
-}
-
-template <typename T>
-__aicore__ inline void SymvAIV<T>::CopyInVec(uint32_t curOffset, uint32_t dataCount, bool needPad)
-{
-    if (incy == 1) {
-        if (!needPad) {
-            LocalTensor<T> LocalX = xQueue.AllocTensor<T>();
-            DataCopy(LocalX, yGM[curOffset], dataCount);
-            xQueue.EnQue<T>(LocalX);
-            return;
-        }
-
-        uint8_t paddingNum = elementsPerBlock - dataCount % elementsPerBlock;
-        DataCopyExtParams copyParams{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
-        DataCopyPadExtParams<T> padParams{true, 0, paddingNum, 0};
-
-        LocalTensor<T> LocalX = xQueue.AllocTensor<T>();
-        DataCopyPad(LocalX, yGM[curOffset], copyParams, padParams);
-        xQueue.EnQue<T>(LocalX);
-    } else {
-        LocalTensor<T> LocalX = xQueue.AllocTensor<T>();
-        for (uint32_t i = 0; i < dataCount; i++) {
-            LocalX.SetValue(i, yGM.GetValue(YPhysicalPos(curOffset + i)));
-        }
-        xQueue.EnQue<T>(LocalX);
-    }
-}
-
-template <typename T>
-__aicore__ inline void SymvAIV<T>::ComputeVec(uint32_t curOffset, uint32_t dataCount)
-{
-    LocalTensor<T> LocalX = xQueue.DeQue<T>();
-    LocalTensor<T> LocalZ = z2Queue.AllocTensor<T>();
-    int32_t eventIDMTE2ToV = static_cast<int32_t>(GetTPipePtr()->FetchEventID(AscendC::HardEvent::MTE2_V));
-    AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(eventIDMTE2ToV);
-    AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(eventIDMTE2ToV);
-    int32_t eventIDMTE3ToV = static_cast<int32_t>(GetTPipePtr()->FetchEventID(AscendC::HardEvent::MTE3_V));
-    AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(eventIDMTE3ToV);
-    AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(eventIDMTE3ToV);
-    T betaMinusOne = beta - static_cast<T>(1.0f);
-    Muls(LocalZ, LocalX, betaMinusOne, dataCount);
-    int32_t eventIDVToMTE3 = static_cast<int32_t>(GetTPipePtr()->FetchEventID(AscendC::HardEvent::V_MTE3));
-    AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(eventIDVToMTE3);
-    AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(eventIDVToMTE3);
-    z2Queue.EnQue<T>(LocalZ);
-    xQueue.FreeTensor(LocalX);
-}
-
-template <typename T>
-__aicore__ inline void SymvAIV<T>::CopyOutVec(uint32_t curOffset, uint32_t dataCount, bool needPad)
-{
-    if (incy == 1) {
-        if (!needPad) {
-            LocalTensor<T> LocalZ = z2Queue.DeQue<T>();
-            DataCopy(yGM[curOffset], LocalZ, dataCount);
-            z2Queue.FreeTensor(LocalZ);
-            return;
-        }
-
-        uint8_t paddingNum = elementsPerBlock - dataCount % elementsPerBlock;
-        DataCopyExtParams copyParams{1, dataCount * BYTENUM_PER_FLOAT32, 0, 0, 0};
-        DataCopyPadExtParams<T> padParams{true, 0, paddingNum, 0};
-
-        LocalTensor<T> LocalZ = z2Queue.DeQue<T>();
-        DataCopyPad(yGM[curOffset], LocalZ, copyParams);
-        z2Queue.FreeTensor(LocalZ);
-    } else {
-        LocalTensor<T> LocalZ = z2Queue.DeQue<T>();
-        for (uint32_t i = 0; i < dataCount; i++) {
-            uint64_t pos = YPhysicalPos(curOffset + i);
-            yGM.SetValue(pos, yGM.GetValue(pos) + LocalZ.GetValue(i));
-        }
-        z2Queue.FreeTensor(LocalZ);
-    }
 }
 
 // ---- phase 0：y = beta*y，覆盖写（非原子），单核执行 ----
@@ -528,31 +366,31 @@ __aicore__ inline void SymvAIV<T>::Process()
                 uint32_t dataCount = maxDataCount;
                 if (col + dataCount > colLen) {
                     dataCount = colLen - col;
-                    CopyInPadV2(taskIdx, row, col, dataCount);
-                    ComputePadV2(taskIdx, row, col, dataCount);
-                    CopyOutPadV2(taskIdx, row, col, dataCount);
+                    CopyInV2(taskIdx, row, col, dataCount, true);
+                    ComputeV2(taskIdx, row, col, dataCount);
+                    CopyOutV2(taskIdx, row, col, dataCount);
                     continue;
                 }
-                CopyInV2(taskIdx, row, col, dataCount);
+                CopyInV2(taskIdx, row, col, dataCount, false);
                 ComputeV2(taskIdx, row, col, dataCount);
                 CopyOutV2(taskIdx, row, col, dataCount);
             }
         } else {
             // LOWER：对角元单独作 1 元素 chunk（dataCount=1 时 z2 自然为空），
             // 其余 chunk 严格位于对角线上方，全部走纯三角路径
-            CopyInPadV2(taskIdx, row, row, 1);
-            ComputePadV2(taskIdx, row, row, 1);
-            CopyOutPadV2(taskIdx, row, row, 1);
+            CopyInV2(taskIdx, row, row, 1, true);
+            ComputeV2(taskIdx, row, row, 1);
+            CopyOutV2(taskIdx, row, row, 1);
             for (uint32_t col = row + 1; col < n; col += maxDataCount) {
                 uint32_t dataCount = maxDataCount;
                 if (col + dataCount > n) {
                     dataCount = n - col;
-                    CopyInPadV2(taskIdx, row, col, dataCount);
-                    ComputePadV2(taskIdx, row, col, dataCount);
-                    CopyOutPadV2(taskIdx, row, col, dataCount);
+                    CopyInV2(taskIdx, row, col, dataCount, true);
+                    ComputeV2(taskIdx, row, col, dataCount);
+                    CopyOutV2(taskIdx, row, col, dataCount);
                     continue;
                 }
-                CopyInV2(taskIdx, row, col, dataCount);
+                CopyInV2(taskIdx, row, col, dataCount, false);
                 ComputeV2(taskIdx, row, col, dataCount);
                 CopyOutV2(taskIdx, row, col, dataCount);
             }
