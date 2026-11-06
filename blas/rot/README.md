@@ -42,14 +42,25 @@ aclblasStatus_t aclblasCsrot(
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
 | n | 输入 | int | 参与旋转的元素个数，Host 内存 |
-| x | 输入/输出 | aclblasComplex*（FP32 complex） | 复数向量，in-place 修改，按 incx 步长访问（步长语义仅 950 生效，见下方注），Device 内存 |
-| incx | 输入 | int | 向量 x 中连续元素之间的步长，可为正/负/零（语义仅 Ascend 950PR/950DT 生效，见下方注），Host 内存 |
-| y | 输入/输出 | aclblasComplex*（FP32 complex） | 复数向量，in-place 修改，按 incy 步长访问（步长语义仅 950 生效，见下方注），Device 内存 |
-| incy | 输入 | int | 向量 y 中连续元素之间的步长，可为正/负/零（语义仅 Ascend 950PR/950DT 生效，见下方注），Host 内存 |
+| x | 输入/输出 | aclblasComplex*（FP32 complex） | 复数向量，in-place 修改，按 incx 步长访问（步长语义见下方 per-arch 差异注），Device 内存 |
+| incx | 输入 | int | 向量 x 中连续元素之间的步长，可为正/负/零（零步长的放行/拦截按 arch 而异，见下方注），Host 内存 |
+| y | 输入/输出 | aclblasComplex*（FP32 complex） | 复数向量，in-place 修改，按 incy 步长访问（步长语义见下方 per-arch 差异注），Device 内存 |
+| incy | 输入 | int | 向量 y 中连续元素之间的步长，可为正/负/零（零步长的放行/拦截按 arch 而异，见下方注），Host 内存 |
 | c | 输入 | const float* | 指向 Givens 旋转参数 cos(θ) 的实数标量指针，Host 内存或 Device 内存，不可为 nullptr；算子运行时通过 aclrtPointerGetAttributes 自动判定其内存位置 |
 | s | 输入 | const float* | 指向 Givens 旋转参数 sin(θ) 的实数标量指针，Host 内存或 Device 内存，不可为 nullptr；算子运行时通过 aclrtPointerGetAttributes 自动判定其内存位置 |
 
-> **步长说明**：incx/incy 的正/负/零及非 1 步长语义（负步长尾端起算、零步长对同一元素反复旋转）**仅 Ascend 950PR / Ascend 950DT（arch35 实现）生效**；Atlas A2/A3（arch22 既有实现）按连续复数组访问，incx/incy 被接收但不生效（不拦截、不报错）。需要完整步长语义请使用 Ascend 950PR / Ascend 950DT。
+> **步长说明（issue #827：per-arch 行为差异显式声明）**：incx/incy 的**非零**步长语义（非 1 正步长、负步长尾端起算）两侧 arch 均生效（arch22 侧见 `test/rot/csrot/arch22/csrot_test.cpp` 的 stride 回归用例）；**零步长与 INT_MIN 步长仅在 Ascend 950PR / Ascend 950DT（arch35 实现）放行**——零步长按参考实现语义对同一元素反复旋转；Atlas A2/A3（arch22 既有实现）对零步长与 INT_MIN 步长返回 ACLBLAS_STATUS_INVALID_VALUE。调用方对同一份代码跨 SoC 运行时须按下表分支处理。
+
+**跨 arch 入参返回码对照（aclblasCsrot）：**
+
+| 入参场景 | Ascend 950PR / 950DT（arch35） | Atlas A2 / A3（arch22） |
+|----------|-------------------------------|------------------------|
+| n < 0 | ACLBLAS_STATUS_SUCCESS（no-op，对齐参考 BLAS `IF (N.LE.0) RETURN`） | ACLBLAS_STATUS_INVALID_VALUE |
+| n == 0 | ACLBLAS_STATUS_SUCCESS（no-op，快速返回） | ACLBLAS_STATUS_SUCCESS（no-op，快速返回） |
+| incx/incy == 0 | 放行（零步长对同一元素反复旋转） | ACLBLAS_STATUS_INVALID_VALUE |
+| incx/incy == INT_MIN | 放行（int32 域守卫范围内执行） | ACLBLAS_STATUS_INVALID_VALUE |
+
+两侧测试分别固化各自 arch 的契约：arch22 的负向检查用例（`csrot negative n not rejected` / `csrot zero stride not rejected`）与 arch35 的 `QuickReturnSkipsDataPointerValidation` 用例互为相反预期，**属已声明的 per-arch 差异而非缺陷**；两侧行为的对齐属公共 API 语义决策，需维护者单独评审，不在本仓单侧修改范围内。
 
 #### 约束说明
 
@@ -69,8 +80,8 @@ aclblasStatus_t aclblasCsrot(
 
 **Atlas A2 / Atlas A3 系列产品（arch22）：**
 
-- 支持（arch22 既有实现，行为保持既有语义不变）：n >= 0；n > 0 时 c、s 不能为 nullptr
-- 按连续访存处理：incx/incy 被接收但不生效（向量按连续复数组访问，忽略步长）；需要非 1/负/零步长语义请使用 Ascend 950PR / Ascend 950DT（arch35）
+- 支持（arch22 既有实现，行为保持既有语义不变）：n == 0 快速返回 ACLBLAS_STATUS_SUCCESS；n < 0 返回 ACLBLAS_STATUS_INVALID_VALUE；n > 0 时 x、y、c、s 不能为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE
+- 步长语义：非零正/负步长生效（负步长自向量尾端起算，见 stride 回归用例）；incx/incy 为 0 或 INT_MIN 时返回 ACLBLAS_STATUS_INVALID_VALUE（与 arch35 的放行口径不同，属已声明的 per-arch 差异，见上方跨 arch 入参返回码对照表）
 
 #### 调用示例
 

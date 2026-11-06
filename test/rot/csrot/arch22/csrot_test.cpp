@@ -82,6 +82,10 @@ uint32_t VerifyResult(
     }
 }
 
+// issue #827: 以下负向检查固化的是 arch22（Atlas A2/A3）单侧契约——n<0 与
+// 零步长/INT_MIN 步长返回 INVALID_VALUE；arch35（950）对同一入参放行并返回
+// SUCCESS。该差异已在 blas/rot/README.md 的"跨 arch 入参返回码对照"显式声明，
+// 用例标签前缀 [arch22] 标注语义归属，避免被误读为跨 SoC 的通用 API 契约。
 static int32_t RunCsrotNegativeChecks(aclblasHandle_t handle)
 {
     aclblasComplex sx{1.0f, 0.0f};
@@ -93,7 +97,8 @@ static int32_t RunCsrotNegativeChecks(aclblasHandle_t handle)
         return 1;
     }
     if (aclblasCsrot(handle, -1, &sx, 1, &sy, 1, &cs, &sn) != ACLBLAS_STATUS_INVALID_VALUE) {
-        std::cout << "[Failed] csrot negative n not rejected" << std::endl;
+        std::cout << "[Failed] [arch22] csrot negative n not rejected (arch35 returns SUCCESS, see rot README)"
+                  << std::endl;
         return 1;
     }
     if (aclblasCsrot(handle, 0, &sx, 1, &sy, 1, &cs, &sn) != ACLBLAS_STATUS_SUCCESS) {
@@ -107,7 +112,7 @@ static int32_t RunCsrotNegativeChecks(aclblasHandle_t handle)
     }
     if (aclblasCsrot(handle, 4, &sx, 0, &sy, 1, &cs, &sn) != ACLBLAS_STATUS_INVALID_VALUE ||
         aclblasCsrot(handle, 4, &sx, 1, &sy, 0, &cs, &sn) != ACLBLAS_STATUS_INVALID_VALUE) {
-        std::cout << "[Failed] csrot zero stride not rejected" << std::endl;
+        std::cout << "[Failed] [arch22] csrot zero stride not rejected (arch35 allows, see rot README)" << std::endl;
         return 1;
     }
     std::cout << "[Success] csrot negative checks passed." << std::endl;

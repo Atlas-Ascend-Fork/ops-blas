@@ -257,6 +257,9 @@ extern "C" aclblasStatus_t aclblasCsrot(
         OP_LOGE("aclblasCsrot", "handle is nullptr");
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
+    // issue #827: n<=0 放行/零步长放行为 arch35 口径（对齐参考 BLAS 的
+    // IF (N.LE.0) RETURN）；arch22 侧对 n<0 与零步长/INT_MIN 返回 INVALID_VALUE，
+    // 属已声明的 per-arch 行为差异，对照见 blas/rot/README.md。
     if (n <= 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }

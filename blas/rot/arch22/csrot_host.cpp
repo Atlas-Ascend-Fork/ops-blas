@@ -58,6 +58,9 @@ static aclblasStatus_t ValidateCsrotInputs(
         LOG_PRINT("aclblasCsrot: c and s must not be nullptr\n");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    // issue #827: 零步长/INT_MIN 步长的拦截与 arch35 的放行口径互为已声明的
+    // per-arch 行为差异（n<0 亦同），跨 arch 返回码对照见 blas/rot/README.md
+    // "跨 arch 入参返回码对照"一节，两侧测试各自固化本 arch 契约。
     if (incx == 0 || incx == INT_MIN || incy == 0 || incy == INT_MIN) {
         LOG_PRINT("aclblasCsrot: incx and incy must be non-zero and not INT_MIN, got incx=%d, incy=%d\n", incx, incy);
         return ACLBLAS_STATUS_INVALID_VALUE;
