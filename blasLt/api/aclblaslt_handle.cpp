@@ -20,11 +20,6 @@
 #include "host_utils.h"
 
 #include <acl/acl.h>
-#include <cstdlib>
-#include <list>
-#include <mutex>
-#include <new>
-#include <unordered_map>
 
 extern "C" {
 
@@ -57,27 +52,8 @@ aclblasStatus_t aclblasLtCreate(aclblasLtHandle_t* lightHandle)
     h->deviceId = deviceId;
     h->context = currentCtx;
     h->defaultStream = nullptr;
-    h->workspaceSize = DEFAULT_WORKSPACE_SIZE;
-    h->internalWorkspace = std::malloc(h->workspaceSize);
-    if (h->internalWorkspace == nullptr) {
-        delete h;
-        return ACLBLAS_STATUS_ALLOC_FAILED;
-    }
-
-    h->mutex = new (std::nothrow) std::mutex();
-    h->algoCache = new (std::nothrow) std::unordered_map<AlgoKey, CacheEntry, AlgoKeyHasher>();
-    h->lruList = new (std::nothrow) std::list<AlgoKey>();
-    if (h->mutex == nullptr || h->algoCache == nullptr || h->lruList == nullptr) {
-        delete h->mutex;
-        delete h->algoCache;
-        delete h->lruList;
-        std::free(h->internalWorkspace);
-        delete h;
-        return ACLBLAS_STATUS_ALLOC_FAILED;
-    }
-
-    h->npuArch = 2;
-    h->maxSharedMemory = L1_SIZE;
+    // issue #822: 不再预分配 32MB internalWorkspace（全仓无读写点，实际 workspace
+    // 由调用方按 heuristic 结果分配传入），同步移除仅初始化/销毁的死资源成员。
     h->initialized = true;
     *lightHandle = h;
     return ACLBLAS_STATUS_SUCCESS;
@@ -95,15 +71,6 @@ aclblasStatus_t aclblasLtDestroy(const aclblasLtHandle_t lightHandle)
     }
 
     h->initialized = false;
-    delete h->mutex;
-    delete h->algoCache;
-    delete h->lruList;
-    std::free(h->internalWorkspace);
-    h->mutex = nullptr;
-    h->algoCache = nullptr;
-    h->lruList = nullptr;
-    h->internalWorkspace = nullptr;
-    h->workspaceSize = 0;
     return FreeHandle(h);
 }
 
