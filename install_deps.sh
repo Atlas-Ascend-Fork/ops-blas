@@ -494,6 +494,10 @@ install_googletest() {
     echo "Installing googletest (release-${req_ver})..."
     local gtest_tmp_dir
     gtest_tmp_dir=$(mktemp -d)
+    # issue #843: 注册 EXIT trap 保证失败路径也清理——下方任一 run_command 失败
+    # 即 exit（set -e 语义），跳过函数末尾的 rm，源码+构建临时目录（数百 MB）
+    # 每次失败重试都会向 /tmp 遗留一份；成功路径末尾的显式 rm 保留（幂等）。
+    trap 'rm -rf "${gtest_tmp_dir}"' EXIT
 
     case "$OS" in
         debian|rhel|euler)
