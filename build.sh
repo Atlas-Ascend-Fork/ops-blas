@@ -20,7 +20,7 @@ RUN_BLAS_ALL=OFF
 BLAS_SMOKE=OFF
 
 export BASE_PATH=$(
-  cd "$(dirname $0)"
+  cd "$(dirname "$0")"
   pwd
 )
 BUILD_DIR="${BASE_PATH}/build"
@@ -138,6 +138,21 @@ elif [[ "${soc_lower}" == ascend310p* ]]; then
     SOC_ARCH_DIRS=("arch20")
 else
     SOC_ARCH_DIRS=()
+fi
+
+# issue #829: SOC 合法性校验前移到任何破坏性操作（rm -rf 构建目录）之前，
+# 避免无效 --soc 先清空既有构建产物再报错退出
+matched=""
+for support_unit in "${SUPPORT_COMPUTE_UNIT_SHORT[@]}"; do
+    if [[ "${soc_lower}" == "${support_unit}"* ]]; then
+        matched="${support_unit}"
+        break
+    fi
+done
+if [ -z "${matched}" ]; then
+    echo "Error: The soc [${SOC_VERSION}] is not supported."
+    echo "Supported SOC: ${SUPPORT_COMPUTE_UNIT_SHORT[*]}"
+    exit 1
 fi
 
 # 展开家族名为具体算子列表
@@ -330,28 +345,10 @@ fi
 # ==========================
 # 构建
 # ==========================
+# issue #829: SOC 合法性校验已前移（见上方映射段）；此处的重复默认值赋值与
+# soc_lower 重算为死代码，一并移除
 rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}"
-
-# 默认 SOC_VERSION，ASCEND_CANN_PACKAGE_PATH 使用环境变量
-if [ -z "${SOC_VERSION}" ]; then
-    SOC_VERSION="ascend910b3"
-fi
-
-# 校验 SOC 是否在支持列表中（前缀匹配）
-soc_lower=$(echo "${SOC_VERSION}" | tr '[:upper:]' '[:lower:]')
-matched=""
-for support_unit in "${SUPPORT_COMPUTE_UNIT_SHORT[@]}"; do
-    if [[ "${soc_lower}" == "${support_unit}"* ]]; then
-        matched="${support_unit}"
-        break
-    fi
-done
-if [ -z "${matched}" ]; then
-    echo "Error: The soc [${SOC_VERSION}] is not supported."
-    echo "Supported SOC: ${SUPPORT_COMPUTE_UNIT_SHORT[*]}"
-    exit 1
-fi
 
 CMAKE_OPTIONS="-DSOC_VERSION=${SOC_VERSION} -DASCEND_CANN_PACKAGE_PATH=${ASCEND_HOME}"
 

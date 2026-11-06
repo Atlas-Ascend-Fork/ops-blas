@@ -20,7 +20,7 @@
 #   bash run_example.sh <pr_filelist.txt> [soc_version]           # 增量（默认）
 #   RUN_FLAGS=--no-smoke bash run_example.sh all [soc_version]      # 全量回归
 ROOT_PATH=$(
-    cd "$(dirname $0)"/../..
+    cd "$(dirname "$0")"/../..
     pwd
 )
 cd ${ROOT_PATH}
