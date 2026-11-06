@@ -8,9 +8,11 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
-# issue #661: 测试目标不得依赖 build.sh 专有的环境变量（LINUX_INCLUDE_PATH/EAGER_LIBRARY_PATH），
-# 否则绕过 build.sh 直连 cmake 时链接输入退化为 "/libascendcl.so"。libascendcl 优先从
-# ASCEND_CANN_PACKAGE_PATH 缓存变量解析（build.sh 场景两者指向同一目录，行为不变），环境变量作回退。
+# issue #661/#845: 测试目标不得依赖 build.sh 专有的环境变量（LINUX_INCLUDE_PATH/EAGER_LIBRARY_PATH），
+# 否则绕过 build.sh 直连 cmake 时链接输入退化为 "/libascendcl.so"。libascendcl 优先按
+# ASCEND_CANN_PACKAGE_PATH 缓存变量解析（build.sh 场景两者指向同一目录，行为不变），环境变量作回退；
+# include 侧的 $ENV{LINUX_INCLUDE_PATH} 已全部移除（三处），统一按
+# ${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/include 解析。
 set(BLAS_ASCENDCL_LIB "${ASCEND_CANN_PACKAGE_PATH}/lib64/libascendcl.so")
 if(NOT EXISTS "${BLAS_ASCENDCL_LIB}" AND EXISTS "$ENV{EAGER_LIBRARY_PATH}/libascendcl.so")
     set(BLAS_ASCENDCL_LIB "$ENV{EAGER_LIBRARY_PATH}/libascendcl.so")
@@ -206,7 +208,6 @@ function(_ops_blas_register_test_target target link_lib)
         ${ASCEND_CANN_PACKAGE_PATH}/pkg_inc/op_common/
         ${ASCEND_CANN_PACKAGE_PATH}/pkg_inc/base/
         ${ASCEND_CANN_PACKAGE_PATH}/pkg_inc/
-        $ENV{LINUX_INCLUDE_PATH}
         ${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/include
         ${REFBLAS_INCLUDE_DIR}
     )
@@ -274,12 +275,11 @@ function(_ops_blas_copy_test_config_files target)
     endforeach()
 
     # Legacy single-file JSON under build/json_configs/
+    # issue #845: 移除 ${CMAKE_SOURCE_DIR}/build/test/json_configs/ 的死 fallback——
+    # 全仓无任何逻辑在源内 build/ 下生成该文件（.gitignore 排除），该分支永不命中
     set(_json_src "${CMAKE_BINARY_DIR}/json_configs/${target}_testcases.json")
-    set(_json_src_alt "${CMAKE_SOURCE_DIR}/build/test/json_configs/${target}_testcases.json")
     if(EXISTS ${_json_src})
         list(APPEND _cfg_files ${_json_src})
-    elseif(EXISTS ${_json_src_alt})
-        list(APPEND _cfg_files ${_json_src_alt})
     endif()
 
     foreach(_cfg_file ${_cfg_files})
@@ -317,7 +317,6 @@ function(_ops_blas_register_gtest_target target link_lib)
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/blas/common/helper
         ${_extra_includes}
-        $ENV{LINUX_INCLUDE_PATH}
         ${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/include
         ${GTEST_INCLUDE_DIR}
         ${REFBLAS_INCLUDE_DIR}
@@ -541,7 +540,6 @@ function(_ops_blas_register_all_runner link_lib)
         ${CMAKE_SOURCE_DIR}/test/utils
         ${CMAKE_SOURCE_DIR}/blas/common/helper
         ${_all_includes}
-        $ENV{LINUX_INCLUDE_PATH}
         ${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux/include
         ${GTEST_INCLUDE_DIR}
         ${REFBLAS_INCLUDE_DIR}
