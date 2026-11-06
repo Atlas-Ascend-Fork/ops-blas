@@ -8,8 +8,7 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef GEMM_EX_NPU_WRAPPER_H
-#define GEMM_EX_NPU_WRAPPER_H
+#pragma once
 
 #include <algorithm>
 #include <cstdint>
@@ -146,8 +145,12 @@ inline aclblasStatus_t aclblasGemmEx_npu(
         Ctype, ldc, computeType, ACLBLAS_GEMM_DEFAULT);
 
     aclError syncRet = aclrtSynchronizeDevice();
-    if (syncRet != ACL_SUCCESS)
+    if (syncRet != ACL_SUCCESS) {
+        // issue #825: sync 失败同样走 CleanupDeviceBuffers 释放 dA/dB/dC，
+        // 与本函数其他失败路径及 strsm 包装器范式一致，避免设备内存泄漏
+        CleanupDeviceBuffers(dA, dB, dC);
         return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
 
     // Copy result back from device to host
     aclblasStatus_t copyRet = CopyResultBack(C, dC, sizes.cBytes, ret);
@@ -159,5 +162,3 @@ inline aclblasStatus_t aclblasGemmEx_npu(
     CleanupDeviceBuffers(dA, dB, dC);
     return ret;
 }
-
-#endif // GEMM_EX_NPU_WRAPPER_H
