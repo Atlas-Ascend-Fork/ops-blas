@@ -290,9 +290,11 @@ float ScoreTileCandidate(
     uint64_t m, uint64_t n, uint32_t cm, uint32_t cn, uint32_t ck, uint32_t prefL0M, uint32_t prefL0N, uint32_t prefL0K,
     const AscendHardwareCaps& caps)
 {
-    const uint32_t tilesM = CeilDiv<uint32_t>(m, cm);
-    const uint32_t tilesN = CeilDiv<uint32_t>(n, cn);
-    const uint32_t totalTiles = tilesM * tilesN;
+    // issue #821: m/n 允许到 2^32-1，tilesM*tilesN 在 uint32 域相乘回绕会使
+    // balanceScore 失真；提升为 uint64 中间量后再参与取模与打分。
+    const uint64_t tilesM = CeilDiv<uint64_t>(m, cm);
+    const uint64_t tilesN = CeilDiv<uint64_t>(n, cn);
+    const uint64_t totalTiles = tilesM * tilesN;
     const float balanceScore =
         1.0f - static_cast<float>(totalTiles % std::max(1u, caps.numAICores)) / std::max(1u, caps.numAICores);
     // issue #799: FP32 kernel 的 L1 布局为 A/B 双缓冲（matmul_fp32_kernel.cpp：
