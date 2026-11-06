@@ -8,8 +8,7 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef SGEMM_EX_NPU_WRAPPER_H
-#define SGEMM_EX_NPU_WRAPPER_H
+#pragma once
 
 #include <algorithm>
 
@@ -65,15 +64,14 @@ inline void SgemmExCleanup(void* dA, void* dB, void* dC)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 inline aclblasStatus_t aclblasSgemmEx_npu(
-    aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB,
-    int m, int n, int k, const float* alpha,
-    const float* A, int lda, const float* B, int ldb,
-    const float* beta, float* C, int ldc, aclblasGemmAlgo_t algo)
+    aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k,
+    const float* alpha, const float* A, int lda, const float* B, int ldb, const float* beta, float* C, int ldc,
+    aclblasGemmAlgo_t algo)
 {
     // 1. Fast path: handle == nullptr or m <= 0 or n <= 0 → pass through directly
     if (handle == nullptr || m <= 0 || n <= 0) {
-        return aclblasSgemmEx(handle, transA, transB, m, n, k,
-                              alpha, A, lda, B, ldb, beta, C, ldc, algo);
+        return aclblasSgemmEx(
+            handle, transA, transB, m, n, k, alpha, A, ACL_FLOAT, lda, B, ACL_FLOAT, ldb, beta, C, ACL_FLOAT, ldc);
     }
 
     // 2. Compute device buffer sizes (column-major, float = 4 bytes)
@@ -119,13 +117,8 @@ inline aclblasStatus_t aclblasSgemmEx_npu(
 
     // 6. Execute kernel (pass device pointers; fall back to host ptr for nullptr)
     aclblasStatus_t ret = aclblasSgemmEx(
-        handle, transA, transB, m, n, k,
-        alpha,
-        dA ? static_cast<const float*>(dA) : A, lda,
-        dB ? static_cast<const float*>(dB) : B, ldb,
-        beta,
-        dC ? static_cast<float*>(dC) : C, ldc,
-        algo);
+        handle, transA, transB, m, n, k, alpha, dA ? static_cast<const float*>(dA) : A, ACL_FLOAT, lda,
+        dB ? static_cast<const float*>(dB) : B, ACL_FLOAT, ldb, beta, dC ? static_cast<float*>(dC) : C, ACL_FLOAT, ldc);
 
     // 7. Synchronize device (must check return value)
     aclError syncRet = aclrtSynchronizeDevice();
@@ -147,5 +140,3 @@ inline aclblasStatus_t aclblasSgemmEx_npu(
     SgemmExCleanup(dA, dB, dC);
     return ret;
 }
-
-#endif // SGEMM_EX_NPU_WRAPPER_H

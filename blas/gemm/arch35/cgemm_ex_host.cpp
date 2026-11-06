@@ -976,13 +976,53 @@ static aclblasStatus_t LaunchMixedPromote(
     return st;
 }
 
+static bool PublicToStorageType(aclDataType type, aclblasCgemmExType_t& storage)
+{
+    switch (type) {
+        case ACL_FLOAT:
+            storage = ACLBLAS_R_32;
+            return true;
+        case ACL_COMPLEX64:
+            storage = ACLBLAS_C_32;
+            return true;
+        case ACL_FLOAT16:
+            storage = ACLBLAS_H_R_32;
+            return true;
+        case ACL_COMPLEX32:
+            storage = ACLBLAS_H_C_32;
+            return true;
+        default:
+            return false;
+    }
+}
+
+static aclblasStatus_t PreparePublicTypes(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, aclDataType typeA, aclDataType typeB,
+    aclDataType typeC, aclblasCgemmExType_t& ta, aclblasCgemmExType_t& tb, aclblasCgemmExType_t& tc)
+{
+    // Preserve the existing 950 handle/operation validation priority.
+    aclblasStatus_t st = ValidateEnums(handle, transa, transb, ACLBLAS_R_32, ACLBLAS_R_32, ACLBLAS_R_32);
+    if (st != ACLBLAS_STATUS_SUCCESS) {
+        return st;
+    }
+    if (!PublicToStorageType(typeA, ta) || !PublicToStorageType(typeB, tb) || !PublicToStorageType(typeC, tc)) {
+        return ACLBLAS_STATUS_INVALID_ENUM;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 } // namespace
 
 extern "C" aclblasStatus_t aclblasCgemmEx(
     aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
-    const aclblasComplex* alpha, const void* A, int typeA, int lda, const void* B, int typeB, int ldb,
-    const aclblasComplex* beta, void* C, int typeC, int ldc)
+    const aclblasComplex* alpha, const void* A, aclDataType typeA, int lda, const void* B, aclDataType typeB, int ldb,
+    const aclblasComplex* beta, void* C, aclDataType typeC, int ldc)
 {
+    aclblasCgemmExType_t ta{}, tb{}, tc{};
+    aclblasStatus_t st = PreparePublicTypes(handle, transa, transb, typeA, typeB, typeC, ta, tb, tc);
+    if (st != ACLBLAS_STATUS_SUCCESS) {
+        return st;
+    }
     // issue #735: alpha/beta 按 gbmv/cherk/strmm/ssymm/axpy_ex/srot 等惯例支持 host/device
     // 双位置——入口统一探测并读入 host 副本，下游全部使用 host 值。原实现直接解引用
     // device 标量指针会段错误或读到垃圾值。
@@ -1006,13 +1046,9 @@ extern "C" aclblasStatus_t aclblasCgemmEx(
     alpha = &alphaHost;
     beta = &betaHost;
 
-    auto ta = static_cast<aclblasCgemmExType_t>(typeA);
-    auto tb = static_cast<aclblasCgemmExType_t>(typeB);
-    auto tc = static_cast<aclblasCgemmExType_t>(typeC);
     OP_LOGI("aclblasCgemmEx", "entry m=%d n=%d k=%d type=%d/%d/%d", m, n, k, typeA, typeB, typeC);
 
-    aclblasStatus_t st =
-        ValidateCgemmEx(handle, transa, transb, m, n, k, alpha, A, ta, lda, B, tb, ldb, beta, C, tc, ldc);
+    st = ValidateCgemmEx(handle, transa, transb, m, n, k, alpha, A, ta, lda, B, tb, ldb, beta, C, tc, ldc);
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
     }

@@ -27,123 +27,12 @@
 #include "common/helper/host_utils.h"
 
 // ============================================================================
-// Parameter validation
-// ============================================================================
-
-static aclblasStatus_t ValidateSgemmExDimensions(
-    aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k)
-{
-    if (m < 0) {
-        OP_LOGE("aclblasSgemmEx", "m must be >= 0, got m=%d", m);
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (n < 0) {
-        OP_LOGE("aclblasSgemmEx", "n must be >= 0, got n=%d", n);
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (k < 0) {
-        OP_LOGE("aclblasSgemmEx", "k must be >= 0, got k=%d", k);
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (transA != ACLBLAS_OP_N && transA != ACLBLAS_OP_T && transA != ACLBLAS_OP_C) {
-        OP_LOGE("aclblasSgemmEx", "transA must be OP_N(111), OP_T(112) or OP_C(113), got %d",
-                static_cast<int>(transA));
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (transB != ACLBLAS_OP_N && transB != ACLBLAS_OP_T && transB != ACLBLAS_OP_C) {
-        OP_LOGE("aclblasSgemmEx", "transB must be OP_N(111), OP_T(112) or OP_C(113), got %d",
-                static_cast<int>(transB));
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-static aclblasStatus_t ValidateSgemmExLeadingDims(
-    bool isTransA, bool isTransB, int m, int n, int k, int lda, int ldb, int ldc)
-{
-    int expectedLda = isTransA ? std::max(1, k) : std::max(1, m);
-    if (lda < expectedLda) {
-        OP_LOGE("aclblasSgemmEx", "lda must be >= %d, got lda=%d", expectedLda, lda);
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    int expectedLdb = isTransB ? std::max(1, n) : std::max(1, k);
-    if (ldb < expectedLdb) {
-        OP_LOGE("aclblasSgemmEx", "ldb must be >= %d, got ldb=%d", expectedLdb, ldb);
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (ldc < std::max(1, m)) {
-        OP_LOGE("aclblasSgemmEx", "ldc must be >= max(1, m=%d), got ldc=%d", m, ldc);
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-static aclblasStatus_t ValidateSgemmExPointers(
-    const float* alpha, const float* beta, aclblasGemmAlgo_t algo,
-    int k, const float* A, const float* B, float* C)
-{
-    if (alpha == nullptr) {
-        OP_LOGE("aclblasSgemmEx", "alpha must not be nullptr");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (beta == nullptr) {
-        OP_LOGE("aclblasSgemmEx", "beta must not be nullptr");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (algo != ACLBLAS_GEMM_DEFAULT) {
-        OP_LOGE("aclblasSgemmEx", "unsupported algo=%d, only ACLBLAS_GEMM_DEFAULT is supported",
-                static_cast<int>(algo));
-        return ACLBLAS_STATUS_NOT_SUPPORTED;
-    }
-    float betaVal = *beta;
-    float alphaVal = *alpha;
-    if (k > 0 && alphaVal != 0.0f) {
-        if (A == nullptr) {
-            OP_LOGE("aclblasSgemmEx", "A must not be nullptr when k > 0 and alpha != 0");
-            return ACLBLAS_STATUS_INVALID_VALUE;
-        }
-        if (B == nullptr) {
-            OP_LOGE("aclblasSgemmEx", "B must not be nullptr when k > 0 and alpha != 0");
-            return ACLBLAS_STATUS_INVALID_VALUE;
-        }
-    }
-    if (betaVal != 0.0f && C == nullptr) {
-        OP_LOGE("aclblasSgemmEx", "C must not be nullptr when beta != 0");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-static aclblasStatus_t ValidateSgemmExParams(
-    aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB,
-    int m, int n, int k, int lda, int ldb, int ldc,
-    const float* alpha, const float* beta, aclblasGemmAlgo_t algo,
-    const float* A, const float* B, float* C)
-{
-    if (handle == nullptr) {
-        OP_LOGE("aclblasSgemmEx", "handle is nullptr");
-        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
-    }
-    aclblasStatus_t st = ValidateSgemmExDimensions(transA, transB, m, n, k);
-    if (st != ACLBLAS_STATUS_SUCCESS) {
-        return st;
-    }
-    bool isTransA = (transA != ACLBLAS_OP_N);
-    bool isTransB = (transB != ACLBLAS_OP_N);
-    st = ValidateSgemmExLeadingDims(isTransA, isTransB, m, n, k, lda, ldb, ldc);
-    if (st != ACLBLAS_STATUS_SUCCESS) {
-        return st;
-    }
-    return ValidateSgemmExPointers(alpha, beta, algo, k, A, B, C);
-}
-
-// ============================================================================
 // Tiling computation
 // ============================================================================
 
 static void InitSgemmExTilingParams(
-    SgemmExTilingData& tiling, int m, int n, int k, int lda, int ldb, int ldc,
-    bool isTransA, bool isTransB, float alpha, float beta)
+    SgemmExTilingData& tiling, int m, int n, int k, int lda, int ldb, int ldc, bool isTransA, bool isTransB,
+    float alpha, float beta)
 {
     tiling.m = m;
     tiling.n = n;
@@ -206,18 +95,19 @@ static void CalcSgemmExPerCoreWorkload(SgemmExTilingData& tiling, int m, int n)
 }
 
 static SgemmExTilingData CalcSgemmExTiling(
-    uint32_t cubeCoreNum, int m, int n, int k, int lda, int ldb, int ldc,
-    bool isTransA, bool isTransB, float alpha, float beta)
+    uint32_t cubeCoreNum, int m, int n, int k, int lda, int ldb, int ldc, bool isTransA, bool isTransB, float alpha,
+    float beta)
 {
     SgemmExTilingData tiling{};
     InitSgemmExTilingParams(tiling, m, n, k, lda, ldb, ldc, isTransA, isTransB, alpha, beta);
     CalcSgemmExMultiCorePartition(tiling, cubeCoreNum, m, n);
     CalcSgemmExPerCoreWorkload(tiling, m, n);
-    OP_LOGD("aclblasSgemmEx",
-            "tiling: M=%d, N=%d, K=%d, baseM=%d, baseN=%d, baseK=%d, "
-            "singleCoreM=%d, singleCoreN=%d, mBlocks=%d, nBlocks=%d, usedCores=%d",
-            m, n, k, tiling.baseM, tiling.baseN, tiling.baseK,
-            tiling.singleCoreM, tiling.singleCoreN, tiling.mBlocks, tiling.nBlocks, tiling.usedCoreNum);
+    OP_LOGD(
+        "aclblasSgemmEx",
+        "tiling: M=%d, N=%d, K=%d, baseM=%d, baseN=%d, baseK=%d, "
+        "singleCoreM=%d, singleCoreN=%d, mBlocks=%d, nBlocks=%d, usedCores=%d",
+        m, n, k, tiling.baseM, tiling.baseN, tiling.baseK, tiling.singleCoreM, tiling.singleCoreN, tiling.mBlocks,
+        tiling.nBlocks, tiling.usedCoreNum);
     return tiling;
 }
 
@@ -226,13 +116,10 @@ static SgemmExTilingData CalcSgemmExTiling(
 // ============================================================================
 
 static bool HandleSgemmExEdgeCases(
-    int k, float alphaVal, float betaVal, float* C, int ldc, int n,
-    aclblasStatus_t& outStatus)
+    int k, float alphaVal, float betaVal, float* C, int ldc, int n, aclblasStatus_t& outStatus)
 {
     if (k == 0 || alphaVal == 0.0f) {
-        OP_LOGD("aclblasSgemmEx",
-                "edge case: k=%d, alpha=%.4f, beta=%.4f",
-                k, alphaVal, betaVal);
+        OP_LOGD("aclblasSgemmEx", "edge case: k=%d, alpha=%.4f, beta=%.4f", k, alphaVal, betaVal);
         if (C == nullptr) {
             OP_LOGD("aclblasSgemmEx", "C is nullptr, skipping computation");
             outStatus = ACLBLAS_STATUS_SUCCESS;
@@ -266,20 +153,18 @@ static bool HandleSgemmExEdgeCases(
 }
 
 static aclblasStatus_t PrepareSgemmExWorkspace(
-    _aclblas_handle* h, SgemmExTilingData& tilingData,
-    bool needPostProcess, int m, int n, uint8_t*& tempABDevice)
+    _aclblas_handle* h, SgemmExTilingData& tilingData, bool needPostProcess, int m, int n, uint8_t*& tempABDevice)
 {
     if (!needPostProcess) {
         return ACLBLAS_STATUS_SUCCESS;
     }
     size_t tempABBytes = static_cast<size_t>(CeilAlign(m, 16)) * static_cast<size_t>(n) * sizeof(float);
-    OP_LOGD("aclblasSgemmEx",
-            "workspace: tempABBytes=%zu, needPostProcess=%d, m=%d, n=%d, alignedM=%d",
-            tempABBytes, needPostProcess, m, n, CeilAlign(m, 16));
+    OP_LOGD(
+        "aclblasSgemmEx", "workspace: tempABBytes=%zu, needPostProcess=%d, m=%d, n=%d, alignedM=%d", tempABBytes,
+        needPostProcess, m, n, CeilAlign(m, 16));
     if (!CheckEffectiveWorkspaceSize(h, tempABBytes)) {
-        OP_LOGE("aclblasSgemmEx",
-                "workspace not enough: need=%zu, have=%zu",
-                tempABBytes, GetEffectiveWorkspaceSize(h));
+        OP_LOGE(
+            "aclblasSgemmEx", "workspace not enough: need=%zu, have=%zu", tempABBytes, GetEffectiveWorkspaceSize(h));
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
     tempABDevice = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
@@ -297,9 +182,8 @@ static void ApplyColumnMajorSwap(SgemmExTilingData& tilingData)
 }
 
 static void LaunchAlphaBetaKernel(
-    _aclblas_handle* h, uint8_t* tempABDevice, float* C,
-    const SgemmExTilingData& abTilingData,
-    int m, int n, float alphaVal, float betaVal, uint32_t cubeCoreNum)
+    _aclblas_handle* h, uint8_t* tempABDevice, float* C, const SgemmExTilingData& abTilingData, int m, int n,
+    float alphaVal, float betaVal, uint32_t cubeCoreNum)
 {
     uint8_t* cOrigPtr = reinterpret_cast<uint8_t*>(C);
     uint8_t* cOutPtr = reinterpret_cast<uint8_t*>(C);
@@ -308,24 +192,21 @@ static void LaunchAlphaBetaKernel(
     // balancing parallelism (more cores for large matrices) vs launch cost
     // (avoid over-parallelizing small matrices).
     constexpr int64_t ELEMENTS_PER_CORE = 16384;
-    int32_t neededCores = static_cast<int32_t>(
-        (static_cast<int64_t>(m) * n + ELEMENTS_PER_CORE - 1) / ELEMENTS_PER_CORE);
+    int32_t neededCores =
+        static_cast<int32_t>((static_cast<int64_t>(m) * n + ELEMENTS_PER_CORE - 1) / ELEMENTS_PER_CORE);
     if (neededCores < 1) {
         neededCores = 1;
     }
     uint32_t aivCores = static_cast<uint32_t>(std::min(static_cast<int32_t>(cubeCoreNum), neededCores));
-    OP_LOGI("aclblasSgemmEx",
-            "launching alpha/beta kernel: alpha=%.4f, beta=%.4f, m=%d, n=%d, blocks=%u",
-            alphaVal, betaVal, m, n, aivCores);
-    sgemm_ex_alpha_beta_do(
-        aivCores, h->stream, tempABDevice, cOrigPtr, cOutPtr, abTilingData);
+    OP_LOGI(
+        "aclblasSgemmEx", "launching alpha/beta kernel: alpha=%.4f, beta=%.4f, m=%d, n=%d, blocks=%u", alphaVal,
+        betaVal, m, n, aivCores);
+    sgemm_ex_alpha_beta_do(aivCores, h->stream, tempABDevice, cOrigPtr, cOutPtr, abTilingData);
 }
 
 static aclblasStatus_t LaunchSgemmExKernel(
-    aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB,
-    int m, int n, int k, const float* alpha,
-    const float* A, int lda, const float* B, int ldb,
-    const float* beta, float* C, int ldc)
+    aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k,
+    const float* alpha, const float* A, int lda, const float* B, int ldb, const float* beta, float* C, int ldc)
 {
     auto* h = reinterpret_cast<_aclblas_handle*>(handle);
     float alphaVal = *alpha;
@@ -349,8 +230,8 @@ static aclblasStatus_t LaunchSgemmExKernel(
 
     bool isTransA = (transA != ACLBLAS_OP_N);
     bool isTransB = (transB != ACLBLAS_OP_N);
-    SgemmExTilingData tilingData = CalcSgemmExTiling(
-        cubeCoreNum, m, n, k, lda, ldb, ldc, isTransA, isTransB, alphaVal, betaVal);
+    SgemmExTilingData tilingData =
+        CalcSgemmExTiling(cubeCoreNum, m, n, k, lda, ldb, ldc, isTransA, isTransB, alphaVal, betaVal);
     if (tilingData.usedCoreNum == 0) {
         OP_LOGE("aclblasSgemmEx", "invalid tiling data, usedCoreNum=0");
         return ACLBLAS_STATUS_INTERNAL_ERROR;
@@ -371,15 +252,15 @@ static aclblasStatus_t LaunchSgemmExKernel(
         uint8_t* bDevicePtr = reinterpret_cast<uint8_t*>(const_cast<float*>(A));
         uint8_t* cDevicePtr = needPostProcess ? tempABDevice : reinterpret_cast<uint8_t*>(C);
 
-        OP_LOGI("aclblasSgemmEx",
-                "launching cube kernel: blocks=%d, transA=%d, transB=%d, alpha=%.4f, beta=%.4f, "
-                "needPostProcess=%d, lda=%d, ldb=%d, ldc=%d",
-                tilingData.usedCoreNum, isTransA, isTransB, alphaVal, betaVal, needPostProcess,
-                tilingData.lda, tilingData.ldb, tilingData.ldc);
+        OP_LOGI(
+            "aclblasSgemmEx",
+            "launching cube kernel: blocks=%d, transA=%d, transB=%d, alpha=%.4f, beta=%.4f, "
+            "needPostProcess=%d, lda=%d, ldb=%d, ldc=%d",
+            tilingData.usedCoreNum, isTransA, isTransB, alphaVal, betaVal, needPostProcess, tilingData.lda,
+            tilingData.ldb, tilingData.ldc);
 
         sgemm_ex_kernel_do(
-            static_cast<uint32_t>(tilingData.usedCoreNum), h->stream,
-            aDevicePtr, bDevicePtr, cDevicePtr, tilingData);
+            static_cast<uint32_t>(tilingData.usedCoreNum), h->stream, aDevicePtr, bDevicePtr, cDevicePtr, tilingData);
     } else {
         // Zero tempAB to avoid NaN propagation (0 * NaN = NaN in IEEE 754)
         size_t tempABBytes = static_cast<size_t>(CeilAlign(m, 16)) * static_cast<size_t>(n) * sizeof(float);
@@ -402,26 +283,17 @@ static aclblasStatus_t LaunchSgemmExKernel(
 // Public API entry
 // ============================================================================
 
+#include "../gemm_ex_validation.h"
 extern "C" aclblasStatus_t aclblasSgemmEx(
-    aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB,
-    int m, int n, int k, const float* alpha,
-    const float* A, int lda, const float* B, int ldb,
-    const float* beta, float* C, int ldc, aclblasGemmAlgo_t algo)
+    aclblasHandle_t handle, aclblasOperation_t ta, aclblasOperation_t tb, int m, int n, int k, const float* alpha,
+    const void* a, aclDataType at, int lda, const void* b, aclDataType bt, int ldb, const float* beta, void* c,
+    aclDataType ct, int ldc)
 {
-    OP_LOGI("aclblasSgemmEx",
-            "entry: transA=%d, transB=%d, m=%d, n=%d, k=%d, algo=%d",
-            static_cast<int>(transA), static_cast<int>(transB), m, n, k, static_cast<int>(algo));
-
-    // Quick return for zero-dimension matrices
-    if (m == 0 || n == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-
-    aclblasStatus_t st = ValidateSgemmExParams(
-        handle, transA, transB, m, n, k, lda, ldb, ldc, alpha, beta, algo, A, B, C);
-    if (st != ACLBLAS_STATUS_SUCCESS) {
-        return st;
-    }
-
-    return LaunchSgemmExKernel(handle, transA, transB, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc);
+    const auto status = gemm_ex::Validate(
+        handle, ta, tb, m, n, k, alpha, a, at, lda, b, bt, ldb, beta, c, ct, ldc, ACL_FLOAT, "aclblasSgemmEx");
+    if (status != ACLBLAS_STATUS_SUCCESS || m == 0 || n == 0 || !c)
+        return status;
+    return LaunchSgemmExKernel(
+        handle, ta, tb, m, n, k, alpha, static_cast<const float*>(a), lda, static_cast<const float*>(b), ldb, beta,
+        static_cast<float*>(c), ldc);
 }

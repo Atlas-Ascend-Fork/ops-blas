@@ -28,6 +28,7 @@
 | :------------: |:------------------------------------------------------------------------------------------:|:----------------------------------------------------------| :---------------------------------------------------------- |:-----------------------------------------|
 |  依赖  | 不涉及  | cmake/third_party/makeself-fetch.cmake | https://gitcode.com/cann-src-third-party/makeself/releases/download/release-2.5.0-patch1.0/makeself-release-2.5.0-patch1.tar.gz | 从gitcode下载makeself源码，作用编译依赖 |
 |  依赖  | https://gitcode.com/cann/ops-tensor.git | cmake/third_party/ops-tensor.cmake | https://gitcode.com/cann/ops-tensor.git（git clone 固定 commit c1326e7a7fb30536dc3517ac40e06935aba5e88d，并执行 submodule update --init --recursive 拉取 include/tensor_api 子模块） | 从gitcode克隆ops-tensor源码并初始化子模块，作用编译依赖 |
+|  依赖  | https://gitcode.com/cann/catlass.git | cmake/third_party/gemmex-catlass.cmake | https://gitcode.com/cann/catlass.git（固定 commit 14d5536bb59cb5822ea3f3e2090b0917d7a4e7b4，并核验 include/ 头文件树哈希） | arch22 GemmEx 编译依赖；可使用已核验本地源码并启用离线模式 |
 |  依赖  | https://gitcode.com/google/googletest.git | install_deps.sh（install_googletest 函数） | https://gitcode.com/google/googletest.git（git clone --depth 1 --branch release-1.11.0 源码编译安装） | 从gitcode克隆googletest release-1.11.0源码编译安装，作用测试依赖 |
 ---
 

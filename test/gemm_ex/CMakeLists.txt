@@ -8,4 +8,12 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
-ops_blas_add_gtest_tests(${OPS_BLAS} gemm_ex_test)
+if("arch22" IN_LIST SOC_ARCH_DIRS)
+    foreach(_ex_interface gemm_ex sgemm_ex cgemm_ex)
+        if(_ex_interface IN_LIST TEST_NAMES)
+            ops_blas_add_gtest_tests(${OPS_BLAS} ${_ex_interface}_test)
+        endif()
+    endforeach()
+else()
+    ops_blas_add_gtest_tests(${OPS_BLAS} gemm_ex_test)
+endif()

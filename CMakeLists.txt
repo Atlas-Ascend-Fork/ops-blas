@@ -257,6 +257,9 @@ project(${OPS_BLAS} LANGUAGES ASC CXX)
 
 add_library(${OPS_BLAS} SHARED ${ALL_BLAS_SRC_FILES})
 
+include(cmake/third_party/gemmex-catlass.cmake)
+ops_blas_enable_gemmex_catlass(${OPS_BLAS})
+
 set_source_files_properties(
     ${ALL_BLAS_SRC_FILES}
     PROPERTIES LANGUAGE ASC

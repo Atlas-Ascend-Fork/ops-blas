@@ -2,7 +2,7 @@
 
 ## 算子概述
 
-aclblasSgemm / aclblasCgemm / aclblasCgemmEx 算子实现了通用矩阵乘法，核心运算为 C = alpha * op(A) * op(B) + beta * C。aclblasSgemm 支持单精度（FP32）数据类型，aclblasCgemm 支持复数单精度（COMPLEX64，每个复数由两个 FP32 分量组成）数据类型，aclblasCgemmEx 在此基础上允许 A/B/C 独立选择 FP32 / Complex32 / FP16 / Complex16 元素类型。均采用 BLAS 标准列主序存储。
+aclblasSgemm / aclblasCgemm / aclblasCgemmEx 算子实现了通用矩阵乘法，核心运算为 C = alpha * op(A) * op(B) + beta * C。aclblasSgemm 支持单精度（FP32）数据类型，aclblasCgemm 支持复数单精度（COMPLEX64，每个复数由两个 FP32 分量组成）数据类型，aclblasCgemmEx 在此基础上允许 A/B/C 独立选择 FP32 / COMPLEX64 / FP16 / COMPLEX32 元素类型。均采用 BLAS 标准列主序存储。
 
 数学表达式：
 
@@ -566,13 +566,13 @@ result C (column-major):
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持 COMPLEX64
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持 COMPLEX64
 
 #### 函数原型
 
 ```cpp
-aclblasStatus_t aclblasCgemmEx(aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k, const aclblasComplex* alpha, const void* A, int typeA, int lda, const void* B, int typeB, int ldb, const aclblasComplex* beta, void* C, int typeC, int ldc)
+aclblasStatus_t aclblasCgemmEx(aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k, const aclblasComplex* alpha, const void* A, aclDataType typeA, int lda, const void* B, aclDataType typeB, int ldb, const aclblasComplex* beta, void* C, aclDataType typeC, int ldc)
 ```
 
 #### 参数说明
@@ -587,21 +587,24 @@ aclblasStatus_t aclblasCgemmEx(aclblasHandle_t handle, aclblasOperation_t transa
 | k | 输入 | int | op(A) 的列数和 op(B) 的行数，K >= 0，Host 内存 |
 | alpha | 输入 | const aclblasComplex* | 标量 alpha，不可为 nullptr，Host 内存 |
 | A | 输入 | const void* | 矩阵 A，列主序，元素类型由 typeA 指定；当 m,n,k>0 且 alpha!=0 时不可为 nullptr，Device 内存 |
-| typeA | 输入 | int | A 的元素类型：0=R_32，1=C_32，2=H_R_32，3=H_C_32，Host 内存 |
+| typeA | 输入 | aclDataType | ACL_FLOAT、ACL_COMPLEX64、ACL_FLOAT16、ACL_COMPLEX32，Host 内存；arch22 仅支持 ACL_COMPLEX64 |
 | lda | 输入 | int | 矩阵 A 的主维度（列主序），transA=N 时 lda >= max(1, M)，transA=T/C 时 lda >= max(1, K)，Host 内存 |
 | B | 输入 | const void* | 矩阵 B，列主序，元素类型由 typeB 指定；当 m,n,k>0 且 alpha!=0 时不可为 nullptr，Device 内存 |
-| typeB | 输入 | int | B 的元素类型（取值同 typeA），Host 内存 |
+| typeB | 输入 | aclDataType | B 的元素类型（取值同 typeA），Host 内存 |
 | ldb | 输入 | int | 矩阵 B 的主维度（列主序），transB=N 时 ldb >= max(1, K)，transB=T/C 时 ldb >= max(1, N)，Host 内存 |
 | beta | 输入 | const aclblasComplex* | 标量 beta，不可为 nullptr，Host 内存 |
 | C | 输入/输出 | void* | 矩阵 C，列主序，元素类型由 typeC 指定；当 m>0 且 n>0 时不可为 nullptr，Device 内存 |
-| typeC | 输入 | int | C 的元素类型（取值同 typeA），Host 内存 |
+| typeC | 输入 | aclDataType | C 的元素类型（取值同 typeA），Host 内存 |
 | ldc | 输入 | int | 矩阵 C 的主维度（列主序），ldc >= max(1, M)，Host 内存 |
 
 #### 约束说明
 
+下列为 arch35 的既有约束。arch22 的类型、参数校验顺序与 no-op 语义见 [GemmEx 接口说明](../gemm_ex/README.md)。
+
 - handle 不可为 nullptr，否则返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR
 - transa / transb 必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C，否则返回 ACLBLAS_STATUS_INVALID_ENUM
-- typeA / typeB / typeC 必须为 0、1、2 或 3（R_32 / C_32 / H_R_32 / H_C_32），否则返回 ACLBLAS_STATUS_INVALID_ENUM
+- typeA / typeB / typeC 使用公共 aclDataType。原 950 私有枚举 0/1/2/3 分别迁移为 ACL_FLOAT/ACL_COMPLEX64/ACL_FLOAT16/ACL_COMPLEX32；不能原值强转，调用方须重新编译。
+- arch35 保留既有混合类型组合；无法映射到上述四种内部存储类型的 dtype 返回 INVALID_ENUM。arch22 的返回码规则见专用接口说明。
 - m >= 0，n >= 0，k >= 0，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 - transA = N 时 lda >= max(1, m)；transA = T/C 时 lda >= max(1, k)
 - transB = N 时 ldb >= max(1, k)；transB = T/C 时 ldb >= max(1, n)
@@ -610,13 +613,13 @@ aclblasStatus_t aclblasCgemmEx(aclblasHandle_t handle, aclblasOperation_t transa
 - m>0 且 n>0 时 C 不可为 nullptr
 - m>0、n>0、k>0 且 alpha!=0 时 A、B 不可为 nullptr
 - 矩阵按列主序存储
-- 仅支持 Ascend 950PR / 950DT（arch35）
+- 以下边界行为与混合类型路径适用于 Ascend 950PR / 950DT（arch35）
 
 边界情况处理：
 
 - m == 0 或 n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS，不访问矩阵指针、不下发 kernel
 - k == 0 或 alpha == 0 时跳过矩阵乘，执行 C = beta * C
-- 半精度输入会先转到 FP32/Complex32 计算，再写回 typeC
+- 半精度输入会先转到 FP32/COMPLEX64 计算，再写回 typeC
 
 异步与同步：
 
@@ -755,9 +758,9 @@ int aclblasCgemmExTest(AclContext& ctx)
 
     blasRet = aclblasCgemmEx(static_cast<aclblasHandle_t>(handlePtr.get()),
                            ACLBLAS_OP_N, ACLBLAS_OP_N, m, n, k, &alpha,
-                           aDevicePtr.get(), 1, lda,
-                           bDevicePtr.get(), 1, ldb,
-                           &beta, cDevicePtr.get(), 1, ldc);
+                           aDevicePtr.get(), ACL_COMPLEX64, lda,
+                           bDevicePtr.get(), ACL_COMPLEX64, ldb,
+                           &beta, cDevicePtr.get(), ACL_COMPLEX64, ldc);
     CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCgemmEx failed. ERROR: %d\n", blasRet);
               return blasRet);
 

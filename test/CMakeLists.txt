@@ -14,6 +14,7 @@ if(BUILD_TEST)
 
     set(_OPS_BLAS_BUILT_TESTS "")
     set(_OPS_BLAS_ADDED_DIRS "")
+    set(_EX_ARCH22_TESTS gemm_ex sgemm_ex cgemm_ex)
 
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/skipped_tests.list "")
 
@@ -21,7 +22,11 @@ if(BUILD_TEST)
     foreach(TEST_NAME ${TEST_NAMES})
         # 解析测试目录路径：支持直接目录 (test/scopy/) 和家族嵌套 (test/gbmv/sgbmv/)
         set(TEST_DIR "")
-        if(TEST_NAME STREQUAL "blasLtMatmul" AND "arch22" IN_LIST SOC_ARCH_DIRS)
+        if("arch22" IN_LIST SOC_ARCH_DIRS AND TEST_NAME IN_LIST _EX_ARCH22_TESTS)
+            set(TEST_DIR "gemm_ex")
+        elseif(TEST_NAME STREQUAL "cgemm_ex" AND "arch35" IN_LIST SOC_ARCH_DIRS)
+            set(TEST_DIR "gemm/cgemm_ex")
+        elseif(TEST_NAME STREQUAL "blasLtMatmul" AND "arch22" IN_LIST SOC_ARCH_DIRS)
             # Task delivery lives in lt_matmul; its existing API/binary name stays stable.
             set(TEST_DIR "lt_matmul")
         elseif(TEST_NAME STREQUAL "chemm" AND "arch35" IN_LIST SOC_ARCH_DIRS)
@@ -134,9 +139,9 @@ if(BUILD_TEST)
         list(FIND _OPS_BLAS_ADDED_DIRS "${TEST_DIR}" _added_idx)
         if(_added_idx EQUAL -1)
             list(APPEND _OPS_BLAS_ADDED_DIRS "${TEST_DIR}")
-            list(APPEND _OPS_BLAS_BUILT_TESTS "${TEST_NAME}")
             add_subdirectory(${TEST_DIR})
         endif()
+        list(APPEND _OPS_BLAS_BUILT_TESTS "${TEST_NAME}")
     endforeach()
 
     # 生成测试清单，供 build.sh --run 区分 skip / fail

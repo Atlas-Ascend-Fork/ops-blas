@@ -989,7 +989,7 @@ Level 3 接口在矩阵之间进行运算，典型操作包括对称矩阵乘法
 |---|---|
 | [aclblasSgemm](../../blas/gemm/README.md) | 单精度浮点通用矩阵乘法 |
 | [aclblasCgemm](../../blas/gemm/README.md) | 复数通用矩阵乘法 |
-| [aclblasCgemmEx](../../blas/gemm/README.md) | 扩展复数通用矩阵乘法，A/B/C 可独立指定元素类型 |
+| [aclblasCgemmEx](../../blas/gemm_ex/README.md) | 扩展复数通用矩阵乘法，A/B/C 可独立指定元素类型 |
 | [aclblasSgemmBatched](../../blas/gemm_batched/README.md) | 单精度浮点批量矩阵乘法 |
 | [aclblasCgemmBatched](../../blas/gemm_batched/README.md) | 单精度复数批量矩阵乘法 |
 | [aclblasSgemmStridedBatched](../../blas/gemm_strided_batched/README.md) | 单精度浮点批量矩阵跨步乘法 |
@@ -1024,7 +1024,7 @@ Level 3 接口在矩阵之间进行运算，典型操作包括对称矩阵乘法
 
 ## BLAS-like Extension
 
-BLAS-like Extension 提供标准 BLAS Level 3 之外的扩展 GEMM 接口（以 **Ex** 为后缀），通过 `aclblasComputeType_t`、`aclblasGemmAlgo_t` 指定计算精度与算法。适用于混合精度、量化等场景。
+BLAS-like Extension 提供标准 BLAS Level 3 之外的扩展GEMM接口。`aclblasGemmEx`为19参数，含computeType/algo；`aclblasSgemmEx`和`aclblasCgemmEx`各17参数，含A/B/C的aclDataType，不含computeType/algo。支持类型组合以各架构实现说明为准。
 
 算子接口列表如下：
 

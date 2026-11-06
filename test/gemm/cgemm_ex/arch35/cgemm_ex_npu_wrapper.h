@@ -16,6 +16,22 @@
 #include "cann_ops_blas.h"
 #include "cgemm_ex_param.h"
 
+inline aclDataType CgemmExPublicType(aclblasCgemmExType_t type)
+{
+    switch (type) {
+        case ACLBLAS_R_32:
+            return ACL_FLOAT;
+        case ACLBLAS_C_32:
+            return ACL_COMPLEX64;
+        case ACLBLAS_H_R_32:
+            return ACL_FLOAT16;
+        case ACLBLAS_H_C_32:
+            return ACL_COMPLEX32;
+        default:
+            return ACL_DT_UNDEFINED;
+    }
+}
+
 inline size_t CgemmExElemSize(aclblasCgemmExType_t t)
 {
     constexpr size_t kBytes[] = {4, 8, 2, 4};
@@ -103,12 +119,13 @@ inline aclblasStatus_t CgemmExCopyBackC(void* C, void* dC, size_t cBytes)
 
 inline aclblasStatus_t aclblasCgemmEx_npu(
     aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k,
-    const aclblasComplex* alpha, const void* A, aclblasCgemmExType_t typeA, int lda, const void* B, aclblasCgemmExType_t typeB,
-    int ldb, const aclblasComplex* beta, void* C, aclblasCgemmExType_t typeC, int ldc)
+    const aclblasComplex* alpha, const void* A, aclblasCgemmExType_t typeA, int lda, const void* B,
+    aclblasCgemmExType_t typeB, int ldb, const aclblasComplex* beta, void* C, aclblasCgemmExType_t typeC, int ldc)
 {
     if (handle == nullptr || m <= 0 || n <= 0) {
         return aclblasCgemmEx(
-            handle, transA, transB, m, n, k, alpha, A, typeA, lda, B, typeB, ldb, beta, C, typeC, ldc);
+            handle, transA, transB, m, n, k, alpha, A, CgemmExPublicType(typeA), lda, B, CgemmExPublicType(typeB), ldb,
+            beta, C, CgemmExPublicType(typeC), ldc);
     }
     int physColsA = (transA == ACLBLAS_OP_N) ? k : m;
     int physColsB = (transB == ACLBLAS_OP_N) ? n : k;
@@ -126,8 +143,9 @@ inline aclblasStatus_t aclblasCgemmEx_npu(
         return st;
     }
     aclblasStatus_t ret = aclblasCgemmEx(
-        handle, transA, transB, m, n, k, alpha, dA != nullptr ? dA : A, typeA, lda, dB != nullptr ? dB : B, typeB, ldb,
-        beta, dC != nullptr ? dC : C, typeC, ldc);
+        handle, transA, transB, m, n, k, alpha, dA != nullptr ? dA : A, CgemmExPublicType(typeA), lda,
+        dB != nullptr ? dB : B, CgemmExPublicType(typeB), ldb, beta, dC != nullptr ? dC : C, CgemmExPublicType(typeC),
+        ldc);
     if (ret == ACLBLAS_STATUS_SUCCESS && aclrtSynchronizeDevice() == ACL_SUCCESS) {
         ret = CgemmExCopyBackC(C, dC, cBytes);
     } else if (ret == ACLBLAS_STATUS_SUCCESS) {

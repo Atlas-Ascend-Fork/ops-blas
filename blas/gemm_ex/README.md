@@ -1,538 +1,99 @@
-# GemmEx算子
+# GemmEx、SgemmEx、CgemmEx
 
-## 算子概述
+计算列主序矩阵 `C = alpha * op(A) * op(B) + beta * C`。`op(A)`为m×k，`op(B)`为k×n，C为m×n。操作N保持原矩阵，T转置，C共轭转置；实数的C与T等价，复数的C会对虚部变号。
 
-通用矩阵乘法扩展接口（GEMM Ex），支持 A、B、C 矩阵使用独立数据类型。本目录包含两个接口：
+## 产品与类型
 
-- **aclblasGemmEx**：通用矩阵乘法扩展接口，支持 A/B/C 矩阵使用不同数据类型（FP16/BF16/FP32）
-- **aclblasSgemmEx**：单精度（FP32）通用矩阵乘法扩展接口，A/B/C 及 alpha/beta 均为 FP32，保留算法选择参数 `algo`，与 `aclblasGemmEx` 接口对齐
+| 接口 | Atlas A2/A3（arch22） | Ascend 950PR/950DT（arch35） |
+|---|---|---|
+| aclblasGemmEx | FLOAT32，三个矩阵类型均为ACL_FLOAT | 沿用arch35实现的类型组合 |
+| aclblasSgemmEx | FLOAT32，三个矩阵类型均为ACL_FLOAT | FLOAT32 |
+| aclblasCgemmEx | COMPLEX64，三个矩阵类型均为ACL_COMPLEX64 | 保留已有实数/复数及半精度组合；统一公共aclDataType接口 |
 
-数学表达式：
+arch22支持Atlas A2/A3系列，实机自测范围与当前提交的最终结果见自验收报告；任务允许覆盖一种款型，未实测A3时不能把架构支持写成A3测试通过。arch22的GemmEx只接受`ACLBLAS_COMPUTE_32F`和`ACLBLAS_GEMM_DEFAULT`。其他合法dtype或不支持的组合返回NOT_SUPPORTED，非法dtype数值返回INVALID_VALUE，不隐式转换为FP32。
 
-```
-C = alpha * op(A) * op(B) + beta * C
-```
+arch35 GemmEx保持既有组合：FP16/FP16/FP16配`ACLBLAS_COMPUTE_16F`或`ACLBLAS_COMPUTE_32F`，BF16/BF16/BF16、FLOAT/FLOAT/FLOAT配`ACLBLAS_COMPUTE_32F`，FP8 E4M3FN/E5M2输入组合配FP16输出及`ACLBLAS_COMPUTE_32F`。这些既有路径不属于本次arch22实机验证结果。
 
-其中：
-- op(A) = A（transA = ACLBLAS_OP_N）、A^T（transA = ACLBLAS_OP_T）或 A^H（transA = ACLBLAS_OP_C，FP32 实数场景下等价于 A^T）
-- op(B) = B（transB = ACLBLAS_OP_N）、B^T（transB = ACLBLAS_OP_T）或 B^H（transB = ACLBLAS_OP_C，FP32 实数场景下等价于 B^T）
-- A 为 M×K 矩阵，B 为 K×N 矩阵，C 为 M×N 矩阵
-- 矩阵采用 BLAS 标准列主序存储
+## 公共接口
 
-包含以下接口：
-
-| 接口名 | 功能简述 |
-|--------|---------|
-| aclblasGemmEx | 通用矩阵乘法扩展接口，支持 A/B/C 矩阵使用独立数据类型 |
-| aclblasSgemmEx | 单精度（FP32）通用矩阵乘法，支持矩阵转置和 alpha/beta 缩放 |
-
-## 算子执行接口
-
-### aclblasGemmEx
-
-#### 产品支持情况
-
-- Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
-
-#### 函数原型
+声明统一位于`include/cann_ops_blas.h`。GemmEx为19参数；SgemmEx和CgemmEx为17参数，包含三矩阵dtype，不含computeType/algo。旧15参数SgemmEx调用方需要迁移。950旧CgemmEx私有dtype数值0/1/2/3分别迁移为公共ACL_FLOAT/ACL_COMPLEX64/ACL_FLOAT16/ACL_COMPLEX32；两种枚举的整数语义不同，调用方须更新类型并重新编译，不能原值强转。950内部存储枚举、支持组合和既有计算实现保留；本次A2实测不等于950硬件验证。
 
 ```cpp
-aclblasStatus_t aclblasGemmEx(aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k, const void* alpha, const void* A, aclDataType Atype, int lda, const void* B, aclDataType Btype, int ldb, const void* beta, void* C, aclDataType Ctype, int ldc, aclblasComputeType_t computeType, aclblasGemmAlgo_t algo)
-```
+aclblasStatus_t aclblasGemmEx(
+    aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB,
+    int m, int n, int k, const void* alpha,
+    const void* A, aclDataType Atype, int lda,
+    const void* B, aclDataType Btype, int ldb, const void* beta,
+    void* C, aclDataType Ctype, int ldc,
+    aclblasComputeType_t computeType, aclblasGemmAlgo_t algo);
 
-#### 参数说明
-
-| 参数名 | 输入/输出 | 参数类型 | 说明 |
-|--------|----------|---------|------|
-| handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
-| transA | 输入 | aclblasOperation_t | 矩阵 A 的操作类型：ACLBLAS_OP_N（不转置）、ACLBLAS_OP_T（转置）、ACLBLAS_OP_C（共轭转置），Host 内存 |
-| transB | 输入 | aclblasOperation_t | 矩阵 B 的操作类型（同 transA），Host 内存 |
-| m | 输入 | int | op(A) 和 C 的行数，M >= 0，Host 内存 |
-| n | 输入 | int | op(B) 和 C 的列数，N >= 0，Host 内存 |
-| k | 输入 | int | op(A) 的列数和 op(B) 的行数，K >= 0，Host 内存 |
-| alpha | 输入 | const void* | 标量 alpha 指针，指向 FP32 标量，不可为 nullptr，Host 内存 |
-| A | 输入 | const void* | 矩阵 A 的设备内存指针，列主序；当 K > 0 时不可为 nullptr，Device 内存 |
-| Atype | 输入 | aclDataType | 矩阵 A 的数据类型，Host 内存 |
-| lda | 输入 | int | 矩阵 A 的主维度（列主序），transA=N 时 lda >= max(1, M)，transA=T/C 时 lda >= max(1, K)，Host 内存 |
-| B | 输入 | const void* | 矩阵 B 的设备内存指针，列主序；当 K > 0 时不可为 nullptr，Device 内存 |
-| Btype | 输入 | aclDataType | 矩阵 B 的数据类型，Host 内存 |
-| ldb | 输入 | int | 矩阵 B 的主维度（列主序），transB=N 时 ldb >= max(1, K)，transB=T/C 时 ldb >= max(1, N)，Host 内存 |
-| beta | 输入 | const void* | 标量 beta 指针，指向 FP32 标量，不可为 nullptr，Host 内存 |
-| C | 输入/输出 | void* | 矩阵 C 的设备内存指针，列主序；当 beta != 0 时不可为 nullptr，Device 内存 |
-| Ctype | 输入 | aclDataType | 矩阵 C 的数据类型，Host 内存 |
-| ldc | 输入 | int | 矩阵 C 的主维度（列主序），ldc >= max(1, M)，Host 内存 |
-| computeType | 输入 | aclblasComputeType_t | 计算精度类型，Host 内存 |
-| algo | 输入 | aclblasGemmAlgo_t | 算法选择，当前仅支持 ACLBLAS_GEMM_DEFAULT，Host 内存 |
-
-#### 数据类型支持
-
-| Atype | Btype | Ctype | computeType |
-|-------|-------|-------|-------------|
-| ACL_FLOAT16 | ACL_FLOAT16 | ACL_FLOAT16 | ACL_COMPUTE_HIGH_PRECISION |
-| ACL_BF16 | ACL_BF16 | ACL_BF16 | ACL_COMPUTE_HIGH_PRECISION |
-| ACL_FLOAT | ACL_FLOAT | ACL_FLOAT | ACL_COMPUTE_HIGH_PRECISION |
-
-#### 约束说明
-
-- m >= 0
-- n >= 0
-- k >= 0
-- transA 必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C
-- transB 必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C
-- transA = N 时 lda >= max(1, m)；transA = T/C 时 lda >= max(1, k)
-- transB = N 时 ldb >= max(1, k)；transB = T/C 时 ldb >= max(1, n)
-- ldc >= max(1, m)
-- alpha 不可为 nullptr
-- beta 不可为 nullptr
-- algo 当前仅支持 ACLBLAS_GEMM_DEFAULT
-- k > 0 时 A 不可为 nullptr
-- k > 0 时 B 不可为 nullptr
-- beta != 0.0f 时 C 不可为 nullptr
-- Atype、Btype、Ctype 必须为上表所列的有效组合
-
-边界情况处理：
-- m == 0 或 n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS，不执行计算
-- k == 0 或 alpha == 0.0f 时跳过矩阵乘，执行 C = beta * C（beta == 0 时置零，beta == 1 时不变，其他值逐元素缩放）
-- C == nullptr 且 beta == 0.0f 时直接返回 ACLBLAS_STATUS_SUCCESS
-
-### aclblasSgemmEx
-
-#### 产品支持情况
-
-- Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
-
-#### 函数原型
-
-```cpp
 aclblasStatus_t aclblasSgemmEx(
     aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB,
     int m, int n, int k, const float* alpha,
-    const float* A, int lda, const float* B, int ldb,
-    const float* beta, float* C, int ldc, aclblasGemmAlgo_t algo)
+    const void* A, aclDataType Atype, int lda,
+    const void* B, aclDataType Btype, int ldb, const float* beta,
+    void* C, aclDataType Ctype, int ldc);
+
+aclblasStatus_t aclblasCgemmEx(
+    aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB,
+    int m, int n, int k, const aclblasComplex* alpha,
+    const void* A, aclDataType Atype, int lda,
+    const void* B, aclDataType Btype, int ldb, const aclblasComplex* beta,
+    void* C, aclDataType Ctype, int ldc);
 ```
 
-#### 参数说明
-
-| 参数名 | 输入/输出 | 参数类型 | 说明 |
-|--------|----------|---------|------|
-| handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
-| transA | 输入 | aclblasOperation_t | 矩阵 A 的操作类型：ACLBLAS_OP_N（不转置）、ACLBLAS_OP_T（转置）、ACLBLAS_OP_C（共轭转置，FP32 实数等价于转置），Host 内存 |
-| transB | 输入 | aclblasOperation_t | 矩阵 B 的操作类型（同 transA），Host 内存 |
-| m | 输入 | int | op(A) 和 C 的行数，M >= 0，Host 内存 |
-| n | 输入 | int | op(B) 和 C 的列数，N >= 0，Host 内存 |
-| k | 输入 | int | op(A) 的列数和 op(B) 的行数，K >= 0，Host 内存 |
-| alpha | 输入 | const float*（FP32） | 标量 alpha 指针，指向 FP32 标量，不可为 nullptr，Host 内存 |
-| A | 输入 | const float*（FP32） | 矩阵 A 的设备内存指针，FP32，列主序；当 K > 0 时不可为 nullptr，Device 内存 |
-| lda | 输入 | int | 矩阵 A 的主维度（列主序），transA=N 时 lda >= max(1, M)，transA=T/C 时 lda >= max(1, K)，Host 内存 |
-| B | 输入 | const float*（FP32） | 矩阵 B 的设备内存指针，FP32，列主序；当 K > 0 时不可为 nullptr，Device 内存 |
-| ldb | 输入 | int | 矩阵 B 的主维度（列主序），transB=N 时 ldb >= max(1, K)，transB=T/C 时 ldb >= max(1, N)，Host 内存 |
-| beta | 输入 | const float*（FP32） | 标量 beta 指针，指向 FP32 标量，不可为 nullptr，Host 内存 |
-| C | 输入/输出 | float*（FP32） | 矩阵 C 的设备内存指针，FP32，列主序；当 beta != 0 时不可为 nullptr，Device 内存 |
-| ldc | 输入 | int | 矩阵 C 的主维度（列主序），ldc >= max(1, M)，Host 内存 |
-| algo | 输入 | aclblasGemmAlgo_t | 算法选择，当前仅支持 ACLBLAS_GEMM_DEFAULT，Host 内存 |
-
-#### 约束说明
-
-- m >= 0
-- n >= 0
-- k >= 0
-- transA 必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C
-- transB 必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C
-- transA = N 时 lda >= max(1, m)；transA = T/C 时 lda >= max(1, k)
-- transB = N 时 ldb >= max(1, k)；transB = T/C 时 ldb >= max(1, n)
-- ldc >= max(1, m)
-- alpha 不可为 nullptr
-- beta 不可为 nullptr
-- algo 当前仅支持 ACLBLAS_GEMM_DEFAULT
-- k > 0 时 A 不可为 nullptr
-- k > 0 时 B 不可为 nullptr
-- beta != 0.0f 时 C 不可为 nullptr
-
-边界情况处理：
-- m == 0 或 n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS，不执行计算
-- k == 0 或 alpha == 0.0f 时跳过矩阵乘，执行 C = beta * C（beta == 0 时置零，beta == 1 时不变，其他值逐元素缩放）
-- C == nullptr 且 beta == 0.0f 时直接返回 ACLBLAS_STATUS_SUCCESS
-
-#### 调用示例
-
-示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。
-
-```cpp
-#include <cstdio>
-#include <memory>
-#include <vector>
-
-#include "acl/acl.h"
-#include "cann_ops_blas.h"
-
-#define CHECK_RET(cond, return_expr) \
-    do {                             \
-        if (!(cond)) {               \
-            return_expr;             \
-        }                            \
-    } while (0)
-
-#define LOG_PRINT(message, ...)         \
-    do {                                \
-        printf(message, ##__VA_ARGS__); \
-    } while (0)
-
-class AclContext {
-public:
-    explicit AclContext(int32_t deviceId) : deviceId_(deviceId) {}
-
-    ~AclContext()
-    {
-        if (stream_ != nullptr) {
-            aclrtDestroyStream(stream_);
-            stream_ = nullptr;
-        }
-        if (deviceSet_) {
-            aclrtResetDevice(deviceId_);
-            deviceSet_ = false;
-        }
-        if (aclInited_) {
-            aclFinalize();
-            aclInited_ = false;
-        }
-    }
-
-    int Init()
-    {
-        auto ret = aclInit(nullptr);
-        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclInit failed. ERROR: %d\n", ret); return ret);
-        aclInited_ = true;
-
-        ret = aclrtSetDevice(deviceId_);
-        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclrtSetDevice failed. ERROR: %d\n", ret); return ret);
-        deviceSet_ = true;
-
-        ret = aclrtCreateStream(&stream_);
-        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclrtCreateStream failed. ERROR: %d\n", ret); return ret);
-        return ACL_SUCCESS;
-    }
-
-    aclrtStream Stream() const { return stream_; }
-
-private:
-    int32_t deviceId_;
-    aclrtStream stream_ = nullptr;
-    bool aclInited_ = false;
-    bool deviceSet_ = false;
-};
-
-struct AclMemDeleter {
-    void operator()(void* p) const { aclrtFree(p); }
-};
-
-struct BlasHandleDeleter {
-    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
-};
-
-int aclblasSgemmExTest(AclContext& ctx)
-{
-    aclrtStream stream = ctx.Stream();
-
-    // 1. 创建 ops-blas 句柄
-    aclblasHandle_t rawHandle = nullptr;
-    auto blasRet = aclblasCreate(&rawHandle);
-    CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
-              return blasRet);
-    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
-
-    blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
-    CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
-              return blasRet);
-
-    // 2. 准备 Host 数据
-    // C = alpha * op(A) * op(B) + beta * C
-    // M=2, N=2, K=3, transA=N, transB=N, alpha=1.0, beta=0.0
-    int m = 2, n = 2, k = 3;
-    int lda = m, ldb = k, ldc = m;
-    float alpha = 1.0f;
-    float beta = 0.0f;
-    aclblasOperation_t transA = ACLBLAS_OP_N;
-    aclblasOperation_t transB = ACLBLAS_OP_N;
-    aclblasGemmAlgo_t algo = ACLBLAS_GEMM_DEFAULT;
-
-    // A (M=2, K=3, column-major, lda=2): [[1,2,3],[4,5,6]]
-    std::vector<float> hA = {1.0f, 4.0f, 2.0f, 5.0f, 3.0f, 6.0f};
-    // B (K=3, N=2, column-major, ldb=3): [[1,0],[0,1],[1,1]]
-    std::vector<float> hB = {1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f};
-    // C (M=2, N=2, column-major, ldc=2): expected result [[4,5],[10,11]]
-    std::vector<float> hC(static_cast<size_t>(ldc) * n, 0.0f);
-
-    size_t aBytes = hA.size() * sizeof(float);
-    size_t bBytes = hB.size() * sizeof(float);
-    size_t cBytes = hC.size() * sizeof(float);
-
-    // 3. 申请 Device 内存并拷贝数据
-    void* rawA = nullptr;
-    auto aclRet = aclrtMalloc(&rawA, aBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc for A failed. ERROR: %d\n", aclRet); return aclRet);
-    std::unique_ptr<float, AclMemDeleter> aDevicePtr(static_cast<float*>(rawA));
-
-    void* rawB = nullptr;
-    aclRet = aclrtMalloc(&rawB, bBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc for B failed. ERROR: %d\n", aclRet); return aclRet);
-    std::unique_ptr<float, AclMemDeleter> bDevicePtr(static_cast<float*>(rawB));
-
-    void* rawC = nullptr;
-    aclRet = aclrtMalloc(&rawC, cBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc for C failed. ERROR: %d\n", aclRet); return aclRet);
-    std::unique_ptr<float, AclMemDeleter> cDevicePtr(static_cast<float*>(rawC));
-
-    aclRet = aclrtMemcpy(aDevicePtr.get(), aBytes, hA.data(), aBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy for A failed. ERROR: %d\n", aclRet); return aclRet);
-
-    aclRet = aclrtMemcpy(bDevicePtr.get(), bBytes, hB.data(), bBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy for B failed. ERROR: %d\n", aclRet); return aclRet);
-
-    aclRet = aclrtMemcpy(cDevicePtr.get(), cBytes, hC.data(), cBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy for C failed. ERROR: %d\n", aclRet); return aclRet);
-
-    // 4. 调用 aclblasSgemmEx
-    blasRet = aclblasSgemmEx(static_cast<aclblasHandle_t>(handlePtr.get()),
-                             transA, transB, m, n, k, &alpha,
-                             aDevicePtr.get(), lda, bDevicePtr.get(), ldb,
-                             &beta, cDevicePtr.get(), ldc, algo);
-    CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSgemmEx failed. ERROR: %d\n", blasRet);
-              return blasRet);
-
-    // 5. 同步等待任务执行结束
-    aclRet = aclrtSynchronizeStream(stream);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); return aclRet);
-
-    // 6. 将结果从 Device 拷贝回 Host 并打印
-    aclRet = aclrtMemcpy(hC.data(), cBytes, cDevicePtr.get(), cBytes, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("copy result from device to host failed. ERROR: %d\n", aclRet);
-              return aclRet);
-
-    // 打印结果（列主序存储：hC[col * ldc + row] = C[row][col]）
-    LOG_PRINT("result C (column-major):\n");
-    for (int col = 0; col < n; col++) {
-        for (int row = 0; row < m; row++) {
-            LOG_PRINT("  C[%d][%d] = %f\n", row, col, hC[static_cast<size_t>(col) * ldc + row]);
-        }
-    }
-
-    return ACL_SUCCESS;
-}
-
-int main()
-{
-    AclContext ctx(0);
-    auto ret = ctx.Init();
-    CHECK_RET(ret == ACL_SUCCESS, return ret);
-
-    ret = aclblasSgemmExTest(ctx);
-    CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclblasSgemmExTest failed. ERROR: %d\n", ret); return ret);
-    return 0;
-}
-```
-
-预期输出：
-
-```
-result C (column-major):
-  C[0][0] = 4.000000
-  C[1][0] = 10.000000
-  C[0][1] = 5.000000
-  C[1][1] = 11.000000
-```
-
-### aclblasGemmEx 调用示例
-
-示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。
-
-```cpp
-#include <cstdio>
-#include <memory>
-#include <vector>
-
-#include "acl/acl.h"
-#include "cann_ops_blas.h"
-
-#define CHECK_RET(cond, return_expr) \
-    do {                             \
-        if (!(cond)) {               \
-            return_expr;             \
-        }                            \
-    } while (0)
-
-#define LOG_PRINT(message, ...)         \
-    do {                                \
-        printf(message, ##__VA_ARGS__); \
-    } while (0)
-
-class AclContext {
-public:
-    explicit AclContext(int32_t deviceId) : deviceId_(deviceId) {}
-
-    ~AclContext()
-    {
-        if (stream_ != nullptr) {
-            aclrtDestroyStream(stream_);
-            stream_ = nullptr;
-        }
-        if (deviceSet_) {
-            aclrtResetDevice(deviceId_);
-            deviceSet_ = false;
-        }
-        if (aclInited_) {
-            aclFinalize();
-            aclInited_ = false;
-        }
-    }
-
-    int Init()
-    {
-        auto ret = aclInit(nullptr);
-        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclInit failed. ERROR: %d\n", ret); return ret);
-        aclInited_ = true;
-
-        ret = aclrtSetDevice(deviceId_);
-        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclrtSetDevice failed. ERROR: %d\n", ret); return ret);
-        deviceSet_ = true;
-
-        ret = aclrtCreateStream(&stream_);
-        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclrtCreateStream failed. ERROR: %d\n", ret); return ret);
-        return ACL_SUCCESS;
-    }
-
-    aclrtStream Stream() const { return stream_; }
-
-private:
-    int32_t deviceId_;
-    aclrtStream stream_ = nullptr;
-    bool aclInited_ = false;
-    bool deviceSet_ = false;
-};
-
-struct AclMemDeleter {
-    void operator()(void* p) const { aclrtFree(p); }
-};
-
-struct BlasHandleDeleter {
-    void operator()(aclblasHandle_t h) const { aclblasDestroy(h); }
-};
-
-int aclblasGemmExTest(AclContext& ctx)
-{
-    aclrtStream stream = ctx.Stream();
-
-    // 1. 创建 ops-blas 句柄
-    aclblasHandle_t rawHandle = nullptr;
-    auto blasRet = aclblasCreate(&rawHandle);
-    CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasCreate failed. ERROR: %d\n", blasRet);
-              return blasRet);
-    std::unique_ptr<std::remove_pointer<aclblasHandle_t>::type, BlasHandleDeleter> handlePtr(rawHandle);
-
-    blasRet = aclblasSetStream(static_cast<aclblasHandle_t>(handlePtr.get()), stream);
-    CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", blasRet);
-              return blasRet);
-
-    // 2. 准备 Host 数据
-    // C = alpha * op(A) * op(B) + beta * C
-    // M=2, N=2, K=3, transA=N, transB=N, alpha=1.0, beta=0.0
-    // 使用 FP16 输入、FP32 输出
-    int m = 2, n = 2, k = 3;
-    int lda = m, ldb = k, ldc = m;
-    float alpha = 1.0f;
-    float beta = 0.0f;
-    aclblasOperation_t transA = ACLBLAS_OP_N;
-    aclblasOperation_t transB = ACLBLAS_OP_N;
-    aclblasComputeType_t computeType = ACLBLAS_COMPUTE_HIGH_PRECISION;
-    aclblasGemmAlgo_t algo = ACLBLAS_GEMM_DEFAULT;
-
-    // A (M=2, K=3, column-major, lda=2, FP16): [[1,2,3],[4,5,6]]
-    std::vector<__fp16> hA = {1.0f, 4.0f, 2.0f, 5.0f, 3.0f, 6.0f};
-    // B (K=3, N=2, column-major, ldb=3, FP16): [[1,0],[0,1],[1,1]]
-    std::vector<__fp16> hB = {1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f};
-    // C (M=2, N=2, column-major, ldc=2, FP32): expected result [[4,5],[10,11]]
-    std::vector<float> hC(static_cast<size_t>(ldc) * n, 0.0f);
-
-    size_t aBytes = hA.size() * sizeof(__fp16);
-    size_t bBytes = hB.size() * sizeof(__fp16);
-    size_t cBytes = hC.size() * sizeof(float);
-
-    // 3. 申请 Device 内存并拷贝数据
-    void* rawA = nullptr;
-    auto aclRet = aclrtMalloc(&rawA, aBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc for A failed. ERROR: %d\n", aclRet); return aclRet);
-    std::unique_ptr<void, AclMemDeleter> aDevicePtr(rawA);
-
-    void* rawB = nullptr;
-    aclRet = aclrtMalloc(&rawB, bBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc for B failed. ERROR: %d\n", aclRet); return aclRet);
-    std::unique_ptr<void, AclMemDeleter> bDevicePtr(rawB);
-
-    void* rawC = nullptr;
-    aclRet = aclrtMalloc(&rawC, cBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc for C failed. ERROR: %d\n", aclRet); return aclRet);
-    std::unique_ptr<void, AclMemDeleter> cDevicePtr(rawC);
-
-    aclRet = aclrtMemcpy(aDevicePtr.get(), aBytes, hA.data(), aBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy for A failed. ERROR: %d\n", aclRet); return aclRet);
-
-    aclRet = aclrtMemcpy(bDevicePtr.get(), bBytes, hB.data(), bBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy for B failed. ERROR: %d\n", aclRet); return aclRet);
-
-    aclRet = aclrtMemcpy(cDevicePtr.get(), cBytes, hC.data(), cBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy for C failed. ERROR: %d\n", aclRet); return aclRet);
-
-    // 4. 调用 aclblasGemmEx
-    blasRet = aclblasGemmEx(static_cast<aclblasHandle_t>(handlePtr.get()),
-                            transA, transB, m, n, k, &alpha,
-                            aDevicePtr.get(), ACL_FLOAT16, lda,
-                            bDevicePtr.get(), ACL_FLOAT16, ldb,
-                            &beta, cDevicePtr.get(), ACL_FLOAT, ldc,
-                            computeType, algo);
-    CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasGemmEx failed. ERROR: %d\n", blasRet);
-              return blasRet);
-
-    // 5. 同步等待任务执行结束
-    aclRet = aclrtSynchronizeStream(stream);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); return aclRet);
-
-    // 6. 将结果从 Device 拷贝回 Host 并打印
-    aclRet = aclrtMemcpy(hC.data(), cBytes, cDevicePtr.get(), cBytes, ACL_MEMCPY_DEVICE_TO_HOST);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("copy result from device to host failed. ERROR: %d\n", aclRet);
-              return aclRet);
-
-    // 打印结果（列主序存储：hC[col * ldc + row] = C[row][col]）
-    LOG_PRINT("result C (column-major):\n");
-    for (int col = 0; col < n; col++) {
-        for (int row = 0; row < m; row++) {
-            LOG_PRINT("  C[%d][%d] = %f\n", row, col, hC[static_cast<size_t>(col) * ldc + row]);
-        }
-    }
-
-    return ACL_SUCCESS;
-}
-
-int main()
-{
-    AclContext ctx(0);
-    auto ret = ctx.Init();
-    CHECK_RET(ret == ACL_SUCCESS, return ret);
-
-    ret = aclblasGemmExTest(ctx);
-    CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclblasGemmExTest failed. ERROR: %d\n", ret); return ret);
-    return 0;
-}
-```
-
-预期输出：
-
-```
-result C (column-major):
-  C[0][0] = 4.000000
-  C[1][0] = 10.000000
-  C[0][1] = 5.000000
-  C[1][1] = 11.000000
-```
+arch22的alpha/beta为Host标量指针；A/B/C为Device矩阵指针。arch35 CgemmEx沿用上游的Host/Device标量解析。复数按`aclblasComplex`的real/imag交错存储，lda/ldb/ldc按复数元素计数。handle通过`aclblasSetStream`绑定stream，接口成功返回表示已按该stream提交，读回结果前需要同步。
+
+## arch22参数与边界行为
+
+| 参数 | 要求 |
+|---|---|
+| handle | 已创建的有效句柄；nullptr返回HANDLE_IS_NULLPTR |
+| m、n、k | 均非负 |
+| transA、transB | N、T或C；其他值返回INVALID_ENUM |
+| lda | transA=N时至少max(1,m)，否则至少max(1,k) |
+| ldb | transB=N时至少max(1,k)，否则至少max(1,n) |
+| ldc | 至少max(1,m) |
+| alpha、beta | 非空Host指针 |
+| A、B | k>0且alpha非零时必须非空 |
+| C | beta非零时必须非空 |
+
+校验顺序为handle、维度/leading dimensions、alpha/beta、dtype、转置枚举、矩阵指针、GemmEx的computeType/algo，最后才判断no-op。leading dimension和其他参数非法返回INVALID_VALUE；合法但不支持的computeType/algo返回NOT_SUPPORTED。
+
+- m=0或n=0在校验完成后成功返回，不计算。
+- k=0或alpha=0只处理`C=beta*C`，不读取A/B。beta=1不改C，beta=0不读取原C，其他beta按逻辑元素缩放。
+- beta=0且C=nullptr直接成功返回，全程不读写C，包括k=0分支。
+- 只写C的逻辑m行，leading dimension中的padding保持原值。支持列主序leading dimension，不提供其他任意步长视图或广播。
+
+## 实现与精度
+
+三个公共接口分别调用各自的分派入口，专用kernel分文件保存。GemmEx与SgemmEx薄包装仍位于同一host文件，通用基础代码和部分fallback在gemm_ex内部复用，不改写普通aclblasSgemm；不能由一个接口通过推断另一个接口通过。根据公开尺寸、转置、leading dimension及标量值选择分块、打包和缩放路径，不按测试用例编号或GPU表选择实现。主机入口及分派集中在对应host文件，删除仅承载薄转发函数的独立源文件。主机侧共同规划通过显式kernel函数表绑定GemmEx/SgemmEx各自的专用入口；共享辅助代码按host规划、device tile、DMA写回三类放入私有头；SgemmEx专用符号直接声明，不使用宏重命名。设备kernel入口、参数布局和各入口的同步编译选项分别保留。同算子、同编译配置的计算与输出kernel按职责合并在同一cpp，仍是独立kernel函数、按原顺序调用。
+
+arch22共19个文件（13个cpp、6个私有头）。主要设备实现分组如下：
+
+| 文件 | 职责及编译边界 |
+|---|---|
+| `gemmex_short_nn_kernel.cpp` | GemmEx短NN计算与输出，显式同步编译 |
+| `sgemm_parity_nn_kernel.cpp` | SgemmEx独立短NN计算与输出，显式同步编译 |
+| `sgemm_short_nn_kernel.cpp` | 短NN回退计算与输出，保留默认同步编译 |
+| `sgemm_backend_kernel.cpp` | SgemmEx原生后端及small-TT、stagger路径，保留相同宏与默认同步编译 |
+| `cgemm_longk_kernel.cpp` | CgemmEx长K打包与矩阵乘，两个kernel分别启动 |
+| 其余host、fallback及复数主体 | 保留完整职责，不将三个算子的专用后端合成一个kernel |
+
+不再保留对应的六份输出/打包/小形状独立源文件；构建从干净源码目录收集，避免旧cpp残留造成重复定义。 已清理没有调用点的历史DMA copy、融合实验和旧短K/复数转换入口；活跃分派继续保留，不以源码入口数量替代性能或正确性验证。
+
+对于|alpha|≤1的非单位标量，超过256³个乘加项的问题使用通用后端及alpha/beta epilogue；小输出direct限制k≤4096。|alpha|>1仍保留补偿计算：先计算FP32乘积再放大可能超出golden最大误差限制。该数值回退保证原精度语义，但大幅值alpha的大矩阵加速仍待验证，不能视为所有非单位alpha的性能问题均已解决。
+
+短NN按两块368行tile组成偶/奇核对选择连续形状族（368<m≤736、n≥16、16<k≤32、紧凑NN且alpha=1/beta=0）；运行时还要求grid不超过可用Cube核数、输出列组不超过AIV核数。原721～736只是先前调优窗口，现已删除；不将该窗口解释为硬件边界。
+
+GemmEx短NN使用独立的输入/计算与输出kernel，在适用的短K形状族中按行核奇偶交错两个K段的搬运和乘加次序，每个乘积仅计算一次；浮点累加次序改变后仍按同一Netlib判据检查。SgemmEx具有独立短NN、小N转置及输入就绪同步路径；适用短K形状族的独立kernel也采用同样的按行K段交错方案，两个接口仍分别验证。短K使用NZ输出和批量DMA恢复布局，中等K使用多K步NZ流水；全部必要搬运、计算和输出阶段都计入接口耗时。
+
+复数采用直接向量、小输出四实乘积和实数块矩阵展开路径，长K适用形状使用独立打包和矩阵乘kernel。展开处理转置/共轭并显式清零padding；乘积完成后恢复实虚交错并应用alpha/beta。单核流水使用相应事件同步，阶段间按同一stream有序执行。workspace来自handle的既有机制。
+
+复数短NN形状族有独立的Cube路径：公开K在17～32范围、M在512～1536范围且N在128～1024范围时，将展开后的至多64个实数K坐标一次装入L0，输出仍写回原padding布局，再由通用输出步骤恢复公共C。模式3的虚部符号处理独立采用奇数位置掩码的标量乘法；这项优化不改变短NN的分块。两处实现按布局和公开参数分派，互不替换，也不改变GemmEx/SgemmEx的专用后端。
+
+arch22不以HF32/FP16替代FP32输入计算。测试golden为Netlib BLAS/CBLAS3.10.0：实数使用cblas_sgemm，复数使用cblas_cgemm，实/虚分别比较。任务精度为rtol=atol=2^-13、matched_ratio>=0.99，最大绝对误差不超过max(0.01,32×ULP(最大误差点golden))；非有限值和alpha=0的EXACT规则单独检查。
+
+## 测试与复现
+
+原始三组CSV各包含1000条精度/边界用例和200条性能用例，保留其数据、种子和GPU基线。构建、golden版本、msprof op采样、原始时序解析及报告说明见[arch22自测步骤](../../test/gemm_ex/arch22/README.md)。实现和测试结果只以最终报告锁定的源码、依赖、动态库及实际设备为准。
