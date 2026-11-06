@@ -49,10 +49,8 @@ inline PreparedData PrepareTestData(const GemmParam& p)
     auto physColsA = (p.transA == ACLBLAS_OP_N) ? p.k : p.m;
     auto physRowsB = (p.transB == ACLBLAS_OP_N) ? p.k : p.n;
     auto physColsB = (p.transB == ACLBLAS_OP_N) ? p.n : p.k;
-    data.aFloat =
-        makeBlasMatrix(physRowsA, physColsA, p.lda, p.aFill, p.randomSeed);
-    data.bFloat = makeBlasMatrix(
-        physRowsB, physColsB, p.ldb, p.bFill, p.randomSeed + 1);
+    data.aFloat = makeBlasMatrix(physRowsA, physColsA, p.lda, p.aFill, p.randomSeed);
+    data.bFloat = makeBlasMatrix(physRowsB, physColsB, p.ldb, p.bFill, p.randomSeed + 1);
     data.cFloat = makeBlasMatrix(p.m, p.n, p.ldc, p.cFill, p.randomSeed + 2);
     data.aBytes = QuantizeMatrix(data.aFloat, p.aFill, p.Atype, p.aNull);
     data.bBytes = QuantizeMatrix(data.bFloat, p.bFill, p.Btype, p.bNull);
@@ -89,9 +87,12 @@ inline void RunAndVerify(const GemmParam& p, aclblasHandle_t testHandle, Prepare
     const float* bGoldenPtr = data.bGolden.empty() ? nullptr : data.bGolden.data();
     float* cGoldenPtr = data.cGolden.empty() ? nullptr : data.cGolden.data();
 
-    aclblasGemmEx_cpu(
-        testHandle, p.transA, p.transB, p.m, p.n, p.k, data.alphaPtr, aGoldenPtr, ACL_FLOAT, p.lda, bGoldenPtr,
-        ACL_FLOAT, p.ldb, data.betaPtr, cGoldenPtr, p.Ctype, p.ldc, p.computeType);
+    // issue #820: golden 返回码必须断言检查，golden 失败时不得以输入初值做参考比对
+    ASSERT_EQ(
+        aclblasGemmEx_cpu(
+            testHandle, p.transA, p.transB, p.m, p.n, p.k, data.alphaPtr, aGoldenPtr, ACL_FLOAT, p.lda, bGoldenPtr,
+            ACL_FLOAT, p.ldb, data.betaPtr, cGoldenPtr, p.Ctype, p.ldc, p.computeType),
+        ACLBLAS_STATUS_SUCCESS);
 
     VerifyConfig cfg;
     cfg.mode = PrecisionMode::MERE_MARE;
@@ -109,8 +110,7 @@ inline void RunAndVerify(const GemmParam& p, aclblasHandle_t testHandle, Prepare
 // Test fixture
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class GemmArch35Test : public BlasTest<GemmParam> {
-};
+class GemmArch35Test : public BlasTest<GemmParam> {};
 
 // ── TEST_F: null handle ──
 TEST_F(GemmArch35Test, NullHandle)

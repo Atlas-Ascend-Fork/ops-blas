@@ -91,7 +91,8 @@ static void TestNormalPath(const Snrm2Param& p, aclblasHandle_t handle)
         return;
 
     float golden = 0.0f;
-    aclblasSnrm2_cpu(handle, p.n, xHost.data(), p.incx, &golden);
+    // issue #820: golden 返回码必须断言检查，golden 失败时不得以初始值 0 做参考比对
+    ASSERT_EQ(aclblasSnrm2_cpu(handle, p.n, xHost.data(), p.incx, &golden), ACLBLAS_STATUS_SUCCESS);
 
     VerifyNrm2Result(result, golden, p.caseName);
 }

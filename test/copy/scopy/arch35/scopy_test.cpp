@@ -68,9 +68,12 @@ TEST_P(ScopyArch35Test, CsvDriven)
     // Step 6: Compute CPU golden with same allocation strategy
     std::vector<float> goldenX = makeBlasArray(xAlloc, p.x, p.randomSeed);
     std::vector<float> goldenY = makeBlasArray(yAlloc, p.y, p.randomSeed);
-    aclblasScopy_cpu(
-        ScopyArch35Test::handle_, p.n, goldenX.data() + p.xAlignOffset, p.incx, goldenY.data() + p.yAlignOffset,
-        p.incy);
+    // issue #820: golden 返回码必须断言检查，golden 失败时不得以输入初值做参考比对
+    ASSERT_EQ(
+        aclblasScopy_cpu(
+            ScopyArch35Test::handle_, p.n, goldenX.data() + p.xAlignOffset, p.incx, goldenY.data() + p.yAlignOffset,
+            p.incy),
+        ACLBLAS_STATUS_SUCCESS);
 
     // Step 7: Verify y output with EXACT precision (scopy is bit-exact data copy)
     // Compare the full strided span of y (including gaps between non-contiguous writes)

@@ -27,7 +27,8 @@ TEST_F(StrsmArch35Test, NullHandle)
 {
     float alpha = 1.0f;
     aclblasStatus_t ret = aclblasStrsm_npu(
-        nullptr, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 5, 5, &alpha, nullptr, 5, nullptr, 5);
+        nullptr, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 5, 5, &alpha, nullptr, 5, nullptr,
+        5);
     EXPECT_EQ(ret, ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 }
 
@@ -35,8 +36,8 @@ TEST_F(StrsmArch35Test, NullAlpha)
 {
     float alpha = 1.0f;
     aclblasStatus_t ret = aclblasStrsm_npu(
-        StrsmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT,
-        5, 5, nullptr, nullptr, 5, nullptr, 5);
+        StrsmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 5, 5, nullptr,
+        nullptr, 5, nullptr, 5);
     EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_VALUE);
 }
 
@@ -44,16 +45,16 @@ TEST_F(StrsmArch35Test, NullB)
 {
     float alpha = 1.0f;
     auto a = makeBlasArray(25, BlasFillMode("RANDOM_NORM"), 42);
-    for (int i = 0; i < 5; i++) a[i + i * 5] += 5.0f;
+    for (int i = 0; i < 5; i++)
+        a[i + i * 5] += 5.0f;
     aclblasStatus_t ret = aclblasStrsm_npu(
-        StrsmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT,
-        5, 5, &alpha, a.data(), 5, nullptr, 5);
+        StrsmArch35Test::handle_, ACLBLAS_SIDE_LEFT, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 5, 5, &alpha,
+        a.data(), 5, nullptr, 5);
     EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_VALUE);
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    Strsm, StrsmArch35Test,
-    ::testing::ValuesIn(GetCasesFromCsv<StrsmParam>(ReplaceFileExtension2Csv(__FILE__))),
+    Strsm, StrsmArch35Test, ::testing::ValuesIn(GetCasesFromCsv<StrsmParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<StrsmParam>);
 
 TEST_P(StrsmArch35Test, CsvDriven)
@@ -61,8 +62,7 @@ TEST_P(StrsmArch35Test, CsvDriven)
     const auto& p = GetParam();
     const int aDim = (p.side == ACLBLAS_SIDE_LEFT) ? p.m : p.n;
 
-    std::vector<float> aHost =
-        makeBlasArray(static_cast<int64_t>(std::max(aDim, p.lda)) * aDim, p.aFill, p.randomSeed);
+    std::vector<float> aHost = makeBlasArray(static_cast<int64_t>(std::max(aDim, p.lda)) * aDim, p.aFill, p.randomSeed);
     if (!aHost.empty() && aDim > 0) {
         bool isUpper = (p.uplo == ACLBLAS_UPPER);
         for (int j = 0; j < aDim; j++) {
@@ -84,9 +84,8 @@ TEST_P(StrsmArch35Test, CsvDriven)
     std::vector<float> bResult = bHost;
 
     aclblasStatus_t ret = aclblasStrsm_npu(
-        StrsmArch35Test::handle_, p.side, p.uplo, p.trans, p.diag, p.m, p.n,
-        &p.alpha, aHost.empty() ? nullptr : aHost.data(), p.lda,
-        bResult.empty() ? nullptr : bResult.data(), p.ldb);
+        StrsmArch35Test::handle_, p.side, p.uplo, p.trans, p.diag, p.m, p.n, &p.alpha,
+        aHost.empty() ? nullptr : aHost.data(), p.lda, bResult.empty() ? nullptr : bResult.data(), p.ldb);
 
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
         EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
@@ -95,13 +94,16 @@ TEST_P(StrsmArch35Test, CsvDriven)
     ASSERT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
 
     std::vector<float> bGolden = bHost;
-    aclblasStrsm_cpu(
-        StrsmArch35Test::handle_, p.side, p.uplo, p.trans, p.diag, p.m, p.n,
-        &p.alpha, aHost.empty() ? nullptr : aHost.data(), p.lda,
-        bGolden.empty() ? nullptr : bGolden.data(), p.ldb);
+    // issue #820: golden 返回码必须断言检查，golden 失败时不得以输入初值做参考比对
+    ASSERT_EQ(
+        aclblasStrsm_cpu(
+            StrsmArch35Test::handle_, p.side, p.uplo, p.trans, p.diag, p.m, p.n, &p.alpha,
+            aHost.empty() ? nullptr : aHost.data(), p.lda, bGolden.empty() ? nullptr : bGolden.data(), p.ldb),
+        ACLBLAS_STATUS_SUCCESS);
 
     const size_t bCount = static_cast<size_t>(p.ldb) * static_cast<size_t>(p.n);
-    if (bCount == 0) return;
+    if (bCount == 0)
+        return;
 
     VerifyConfig cfg;
     cfg.mode = PrecisionMode::MERE_MARE;

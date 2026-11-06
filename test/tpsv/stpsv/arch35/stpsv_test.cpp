@@ -47,7 +47,9 @@ TEST_P(TpsvArch35Test, CsvDriven)
     const auto& p = GetParam();
 
     bool isUpper = (p.uplo == ACLBLAS_UPPER);
-    auto ap = makeBlasTriangular(p.n, isUpper, "RANDOM", p.randomSeed);
+    // issue #839: 消费 stpsv_param.h 解析的 ap_fill/x_fill 配置列，
+    // 与 arch22 测试的 fill 消费口径对齐，不再写死 RANDOM。
+    auto ap = makeBlasTriangular(p.n, isUpper, p.apFill, p.randomSeed);
     if (p.diag == ACLBLAS_UNIT) {
         float scale = std::min(1.0f, 5.0f / static_cast<float>(p.n));
         for (size_t i = 0; i < ap.size(); ++i)
@@ -62,7 +64,7 @@ TEST_P(TpsvArch35Test, CsvDriven)
             }
         }
     }
-    auto x = makeBlasStrided(p.n, p.incx, "RANDOM", p.randomSeed + 1);
+    auto x = makeBlasStrided(p.n, p.incx, p.xFill, p.randomSeed + 1);
     std::vector<float> golden = x;
 
     aclblasStatus_t ret =
@@ -74,7 +76,10 @@ TEST_P(TpsvArch35Test, CsvDriven)
     }
     ASSERT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
 
-    aclblasStpsv_cpu(TpsvArch35Test::handle_, p.uplo, p.trans, p.diag, p.n, ap.data(), golden.data(), p.incx);
+    // issue #820: golden 返回码必须断言检查，golden 失败时不得以输入初值做参考比对
+    ASSERT_EQ(
+        aclblasStpsv_cpu(TpsvArch35Test::handle_, p.uplo, p.trans, p.diag, p.n, ap.data(), golden.data(), p.incx),
+        ACLBLAS_STATUS_SUCCESS);
 
     const int absIncx = std::abs(p.incx);
     const float* outPtr = (p.incx < 0 && p.n > 0) ? x.data() + (p.n - 1) * absIncx : x.data();
