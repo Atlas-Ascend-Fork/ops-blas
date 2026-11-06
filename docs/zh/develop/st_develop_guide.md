@@ -201,12 +201,19 @@ TEST_P(StpttrArch35Test, CsvDriven) {
 
 ### 1.7 构建与运行
 
+`--soc` 必须与实机芯片一致：Atlas A2/A3 用 `ascend910b` / `ascend910_93`，Ascend 950 用 `ascend950`，Ascend 310P 用 `ascend310p`。不带 `--soc` 时脚本默认按 `ascend910b3`（arch22）编译，Ascend 950 的 arch35-only 算子会被跳过。
+
+ST 测试二进制链接 `libops_blas.so`。`source set_env.sh` 会把 `${ASCEND_HOME_PATH}/lib64` 放在 `LD_LIBRARY_PATH` 最前面，而动态加载器先查 `LD_LIBRARY_PATH`、再查二进制的 `RUNPATH`；若该目录已有旧版库，`--run` 会加载旧库并可能报 `undefined symbol`。运行前把本次构建目录前置：
+
 ```bash
 source <cann>/set_env.sh
 cd ops-blas
-bash build.sh --ops=gbmv,stpttr --run              # 默认卡0
-bash build.sh --ops=gbmv,stpttr --run --device=1   # 指定卡1
+export LD_LIBRARY_PATH=$(pwd)/build:$(pwd)/out/lib64:$LD_LIBRARY_PATH
+bash build.sh --soc=ascend950 --ops=gbmv,stpttr --run              # 默认卡0
+bash build.sh --soc=ascend950 --ops=gbmv,stpttr --run --device=1   # 指定卡1
 ```
+
+如改用 run 包验证部署流程，可先执行 `bash build.sh --pkg --soc=ascend950 --ops=gbmv,stpttr`，再执行 `./build_out/cann-*-ops-blas_*.run --install --quiet`。注意 run 包只包含本次 `--ops` 指定的算子，会覆盖安装目录中的 `libops_blas.so`。
 
 CMake：`ops_blas_add_gtest_tests` 自动发现 `arch35/<op>_test.cpp`，链接 `test/frame/test_main.cpp` 作为共享入口。
 
@@ -271,8 +278,11 @@ ops_blas_add_gtest_tests(${OPS_BLAS} <op>_test)
 
 ### 3.6 构建验收
 
+`--soc` 必须与实机一致（Ascend 950 用 `ascend950`），并让测试加载本次构建的库：
+
 ```bash
-bash build.sh --ops=<op> --run
+export LD_LIBRARY_PATH=$(pwd)/build:$(pwd)/out/lib64:$LD_LIBRARY_PATH
+bash build.sh --soc=<soc> --ops=<op> --run
 ```
 
 ---

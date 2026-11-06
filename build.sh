@@ -14,6 +14,7 @@ set -e
 BUILD_OPS=""
 RUN_TEST=OFF
 ENABLE_PACKAGE=FALSE
+SOC_EXPLICIT=FALSE
 TEST_DEVICE_ID=0
 TEST_DEVICE_COUNT=1
 RUN_BLAS_ALL=OFF
@@ -83,6 +84,9 @@ for arg in "$@"; do
             ;;
         --soc=*)
             SOC_VERSION="${arg#*=}"
+            if [ -n "${SOC_VERSION}" ]; then
+                SOC_EXPLICIT=TRUE
+            fi
             ;;
         --pkg)
             ENABLE_PACKAGE=TRUE
@@ -138,6 +142,10 @@ elif [[ "${soc_lower}" == ascend310p* ]]; then
     SOC_ARCH_DIRS=("arch20")
 else
     SOC_ARCH_DIRS=()
+fi
+
+if [ "${SOC_EXPLICIT}" != "TRUE" ]; then
+    echo "[WARN] --soc 未指定，默认按 ${SOC_VERSION}（${SOC_ARCH_DIRS[*]:-unknown}）编译；其他架构的算子会被跳过。请显式传入与实机一致的 --soc=<ascend910b|ascend910_93|ascend950|ascend310p>。" >&2
 fi
 
 # issue #829: SOC 合法性校验前移到任何破坏性操作（rm -rf 构建目录）之前，
