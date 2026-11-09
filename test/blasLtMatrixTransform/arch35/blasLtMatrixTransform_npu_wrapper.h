@@ -302,10 +302,20 @@ inline aclblasStatus_t aclblasLtMatrixTransform_npu(
         if (ret != ACLBLAS_STATUS_SUCCESS) { ltDestroyNpuCtx(ctx); return ret; }
         int32_t ta = static_cast<int32_t>(p.transA);
         int32_t tb = static_cast<int32_t>(p.transB);
-        aclblasLtMatrixTransformDescSetAttribute(
+        // TRANSA/TRANSB 的值域在 SetAttribute 阶段校验（白名单 N/T/C），失败须像 ltCreateLayout
+        // 传播 ORDER 校验失败一样向上传播，否则越界取值会被静默丢弃、描述符留在默认 OP_N。
+        ret = aclblasLtMatrixTransformDescSetAttribute(
             ctx.transformDesc, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA, &ta, sizeof(int32_t));
-        aclblasLtMatrixTransformDescSetAttribute(
+        if (ret != ACLBLAS_STATUS_SUCCESS) {
+            ltDestroyNpuCtx(ctx);
+            return ret;
+        }
+        ret = aclblasLtMatrixTransformDescSetAttribute(
             ctx.transformDesc, ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSB, &tb, sizeof(int32_t));
+        if (ret != ACLBLAS_STATUS_SUCCESS) {
+            ltDestroyNpuCtx(ctx);
+            return ret;
+        }
     }
 
     // physical pre-op dims

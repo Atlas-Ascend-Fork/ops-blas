@@ -10,6 +10,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <cstdint>
 #include <vector>
 #include <random>
 
@@ -426,13 +427,25 @@ TEST_F(LtMatmulArch35Test, TransformDescGetAttributeProbeMode)
         ACLBLAS_STATUS_SUCCESS);
     EXPECT_EQ(scaleType, ACL_FLOAT);
 
-    // Set 后回读一致（确认 Get 拆分未破坏既有语义）
-    const int32_t pointerMode = 1;
+    // Set 后回读一致（确认 Get 拆分未破坏既有语义）：pointer mode 仅接受 HOST
+    const int32_t pointerMode = ACLBLASLT_POINTER_MODE_HOST;
     EXPECT_EQ(
         aclblasLtMatrixTransformDescSetAttribute(
             desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE, &pointerMode, sizeof(pointerMode)),
         ACLBLAS_STATUS_SUCCESS);
-    int32_t modeOut = 0;
+    int32_t modeOut = -1;
+    EXPECT_EQ(
+        aclblasLtMatrixTransformDescGetAttribute(
+            desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE, &modeOut, sizeof(modeOut), &sizeWritten),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(modeOut, pointerMode);
+
+    // 非 HOST 取值在 Set 阶段被拒（本库标量执行链只实现主机指针模式），且不改写描述符
+    const int32_t modeDevice = ACLBLASLT_POINTER_MODE_DEVICE;
+    EXPECT_EQ(
+        aclblasLtMatrixTransformDescSetAttribute(
+            desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE, &modeDevice, sizeof(modeDevice)),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
     EXPECT_EQ(
         aclblasLtMatrixTransformDescGetAttribute(
             desc, ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE, &modeOut, sizeof(modeOut), &sizeWritten),
@@ -518,6 +531,91 @@ TEST_F(LtMatmulArch35Test, AlgoGetIdsContract)
             0, ids.data(), &numIdsFail),
         ACLBLAS_STATUS_INVALID_VALUE);
     EXPECT_EQ(numIdsFail, 0);
+}
+
+// ── GetHeuristic/GetIds 契约补全（缺口 G11，评估报告 P2-5）──
+// 真值源：blasLt/api/aclblaslt_matmul_algo.cpp —— GetIds 失败路径恒先写 *returnAlgoCount=0；
+// handle NULL → NOT_INITIALIZED 的守卫位于 arch 条件编译之前（两 arch 同码，非分叉项）；
+// 负 count / 数组 NULL → INVALID_VALUE；arch35 dtype 组合 NOT_SUPPORTED 有两条通道
+// （compute 不兼容、Ctype≠Dtype）；成功路径写 min(requested, 枚举总数) 且为全表升序前缀。
+
+// 截断语义：requested < 总数时 returnAlgoCount == requested 且逐元素等于全表升序前缀；
+// requested > 总数时封顶为总数（min() 语义）。既有 AlgoGetIdsContract 以大容量请求只钉了
+// 正向与升序，真正的截断此前两侧 arch 都未钉住（评估报告 §2.4）。
+TEST_F(LtMatmulArch35Test, AlgoGetIdsTruncatesToRequestedPrefix)
+{
+    // 全量枚举作为截断参照：容量 256 远大于枚举域（3 policy × 2 L1M × 2 L1N × 3 L1K × 3 splitK）
+    std::vector<int> full(256, -1);
+    int total = 0;
+    ASSERT_EQ(
+        aclblasLtMatmulAlgoGetIds(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            static_cast<int>(full.size()), full.data(), &total),
+        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_GT(total, 2);
+    ASSERT_LT(total, static_cast<int>(full.size())); // requested > 总数 → 封顶为总数
+
+    auto expectPrefix = [&](int requested) {
+        std::vector<int> ids(static_cast<size_t>(requested), -1);
+        int got = 0;
+        ASSERT_EQ(
+            aclblasLtMatmulAlgoGetIds(
+                LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+                ACL_FLOAT, requested, ids.data(), &got),
+            ACLBLAS_STATUS_SUCCESS);
+        ASSERT_EQ(got, requested); // min(requested, 总数) == requested（requested ≤ 总数）
+        for (int i = 0; i < got; ++i) {
+            EXPECT_EQ(ids[static_cast<size_t>(i)], full[static_cast<size_t>(i)]) << "truncated id[" << i << "]";
+        }
+    };
+    expectPrefix(1);         // 最小截断：仅最小 id
+    expectPrefix(total - 1); // 比全量少 1
+    expectPrefix(total);     // 恰好容纳（min 边界）
+}
+
+// GetIds 负向矩阵：handle NULL → NOT_INITIALIZED（该守卫在 arch 条件编译之前，两 arch 同码，
+// 非分叉项）；负 count → INVALID_VALUE（count=0 已由 AlgoGetIdsContract 钉住，此处补负数侧）；
+// arch35 dtype 组合 NOT_SUPPORTED 两条通道（compute 不兼容、Ctype≠Dtype；arch22 的
+// scaleType≠FLOAT 分支不在本套件构建目标内，按任务口径不钉）。失败路径均写 0 且不改写 ids 缓冲。
+TEST_F(LtMatmulArch35Test, AlgoGetIdsRejectsNullHandleAndUnsupportedDtypes)
+{
+    std::vector<int> ids(8, -1);
+    int got = -7;
+    // handle NULL → NOT_INITIALIZED + 写 0
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetIds(
+            nullptr, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            static_cast<int>(ids.size()), ids.data(), &got),
+        ACLBLAS_STATUS_NOT_INITIALIZED);
+    EXPECT_EQ(got, 0);
+    // 负 count → INVALID_VALUE + 写 0
+    got = -7;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetIds(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT,
+            -1, ids.data(), &got),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(got, 0);
+    // Ctype ≠ Dtype（FLOAT vs FLOAT16）→ NOT_SUPPORTED + 写 0
+    got = -7;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetIds(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT16,
+            static_cast<int>(ids.size()), ids.data(), &got),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
+    EXPECT_EQ(got, 0);
+    // compute/dtype 不兼容：COMPUTE_32F + INT8×INT8（INT8 对仅配 32I）→ NOT_SUPPORTED + 写 0
+    got = -7;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetIds(
+            LtMatmulArch35Test::ltHandle_, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_INT8, ACL_INT8, ACL_FLOAT, ACL_FLOAT,
+            static_cast<int>(ids.size()), ids.data(), &got),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
+    EXPECT_EQ(got, 0);
+    // ids 缓冲在任何失败路径都不被写入（毒值原封不动）
+    for (size_t i = 0; i < ids.size(); ++i) {
+        EXPECT_EQ(ids[i], -1) << "ids[" << i << "] written on failure path";
+    }
 }
 
 // 哨兵毒化：失败路径不得回写 *algo，先整体填毒值，调用后校验毒值原封不动，
@@ -652,7 +750,14 @@ TEST_F(LtMatmulArch35Test, AlgoGetHeuristicContract)
     DestroyFp32HeuristicFixture(computeDesc, aLayout, bLayout, dLayout);
 }
 
-TEST_F(LtMatmulArch35Test, AlgoGetHeuristicRejectsBadTypeAndTinyWorkspace)
+// 坏用例修复（栈溢出 abort 遮蔽注册序其后全部用例）：原 mismatchResult[1] 单元素栈数组被
+// requestedAlgoCount=4 复用为出参，4 个回写踩坏栈金丝雀，测试体退出时 stack smashing abort
+// （exit 134），套件不加 filter 无法产生任何可信信号。数组容量对齐最大请求数。
+// 同时按实现真实语义修正 tiny 预算断言：FP32 默认候选 splitK=1、epilogue=DEFAULT，内在
+// workspace 需求恒 0（CalculateWorkspaceForAscend），FillHeuristicResults 的预算过滤仅在
+// workspaceSize > maxWorkspace 时跳过候选，1 字节预算不会过滤任何候选 → SUCCESS
+// （基线实测 tinyCount=4），原 NOT_SUPPORTED 期望系误设。
+TEST_F(LtMatmulArch35Test, AlgoGetHeuristicTypeMismatchAndTinyWorkspaceBudget)
 {
     aclblasLtMatrixLayout_t aLayout = nullptr;
     aclblasLtMatrixLayout_t bLayout = nullptr;
@@ -663,17 +768,17 @@ TEST_F(LtMatmulArch35Test, AlgoGetHeuristicRejectsBadTypeAndTinyWorkspace)
     // 类型组合不兼容：返回 INVALID_VALUE 且 results[0].state 写 INVALID_VALUE
     aclblasLtMatrixLayout_t int8Layout = nullptr;
     ASSERT_EQ(aclblasLtMatrixLayoutCreate(&int8Layout, ACL_INT8, 32, 16, 32), ACLBLAS_STATUS_SUCCESS);
-    aclblasLtMatmulHeuristicResult_t mismatchResult[1];
+    aclblasLtMatmulHeuristicResult_t results[4] = {}; // 容量覆盖本用例最大 requestedAlgoCount=4
     int mismatchCount = -1;
     EXPECT_EQ(
         aclblasLtMatmulAlgoGetHeuristic(
-            LtMatmulArch35Test::ltHandle_, computeDesc, int8Layout, bLayout, dLayout, dLayout, nullptr, 1,
-            mismatchResult, &mismatchCount),
+            LtMatmulArch35Test::ltHandle_, computeDesc, int8Layout, bLayout, dLayout, dLayout, nullptr, 1, results,
+            &mismatchCount),
         ACLBLAS_STATUS_INVALID_VALUE);
-    EXPECT_EQ(mismatchResult[0].state, ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(results[0].state, ACLBLAS_STATUS_INVALID_VALUE);
     EXPECT_EQ(mismatchCount, 0);
 
-    // workspace 预算不足：候选全部被跳过 → NOT_SUPPORTED 且 returnCount=0
+    // tiny 预算（1 字节）：内在需求为 0 的候选不被过滤 → SUCCESS 且各候选 workspaceSize=0
     aclblasLtMatmulPreference_t pref = nullptr;
     ASSERT_EQ(aclblasLtMatmulPreferenceCreate(&pref), ACLBLAS_STATUS_SUCCESS);
     const size_t tinyWorkspace = 1;
@@ -684,13 +789,41 @@ TEST_F(LtMatmulArch35Test, AlgoGetHeuristicRejectsBadTypeAndTinyWorkspace)
     int tinyCount = -1;
     EXPECT_EQ(
         aclblasLtMatmulAlgoGetHeuristic(
-            LtMatmulArch35Test::ltHandle_, computeDesc, aLayout, bLayout, dLayout, dLayout, pref, 4, mismatchResult,
+            LtMatmulArch35Test::ltHandle_, computeDesc, aLayout, bLayout, dLayout, dLayout, pref, 4, results,
             &tinyCount),
-        ACLBLAS_STATUS_NOT_SUPPORTED);
-    EXPECT_EQ(tinyCount, 0);
-    aclblasLtMatmulPreferenceDestroy(pref);
+        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_GT(tinyCount, 0);
+    ASSERT_LE(tinyCount, 4);
+    for (int i = 0; i < tinyCount; i++) {
+        EXPECT_EQ(results[i].state, ACLBLAS_STATUS_SUCCESS);
+        EXPECT_EQ(results[i].workspaceSize, size_t{0});
+    }
+    EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(pref), ACLBLAS_STATUS_SUCCESS);
 
     aclblasLtMatrixLayoutDestroy(int8Layout);
+    DestroyFp32HeuristicFixture(computeDesc, aLayout, bLayout, dLayout);
+}
+
+// GetHeuristic handle NULL → INVALID_VALUE 且 *returnAlgoCount 先被写 0（ValidateHeuristicArgs
+// 把 handle/computeDesc NULL 归入 INVALID_VALUE）。钉 arch35 行为：arch22 分支
+// （LtMatmul22Heuristic）对 handle NULL 返回 NOT_INITIALIZED，该分叉是检视报告点名的已披露
+// 文档失准项，但本套件仅按 arch35 目标构建，按任务口径 arch22 分支行为一律不钉。
+TEST_F(LtMatmulArch35Test, AlgoGetHeuristicRejectsNullHandle)
+{
+    aclblasLtMatrixLayout_t aLayout = nullptr;
+    aclblasLtMatrixLayout_t bLayout = nullptr;
+    aclblasLtMatrixLayout_t dLayout = nullptr;
+    aclblasLtMatmulDesc_t computeDesc = CreateFp32HeuristicFixture(&aLayout, &bLayout, &dLayout);
+    ASSERT_NE(computeDesc, nullptr);
+
+    aclblasLtMatmulHeuristicResult_t results[1] = {};
+    int returnCount = -1;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoGetHeuristic(
+            nullptr, computeDesc, aLayout, bLayout, dLayout, dLayout, nullptr, 1, results, &returnCount),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(returnCount, 0);
+
     DestroyFp32HeuristicFixture(computeDesc, aLayout, bLayout, dLayout);
 }
 
@@ -734,6 +867,193 @@ TEST_F(LtMatmulArch35Test, AlgoCapGetAttributeContract)
         ACLBLAS_STATUS_INVALID_VALUE);
 }
 
+// ── CapGetAttribute 契约补全（缺口 G2）──
+// 真值源：.cannbot/aclblasLtMatmulAlgoCapGetAttribute/2.2-开发方案设计.md §11.3 能力值表
+// （exact match 零容差，SPLITK=0 / REDUCTION_MASK=0 为用户拍板值）与 §11.4 错误码矩阵
+// （行 9 为黑盒不可达防御分支，按 2.1 §8.2 E1 正当排除）。
+
+namespace {
+
+// 默认 FP32 algo 胶囊（algoId=0）：Cap 契约组与 AlgoCheck 契约组共用的前置构造。
+// 两处此前各持一份同体实现（MakeCapTestAlgo / MakeDefaultFp32Algo），按 CQ.07 收敛为一份。
+bool MakeDefaultFp32Algo(aclblasLtHandle_t handle, aclblasLtMatmulAlgo_t* out)
+{
+    return aclblasLtMatmulAlgoInit(
+               handle, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, 0, out) ==
+           ACLBLAS_STATUS_SUCCESS;
+}
+
+// 标量能力断言：SUCCESS + sizeWritten==4 + 能力值精确一致。
+void ExpectCapScalarValue(const aclblasLtMatmulAlgo_t& algo, aclblasLtMatmulAlgoCapAttributes_t cap, uint32_t expected)
+{
+    uint32_t value = 0xDEADu;
+    size_t written = 0;
+    ASSERT_EQ(aclblasLtMatmulAlgoCapGetAttribute(&algo, cap, &value, sizeof(value), &written), ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(value, expected);
+    EXPECT_EQ(written, sizeof(uint32_t));
+}
+
+// 数组能力断言：SUCCESS + sizeWritten==16 + 逐元素精确一致（{1,2,3,4} 即升序契约）。
+void ExpectCapArrayValue(const aclblasLtMatmulAlgo_t& algo, aclblasLtMatmulAlgoCapAttributes_t cap)
+{
+    constexpr uint32_t kExpected[4] = {1u, 2u, 3u, 4u};
+    uint32_t values[4] = {0};
+    size_t written = 0;
+    ASSERT_EQ(aclblasLtMatmulAlgoCapGetAttribute(&algo, cap, values, sizeof(values), &written), ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(written, sizeof(values));
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+        EXPECT_EQ(values[i], kExpected[i]) << "cap array element " << i;
+    }
+}
+
+// 探长断言（错误码矩阵行 6）：size==0 且 buf 可空 → SUCCESS + sizeWritten==所需字节数。
+void ExpectCapProbeBytes(const aclblasLtMatmulAlgo_t& algo, aclblasLtMatmulAlgoCapAttributes_t cap, size_t expected)
+{
+    size_t written = 0;
+    EXPECT_EQ(aclblasLtMatmulAlgoCapGetAttribute(&algo, cap, nullptr, 0, &written), ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(written, expected);
+}
+
+// 缓冲不足断言（错误码矩阵行 7）：INVALID_VALUE，但 sizeWritten 仍回传所需字节（用户批准设计）。
+void ExpectCapShortBuffer(
+    const aclblasLtMatmulAlgo_t& algo, aclblasLtMatmulAlgoCapAttributes_t cap, size_t given, size_t expected)
+{
+    uint32_t out = 0;
+    size_t written = 0;
+    EXPECT_EQ(aclblasLtMatmulAlgoCapGetAttribute(&algo, cap, &out, given, &written), ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(written, expected);
+}
+
+} // namespace
+
+// 错误码矩阵缺失的 5 行（2/3/4/6/7）补齐执行——行 1/5/8 已由 AlgoCapGetAttributeContract 钉住。
+TEST_F(LtMatmulArch35Test, AlgoCapGetAttributeErrorCodeMatrix)
+{
+    aclblasLtMatmulAlgo_t algo{};
+    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
+
+    // 行 2：size==0 且 sizeWritten==NULL → INVALID_VALUE（Cap 族严格守卫，异于 Get 族宽松契约）
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCapGetAttribute(&algo, ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT, nullptr, 0, nullptr),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    // 行 3：size!=0 且 capAttribute==NULL → INVALID_VALUE
+    size_t written = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCapGetAttribute(
+            &algo, ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT, nullptr, sizeof(uint32_t), &written),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    // 行 4：DecodeAlgo 失败（magic 损坏 / 全零未初始化胶囊）→ INVALID_VALUE
+    aclblasLtMatmulAlgo_t badMagic = algo;
+    badMagic.data[0] = static_cast<uint8_t>(badMagic.data[0] ^ 0xFFu);
+    uint32_t out = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCapGetAttribute(&badMagic, ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT, &out, sizeof(out), &written),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    const aclblasLtMatmulAlgo_t zeroInit{};
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCapGetAttribute(&zeroInit, ACLBLASLT_ALGO_CAP_TILE_IDS, &out, sizeof(out), &written),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    // 行 6：probe（size==0，buf 可空）→ SUCCESS + sizeWritten==所需字节（标量 4 / 数组 16）
+    ExpectCapProbeBytes(algo, ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT, sizeof(uint32_t));
+    ExpectCapProbeBytes(algo, ACLBLASLT_ALGO_CAP_TILE_IDS, 4u * sizeof(uint32_t));
+    // 行 7：缓冲不足 → INVALID_VALUE，且 sizeWritten 仍回传所需值（用户批准设计）
+    ExpectCapShortBuffer(algo, ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT, sizeof(uint16_t), sizeof(uint32_t));
+    ExpectCapShortBuffer(algo, ACLBLASLT_ALGO_CAP_TILE_IDS, sizeof(uint32_t), 4u * sizeof(uint32_t));
+}
+
+// 9 项拍板能力值逐项钉住（§11.3）——既有 AlgoCapGetAttributeContract 仅钉 SPLITK 一项。
+TEST_F(LtMatmulArch35Test, AlgoCapGetAttributeCapabilityValues)
+{
+    aclblasLtMatmulAlgo_t algo{};
+    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
+
+    ExpectCapScalarValue(algo, ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT, 0u);
+    ExpectCapScalarValue(algo, ACLBLASLT_ALGO_CAP_REDUCTION_SCHEME_MASK, 0u);
+    ExpectCapScalarValue(algo, ACLBLASLT_ALGO_CAP_CTA_SWIZZLING_SUPPORT, 0u);
+    ExpectCapScalarValue(algo, ACLBLASLT_ALGO_CAP_STRIDED_BATCH_SUPPORT, 0u);
+    ExpectCapScalarValue(algo, ACLBLASLT_ALGO_CAP_OUT_OF_PLACE_RESULT_SUPPORT, 1u);
+    ExpectCapScalarValue(algo, ACLBLASLT_ALGO_CAP_UPLO_SUPPORT, 0u);
+    ExpectCapScalarValue(algo, ACLBLASLT_ALGO_CAP_CUSTOM_OPTION_MAX, 2u);
+    ExpectCapArrayValue(algo, ACLBLASLT_ALGO_CAP_TILE_IDS);
+    ExpectCapArrayValue(algo, ACLBLASLT_ALGO_CAP_STAGES_IDS);
+}
+
+// ── ALGO_CAP 枚举裸数值钉值（迁移安全，循 PR 682 L2_16~21 先例）──
+// 数值契约（2.2 §11.2，cuBLASLt 四源实证权威值）：0~6 + CUSTOM_OPTION_MAX=7 +
+// STAGES_IDS=13 + MAX 哨兵=14；7→13 跳号是与权威值一一对应的直接代价。该族已真实
+// 发生过一次 5/12 错号（PR 682 修复），符号名引用对数值漂移全盲，裸值钉值是唯一回归网。
+TEST_F(LtMatmulArch35Test, AlgoCapGetAttributeMigrationRawValues)
+{
+    // 编译期编号逐项钉住
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT), 0);
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_ALGO_CAP_REDUCTION_SCHEME_MASK), 1);
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_ALGO_CAP_CTA_SWIZZLING_SUPPORT), 2);
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_ALGO_CAP_STRIDED_BATCH_SUPPORT), 3);
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_ALGO_CAP_OUT_OF_PLACE_RESULT_SUPPORT), 4);
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_ALGO_CAP_UPLO_SUPPORT), 5);
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_ALGO_CAP_TILE_IDS), 6);
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_ALGO_CAP_CUSTOM_OPTION_MAX), 7);
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_ALGO_CAP_STAGES_IDS), 13);
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_ALGO_CAP_MAX), 14);
+
+    aclblasLtMatmulAlgo_t algo{};
+    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
+
+    // 行为级裸值可达：raw 7 → CUSTOM_OPTION_MAX 标量 2/4B（committer 指控的静默错配修复点）；
+    // raw 13 → STAGES_IDS 数组 {1,2,3,4}/16B（迁移代码按 cuBLASLt 真值传参的正例）
+    ExpectCapScalarValue(algo, static_cast<aclblasLtMatmulAlgoCapAttributes_t>(7), 2u);
+    ExpectCapArrayValue(algo, static_cast<aclblasLtMatmulAlgoCapAttributes_t>(13));
+    // 子集外逐值：8~12（cuBLASLt MATHMODE_IMPL/GAUSSIAN_IMPL/CUSTOM_MEMORY_ORDER/
+    // POINTER_MODE_MASK/EPILOGUE_MASK 位）、14（MAX 哨兵，与 cuBLASLt LD_NEGATIVE 数值重合
+    // 但本库不提供）、22、999、UINT32_MAX（负数位模式）→ NOT_SUPPORTED
+    for (uint32_t raw : {8u, 9u, 10u, 11u, 12u, 14u, 22u, 999u, 0xFFFFFFFFu}) {
+        uint32_t out = 0;
+        size_t written = 0;
+        EXPECT_EQ(
+            aclblasLtMatmulAlgoCapGetAttribute(
+                &algo, static_cast<aclblasLtMatmulAlgoCapAttributes_t>(raw), &out, sizeof(out), &written),
+            ACLBLAS_STATUS_NOT_SUPPORTED)
+            << "raw cap " << raw;
+    }
+}
+
+namespace {
+
+// Preference Get 族「探测」断言：size==0 且 buf 可空 → SUCCESS + sizeWritten==属性宽度。
+// written 预置 SIZE_MAX，故第二断言同时证明「确由本次调用回写」而非残留值。
+void ExpectPrefProbeBytes(
+    aclblasLtMatmulPreference_t pref, aclblasLtMatmulPreferenceAttribute_t attr, size_t expectedBytes)
+{
+    size_t written = SIZE_MAX;
+    EXPECT_EQ(aclblasLtMatmulPreferenceGetAttribute(pref, attr, nullptr, 0, &written), ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(written, expectedBytes);
+}
+
+// Preference Get 族「拒绝但告知」断言：状态码为 expected，且 sizeWritten 仍先行回传所需宽度
+// （未知属性场景传 SIZE_MAX 即断言其不被改写）。
+void ExpectPrefRejectedWithWidth(
+    aclblasLtMatmulPreference_t pref, aclblasLtMatmulPreferenceAttribute_t attr, void* buf, size_t size,
+    aclblasStatus_t expected, size_t expectedWritten)
+{
+    size_t written = SIZE_MAX;
+    EXPECT_EQ(aclblasLtMatmulPreferenceGetAttribute(pref, attr, buf, size, &written), expected);
+    EXPECT_EQ(written, expectedWritten);
+}
+
+// SEARCH_MODE 回读断言：Get 成功 + 值精确一致 + sizeWritten==4（值域扫描的公共形态）。
+void ExpectPrefSearchModeReadback(aclblasLtMatmulPreference_t pref, uint32_t expected)
+{
+    uint32_t out = 0xDEADu;
+    size_t written = 0;
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &out, sizeof(out), &written),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(out, expected);
+    EXPECT_EQ(written, sizeof(uint32_t));
+}
+
+} // namespace
+
 TEST_F(LtMatmulArch35Test, MatmulPreferenceGetAttributeContract)
 {
     aclblasLtMatmulPreference_t pref = nullptr;
@@ -751,18 +1071,21 @@ TEST_F(LtMatmulArch35Test, MatmulPreferenceGetAttributeContract)
         ACLBLAS_STATUS_SUCCESS);
     EXPECT_EQ(modeOut, searchMode);
 
-    // MAX_WORKSPACE_BYTES：接受 4 字节写入（4/8 两种宽度均合法）
-    const uint32_t workspaceSmall = 1024;
+    // MAX_WORKSPACE_BYTES：实现为精确宽度匹配、仅接受 8 字节（#786 口径，
+    // aclblaslt_matmul_preference.cpp 的 sizeof(size_t)/sizeof(uint64_t) 守卫）。原 4 字节
+    // 正向断言源自 api_list 失准文档，ASSERT 中止使本用例后续断言全部僵尸；
+    // 现改为 8 字节正向回读（4 字节宽度错配拒绝见 SetAttribute 负向契约用例）。
+    const uint64_t workspace = 1024;
     ASSERT_EQ(
         aclblasLtMatmulPreferenceSetAttribute(
-            pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &workspaceSmall, sizeof(workspaceSmall)),
+            pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &workspace, sizeof(workspace)),
         ACLBLAS_STATUS_SUCCESS);
     size_t workspaceOut = 0;
     EXPECT_EQ(
         aclblasLtMatmulPreferenceGetAttribute(
             pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &workspaceOut, sizeof(workspaceOut), nullptr),
         ACLBLAS_STATUS_SUCCESS);
-    EXPECT_EQ(workspaceOut, size_t{workspaceSmall});
+    EXPECT_EQ(workspaceOut, static_cast<size_t>(workspace));
 
     // 值域校验：SEARCH_MODE>2 拒绝、workspace 超 INT64_MAX 拒绝
     const uint32_t badMode = 3;
@@ -776,11 +1099,7 @@ TEST_F(LtMatmulArch35Test, MatmulPreferenceGetAttributeContract)
         ACLBLAS_STATUS_INVALID_VALUE);
 
     // 探测模式：size=0 不写 buf，sizeWritten 回传所需字节数
-    size_t probeBytes = 0;
-    EXPECT_EQ(
-        aclblasLtMatmulPreferenceGetAttribute(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, nullptr, 0, &probeBytes),
-        ACLBLAS_STATUS_SUCCESS);
-    EXPECT_EQ(probeBytes, sizeof(uint32_t));
+    ExpectPrefProbeBytes(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, sizeof(uint32_t));
 
     // 未识别 attr → NOT_SUPPORTED
     uint32_t out = 0;
@@ -790,6 +1109,161 @@ TEST_F(LtMatmulArch35Test, MatmulPreferenceGetAttributeContract)
         ACLBLAS_STATUS_NOT_SUPPORTED);
 
     aclblasLtMatmulPreferenceDestroy(pref);
+}
+
+// ── PreferenceGet/Set 负向与探测契约补全（缺口 G4：Set 是偏好族唯一写入口，
+// 其拒绝分支此前零执行；Get 族宽松契约与 Cap 族严格守卫的差异此前无钉住）──
+
+TEST_F(LtMatmulArch35Test, MatmulPreferenceSetAttributeRejectsInvalidInputs)
+{
+    aclblasLtMatmulPreference_t pref = nullptr;
+    ASSERT_EQ(aclblasLtMatmulPreferenceCreate(&pref), ACLBLAS_STATUS_SUCCESS);
+
+    // NULL 组合：pref NULL / buf NULL → INVALID_VALUE
+    const uint32_t mode = 1;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(nullptr, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &mode, sizeof(mode)),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, nullptr, sizeof(mode)),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    // 宽度错配：SEARCH_MODE 仅收 4 字节（8 字节拒绝）、MAX_WS 仅收 8 字节（4 字节拒绝，#786 口径）
+    const uint64_t modeWide = 1;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &modeWide, sizeof(modeWide)),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    const uint32_t wsNarrow = 64;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(
+            pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &wsNarrow, sizeof(wsNarrow)),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    // 未知属性（含 MAX 哨兵）→ NOT_SUPPORTED
+    uint32_t ignored = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(pref, ACLBLASLT_MATMUL_PREF_MAX, &ignored, sizeof(ignored)),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(
+            pref, static_cast<aclblasLtMatmulPreferenceAttribute_t>(99), &ignored, sizeof(ignored)),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
+    // 被拒写入不改写胶囊：SEARCH_MODE 仍为 Create 后默认值 0
+    uint32_t modeOut = 0xDEADu;
+    size_t written = 0;
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(
+            pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &modeOut, sizeof(modeOut), &written),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(modeOut, 0u);
+
+    EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(pref), ACLBLAS_STATUS_SUCCESS);
+}
+
+// SEARCH_MODE 值域契约（缺口 G7/G4 残项，评估报告 P2-2）：0/1/2 逐一接受并回读一致，
+// >2 拒绝且不改写。钉住 header/api_list 已披露的仓内自定义语义——0=启发式、1=穷举、
+// 2=快速，其中 1/2 与 cublasLtMatmulSearch_t 分叉（cuBLASLt 侧 1=LIMITED_BY_ALGO_ID、
+// 2~7=RESERVED），仅 0 两侧同义可移植；该分叉当前为潜伏状态（searchMode 全链无消费方，
+// Set 存 / Get 读回，heuristic 不读取），值域 Set/Get 行为是其唯一可观测面。
+// 既有零散断言（契约用例中 2 接受、3 拒绝）之外，此处首次以完整值域扫描钉住披露语义。
+TEST_F(LtMatmulArch35Test, MatmulPreferenceSearchModeValueDomain)
+{
+    aclblasLtMatmulPreference_t pref = nullptr;
+    ASSERT_EQ(aclblasLtMatmulPreferenceCreate(&pref), ACLBLAS_STATUS_SUCCESS);
+
+    // 域内 0/1/2：Set 逐一接受 + Get 回读一致（含 sizeWritten 宽度断言）
+    for (uint32_t mode : {0u, 1u, 2u}) {
+        ASSERT_EQ(
+            aclblasLtMatmulPreferenceSetAttribute(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &mode, sizeof(mode)),
+            ACLBLAS_STATUS_SUCCESS)
+            << "mode=" << mode;
+        ExpectPrefSearchModeReadback(pref, mode);
+    }
+    // 域外 3（边界+1）与 UINT32_MAX：拒绝且不改写（回读仍为最后一次合法写入的 2）。
+    // 此处刻意保留 sizeWritten=nullptr 的成功路径调用——Get 族「宽出参可空」契约的独立观测点。
+    for (uint32_t bad : {3u, 0xFFFFFFFFu}) {
+        EXPECT_EQ(
+            aclblasLtMatmulPreferenceSetAttribute(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &bad, sizeof(bad)),
+            ACLBLAS_STATUS_INVALID_VALUE)
+            << "bad mode=" << bad;
+        uint32_t out = 0;
+        ASSERT_EQ(
+            aclblasLtMatmulPreferenceGetAttribute(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &out, sizeof(out), nullptr),
+            ACLBLAS_STATUS_SUCCESS);
+        EXPECT_EQ(out, 2u);
+    }
+
+    EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(pref), ACLBLAS_STATUS_SUCCESS);
+}
+
+TEST_F(LtMatmulArch35Test, MatmulPreferenceGetAttributeProbeAndGuards)
+{
+    aclblasLtMatmulPreference_t pref = nullptr;
+    ASSERT_EQ(aclblasLtMatmulPreferenceCreate(&pref), ACLBLAS_STATUS_SUCCESS);
+
+    // 探测族：size==0 → SUCCESS + sizeWritten==属性宽度（SEARCH_MODE=4 / MAX_WS=8）
+    ExpectPrefProbeBytes(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, sizeof(uint32_t));
+    ExpectPrefProbeBytes(pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, sizeof(uint64_t));
+    // (size==0 且 sizeWritten==NULL) → SUCCESS：Get 族宽松契约（异于 Cap 族矩阵行 2 严格守卫）
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, nullptr, 0, nullptr),
+        ACLBLAS_STATUS_SUCCESS);
+    // 缓冲不足 → INVALID_VALUE，且 sizeWritten 仍回传所需宽度
+    uint16_t small = 0;
+    ExpectPrefRejectedWithWidth(
+        pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &small, sizeof(small), ACLBLAS_STATUS_INVALID_VALUE,
+        sizeof(uint64_t));
+    // buf NULL + size!=0 → INVALID_VALUE（sizeWritten 已先行回传所需宽度）
+    ExpectPrefRejectedWithWidth(
+        pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, nullptr, sizeof(uint32_t), ACLBLAS_STATUS_INVALID_VALUE,
+        sizeof(uint32_t));
+    // pref NULL → INVALID_VALUE
+    uint32_t modeOut = 0;
+    size_t written = SIZE_MAX;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(
+            nullptr, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &modeOut, sizeof(modeOut), &written),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    // 未知属性 → NOT_SUPPORTED 且 sizeWritten 不写
+    ExpectPrefRejectedWithWidth(
+        pref, static_cast<aclblasLtMatmulPreferenceAttribute_t>(99), &modeOut, sizeof(modeOut),
+        ACLBLAS_STATUS_NOT_SUPPORTED, SIZE_MAX);
+
+    EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(pref), ACLBLAS_STATUS_SUCCESS);
+}
+
+// ── PREFERENCE 族枚举裸数值钉值（迁移安全）──
+// SEARCH_MODE=0、MAX_WORKSPACE_BYTES=1 与 cuBLASLt 对齐；MAX 哨兵=2 与 cuBLASLt
+// MATH_MODE_MASK 数值重合，本库对其一律 NOT_SUPPORTED（「响亮拒绝」安全态，由此钉住）。
+TEST_F(LtMatmulArch35Test, MatmulPreferenceAttributeEnumValuesPinned)
+{
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_MATMUL_PREF_SEARCH_MODE), 0);
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES), 1);
+    EXPECT_EQ(static_cast<int>(ACLBLASLT_MATMUL_PREF_MAX), 2);
+
+    aclblasLtMatmulPreference_t pref = nullptr;
+    ASSERT_EQ(aclblasLtMatmulPreferenceCreate(&pref), ACLBLAS_STATUS_SUCCESS);
+    // 行为级裸值可达：raw 0 → SEARCH_MODE 回环；raw 1 → MAX_WS 探测宽度 8
+    const uint32_t mode = 1;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(
+            pref, static_cast<aclblasLtMatmulPreferenceAttribute_t>(0), &mode, sizeof(mode)),
+        ACLBLAS_STATUS_SUCCESS);
+    uint32_t modeOut = 0;
+    size_t written = 0;
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(
+            pref, static_cast<aclblasLtMatmulPreferenceAttribute_t>(0), &modeOut, sizeof(modeOut), &written),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(modeOut, mode);
+    ExpectPrefProbeBytes(pref, static_cast<aclblasLtMatmulPreferenceAttribute_t>(1), sizeof(uint64_t));
+    // raw 2（MAX 哨兵）→ Set/Get 双侧 NOT_SUPPORTED
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(pref, ACLBLASLT_MATMUL_PREF_MAX, &mode, sizeof(mode)),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
+    EXPECT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(pref, ACLBLASLT_MATMUL_PREF_MAX, &modeOut, sizeof(modeOut), &written),
+        ACLBLAS_STATUS_NOT_SUPPORTED);
+
+    EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(pref), ACLBLAS_STATUS_SUCCESS);
 }
 
 TEST_F(LtMatmulArch35Test, RejectsMismatchedContractionDimension)
@@ -1537,13 +2011,6 @@ TEST_F(LtMatmulArch35Test, Fp32ComputeBf16OutputMixedBuffers)
 
 namespace {
 
-bool MakeDefaultFp32Algo(aclblasLtHandle_t handle, aclblasLtMatmulAlgo_t* out)
-{
-    return aclblasLtMatmulAlgoInit(
-               handle, ACLBLAS_COMPUTE_32F, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, ACL_FLOAT, 0, out) ==
-           ACLBLAS_STATUS_SUCCESS;
-}
-
 // algo blob 里 magic 占 data[0:4]、algoId 占 data[4:8]，均小端。逐字节读写，避免裸 memcpy。
 void SetAlgoBlobWord(aclblasLtMatmulAlgo_t& algo, size_t wordOffset, uint32_t value)
 {
@@ -1561,10 +2028,19 @@ uint32_t GetAlgoBlobWord(const aclblasLtMatmulAlgo_t& algo, size_t wordOffset)
     return value;
 }
 
-// 16×16 FP32 行主序方阵 workload；m/n/k 可覆盖以构造零维等边界。
-struct AlgoCheckWorkload {
+// AlgoCheck 契约组公共夹具：16×16 FP32 行主序方阵 workload + 默认 algo 胶囊 + result 出参。
+// 该组 12 个用例的「建 workload → 取默认 algo → 以全套有效参调 AlgoCheck」三步完全同构，
+// 差异仅在 m/n/k、algo blob 篡改与 desc/layout 属性改写，故按 CQ.07 收敛到一处。
+// handle 由调用方传入（夹具位于匿名命名空间，无法访问 fixture 的 protected 静态成员）。
+// 两级前置条件保持各自独立断言（CreateWorkload / InitAlgo），失败可定位到具体阶段。
+struct AlgoCheckFixture {
     MatmulLayoutTestData layouts;
-    bool Create(uint64_t m = 16, uint64_t n = 16, uint64_t k = 16)
+    aclblasLtMatmulAlgo_t algo{};
+    aclblasLtMatmulHeuristicResult_t result{};
+    aclblasLtHandle_t handle = nullptr;
+
+    // m/n/k 可覆盖以构造零维等边界
+    bool CreateWorkload(uint64_t m = 16, uint64_t n = 16, uint64_t k = 16)
     {
         const uint64_t rows[] = {m, k, m, m};
         const uint64_t cols[] = {k, n, n, n};
@@ -1572,6 +2048,20 @@ struct AlgoCheckWorkload {
             static_cast<int64_t>(k), static_cast<int64_t>(n), static_cast<int64_t>(n), static_cast<int64_t>(n)};
         return layouts.Initialize(rows, cols, ld);
     }
+
+    bool InitAlgo(aclblasLtHandle_t ltHandle)
+    {
+        handle = ltHandle;
+        return MakeDefaultFp32Algo(ltHandle, &algo);
+    }
+
+    // 以夹具当前状态调用 AlgoCheck；out 重载供需要独立零初始化 result 的用例使用。
+    aclblasStatus_t Run(aclblasLtMatmulHeuristicResult_t& out)
+    {
+        return aclblasLtMatmulAlgoCheck(
+            handle, layouts.computeDesc, layouts.a, layouts.b, layouts.c, layouts.d, &algo, &out);
+    }
+    aclblasStatus_t Run() { return Run(result); }
 };
 
 } // namespace
@@ -1589,163 +2079,114 @@ TEST_F(LtMatmulArch35Test, AlgoCheckNullArgsPrecedeHandleCheck)
 
 TEST_F(LtMatmulArch35Test, AlgoCheckNullHandleAlone)
 {
-    AlgoCheckWorkload wl;
-    ASSERT_TRUE(wl.Create());
-    aclblasLtMatmulAlgo_t algo{};
-    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
-    aclblasLtMatmulHeuristicResult_t result{};
-    EXPECT_EQ(
-        aclblasLtMatmulAlgoCheck(
-            nullptr, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c, wl.layouts.d, &algo, &result),
-        ACLBLAS_STATUS_NOT_INITIALIZED);
+    AlgoCheckFixture fx;
+    ASSERT_TRUE(fx.CreateWorkload());
+    ASSERT_TRUE(fx.InitAlgo(LtMatmulArch35Test::ltHandle_));
+    fx.handle = nullptr; // 仅 handle 置空，其余 6 参均有效
+    EXPECT_EQ(fx.Run(), ACLBLAS_STATUS_NOT_INITIALIZED);
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckRejectsTamperedMagic)
 {
-    AlgoCheckWorkload wl;
-    ASSERT_TRUE(wl.Create());
-    aclblasLtMatmulAlgo_t algo{};
-    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
-    SetAlgoBlobWord(algo, 0, GetAlgoBlobWord(algo, 0) ^ 0xFFu); // 破坏 magic
-    aclblasLtMatmulHeuristicResult_t result{};
-    EXPECT_EQ(
-        aclblasLtMatmulAlgoCheck(
-            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
-            wl.layouts.d, &algo, &result),
-        ACLBLAS_STATUS_INVALID_VALUE);
+    AlgoCheckFixture fx;
+    ASSERT_TRUE(fx.CreateWorkload());
+    ASSERT_TRUE(fx.InitAlgo(LtMatmulArch35Test::ltHandle_));
+    SetAlgoBlobWord(fx.algo, 0, GetAlgoBlobWord(fx.algo, 0) ^ 0xFFu); // 破坏 magic
+    EXPECT_EQ(fx.Run(), ACLBLAS_STATUS_INVALID_VALUE);
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckRejectsUndecodableAlgoId)
 {
-    AlgoCheckWorkload wl;
-    ASSERT_TRUE(wl.Create());
-    aclblasLtMatmulAlgo_t algo{};
-    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
-    SetAlgoBlobWord(algo, 4, 0x00800000u); // 低 2 位为 0，落在 splitK 编码域 {1,2,3} 之外 → 不可解码
-    aclblasLtMatmulHeuristicResult_t result{};
-    EXPECT_EQ(
-        aclblasLtMatmulAlgoCheck(
-            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
-            wl.layouts.d, &algo, &result),
-        ACLBLAS_STATUS_INVALID_VALUE);
+    AlgoCheckFixture fx;
+    ASSERT_TRUE(fx.CreateWorkload());
+    ASSERT_TRUE(fx.InitAlgo(LtMatmulArch35Test::ltHandle_));
+    // 低 2 位为 0，落在 splitK 编码域 {1,2,3} 之外 → 不可解码
+    SetAlgoBlobWord(fx.algo, 4, 0x00800000u);
+    EXPECT_EQ(fx.Run(), ACLBLAS_STATUS_INVALID_VALUE);
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckZeroDimNoOpReportsZeroWorkspace)
 {
-    AlgoCheckWorkload wl;
-    ASSERT_TRUE(wl.Create(/*m=*/0, /*n=*/16, /*k=*/16));
-    aclblasLtMatmulAlgo_t algo{};
-    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
-    aclblasLtMatmulHeuristicResult_t result{};
-    ASSERT_EQ(
-        aclblasLtMatmulAlgoCheck(
-            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
-            wl.layouts.d, &algo, &result),
-        ACLBLAS_STATUS_SUCCESS);
-    EXPECT_EQ(result.workspaceSize, 0u); // 空问题不报 epilogue 的固定附加项
-    EXPECT_EQ(result.state, ACLBLAS_STATUS_SUCCESS);
+    AlgoCheckFixture fx;
+    ASSERT_TRUE(fx.CreateWorkload(/*m=*/0, /*n=*/16, /*k=*/16));
+    ASSERT_TRUE(fx.InitAlgo(LtMatmulArch35Test::ltHandle_));
+    ASSERT_EQ(fx.Run(), ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(fx.result.workspaceSize, 0u); // 空问题不报 epilogue 的固定附加项
+    EXPECT_EQ(fx.result.state, ACLBLAS_STATUS_SUCCESS);
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckRejectsColOrder)
 {
-    AlgoCheckWorkload wl;
-    ASSERT_TRUE(wl.Create());
+    AlgoCheckFixture fx;
+    ASSERT_TRUE(fx.CreateWorkload());
+    ASSERT_TRUE(fx.InitAlgo(LtMatmulArch35Test::ltHandle_));
     const aclblasLtOrder_t col = ACLBLASLT_ORDER_COL;
     ASSERT_EQ(
-        aclblasLtMatrixLayoutSetAttribute(wl.layouts.a, ACLBLASLT_MATRIX_LAYOUT_ORDER, &col, sizeof(col)),
+        aclblasLtMatrixLayoutSetAttribute(fx.layouts.a, ACLBLASLT_MATRIX_LAYOUT_ORDER, &col, sizeof(col)),
         ACLBLAS_STATUS_SUCCESS);
-    aclblasLtMatmulAlgo_t algo{};
-    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
-    aclblasLtMatmulHeuristicResult_t result{};
-    EXPECT_EQ(
-        aclblasLtMatmulAlgoCheck(
-            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
-            wl.layouts.d, &algo, &result),
-        ACLBLAS_STATUS_NOT_SUPPORTED);
+    EXPECT_EQ(fx.Run(), ACLBLAS_STATUS_NOT_SUPPORTED);
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckRejectsConjugateTranspose)
 {
-    AlgoCheckWorkload wl;
-    ASSERT_TRUE(wl.Create());
+    AlgoCheckFixture fx;
+    ASSERT_TRUE(fx.CreateWorkload());
+    ASSERT_TRUE(fx.InitAlgo(LtMatmulArch35Test::ltHandle_));
     const int32_t opC = ACLBLAS_OP_C;
     ASSERT_EQ(
-        aclblasLtMatmulDescSetAttribute(wl.layouts.computeDesc, ACLBLASLT_MATMUL_DESC_TRANSA, &opC, sizeof(opC)),
+        aclblasLtMatmulDescSetAttribute(fx.layouts.computeDesc, ACLBLASLT_MATMUL_DESC_TRANSA, &opC, sizeof(opC)),
         ACLBLAS_STATUS_SUCCESS);
-    aclblasLtMatmulAlgo_t algo{};
-    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
-    aclblasLtMatmulHeuristicResult_t result{};
-    EXPECT_EQ(
-        aclblasLtMatmulAlgoCheck(
-            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
-            wl.layouts.d, &algo, &result),
-        ACLBLAS_STATUS_NOT_SUPPORTED);
+    EXPECT_EQ(fx.Run(), ACLBLAS_STATUS_NOT_SUPPORTED);
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckWorkspaceIsMaxOfIntrinsicAndAlgoCap)
 {
-    AlgoCheckWorkload wl;
-    ASSERT_TRUE(wl.Create());
-    aclblasLtMatmulAlgo_t algo{};
-    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
+    AlgoCheckFixture fx;
+    ASSERT_TRUE(fx.CreateWorkload());
+    ASSERT_TRUE(fx.InitAlgo(LtMatmulArch35Test::ltHandle_));
 
     // (a) 默认 algo：内在需求为 0（splitK=1、epilogue DEFAULT），报出的是 algo 自带的上限，
     //     使「按 result->workspaceSize 分配后直接调 aclblasLtMatmul」这条自然流程能通过其容量校验。
     aclblasLtMatmulHeuristicResult_t r1{};
-    ASSERT_EQ(
-        aclblasLtMatmulAlgoCheck(
-            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
-            wl.layouts.d, &algo, &r1),
-        ACLBLAS_STATUS_SUCCESS);
-    EXPECT_EQ(r1.workspaceSize, algo.max_workspace_bytes);
+    ASSERT_EQ(fx.Run(r1), ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(r1.workspaceSize, fx.algo.max_workspace_bytes);
     EXPECT_GT(r1.workspaceSize, 0u);
 
     // (b) 把上限压到 100 并令 splitK=2 → 内在需求 2*16*16*4 = 2048 > 100，报内在需求。
-    algo.max_workspace_bytes = 100;
+    fx.algo.max_workspace_bytes = 100;
     const uint32_t splitK = 2;
     ASSERT_EQ(
-        aclblasLtMatmulAlgoConfigSetAttribute(&algo, ACLBLASLT_ALGO_CONFIG_SPLITK_NUM, &splitK, sizeof(splitK)),
+        aclblasLtMatmulAlgoConfigSetAttribute(&fx.algo, ACLBLASLT_ALGO_CONFIG_SPLITK_NUM, &splitK, sizeof(splitK)),
         ACLBLAS_STATUS_SUCCESS);
     aclblasLtMatmulHeuristicResult_t r2{};
-    ASSERT_EQ(
-        aclblasLtMatmulAlgoCheck(
-            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
-            wl.layouts.d, &algo, &r2),
-        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(fx.Run(r2), ACLBLAS_STATUS_SUCCESS);
     EXPECT_EQ(r2.workspaceSize, 2u * 16u * 16u * sizeof(float));
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckEchoesAlgoUnchanged)
 {
-    AlgoCheckWorkload wl;
-    ASSERT_TRUE(wl.Create());
-    aclblasLtMatmulAlgo_t algo{};
-    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
-    const aclblasLtMatmulAlgo_t before = algo;
-    aclblasLtMatmulHeuristicResult_t result{};
-    ASSERT_EQ(
-        aclblasLtMatmulAlgoCheck(
-            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
-            wl.layouts.d, &algo, &result),
-        ACLBLAS_STATUS_SUCCESS);
+    AlgoCheckFixture fx;
+    ASSERT_TRUE(fx.CreateWorkload());
+    ASSERT_TRUE(fx.InitAlgo(LtMatmulArch35Test::ltHandle_));
+    const aclblasLtMatmulAlgo_t before = fx.algo;
+    ASSERT_EQ(fx.Run(), ACLBLAS_STATUS_SUCCESS);
     // 回显必须逐字节相同（含 max_workspace_bytes），调用方可安全复用或再序列化原 algo。
     for (size_t i = 0; i < sizeof(before.data); ++i) {
-        ASSERT_EQ(result.algo.data[i], before.data[i]) << "algo.data[" << i << "] differs";
+        ASSERT_EQ(fx.result.algo.data[i], before.data[i]) << "algo.data[" << i << "] differs";
     }
-    EXPECT_EQ(result.algo.max_workspace_bytes, before.max_workspace_bytes);
-    EXPECT_EQ(result.wavesCount, 1.0f); // 占位值：本接口不做设备查询，不可用于排序
+    EXPECT_EQ(fx.result.algo.max_workspace_bytes, before.max_workspace_bytes);
+    EXPECT_EQ(fx.result.wavesCount, 1.0f); // 占位值：本接口不做设备查询，不可用于排序
     for (int i = 0; i < 4; ++i) {
-        EXPECT_EQ(result.reserved[i], 0);
+        EXPECT_EQ(fx.result.reserved[i], 0);
     }
 }
 
 TEST_F(LtMatmulArch35Test, AlgoCheckFailureLeavesResultUntouched)
 {
-    AlgoCheckWorkload wl;
-    ASSERT_TRUE(wl.Create());
-    aclblasLtMatmulAlgo_t algo{};
-    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
-    SetAlgoBlobWord(algo, 0, GetAlgoBlobWord(algo, 0) ^ 0xFFu); // 令其在 Stage 2 失败
+    AlgoCheckFixture fx;
+    ASSERT_TRUE(fx.CreateWorkload());
+    ASSERT_TRUE(fx.InitAlgo(LtMatmulArch35Test::ltHandle_));
+    SetAlgoBlobWord(fx.algo, 0, GetAlgoBlobWord(fx.algo, 0) ^ 0xFFu); // 令其在 Stage 2 失败
 
     aclblasLtMatmulHeuristicResult_t result{};
     result.workspaceSize = 0xDEADBEEFu;
@@ -1758,11 +2199,7 @@ TEST_F(LtMatmulArch35Test, AlgoCheckFailureLeavesResultUntouched)
         result.reserved[i] = 0x5A5A5A5A;
     }
 
-    EXPECT_EQ(
-        aclblasLtMatmulAlgoCheck(
-            LtMatmulArch35Test::ltHandle_, wl.layouts.computeDesc, wl.layouts.a, wl.layouts.b, wl.layouts.c,
-            wl.layouts.d, &algo, &result),
-        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(fx.Run(result), ACLBLAS_STATUS_INVALID_VALUE);
     // 失败路径不得回写 result：调用方只能按返回值判定，不能读 result.state
     // （其默认成员初始化值恰为 SUCCESS，失败后读它会误判为成功）。
     EXPECT_EQ(result.workspaceSize, 0xDEADBEEFu);
@@ -1783,28 +2220,95 @@ TEST_F(LtMatmulArch35Test, AlgoCheckHostFp32WithBf16OutputNotSupported)
     // 这是方向保守的已知假阴性：alpha!=1 或 beta!=0 时 aclblasLtMatmul 实际可跑。
     aclblasLtMatmulDesc_t computeDesc = nullptr;
     ASSERT_EQ(aclblasLtMatmulDescCreate(&computeDesc, ACLBLAS_COMPUTE_32F, ACL_FLOAT), ACLBLAS_STATUS_SUCCESS);
-    aclblasLtMatrixLayout_t a = nullptr, b = nullptr, c = nullptr, d = nullptr;
-    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&a, ACL_FLOAT, 16, 16, 16), ACLBLAS_STATUS_SUCCESS);
-    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&b, ACL_FLOAT, 16, 16, 16), ACLBLAS_STATUS_SUCCESS);
-    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&c, ACL_BF16, 16, 16, 16), ACLBLAS_STATUS_SUCCESS);
-    ASSERT_EQ(aclblasLtMatrixLayoutCreate(&d, ACL_BF16, 16, 16, 16), ACLBLAS_STATUS_SUCCESS);
+    // A/B 为 FP32、C/D 为 BF16：dtype 组合逐位不同，故不用 CreateRowOrderFloatLayouts（其仅 D 可变）
+    aclblasLtMatrixLayout_t layouts[4]{};
+    const aclDataType layoutTypes[4] = {ACL_FLOAT, ACL_FLOAT, ACL_BF16, ACL_BF16};
     const aclblasLtOrder_t row = ACLBLASLT_ORDER_ROW;
-    for (aclblasLtMatrixLayout_t* l : {&a, &b, &c, &d}) {
+    for (size_t i = 0; i < 4; ++i) {
+        ASSERT_EQ(aclblasLtMatrixLayoutCreate(&layouts[i], layoutTypes[i], 16, 16, 16), ACLBLAS_STATUS_SUCCESS);
         ASSERT_EQ(
-            aclblasLtMatrixLayoutSetAttribute(*l, ACLBLASLT_MATRIX_LAYOUT_ORDER, &row, sizeof(row)),
+            aclblasLtMatrixLayoutSetAttribute(layouts[i], ACLBLASLT_MATRIX_LAYOUT_ORDER, &row, sizeof(row)),
             ACLBLAS_STATUS_SUCCESS);
     }
     aclblasLtMatmulAlgo_t algo{};
     ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
     aclblasLtMatmulHeuristicResult_t result{};
     EXPECT_EQ(
-        aclblasLtMatmulAlgoCheck(LtMatmulArch35Test::ltHandle_, computeDesc, a, b, c, d, &algo, &result),
+        aclblasLtMatmulAlgoCheck(
+            LtMatmulArch35Test::ltHandle_, computeDesc, layouts[0], layouts[1], layouts[2], layouts[3], &algo, &result),
         ACLBLAS_STATUS_NOT_SUPPORTED);
 
-    aclblasLtMatrixLayoutDestroy(a);
-    aclblasLtMatrixLayoutDestroy(b);
-    aclblasLtMatrixLayoutDestroy(c);
-    aclblasLtMatrixLayoutDestroy(d);
+    DestroyLayouts(layouts);
+    aclblasLtMatmulDescDestroy(computeDesc);
+}
+
+// ── AlgoCheck 契约补全（缺口 G8，评估报告 P2-3）──
+// 真值源：blasLt/api/aclblaslt_matmul_algo.cpp —— Stage 0 AlgoCheckArgsAreNonNull 逐参检查
+// 7 个指针并在日志指名首个空参；CheckScalarSemantics 按 pointerMode → scaleType → transpose →
+// epilogue 顺序校验：scaleType 非 ACL_FLOAT 返回 INVALID_VALUE（本接口只解析 FP32 host 标量），
+// epilogue 非 DEFAULT 返回 NOT_SUPPORTED（issue #801 第三入口，与 Matmul 入口/heuristic 同口径）。
+
+// 单参 NULL 矩阵：handle 与其余 6 参均有效，逐一置空 7 个指针参数 → INVALID_VALUE。
+// 此前仅钉「全 NULL」组合（AlgoCheckNullArgsPrecedeHandleCheck）与 handle 单独为空
+// （AlgoCheckNullHandleAlone），此处补齐逐参路径（Stage 0 校验顺序契约的另一半）。
+// 注意 Cdesc 为空同样被拒——AlgoCheck 比 aclblasLtMatmul（beta=0 时允许 C=NULL）更严格。
+TEST_F(LtMatmulArch35Test, AlgoCheckRejectsEachSingleNullArgument)
+{
+    AlgoCheckFixture fx;
+    ASSERT_TRUE(fx.CreateWorkload());
+    ASSERT_TRUE(fx.InitAlgo(LtMatmulArch35Test::ltHandle_));
+    const MatmulLayoutTestData& lay = fx.layouts;
+    const aclblasLtMatmulDesc_t desc = lay.computeDesc;
+    auto invoke = [&](aclblasLtMatmulDesc_t descArg, aclblasLtMatrixLayout_t aArg, aclblasLtMatrixLayout_t bArg,
+                      aclblasLtMatrixLayout_t cArg, aclblasLtMatrixLayout_t dArg, const aclblasLtMatmulAlgo_t* algoPtr,
+                      aclblasLtMatmulHeuristicResult_t* resultPtr) {
+        return aclblasLtMatmulAlgoCheck(
+            LtMatmulArch35Test::ltHandle_, descArg, aArg, bArg, cArg, dArg, algoPtr, resultPtr);
+    };
+    // 逐参置空、其余 6 参恒有效；行尾标注被置空的形参名
+    EXPECT_EQ(invoke(desc, lay.a, lay.b, lay.c, lay.d, &fx.algo, nullptr), ACLBLAS_STATUS_INVALID_VALUE);   // result
+    EXPECT_EQ(invoke(desc, lay.a, lay.b, lay.c, lay.d, nullptr, &fx.result), ACLBLAS_STATUS_INVALID_VALUE); // algo
+    EXPECT_EQ(invoke(nullptr, lay.a, lay.b, lay.c, lay.d, &fx.algo, &fx.result), ACLBLAS_STATUS_INVALID_VALUE); // desc
+    EXPECT_EQ(invoke(desc, nullptr, lay.b, lay.c, lay.d, &fx.algo, &fx.result), ACLBLAS_STATUS_INVALID_VALUE);  // Adesc
+    EXPECT_EQ(invoke(desc, lay.a, nullptr, lay.c, lay.d, &fx.algo, &fx.result), ACLBLAS_STATUS_INVALID_VALUE);  // Bdesc
+    EXPECT_EQ(invoke(desc, lay.a, lay.b, nullptr, lay.d, &fx.algo, &fx.result), ACLBLAS_STATUS_INVALID_VALUE);  // Cdesc
+    EXPECT_EQ(invoke(desc, lay.a, lay.b, lay.c, nullptr, &fx.algo, &fx.result), ACLBLAS_STATUS_INVALID_VALUE);  // Ddesc
+}
+
+// issue #801 第三入口：Matmul 入口与 GetHeuristic 已由 NonDefaultEpilogueRejected 钉住，
+// AlgoCheck 的 CheckScalarSemantics 对非 DEFAULT epilogue 同口径 NOT_SUPPORTED——
+// 「可校验的必可执行」三处入口一致。该校验先于维度读取与 dtype/order 检查，失败不回写 result。
+TEST_F(LtMatmulArch35Test, AlgoCheckRejectsNonDefaultEpilogue)
+{
+    AlgoCheckFixture fx;
+    ASSERT_TRUE(fx.CreateWorkload());
+    ASSERT_TRUE(fx.InitAlgo(LtMatmulArch35Test::ltHandle_));
+    const int32_t epilogueBias = ACLBLASLT_EPILOGUE_BIAS;
+    ASSERT_EQ(
+        aclblasLtMatmulDescSetAttribute(
+            fx.layouts.computeDesc, ACLBLASLT_MATMUL_DESC_EPILOGUE, &epilogueBias, sizeof(epilogueBias)),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(fx.Run(), ACLBLAS_STATUS_NOT_SUPPORTED);
+}
+
+// CheckScalarSemantics 的 scaleType 守卫（issue #594 同源语义）：Matmul 侧已由
+// NonFloatScaleTypeRejected 钉住，AlgoCheck 侧此前无对应。DescCreate 不校验 scaleType
+// 入参，FP16 scaleType 的 desc 构造成功、在 AlgoCheck 标量语义检查处拒绝（INVALID_VALUE），
+// 该校验先于 transpose/epilogue 与维度/dtype 检查。
+TEST_F(LtMatmulArch35Test, AlgoCheckRejectsNonFloatScaleType)
+{
+    aclblasLtMatmulDesc_t computeDesc = nullptr;
+    ASSERT_EQ(aclblasLtMatmulDescCreate(&computeDesc, ACLBLAS_COMPUTE_32F, ACL_FLOAT16), ACLBLAS_STATUS_SUCCESS);
+    aclblasLtMatrixLayout_t layouts[4]{};
+    CreateRowOrderFloatLayouts(layouts, 16, 16, 16);
+    aclblasLtMatmulAlgo_t algo{};
+    ASSERT_TRUE(MakeDefaultFp32Algo(LtMatmulArch35Test::ltHandle_, &algo));
+    aclblasLtMatmulHeuristicResult_t result{};
+    EXPECT_EQ(
+        aclblasLtMatmulAlgoCheck(
+            LtMatmulArch35Test::ltHandle_, computeDesc, layouts[0], layouts[1], layouts[2], layouts[3], &algo, &result),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    DestroyLayouts(layouts);
     aclblasLtMatmulDescDestroy(computeDesc);
 }
 
@@ -1814,6 +2318,56 @@ TEST_F(LtMatmulArch35Test, PreferenceInitProductRejectedByDestroy)
     ASSERT_EQ(aclblasLtMatmulPreferenceInit(&storage), ACLBLAS_STATUS_SUCCESS);
     // Init 产物位于调用方存储，Destroy 必须拒绝而不是 delete 一个非堆指针。
     EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(&storage), ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+// 契约配套用例：公开契约要求调用方存储入口为确定值（零初始化，或 Create/Init 产物胶囊），
+// Init 读回首部字节以保留 Create 产物的堆来源位。此处故意预填契约外的**确定**垃圾字节
+// （确定值，非 UB），验证 magic 门控对任何非胶囊内容都路由到纯重置路径：heapOwned=0、
+// Destroy 照旧拒绝——「残留字节被误标堆来源」须恰好命中 32 位 magic 且 heapOwned 非零，
+// 而该输入本身已属违约。
+TEST_F(LtMatmulArch35Test, PreferenceInitOnNonCapsuleBytesCarriesNoProvenance)
+{
+    aclblasLtMatmulPreferenceOpaque_t storage{};
+    for (auto& word : storage.data) {
+        word = 0xAAAAAAAAAAAAAAAAULL; // 确定的非零垃圾：magic 必不匹配，亦非 Create 产物
+    }
+    ASSERT_EQ(aclblasLtMatmulPreferenceInit(&storage), ACLBLAS_STATUS_SUCCESS);
+    // 纯重置路径：来源位为 0，Destroy 拒绝，绝不 delete 非堆指针。
+    EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(&storage), ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+// cuBLASLt 的 Init 语义是「重置一个先前已分配的描述符」，Create→Init（重置复用）→Destroy 属
+// 合法模式。此前 Init 无条件以 NSDMI 全新 impl 覆写胶囊，把 heapOwned 从 1 翻回 0，Destroy 的
+// 来源防护随后永久拒绝该堆胶囊——既泄漏又给出意外 INVALID_VALUE。现在 Init 保留来源位、只重置属性。
+TEST_F(LtMatmulArch35Test, PreferenceInitOnCreateProductKeepsDestroyable)
+{
+    aclblasLtMatmulPreference_t pref = nullptr;
+    ASSERT_EQ(aclblasLtMatmulPreferenceCreate(&pref), ACLBLAS_STATUS_SUCCESS);
+    ASSERT_NE(pref, nullptr);
+    const uint64_t ws = 4096;
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceSetAttribute(pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &ws, sizeof(ws)),
+        ACLBLAS_STATUS_SUCCESS);
+
+    ASSERT_EQ(aclblasLtMatmulPreferenceInit(pref), ACLBLAS_STATUS_SUCCESS);
+
+    // 属性确已回到默认值（重置生效），而非保留 Set 进去的 4096。
+    uint64_t wsOut = 0;
+    uint32_t modeOut = 0xDEADu;
+    size_t written = 0;
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(
+            pref, ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &wsOut, sizeof(wsOut), &written),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(wsOut, static_cast<uint64_t>(32) * 1024 * 1024);
+    ASSERT_EQ(
+        aclblasLtMatmulPreferenceGetAttribute(
+            pref, ACLBLASLT_MATMUL_PREF_SEARCH_MODE, &modeOut, sizeof(modeOut), &written),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(modeOut, 0u);
+
+    // 来源位保留 → Destroy 正常释放，Create→Init→Destroy 不再泄漏。
+    EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(pref), ACLBLAS_STATUS_SUCCESS);
 }
 
 TEST_F(LtMatmulArch35Test, PreferenceCreateProductSurvivesSetAttributeThenDestroy)
@@ -1832,6 +2386,9 @@ TEST_F(LtMatmulArch35Test, PreferenceCreateProductSurvivesSetAttributeThenDestro
 TEST_F(LtMatmulArch35Test, PreferenceInitCapsuleIsDeterministic)
 {
     // 两次 Init 到预填不同垃圾的存储，产物应逐字节相同（值初始化 + 尾部清零）。
+    // 预填垃圾为契约外的确定值输入（确定字节，非 UB）：magic 门控将其路由到纯重置路径，
+    // 产物与预填内容无关；来源位不被误授予的断言见
+    // PreferenceInitOnNonCapsuleBytesCarriesNoProvenance。
     aclblasLtMatmulPreferenceOpaque_t lhs{}, rhs{};
     for (auto& word : lhs.data) {
         word = 0xAAAAAAAAAAAAAAAAULL;
@@ -1876,4 +2433,46 @@ TEST_F(LtMatmulArch35Test, PreferenceInitDefaultsMatchCreate)
     EXPECT_EQ(wsInit, wsCreate);
 
     ASSERT_EQ(aclblasLtMatmulPreferenceDestroy(heap), ACLBLAS_STATUS_SUCCESS);
+}
+
+// ── Preference 族对称化（缺口 G10，评估报告 P2-6）──
+// TransformDesc 族已有 InitRejectsNull / DestroyRejectsCorruptedMagic 三项 counterpart，
+// Preference 族此前缺失对应钉住。胶囊布局真值源（aclblaslt_layout_impl.h）：magic 字节 0~3、
+// heapOwned 字节 28~31（即 data[3] 高 4 字节，本仓构建目标均为小端）；data[0] ^= 0xFF
+// 仅破坏 magic 低字节，heapOwned 不受影响。
+
+// Init(NULL) / Destroy(NULL) → INVALID_VALUE（preference.cpp 的显式判空分支；
+// TransformDescInitRejectsNull 已有同族 counterpart，此处补齐 Preference 侧）。
+TEST_F(LtMatmulArch35Test, PreferenceInitDestroyRejectNull)
+{
+    EXPECT_EQ(aclblasLtMatmulPreferenceInit(nullptr), ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(nullptr), ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+// Preference 损坏胶囊行为——钉实现真相，不照搬 TransformDesc 的拒绝形态（期望值以实现取证
+// 为准）。取证：preference.cpp 的 Destroy/Set/Get 均无 magic 守卫（实现注释明示 "No magic
+// check here, unlike aclblasLtMatrixTransformDescDestroy"），Destroy 的唯一胶囊级守卫是
+// heapOwned 来源位；header/api_list 亦只披露 NULL + 来源防护两条防御。故：
+// (a) 损坏 magic 的 Create 产物仍按来源位正常释放（SUCCESS）——与 TransformDescDestroy 的
+//     magic 拒绝为有意不对称，钉住该事实，未来增删守卫须有意识地更新本用例与文档；
+// (b) 来源位清零（magic 完好）才使 Destroy 拒绝（INVALID_VALUE），复原后正常释放——循
+//     TransformDescDestroyRejectsCorruptedMagic 的「损坏→拒绝→复原→释放」防泄漏形态。
+TEST_F(LtMatmulArch35Test, PreferenceDestroyGuardsProvenanceNotMagic)
+{
+    // (a) magic 损坏不触发 Destroy 拒绝（无 magic 守卫），胶囊按 heapOwned=1 正常释放
+    aclblasLtMatmulPreference_t magicBroken = nullptr;
+    ASSERT_EQ(aclblasLtMatmulPreferenceCreate(&magicBroken), ACLBLAS_STATUS_SUCCESS);
+    auto* brokenCapsule = reinterpret_cast<aclblasLtMatmulPreferenceOpaque_t*>(magicBroken);
+    brokenCapsule->data[0] ^= 0xFFu; // 破坏 magic 低字节；heapOwned（字节 28~31）不受影响
+    EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(magicBroken), ACLBLAS_STATUS_SUCCESS);
+
+    // (b) 来源位是 Destroy 的唯一胶囊级守卫：清零即拒绝，复原后正常释放（无泄漏）
+    aclblasLtMatmulPreference_t pref = nullptr;
+    ASSERT_EQ(aclblasLtMatmulPreferenceCreate(&pref), ACLBLAS_STATUS_SUCCESS);
+    auto* capsule = reinterpret_cast<aclblasLtMatmulPreferenceOpaque_t*>(pref);
+    const uint64_t savedWord = capsule->data[3];  // 字节 24~31：preferredL0K（低 4）+ heapOwned（高 4）
+    capsule->data[3] = savedWord & 0xFFFFFFFFULL; // 清零 heapOwned，magic 与其余字段保持完好
+    EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(pref), ACLBLAS_STATUS_INVALID_VALUE);
+    capsule->data[3] = savedWord; // 复原来源位，正常释放，避免测试泄漏
+    EXPECT_EQ(aclblasLtMatmulPreferenceDestroy(pref), ACLBLAS_STATUS_SUCCESS);
 }

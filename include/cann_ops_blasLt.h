@@ -260,12 +260,30 @@ typedef enum aclblasLtMatmulDescAttribute {
 
 /*! \ingroup types_module
  *  \brief Matrix transform descriptor attributes.
+ *
+ *  \details
+ *  ``ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE`` only accepts
+ *  ``ACLBLASLT_POINTER_MODE_HOST``. The scalar path of aclblasLtMatrixTransform()
+ *  always dereferences alpha/beta as host pointers, so
+ *  aclblasLtMatrixTransformDescSetAttribute() rejects any other value with
+ *  ``ACLBLAS_STATUS_NOT_SUPPORTED`` instead of recording a device mode that the
+ *  execution chain would silently ignore -- cuBLASLt does honour
+ *  ``CUBLASLT_POINTER_MODE_DEVICE`` for this attribute, and migration code
+ *  relying on device-side scalars gets a loud rejection at the Set call.
+ *
+ *  ``TRANSA`` / ``TRANSB`` are validated at Set time against exactly the
+ *  aclblasOperation_t domain the transform engine can execute (``ACLBLAS_OP_N`` /
+ *  ``ACLBLAS_OP_T`` / ``ACLBLAS_OP_C``, where C is treated as T because this
+ *  library has no complex dtype); any other value returns
+ *  ``ACLBLAS_STATUS_INVALID_VALUE`` rather than being stored and rejected later
+ *  by aclblasLtMatrixTransform(). This is the same Set-time guarding that
+ *  ``SCALE_TYPE`` here and the MatrixLayout ``ORDER`` attribute already apply.
  */
 typedef enum aclblasLtMatrixTransformDescAttribute {
     ACLBLASLT_MATRIX_TRANSFORM_DESC_SCALE_TYPE =
         0, /**<Scale (compute) data type. Set at create time. Data type: ``int32_t`` based on ``aclDataType``. */
     ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE =
-        1, /**<Pointer mode for alpha / beta. Default host. Data type: ``int32_t``. */
+        1, /**<Pointer mode for alpha / beta. Host only (see the enum details). Data type: ``int32_t``. */
     ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA = 2, /**<Transform operation on matrix A. Default ``ACLBLAS_OP_N``. See
                                                    ``aclblasOperation_t``. Data type: ``int32_t``. */
     ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSB = 3, /**<Transform operation on matrix B. Default ``ACLBLAS_OP_N``. See
@@ -274,12 +292,50 @@ typedef enum aclblasLtMatrixTransformDescAttribute {
 
 /*! \ingroup types_module
  *  \brief Matmul preference attributes.
+ *
+ *  \details
+ *  ``ACLBLASLT_MATMUL_PREF_SEARCH_MODE`` accepts 0/1/2 with repo-local meanings
+ *  (0 = heuristic, 1 = exhaustive, 2 = fast). Values 1 and 2 diverge from
+ *  cuBLASLt ``cublasLtMatmulSearch_t``, where 1 =
+ *  ``CUBLASLT_SEARCH_LIMITED_BY_ALGO_ID`` ("only try to find best config for
+ *  preconfigured algo id") and 2~7 are reserved: migration code passing
+ *  ``CUBLASLT_SEARCH_LIMITED_BY_ALGO_ID`` (1) is read as "exhaustive" here, and
+ *  a cuBLASLt reserved value (2) is read as "fast". Only 0
+ *  (``CUBLASLT_SEARCH_BEST_FIT`` on both sides) is portable. The divergence is
+ *  currently latent -- nothing consumes the stored search mode (SetAttribute
+ *  stores it, GetAttribute reads it back, the heuristic never reads it), so no
+ *  result can differ today -- and is disclosed because it takes effect as soon
+ *  as a consumer lands.
+ *
+ *  ``ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES`` defaults to 32MB
+ *  (32*1024*1024 bytes). This is a deliberate divergence from cuBLASLt, whose
+ *  default is 0 ("no workspace allowed"): aclblasLtMatmulAlgoInit() stamps
+ *  every algorithm with ``max_workspace_bytes = 32MB`` and aclblasLtMatmul()
+ *  validates ``workspaceSizeInBytes`` against that stamp, so inheriting the
+ *  cuBLASLt default would make the natural Create()/Init() preference reject
+ *  every candidate.
+ *
+ *  A stored budget of 0 does not uniformly mean "no workspace allowed" either.
+ *  The Ascend 950 (arch35) implementation of aclblasLtMatmulAlgoGetHeuristic()
+ *  reads a 0 budget as "filtering disabled" (unbounded), whereas cuBLASLt -- and
+ *  the Atlas A2/A3 (arch22) implementation of this library -- read 0 as a hard
+ *  zero-byte budget. Migration code targeting arch35 that sets 0 in order to
+ *  obtain a workspace-free algorithm must instead inspect
+ *  ``heuristicResultsArray[i].workspaceSize`` and allocate that much before
+ *  calling aclblasLtMatmul().
+ *
+ *  ``ACLBLASLT_MATMUL_PREF_MAX`` (= 2) is a repo-local sentinel (cuBLASLt has
+ *  no such sentinel); Set/Get with it return ``ACLBLAS_STATUS_NOT_SUPPORTED``
+ *  like any other value outside the enumerated subset. The value coincides with
+ *  cuBLASLt ``MATH_MODE_MASK`` (2, deprecated), which this library does not
+ *  offer -- migration code passing that numeric value gets a loud rejection
+ *  rather than a silent misinterpretation.
  */
 typedef enum aclblasLtMatmulPreferenceAttribute {
     ACLBLASLT_MATMUL_PREF_SEARCH_MODE = 0, /**<Search mode. Data type: ``uint32_t``. */
     ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES =
         1, /**<Maximum allowed workspace memory. Default is 32MB (32*1024*1024 bytes). Data type: ``uint64_t``. */
-    ACLBLASLT_MATMUL_PREF_MAX = 2
+    ACLBLASLT_MATMUL_PREF_MAX = 2 /**< Repo-local sentinel (cuBLASLt has none); Set/Get NOT_SUPPORTED. */
 } aclblasLtMatmulPreferenceAttribute_t;
 
 /*! \ingroup types_module
@@ -740,17 +796,32 @@ aclblasStatus_t aclblasLtMatmulPreferenceCreate(aclblasLtMatmulPreference_t* pre
  *  This function initializes a matrix multiply heuristic search preferences
  *  descriptor that the caller has already allocated (e.g. on the stack). Unlike
  *  aclblasLtMatmulPreferenceCreate(), this function does not allocate heap
- *  memory; the resulting capsule must NOT be passed to
+ *  memory; a capsule initialized in caller storage must NOT be passed to
  *  aclblasLtMatmulPreferenceDestroy(); Destroy() rejects it with
  *  ACLBLAS_STATUS_INVALID_VALUE (runtime provenance guard) instead of
  *  attempting a non-heap delete.
  *
- *  @param[out]
+ *  Calling this function on an aclblasLtMatmulPreferenceCreate() product is a
+ *  pure attribute reset, matching the cuBLASLt wording "initializes ... in a
+ *  previously allocated one": every attribute goes back to its default while the
+ *  internal heap-provenance flag is carried over, so the capsule keeps its
+ *  Destroy() eligibility. The cuBLASLt-legal Create -> Init (reset and reuse) ->
+ *  Destroy pattern therefore releases the capsule instead of leaking it.
+ *
+ *  @param[in,out]
  *  pref Pointer to the caller-allocated capsule to initialize. The handle must
  *  point to caller-allocated storage of at least
  *  sizeof(aclblasLtMatmulPreferenceOpaque_t) (64) bytes, because this function
  *  writes the whole capsule; the size cannot be validated at run time from an
- *  opaque pointer. See \ref aclblasLtMatmulPreference_t.
+ *  opaque pointer. On entry the storage must hold determinate content: either
+ *  zero-initialize it (e.g. `aclblasLtMatmulPreferenceOpaque_t pref{};`) or
+ *  pass a capsule previously produced by aclblasLtMatmulPreferenceCreate() or
+ *  aclblasLtMatmulPreferenceInit(). The leading bytes
+ *  are read back first, to detect a Create() product whose provenance flag must
+ *  be carried over; passing uninitialized (indeterminate) storage violates this
+ *  precondition and is undefined behavior. All-zero bytes never match the
+ *  internal magic, so zero-initialized storage always takes the pure-reset path
+ *  (provenance flag 0, Destroy() rejects). See \ref aclblasLtMatmulPreference_t.
  *
  *  \retval ACLBLAS_STATUS_SUCCESS If initialization was successful.
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p pref is NULL.
@@ -772,8 +843,9 @@ aclblasStatus_t aclblasLtMatmulPreferenceInit(aclblasLtMatmulPreference_t pref);
  *
  *  \retval ACLBLAS_STATUS_SUCCESS If operation was successful.
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p pref is NULL, or if the capsule was not allocated
- *  by aclblasLtMatmulPreferenceCreate() (an Init() product) -- the provenance guard rejects it
- *  before any delete.
+ *  by aclblasLtMatmulPreferenceCreate() -- the provenance guard rejects it before any delete.
+ *  Only an Init() in caller storage lands here: Init() on a Create() product carries the
+ *  provenance flag over, so such a capsule stays destroyable.
  */
 aclblasStatus_t aclblasLtMatmulPreferenceDestroy(const aclblasLtMatmulPreference_t pref);
 
@@ -824,10 +896,22 @@ aclblasStatus_t aclblasLtMatmulPreferenceSetAttribute(
  *  @param[out]
  *  sizeWritten Number of bytes actually written to \p buf. Can be NULL.
  *
- *  \retval ACLBLAS_STATUS_SUCCESS If the attribute was retrieved successfully.
- *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p pref or \p buf is NULL, or
- *  \p sizeInBytes is smaller than the required size for the selected
- *  attribute.
+ *  \retval ACLBLAS_STATUS_SUCCESS If the attribute was retrieved successfully,
+ *  including the ``sizeInBytes == 0`` probe mode (nothing is written to \p buf;
+ *  the required byte count goes to \p sizeWritten). Deliberate leniency: the
+ *  combination ``sizeInBytes == 0`` and ``sizeWritten == NULL`` returns SUCCESS
+ *  here, while cuBLASLt -- and this library's
+ *  aclblasLtMatmulAlgoCapGetAttribute() -- return INVALID_VALUE for it.
+ *  \p sizeWritten is optional across this attribute family by design (a probe
+ *  that discards the required size is still a well-formed no-op call), whereas
+ *  the Cap family reproduces the cuBLASLt guard verbatim because its error-code
+ *  matrix was specified line by line against the cuBLASLt documentation. Pass a
+ *  non-NULL \p sizeWritten where the strict behaviour is wanted.
+ *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p pref is NULL, or \p buf is NULL
+ *  while \p sizeInBytes is non-zero, or \p sizeInBytes is smaller than the
+ *  required size for the selected attribute (\p sizeWritten still receives the
+ *  required size in that case -- a lenient superset of cuBLASLt, which
+ *  documents sizeWritten as valid only when the call succeeds).
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If \p attr is not a recognized attribute.
  */
 aclblasStatus_t aclblasLtMatmulPreferenceGetAttribute(
@@ -884,6 +968,13 @@ aclblasStatus_t aclblasLtMatmulAlgoInit(
  *  algos. This is a host-side check only: no
  *  kernel is launched, no device memory is accessed, and the handle is only
  *  checked for presence.
+ *
+ *  The algo echo is a divergence from cuBLASLt, whose documentation states that
+ *  the result comprises "the required workspace and the calculated wave count"
+ *  and that "The algo field is never updated." The two behaviours are
+ *  indistinguishable for the aliased call cuBLASLt explicitly permits
+ *  (``algo == &result->algo``); only a caller that passes a separate \p algo and
+ *  relies on ``result->algo`` staying untouched can observe the difference.
  *
  *  The reported \p result->workspaceSize is the amount the caller should
  *  allocate: max(the algo's intrinsic demand -- split-K staging and epilogue
@@ -1106,6 +1197,17 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(
  *  C, and the output matrix D. The output is placed in ``heuristicResultsArray``
  *  in order of increasing estimated compute time.
  *
+ *  Candidates whose workspace demand exceeds the ``MAX_WORKSPACE_BYTES`` budget
+ *  carried by \p pref are skipped. How a 0 budget is read differs per build
+ *  target: the Ascend 950 (arch35) implementation treats 0 as "filtering
+ *  disabled" (unbounded), while the Atlas A2/A3 (arch22) implementation treats
+ *  it as a real zero-byte budget (the cuBLASLt meaning). A NULL \p pref is
+ *  accepted and differs the same way -- arch35 reads it as 0 (unbounded),
+ *  arch22 as the 32MB default -- so on arch35 a NULL \p pref is NOT equivalent
+ *  to passing a freshly Create()d / Init()d preference. See
+ *  aclblasLtMatmulPreferenceAttribute_t for the default-value divergence from
+ *  cuBLASLt and its migration impact.
+ *
  *  @param[in]
  *  lightHandle Pointer to the allocated aclBLASLt handle for the
  *  aclBLASLt context. See \ref aclblasLtHandle_t.
@@ -1215,14 +1317,28 @@ aclblasStatus_t aclblasLtMatrixTransformDescCreate(
  *  \details
  *  This function initializes a matrix transform descriptor that the caller has
  *  already allocated (e.g. on the stack). Unlike aclblasLtMatrixTransformDescCreate(),
- *  this function does not allocate heap memory and the resulting descriptor must
- *  NOT be passed to aclblasLtMatrixTransformDescDestroy(); Destroy() rejects it with
- *  ACLBLAS_STATUS_INVALID_VALUE (runtime provenance guard) instead of
+ *  this function does not allocate heap memory and a descriptor initialized in caller
+ *  storage must NOT be passed to aclblasLtMatrixTransformDescDestroy(); Destroy()
+ *  rejects it with ACLBLAS_STATUS_INVALID_VALUE (runtime provenance guard) instead of
  *  attempting a non-heap delete.
  *
- *  \param transformDesc Handle to the caller-allocated descriptor capsule; it must point
- *  to caller-allocated storage of at least sizeof(aclblasLtMatrixTransformDescOpaque_t)
- *  bytes. Passed by value like cuBLASLt's
+ *  Calling this function on an aclblasLtMatrixTransformDescCreate() product is a pure
+ *  attribute reset, matching the cuBLASLt wording "initializes ... in a previously
+ *  allocated one": scaleType is set to the argument, every other attribute goes back to
+ *  its default, and the internal heap-provenance flag is carried over, so the descriptor
+ *  keeps its Destroy() eligibility. The cuBLASLt-legal Create -> Init (reset and reuse)
+ *  -> Destroy pattern therefore releases the capsule instead of leaking it.
+ *
+ *  \param[in,out] transformDesc Handle to the caller-allocated descriptor capsule; it must
+ *  point to caller-allocated storage of at least sizeof(aclblasLtMatrixTransformDescOpaque_t)
+ *  bytes, holding determinate content on entry: either zero-initialize it (e.g.
+ *  `aclblasLtMatrixTransformDescOpaque_t desc{};`) or pass a capsule previously produced by
+ *  aclblasLtMatrixTransformDescCreate() / aclblasLtMatrixTransformDescInit(). The leading
+ *  bytes are read back first, to detect a Create() product whose provenance flag must be
+ *  carried over; passing uninitialized (indeterminate) storage violates this precondition
+ *  and is undefined behavior. All-zero bytes never match the internal magic, so
+ *  zero-initialized storage always takes the pure-reset path (provenance flag 0, Destroy()
+ *  rejects). Passed by value like cuBLASLt's
  *  cublasLtMatrixTransformDescInit(transformDesc, scaleType) and the repo's
  *  aclblasLtMatmulDescInit / aclblasLtMatmulPreferenceInit, unlike
  *  aclblasLtMatrixTransformDescCreate() which takes an output pointer.
@@ -1231,7 +1347,12 @@ aclblasStatus_t aclblasLtMatrixTransformDescCreate(
  *  \note transa/transb are deliberately NOT Init parameters, matching cuBLASLt: set them
  *  afterwards via aclblasLtMatrixTransformDescSetAttribute() with
  *  ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA / TRANSB. Until then they keep their default
- *  (ACLBLAS_OP_N), byte-equivalent to a freshly Create()d descriptor.
+ *  (ACLBLAS_OP_N), attribute-equivalent to a freshly Create()d descriptor. The two capsules
+ *  are not byte-identical though: the internal heapOwned provenance flag is 1 for a Create()
+ *  product and 0 for an Init() in caller storage, which is exactly how Destroy() tells the
+ *  two provenances apart and rejects the latter. (Init() on a Create() product carries the
+ *  flag over, so that capsule stays byte-identical to a fresh Create() one apart from
+ *  scaleType.)
  *  \retval ACLBLAS_STATUS_SUCCESS On success.
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p transformDesc is NULL.
  *  \retval ACLBLAS_STATUS_INTERNAL_ERROR If an internal copy fails.
@@ -1244,8 +1365,10 @@ aclblasStatus_t aclblasLtMatrixTransformDescInit(
  *  \param transformDesc Descriptor to be destroyed.
  *  \retval ACLBLAS_STATUS_SUCCESS On success.
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If transformDesc is NULL, or if the capsule was
- *  not allocated by aclblasLtMatrixTransformDescCreate() (an Init() product, a corrupted
- *  or a foreign capsule) -- the provenance/magic guard rejects it before any delete.
+ *  not allocated by aclblasLtMatrixTransformDescCreate() (an Init() in caller storage, a
+ *  corrupted or a foreign capsule) -- the provenance/magic guard rejects it before any
+ *  delete. Init() on a Create() product carries the provenance flag over, so such a
+ *  descriptor stays destroyable.
  */
 aclblasStatus_t aclblasLtMatrixTransformDescDestroy(const aclblasLtMatrixTransformDesc_t transformDesc);
 
@@ -1256,8 +1379,14 @@ aclblasStatus_t aclblasLtMatrixTransformDescDestroy(const aclblasLtMatrixTransfo
  *  \param buf Source buffer holding the attribute value.
  *  \param sizeInBytes Size of the source buffer in bytes.
  *  \retval ACLBLAS_STATUS_SUCCESS On success.
- *  \retval ACLBLAS_STATUS_INVALID_VALUE If the parameters are NULL or the size mismatches.
- *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If \p attr is not a recognized attribute.
+ *  \retval ACLBLAS_STATUS_INVALID_VALUE If the parameters are NULL, the size mismatches, or an
+ *  attribute value is outside its domain (SCALE_TYPE is limited to the aclDataType values the
+ *  transform engine consumes; TRANSA / TRANSB are limited to ACLBLAS_OP_N / OP_T / OP_C).
+ *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If \p attr is not a recognized attribute, or if \p attr
+ *  is ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE and the value is not
+ *  ACLBLASLT_POINTER_MODE_HOST -- this library implements the host pointer mode only, so a
+ *  device mode is rejected here rather than recorded and silently ignored by
+ *  aclblasLtMatrixTransform().
  */
 aclblasStatus_t aclblasLtMatrixTransformDescSetAttribute(
     aclblasLtMatrixTransformDesc_t transformDesc, aclblasLtMatrixTransformDescAttribute_t attr, const void* buf,
@@ -1270,8 +1399,22 @@ aclblasStatus_t aclblasLtMatrixTransformDescSetAttribute(
  *  \param buf Destination buffer for the attribute value.
  *  \param sizeInBytes Size of the destination buffer in bytes.
  *  \param sizeWritten On return, the number of bytes written (or required).
- *  \retval ACLBLAS_STATUS_SUCCESS On success.
- *  \retval ACLBLAS_STATUS_INVALID_VALUE If the parameters are NULL or the buffer is too small.
+ *  \retval ACLBLAS_STATUS_SUCCESS On success, including the ``sizeInBytes == 0``
+ *  probe mode (nothing is written to \p buf; the required byte count goes to
+ *  \p sizeWritten). Deliberate leniency: ``sizeInBytes == 0`` together with
+ *  ``sizeWritten == NULL`` returns SUCCESS here, while cuBLASLt -- and this
+ *  library's aclblasLtMatmulAlgoCapGetAttribute() -- return INVALID_VALUE for
+ *  that combination. \p sizeWritten is optional across this attribute family by
+ *  design (a probe that discards the required size is still a well-formed no-op
+ *  call); the Cap family reproduces the cuBLASLt guard verbatim because its
+ *  error-code matrix was specified line by line against the cuBLASLt
+ *  documentation. Pass a non-NULL \p sizeWritten where the strict behaviour is
+ *  wanted.
+ *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p transformDesc is NULL or fails the
+ *  internal magic check, or \p buf is NULL while \p sizeInBytes is non-zero, or
+ *  the buffer is too small (\p sizeWritten still receives the required size in
+ *  that case -- a lenient superset of cuBLASLt, which documents sizeWritten as
+ *  valid only when the call succeeds).
  *  \retval ACLBLAS_STATUS_NOT_SUPPORTED If \p attr is not a recognized attribute.
  */
 aclblasStatus_t aclblasLtMatrixTransformDescGetAttribute(

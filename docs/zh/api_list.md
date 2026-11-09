@@ -496,7 +496,9 @@ aclblasStatus_t aclblasLtMatmulPreferenceCreate(aclblasLtMatmulPreference_t* pre
 aclblasStatus_t aclblasLtMatmulPreferenceInit(aclblasLtMatmulPreference_t pref);
 ```
 
-初始化调用方预分配的算法搜索偏好描述符胶囊（如栈上分配），不分配堆内存，就地写入与 `aclblasLtMatmulPreferenceCreate` 相同的默认属性值（`SEARCH_MODE`=0、`MAX_WORKSPACE_BYTES`=32MB 等；对标 cuBLASLt `cublasLtMatmulPreferenceInit(pref)`，签名逐参数一致）。与 Create 的区别：Create 在堆上分配胶囊并返回指针，Init 仅写入已分配的胶囊。通过 Init 初始化的栈胶囊**禁止**传给 `aclblasLtMatmulPreferenceDestroy()`——传错会得到 `ACLBLAS_STATUS_INVALID_VALUE`（运行期来源防护）而非对非堆指针 `delete`。
+初始化调用方预分配的算法搜索偏好描述符胶囊（如栈上分配），不分配堆内存，就地写入与 `aclblasLtMatmulPreferenceCreate` 相同的默认属性值（`SEARCH_MODE`=0、`MAX_WORKSPACE_BYTES`=32MB 等；对标 cuBLASLt `cublasLtMatmulPreferenceInit(pref)`，签名逐参数一致）。与 Create 的区别：Create 在堆上分配胶囊并返回指针，Init 仅写入已分配的胶囊。通过 Init 初始化的**栈胶囊**禁止传给 `aclblasLtMatmulPreferenceDestroy()`——传错会得到 `ACLBLAS_STATUS_INVALID_VALUE`（运行期来源防护）而非对非堆指针 `delete`。对 **Create 产物**调用 Init 则是「纯重置」，与 cuBLASLt「initializes ... in a previously allocated one」的语义一致：全部属性回到默认值，内部堆来源标志位被保留，故该胶囊仍可正常 `Destroy`；cuBLASLt 合法的「Create → Init（重置复用）→ Destroy」模式因此能正常释放而不会泄漏。
+
+**存储前提（`[in,out]` 参数）**：`pref` 指向的存储会被本函数先读后写——为识别 Create 产物并保留其堆来源位，Init 会先读回其首部字节，故存储入口内容必须为**确定值**：要么零初始化（如 `aclblasLtMatmulPreferenceOpaque_t pref{};`），要么是 `aclblasLtMatmulPreferenceCreate` / `aclblasLtMatmulPreferenceInit` 的产物胶囊。传入未初始化（不确定值）存储违反该前提，属未定义行为。这是与 cuBLASLt 的一处使用差异：cuBLASLt 的 Init 不读取存储内容，允许未初始化的句柄声明；本实现因来源位保留机制要求确定值入口。全零字节必不匹配内部 magic 数，故零初始化存储必走纯重置路径（来源位为 0，`Destroy` 拒绝），不会被误标为堆来源。
 
 | 返回值 | 含义 |
 |---|---|
@@ -515,7 +517,7 @@ aclblasStatus_t aclblasLtMatmulPreferenceDestroy(const aclblasLtMatmulPreference
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 销毁成功。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | `pref` 为空指针，或胶囊非 `aclblasLtMatmulPreferenceCreate()` 产物（`Init` 胶囊 `heapOwned=0`，来源防护在 delete 前拒绝）。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `pref` 为空指针，或胶囊非 `aclblasLtMatmulPreferenceCreate()` 产物（在调用方存储上 `Init` 出的胶囊 `heapOwned=0`，来源防护在 delete 前拒绝）。对 `Create` 产物调用 `Init` 会保留 `heapOwned=1`，故此类胶囊仍可正常销毁。 |
 
 #### aclblasLtMatmulPreferenceSetAttribute()
 
@@ -526,7 +528,7 @@ aclblasStatus_t aclblasLtMatmulPreferenceSetAttribute(aclblasLtMatmulPreference_
                                                       size_t sizeInBytes);
 ```
 
-设置算法搜索偏好属性，如 `ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES`（允许的最大 workspace 字节数，默认 32MB）。值域约束：`ACLBLASLT_MATMUL_PREF_SEARCH_MODE` 仅接受 0（启发式）/1（穷举）/2（快速），且写入缓冲须为 4 字节 `uint32_t`；`ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES` 接受 4 或 8 字节写入，值不得超过 `INT64_MAX`，越界返回 `INVALID_VALUE`。
+设置算法搜索偏好属性，如 `ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES`（允许的最大 workspace 字节数，默认 32MB——该默认值与 0 值预算的语义均与 cuBLASLt 存在有意偏差，详见 `aclblasLtMatmulPreferenceAttribute_t`）。值域约束：`ACLBLASLT_MATMUL_PREF_SEARCH_MODE` 仅接受 0（启发式）/1（穷举）/2（快速），且写入缓冲须为 4 字节 `uint32_t`——这三个取值语义为**仓内自定义**，其中 1/2 与 cuBLASLt `cublasLtMatmulSearch_t` 分叉（cuBLASLt 中 1=`CUBLASLT_SEARCH_LIMITED_BY_ALGO_ID`、2~7 为保留值），仅 0（两侧同为 `BEST_FIT`）可移植；该分叉当前为潜伏状态，仓内无任何执行路径消费已存储的搜索模式（`Set` 存、`Get` 读回，heuristic 不读取），故不影响任何结果，详见 `aclblasLtMatmulPreferenceAttribute_t`。`ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES` 的写入缓冲须为 8 字节（`uint64_t`）——实现按 `sizeof(size_t)` 与 `sizeof(uint64_t)` 精确匹配，而本仓构建目标均为 LP64（AArch64 / x86_64），两者同为 8，故 4 字节写入会被拒绝；值不得超过 `INT64_MAX`，越界返回 `INVALID_VALUE`。
 
 | 返回值 | 含义 |
 |---|---|
@@ -544,12 +546,12 @@ aclblasStatus_t aclblasLtMatmulPreferenceGetAttribute(aclblasLtMatmulPreference_
                                                       size_t* sizeWritten);
 ```
 
-查询算法搜索偏好描述符属性。`sizeWritten` 允许为 `nullptr`（不回写所需大小）；`sizeInBytes=0` 时为探测模式，不写 `buf`，仅通过 `sizeWritten` 返回所需字节数。
+查询算法搜索偏好描述符属性。`sizeWritten` 允许为 `nullptr`（不回写所需大小）；`sizeInBytes=0` 时为探测模式，不写 `buf`，仅通过 `sizeWritten` 返回所需字节数。**有意宽松**：`sizeInBytes=0` 且 `sizeWritten=nullptr` 的组合在本接口返回 `SUCCESS`，而 cuBLASLt 与本库 `aclblasLtMatmulAlgoCapGetAttribute` 均对该组合返回 `INVALID_VALUE`——本属性族把 `sizeWritten` 设计为可选（丢弃所需大小的探测仍是一次合法的空调用），Cap 族则逐条复刻 cuBLASLt 的该守卫（其错误码矩阵是按 cuBLASLt 文档逐行制定的）；需要严格口径的调用方传入非空 `sizeWritten` 即可。
 
 | 返回值 | 含义 |
 |---|---|
-| `ACLBLAS_STATUS_SUCCESS` | 查询成功（含 `sizeInBytes=0` 探测）。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | `pref` 为空，或 `buf` 非空但缓冲区过小（此时 `sizeWritten` 仍回传所需字节数）。 |
+| `ACLBLAS_STATUS_SUCCESS` | 查询成功（含 `sizeInBytes=0` 探测，以及 `sizeInBytes=0` 且 `sizeWritten=nullptr` 的组合）。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `pref` 为空；或 `sizeInBytes` 非 0 而 `buf` 为空；或缓冲区过小（此时 `sizeWritten` 仍回传所需字节数，属相对 cuBLASLt 的宽松超集——cuBLASLt 文档规定 `sizeWritten` 仅在返回 `SUCCESS` 时有效）。 |
 | `ACLBLAS_STATUS_NOT_SUPPORTED` | `attr` 不是已识别的属性。 |
 
 #### aclblasLtMatmulAlgoInit()
@@ -644,7 +646,7 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(aclblasLtHandle_t lightHandle,
                                           int* returnAlgoCount);
 ```
 
-查询指定计算类型与数据类型组合下 aclBLASLt 支持的全部算法 ID 集合，每个 ID 均可作为 `aclblasLtMatmulAlgoInit` 的合法 `algoId` 输入。ID 按升序写入 `algoIdsArray`；当 `requestedAlgoCount` 小于可用 ID 数量时，仅写入前 `requestedAlgoCount` 个，实际写入数量通过 `returnAlgoCount` 返回。`scaleType` 当前不参与类型组合校验（保留参数，语义与 `aclblasLtMatmulAlgoInit` 的 `scaleType` 不同：本接口的类型组合合法性仅由 `computeType` 与 A/B 及 C/D 决定）。`returnAlgoCount` 在非空前提下总会被写入：任何失败返回路径写 0，成功时写实际数量。
+查询指定计算类型与数据类型组合下 aclBLASLt 支持的全部算法 ID 集合，每个 ID 均可作为 `aclblasLtMatmulAlgoInit` 的合法 `algoId` 输入。ID 按升序写入 `algoIdsArray`；当 `requestedAlgoCount` 小于可用 ID 数量时，仅写入前 `requestedAlgoCount` 个，实际写入数量通过 `returnAlgoCount` 返回。`scaleType` 的参与程度按构建目标不同：**arch35**（Ascend 950 系列）实现下不参与类型组合校验（保留参数），类型组合合法性仅由 `computeType` 与 A/B 及 C/D 决定（语义与 `aclblasLtMatmulAlgoInit` 的 `scaleType` 不同）；**arch22**（Atlas A2/A3 系列）实现下参与校验，`scaleType` 不为 `ACL_FLOAT` 时返回 `NOT_SUPPORTED`。`returnAlgoCount` 在非空前提下总会被写入：任何失败返回路径写 0，成功时写实际数量。
 
 | 返回值 | 含义 |
 |---|---|
@@ -668,9 +670,9 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(aclblasLtHandle_t lightHandle,
                                                 int* returnAlgoCount);
 ```
 
-根据给定的 matmul 描述符与 A/B/C/D 矩阵 layout，检索可用的矩阵乘法算法启发式结果。结果按预估计算时间递增顺序写入 `heuristicResultsArray`；实际返回数量写入 `returnAlgoCount`。调用 `aclblasLtMatmul` 时可将 `heuristicResultsArray[i].algo` 传入 `algo` 参数。`pref` 允许为空：为空时不设置偏好，按内部默认值执行（最大 workspace 32MB、无 L0 tile 偏好），与显式传入默认偏好的行为一致。
+根据给定的 matmul 描述符与 A/B/C/D 矩阵 layout，检索可用的矩阵乘法算法启发式结果。结果按预估计算时间递增顺序写入 `heuristicResultsArray`；实际返回数量写入 `returnAlgoCount`。调用 `aclblasLtMatmul` 时可将 `heuristicResultsArray[i].algo` 传入 `algo` 参数。`pref` 允许为空，但**空偏好与显式传入默认偏好并不等价**：arch35（Ascend 950 系列）实现下 `pref` 为空时 workspace 预算取 0，而本仓 0 值预算的语义是「关闭预算过滤」（即无上限），显式传入 `Create`/`Init` 产物则按默认 32MB 预算过滤候选，两者在存在超 32MB workspace 候选时结果不同；arch22（Atlas A2/A3 系列）实现下 `pref` 为空时预算取默认 32MB，与显式传入默认偏好一致。两种实现下 `pref` 为空时均不设置 L0 tile 偏好。
 
-成功返回后应检查 `heuristicResultsArray[0 .. returnAlgoCount-1].state` 确认各候选算法是否可用。超过偏好中 workspace 预算的候选算法会被跳过（不计入返回数量，不写对应结果项）；计算类型与输入矩阵数据类型不兼容时返回 `INVALID_VALUE`，且 `heuristicResultsArray[0].state` 会被写为 `INVALID_VALUE`。无论返回码如何，`returnAlgoCount` 均会被写入（失败路径写 0）。结果项中 `wavesCount` 当前为固定填充值 1.0（不代表实测设备利用率），`reserved` 为保留字段（填 0，调用方忽略）。
+成功返回后应检查 `heuristicResultsArray[0 .. returnAlgoCount-1].state` 确认各候选算法是否可用。超过偏好中 workspace 预算的候选算法会被跳过（不计入返回数量，不写对应结果项）；**预算为 0 时的语义按构建目标不同**——arch35（Ascend 950 系列）实现把 0 读作「关闭预算过滤」（即无上限，不过滤任何候选），arch22（Atlas A2/A3 系列）实现与 cuBLASLt 一致、把 0 读作「零字节预算」（只保留无 workspace 需求的候选），详见 `aclblasLtMatmulPreferenceAttribute_t`；计算类型与输入矩阵数据类型不兼容时返回 `INVALID_VALUE`，且 `heuristicResultsArray[0].state` 会被写为 `INVALID_VALUE`。无论返回码如何，`returnAlgoCount` 均会被写入（失败路径写 0）。结果项中 `wavesCount` 当前为固定填充值 1.0（不代表实测设备利用率），`reserved` 为保留字段（填 0，调用方忽略）。
 
 | 返回值 | 含义 |
 |---|---|
@@ -725,9 +727,9 @@ aclblasStatus_t aclblasLtMatrixTransformDescInit(aclblasLtMatrixTransformDesc_t 
                                                  aclDataType scaleType);
 ```
 
-就地初始化调用方预分配的矩阵变换描述符胶囊（如栈上分配），指定计算（scale）精度类型，供 `aclblasLtMatrixTransform` 使用。参数面与 cuBLASLt `cublasLtMatrixTransformDescInit(transformDesc, scaleType)` 一致——transa/transb **不是** Init 参数（与 cuBLASLt 相同），初始化后经 `aclblasLtMatrixTransformDescSetAttribute` 的 `TRANSA`/`TRANSB` 设置；未设置时保持默认 `ACLBLAS_OP_N`，与新建 `Create` 描述符字节等价。
+就地初始化调用方预分配的矩阵变换描述符胶囊（如栈上分配），指定计算（scale）精度类型，供 `aclblasLtMatrixTransform` 使用。参数面与 cuBLASLt `cublasLtMatrixTransformDescInit(transformDesc, scaleType)` 一致——transa/transb **不是** Init 参数（与 cuBLASLt 相同），初始化后经 `aclblasLtMatrixTransformDescSetAttribute` 的 `TRANSA`/`TRANSB` 设置；未设置时保持默认 `ACLBLAS_OP_N`，**属性取值**与新建 `Create` 描述符等价；但在调用方存储上 `Init` 出的胶囊与 `Create` 产物并非逐字节相同——内部来源标志位 `heapOwned` 在 `Create` 产物中为 1、在调用方存储的 `Init` 产物中为 0，该差异正是 `Destroy` 区分两种来源并拒绝后者的判定依据（对 `Create` 产物调用 `Init` 会保留该标志位，见下）。
 
-本函数**不分配堆内存**，因此所得描述符**不得**传给 `aclblasLtMatrixTransformDescDestroy()`——传错时 `Destroy` 会以 `ACLBLAS_STATUS_INVALID_VALUE` 拒绝（运行期来源防护），而非对非堆指针执行 delete。`transformDesc` 为值传递（与 cuBLASLt `cublasLtMatrixTransformDescInit` 及本仓库 `aclblasLtMatmulDescInit` / `aclblasLtMatmulPreferenceInit` 一致），必须指向不小于 `sizeof(aclblasLtMatrixTransformDescOpaque_t)` 字节的调用方存储。
+本函数**不分配堆内存**，因此在调用方存储上初始化出的描述符**不得**传给 `aclblasLtMatrixTransformDescDestroy()`——传错时 `Destroy` 会以 `ACLBLAS_STATUS_INVALID_VALUE` 拒绝（运行期来源防护），而非对非堆指针执行 delete。对 **`Create` 产物**调用 Init 则是「纯重置」，与 cuBLASLt「initializes ... in a previously allocated one」的语义一致：`scaleType` 取入参、其余属性回到默认值，内部堆来源标志位被保留，故该描述符仍可正常 `Destroy`；cuBLASLt 合法的「Create → Init（重置复用）→ Destroy」模式因此能正常释放而不会泄漏。`transformDesc` 为值传递（与 cuBLASLt `cublasLtMatrixTransformDescInit` 及本仓库 `aclblasLtMatmulDescInit` / `aclblasLtMatmulPreferenceInit` 一致），必须指向不小于 `sizeof(aclblasLtMatrixTransformDescOpaque_t)` 字节的调用方存储（**[in,out] 参数**：函数会先读回其首部字节以识别是否为 `Create` 产物并保留其堆来源位）。存储入口内容必须为**确定值**：要么零初始化（如 `aclblasLtMatrixTransformDescOpaque_t desc{};`），要么是 `Create` / `Init` 的产物胶囊；传入未初始化（不确定值）存储违反该前提，属未定义行为。这是与 cuBLASLt 的一处使用差异：cuBLASLt 的 Init 不读取存储内容，允许未初始化的句柄声明；本实现因来源位保留机制要求确定值入口。全零字节必不匹配内部 magic 数，故零初始化存储必走纯重置路径（来源位为 0，`Destroy` 拒绝），不会被误标为堆来源。
 
 | 返回值 | 含义 |
 |---|---|
@@ -746,7 +748,7 @@ aclblasStatus_t aclblasLtMatrixTransformDescDestroy(const aclblasLtMatrixTransfo
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 销毁成功。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | `transformDesc` 为空指针，或胶囊非 `aclblasLtMatrixTransformDescCreate()` 产物（`Init` 胶囊 / 损坏 / 外来胶囊，来源与 magic 防护在 delete 前拒绝）。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `transformDesc` 为空指针，或胶囊非 `aclblasLtMatrixTransformDescCreate()` 产物（调用方存储上的 `Init` 胶囊 / 损坏 / 外来胶囊，来源与 magic 防护在 delete 前拒绝）。对 `Create` 产物调用 `Init` 会保留 `heapOwned=1`，故此类胶囊仍可正常销毁。 |
 
 #### aclblasLtMatrixTransformDescSetAttribute()
 
@@ -757,13 +759,13 @@ aclblasStatus_t aclblasLtMatrixTransformDescSetAttribute(aclblasLtMatrixTransfor
                                                          size_t sizeInBytes);
 ```
 
-设置矩阵变换描述符属性，如 `TRANSA`/`TRANSB`（`aclblasOperation_t`）、pointer mode 等，详见 `aclblasLtMatrixTransformDescAttribute_t`。`SCALE_TYPE` 允许在 Set 阶段覆盖，但其值须为变换引擎支持的精度（`ACL_FLOAT` / `ACL_BF16` / `ACL_INT32`），其余 `aclDataType` 取值会被拒绝。校验顺序为：描述符判空与 magic 校验 → `buf` 判空 → `sizeInBytes` 校验 → `attr` 识别；因此非法 `sizeInBytes` 搭配未识别 `attr` 时返回 `INVALID_VALUE`（size 校验先于 attr 识别）。
+设置矩阵变换描述符属性，如 `TRANSA`/`TRANSB`（`aclblasOperation_t`）、pointer mode 等，详见 `aclblasLtMatrixTransformDescAttribute_t`。`SCALE_TYPE` 允许在 Set 阶段覆盖，但其值须为变换引擎支持的精度（`ACL_FLOAT` / `ACL_BF16` / `ACL_INT32`），其余 `aclDataType` 取值会被拒绝。`TRANSA` / `TRANSB` 同样在 Set 阶段校验值域，白名单与变换引擎运行期的判定同域（`ACLBLAS_OP_N` / `ACLBLAS_OP_T` / `ACLBLAS_OP_C`，其中 C 按 T 处理——本库无复数 dtype），越界取值返回 `INVALID_VALUE` 而不是先存下、等到 `aclblasLtMatrixTransform` 阶段才失败；该口径与本仓 `MatrixLayout` 的 `ORDER` 属性 Set 期白名单一致。`POINTER_MODE` **仅接受 `ACLBLASLT_POINTER_MODE_HOST`(0)**：`aclblasLtMatrixTransform` 的标量执行链恒按主机指针解引用 alpha/beta，本库未实现 device 指针模式，故非 HOST 取值在 Set 阶段即返回 `NOT_SUPPORTED`，而不是记录后在执行阶段静默把设备地址当主机指针解读；cuBLASLt 对该属性支持 `CUBLASLT_POINTER_MODE_DEVICE`，依赖 device 侧标量的迁移代码会在此得到响亮拒绝。校验顺序为：描述符判空与 magic 校验 → `buf` 判空 → `sizeInBytes` 校验 → `attr` 识别与值域校验；因此非法 `sizeInBytes` 搭配未识别 `attr` 时返回 `INVALID_VALUE`（size 校验先于 attr 识别）。
 
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 设置成功。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | `transformDesc` 或 `buf` 为空、描述符 magic 校验失败、`sizeInBytes` 不匹配，或 `SCALE_TYPE` 的值不是变换引擎支持的精度。 |
-| `ACLBLAS_STATUS_NOT_SUPPORTED` | `attr` 不是已识别的属性。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `transformDesc` 或 `buf` 为空、描述符 magic 校验失败、`sizeInBytes` 不匹配，或属性值越界（`SCALE_TYPE` 不是变换引擎支持的精度；`TRANSA` / `TRANSB` 不是 `ACLBLAS_OP_N` / `ACLBLAS_OP_T` / `ACLBLAS_OP_C`）。 |
+| `ACLBLAS_STATUS_NOT_SUPPORTED` | `attr` 不是已识别的属性；或 `attr` 为 `POINTER_MODE` 而取值不是 `ACLBLASLT_POINTER_MODE_HOST`（本库仅实现主机指针模式）。 |
 
 #### aclblasLtMatrixTransformDescGetAttribute()
 
@@ -775,12 +777,12 @@ aclblasStatus_t aclblasLtMatrixTransformDescGetAttribute(aclblasLtMatrixTransfor
                                                          size_t* sizeWritten);
 ```
 
-查询矩阵变换描述符属性。描述符须由 `aclblasLtMatrixTransformDescCreate` 创建且未销毁（内部 magic 校验，未初始化或已损坏的描述符返回 `INVALID_VALUE`）。`sizeWritten` 允许为 `nullptr`（不回写所需大小）；`sizeInBytes=0` 时为探测模式，不写 `buf`，仅通过 `sizeWritten` 返回所需字节数。
+查询矩阵变换描述符属性。描述符须由 `aclblasLtMatrixTransformDescCreate` 创建且未销毁（内部 magic 校验，未初始化或已损坏的描述符返回 `INVALID_VALUE`）。`sizeWritten` 允许为 `nullptr`（不回写所需大小）；`sizeInBytes=0` 时为探测模式，不写 `buf`，仅通过 `sizeWritten` 返回所需字节数。**有意宽松**：`sizeInBytes=0` 且 `sizeWritten=nullptr` 的组合在本接口返回 `SUCCESS`，而 cuBLASLt 与本库 `aclblasLtMatmulAlgoCapGetAttribute` 均对该组合返回 `INVALID_VALUE`——本属性族把 `sizeWritten` 设计为可选（丢弃所需大小的探测仍是一次合法的空调用），Cap 族则逐条复刻 cuBLASLt 的该守卫（其错误码矩阵是按 cuBLASLt 文档逐行制定的）；需要严格口径的调用方传入非空 `sizeWritten` 即可。
 
 | 返回值 | 含义 |
 |---|---|
-| `ACLBLAS_STATUS_SUCCESS` | 查询成功（含 `sizeInBytes=0` 探测）。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | `transformDesc` 或 `buf` 为空、描述符 magic 校验失败，或 `buf` 非空但缓冲区过小（此时 `sizeWritten` 仍回传所需字节数）。 |
+| `ACLBLAS_STATUS_SUCCESS` | 查询成功（含 `sizeInBytes=0` 探测，以及 `sizeInBytes=0` 且 `sizeWritten=nullptr` 的组合）。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `transformDesc` 为空或描述符 magic 校验失败；或 `sizeInBytes` 非 0 而 `buf` 为空；或缓冲区过小（此时 `sizeWritten` 仍回传所需字节数，属相对 cuBLASLt 的宽松超集——cuBLASLt 文档规定 `sizeWritten` 仅在返回 `SUCCESS` 时有效）。 |
 | `ACLBLAS_STATUS_NOT_SUPPORTED` | `attr` 不是已识别的属性。 |
 
 #### aclblasLtLoggerSetFile()
@@ -1186,18 +1188,25 @@ aclBLASLt 日志掩码位标志枚举，按位组合控制各类消息的输出�
 | 取值 | 含义 | 数据类型 | 默认值 |
 |---|---|---|---|
 | `ACLBLASLT_MATRIX_TRANSFORM_DESC_SCALE_TYPE` (0) | 计算（scale）数据类型，创建时指定。 | `int32_t`（`aclDataType`） | 创建时指定 |
-| `ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE` (1) | alpha / beta 的传递方式。 | `int32_t` | host |
-| `ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA` (2) | 对矩阵 A 的变换操作，见 `aclblasOperation_t`。 | `int32_t` | `ACLBLAS_OP_N` |
-| `ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSB` (3) | 对矩阵 B 的变换操作，见 `aclblasOperation_t`。 | `int32_t` | `ACLBLAS_OP_N` |
+| `ACLBLASLT_MATRIX_TRANSFORM_DESC_POINTER_MODE` (1) | alpha / beta 的传递方式。**仅接受 host**（`ACLBLASLT_POINTER_MODE_HOST`=0）：本库标量执行链恒按主机指针解引用 alpha/beta，设 device 取值在 `SetAttribute` 阶段返回 `NOT_SUPPORTED`（cuBLASLt 支持 device，属有意偏差）。 | `int32_t` | host |
+| `ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSA` (2) | 对矩阵 A 的变换操作，见 `aclblasOperation_t`。Set 阶段校验白名单 `ACLBLAS_OP_N` / `ACLBLAS_OP_T` / `ACLBLAS_OP_C`（C 按 T 处理），越界返回 `INVALID_VALUE`。 | `int32_t` | `ACLBLAS_OP_N` |
+| `ACLBLASLT_MATRIX_TRANSFORM_DESC_TRANSB` (3) | 对矩阵 B 的变换操作，见 `aclblasOperation_t`。Set 阶段校验白名单同 `TRANSA`，越界返回 `INVALID_VALUE`。 | `int32_t` | `ACLBLAS_OP_N` |
 
 ### aclblasLtMatmulPreferenceAttribute_t
 
 矩阵乘法算法搜索偏好的可配置属性，用于 `aclblasLtMatmulPreferenceSetAttribute` / `aclblasLtMatmulPreferenceGetAttribute`。
 
+`ACLBLASLT_MATMUL_PREF_SEARCH_MODE` 的取值语义为**仓内自定义**，与 cuBLASLt `cublasLtMatmulSearch_t` 存在分叉：仓内 0/1/2 分别为「启发式 / 穷举 / 快速」，而 cuBLASLt 中 0=`CUBLASLT_SEARCH_BEST_FIT`、1=`CUBLASLT_SEARCH_LIMITED_BY_ALGO_ID`（「只为预配置的 algo id 寻找最佳配置」）、2~7 为保留值。因此从 cuBLASLt 迁移、传入 `CUBLASLT_SEARCH_LIMITED_BY_ALGO_ID`(1) 的代码在本仓会被解释为「穷举」，传入 cuBLASLt 保留值 2 会被解释为「快速」；仅 0 在两侧同义、可移植。该分叉当前为**潜伏**状态：仓内无任何执行路径消费已存储的搜索模式（`SetAttribute` 存、`GetAttribute` 读回，heuristic 不读取），故不影响任何返回结果；在此披露是因为一旦有消费方落地即会生效。
+
+`ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES` 的默认值 32MB 是**相对 cuBLASLt 的有意偏差**（cuBLASLt 默认为 0，即「不允许 workspace」）：本仓 `aclblasLtMatmulAlgoInit` 会给每个算法打上 `max_workspace_bytes = 32MB` 标记，而 `aclblasLtMatmul` 会以该标记校验 `workspaceSizeInBytes`；若照搬 cuBLASLt 的 0 默认值，`Create`/`Init` 得到的默认偏好将拒绝全部候选算法。
+
+**0 值预算的语义按构建目标不同**：arch35（Ascend 950 系列）实现把 0 读作「关闭预算过滤」（即无上限），arch22（Atlas A2/A3 系列）实现与 cuBLASLt 一致、把 0 读作「零字节预算」。因此从 cuBLASLt 迁移、以 `SetAttribute(MAX_WORKSPACE_BYTES, 0)` 表达「不要 workspace」的代码，在 arch35 上反而会拿到需要 workspace 的候选算法，随后按 cuBLASLt 习惯传 0 字节 workspace 调用 `aclblasLtMatmul` 会得到 `INVALID_VALUE`；此类调用方应改为读取 `heuristicResultsArray[i].workspaceSize` 并按其分配。
+
 | 取值 | 含义 | 数据类型 | 默认值 |
 |---|---|---|---|
-| `ACLBLASLT_MATMUL_PREF_SEARCH_MODE` (0) | 搜索模式：0=启发式，1=穷举，2=快速。 | `uint32_t` | 0 |
-| `ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES` (1) | 允许的最大 workspace 字节数。 | `uint64_t` | 32MB（`32*1024*1024`） |
+| `ACLBLASLT_MATMUL_PREF_SEARCH_MODE` (0) | 搜索模式：0=启发式，1=穷举，2=快速。**仓内自定义语义**，1/2 与 cuBLASLt `cublasLtMatmulSearch_t` 分叉（见上）；当前无执行路径消费该值。 | `uint32_t` | 0 |
+| `ACLBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES` (1) | 允许的最大 workspace 字节数；0 值语义按构建目标不同（见上）。 | `uint64_t` | 32MB（`32*1024*1024`）；cuBLASLt 默认为 0 |
+| `ACLBLASLT_MATMUL_PREF_MAX` (2) | repo-local 哨兵（cuBLASLt 无此哨兵），**不是可读写属性**：以该取值调用 Set/Get 与子集外任意取值一样返回 `NOT_SUPPORTED`。数值与 cuBLASLt `MATH_MODE_MASK`(2，已废弃) 重合，本库不提供该属性，迁移代码传该数值得到的是响亮拒绝而非静默误解释。 | — | — |
 
 ### aclblasLtMatmulTile_t
 

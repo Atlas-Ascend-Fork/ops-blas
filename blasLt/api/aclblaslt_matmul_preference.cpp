@@ -23,6 +23,35 @@
 #include <cstdint>
 #include <new>
 
+namespace {
+
+// cuBLASLt 的 *Init 语义是「重置一个先前已分配的描述符」（"initializes ... in a previously
+// allocated one"），因此 Create → Init（重置复用）→ Destroy 是合法模式。仓内 Init 若无条件以
+// NSDMI 全新 impl 覆写胶囊，会把 heapOwned 从 1 翻回 0，此后 Destroy 的来源防护永久拒绝该堆
+// 胶囊——既泄漏又给出意外的 INVALID_VALUE。故 magic 有效且 heapOwned==1 时保留来源位、只重置
+// 属性；调用方存储（magic 不匹配或来源位为 0）仍得到 heapOwned=0，Destroy 照旧拒绝。
+//
+// 读取前提（公开契约，见 include/cann_ops_blasLt.h 中 Init 的 @param[in,out] pref）：调用方
+// 存储入口须为确定值——零初始化，或 Create/Init 产物胶囊。本 helper 会读回该存储前
+// sizeof(impl) 字节；未初始化（不确定值）存储属调用方违约（UB）。这与本文件「读不确定值亦属
+// UB」的纪律一致：写入侧由 impl 值初始化保证，读取侧由公开契约保证。门控顺序固定：magic 先行、
+// 再判 heapOwned，局部缓冲值初始化；全零字节必不匹配 magic，故零初始化存储必走纯重置路径
+// （返回 0），只有真正的 Create 产物才保留来源位——自然垃圾误标堆来源需恰好命中 32 位 magic
+// 且 heapOwned 非零，且前提已是违约输入。
+uint32_t CarriedHeapOwnedFlag(aclblasLtMatmulPreference_t pref)
+{
+    aclblasLtMatmulPreferenceImpl existing{};
+    if (CheckedMemcpyS(&existing, sizeof(existing), pref, sizeof(existing)) != ACLBLAS_STATUS_SUCCESS) {
+        return 0U;
+    }
+    if (existing.magic != ACLBLASLT_PREFERENCE_MAGIC || existing.heapOwned == 0U) {
+        return 0U;
+    }
+    return existing.heapOwned;
+}
+
+} // namespace
+
 extern "C" {
 
 aclblasStatus_t aclblasLtMatmulPreferenceCreate(aclblasLtMatmulPreference_t* pref)
@@ -64,6 +93,8 @@ aclblasStatus_t aclblasLtMatmulPreferenceInit(aclblasLtMatmulPreference_t pref)
     // 值初始化：impl 会被整体 memcpy 进调用方胶囊，未初始化的 magic 与 padding 字节会让胶囊内容
     // 不确定（读不确定值亦属 UB）。与 aclblaslt_transform_desc.cpp 的 InitTransformDescCapsule 对齐。
     aclblasLtMatmulPreferenceImpl impl{};
+    // 对 Create 产物调用 Init 是「纯重置」：属性回到默认值，堆来源位保留，Destroy 资格不丢失。
+    impl.heapOwned = CarriedHeapOwnedFlag(pref);
     return PackImplIntoCapsule(pref, sizeof(*pref), &impl, sizeof(impl));
 }
 
