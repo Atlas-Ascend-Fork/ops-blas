@@ -767,9 +767,8 @@ static void FillHalfHost(const uint8_t* raw, size_t count, aclblasCgemmExType_t 
 
 static aclblasStatus_t PromoteR32ToC32(const void* src, int physRows, int physCols, int ld, void** dstDev)
 {
-    (void)physRows;
-    if (ld <= 0 || physCols <= 0) {
-        OP_LOGE("aclblasCgemmEx", "invalid R32 promote ld=%d physCols=%d", ld, physCols);
+    if (ld <= 0 || physCols <= 0 || physRows <= 0) {
+        OP_LOGE("aclblasCgemmEx", "invalid R32 promote ld=%d physRows=%d physCols=%d", ld, physRows, physCols);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     size_t count = static_cast<size_t>(ld) * static_cast<size_t>(physCols);
@@ -777,9 +776,19 @@ static aclblasStatus_t PromoteR32ToC32(const void* src, int physRows, int physCo
         OP_LOGE("aclblasCgemmEx", "R32 promote count overflow ld=%d physCols=%d", ld, physCols);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    std::vector<float> host(count);
-    size_t inBytes = count * sizeof(float);
-    aclError ret = aclrtMemcpy(host.data(), inBytes, src, inBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    // issue #865: 与 gemm3m #742 同口径，D2H 只读 C 的逻辑足迹 (physCols-1)*ld + physRows
+    // （= 用户缓冲真实跨度），ld > physRows 时不再越界读取用户缓冲之外设备内存；
+    // C32 缓冲布局不变（ld*physCols），足迹内元素与源布局逐位对应
+    const size_t footprint =
+        (static_cast<size_t>(physCols) - 1) * static_cast<size_t>(ld) + static_cast<size_t>(physRows);
+    if (!HostCountOk(footprint, sizeof(float))) {
+        OP_LOGE(
+            "aclblasCgemmEx", "R32 promote footprint overflow ld=%d physRows=%d physCols=%d", ld, physRows, physCols);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    std::vector<float> host(count, 0.0f);
+    aclError ret =
+        aclrtMemcpy(host.data(), footprint * sizeof(float), src, footprint * sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST);
     if (ret != ACL_SUCCESS) {
         OP_LOGE("aclblasCgemmEx", "aclrtMemcpy D2H failed in PromoteR32ToC32");
         return ACLBLAS_STATUS_EXECUTION_FAILED;
@@ -795,8 +804,8 @@ static aclblasStatus_t PromoteR32ToC32(const void* src, int physRows, int physCo
 static aclblasStatus_t ConvertHalfToDeviceC32(
     const void* src, aclblasCgemmExType_t type, int physRows, int physCols, int ld, void** dstDev, size_t* bytesOut)
 {
-    if (ld <= 0 || physCols <= 0) {
-        OP_LOGE("aclblasCgemmEx", "invalid half convert ld=%d physCols=%d", ld, physCols);
+    if (ld <= 0 || physCols <= 0 || physRows <= 0) {
+        OP_LOGE("aclblasCgemmEx", "invalid half convert ld=%d physRows=%d physCols=%d", ld, physRows, physCols);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     size_t count = static_cast<size_t>(ld) * static_cast<size_t>(physCols);
@@ -805,8 +814,18 @@ static aclblasStatus_t ConvertHalfToDeviceC32(
         OP_LOGE("aclblasCgemmEx", "half convert count overflow ld=%d physCols=%d", ld, physCols);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    std::vector<uint8_t> raw(count * elemBytes);
-    size_t rawBytes = raw.size();
+    // issue #865: 与 gemm3m #742 同口径，D2H 只读 C 的逻辑足迹 (physCols-1)*ld + physRows
+    // （= 用户缓冲真实跨度），ld > physRows 时不再越界读取用户缓冲之外设备内存；
+    // C32 缓冲布局不变（ld*physCols），足迹内元素与源布局逐位对应
+    const size_t footprint =
+        (static_cast<size_t>(physCols) - 1) * static_cast<size_t>(ld) + static_cast<size_t>(physRows);
+    if (!HostCountOk(footprint, elemBytes)) {
+        OP_LOGE(
+            "aclblasCgemmEx", "half convert footprint overflow ld=%d physRows=%d physCols=%d", ld, physRows, physCols);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    std::vector<uint8_t> raw(count * elemBytes, 0);
+    size_t rawBytes = footprint * elemBytes;
     aclError ret = aclrtMemcpy(raw.data(), rawBytes, src, rawBytes, ACL_MEMCPY_DEVICE_TO_HOST);
     if (ret != ACL_SUCCESS) {
         OP_LOGE("aclblasCgemmEx", "aclrtMemcpy D2H failed in ConvertHalfToDeviceC32");
@@ -825,38 +844,41 @@ static aclblasStatus_t ConvertHalfToDeviceC32(
 
 static aclblasStatus_t ConvertC32DeviceToHalf(void* c32Dev, void* dst, aclblasCgemmExType_t type, int m, int n, int ldc)
 {
-    if (ldc <= 0 || n <= 0) {
-        OP_LOGE("aclblasCgemmEx", "invalid C32-to-half ldc=%d n=%d", ldc, n);
+    if (ldc <= 0 || n <= 0 || m <= 0) {
+        OP_LOGE("aclblasCgemmEx", "invalid C32-to-half m=%d ldc=%d n=%d", m, ldc, n);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    size_t count = static_cast<size_t>(ldc) * static_cast<size_t>(n);
-    if (!HostCountOk(count, sizeof(aclblasComplex))) {
-        OP_LOGE("aclblasCgemmEx", "C32-to-half count overflow ldc=%d n=%d", ldc, n);
+    // issue #865: 与 gemm3m #742 同口径，D2H/H2D 均限定在逻辑足迹 (n-1)*ldc + m 内，
+    // ldc > m 时不再 ldc*n 整块搬运越过 C 逻辑足迹改写 padding 行/相邻数据；足迹内元素
+    // （含既有 padding 槽位，其值经 half→C32→half 往返保持逐位一致）按源布局逐位转换，
+    // 单次 D2H + 单次 H2D，避免逐列同步 memcpy 的性能退化
+    const size_t footprint = (static_cast<size_t>(n) - 1) * static_cast<size_t>(ldc) + static_cast<size_t>(m);
+    if (!HostCountOk(footprint, sizeof(aclblasComplex))) {
+        OP_LOGE("aclblasCgemmEx", "C32-to-half footprint overflow m=%d ldc=%d n=%d", m, ldc, n);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    std::vector<aclblasComplex> host(count);
-    size_t inBytes = count * sizeof(aclblasComplex);
+    std::vector<aclblasComplex> host(footprint);
+    const size_t inBytes = footprint * sizeof(aclblasComplex);
     aclError ret = aclrtMemcpy(host.data(), inBytes, c32Dev, inBytes, ACL_MEMCPY_DEVICE_TO_HOST);
     if (ret != ACL_SUCCESS) {
         OP_LOGE("aclblasCgemmEx", "aclrtMemcpy D2H failed in ConvertC32DeviceToHalf");
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
-    if (type == ACLBLAS_H_C_32) {
-        std::vector<uint16_t> out(count * 2);
-        for (size_t i = 0; i < count; i++) {
+    const bool complexOut = (type == ACLBLAS_H_C_32);
+    const size_t elemsPer = complexOut ? 2U : 1U;
+    const size_t outBytes = footprint * elemsPer * sizeof(uint16_t);
+    std::vector<uint16_t> out(footprint * elemsPer);
+    if (complexOut) {
+        for (size_t i = 0; i < footprint; i++) {
             out[i * 2] = blas_common::FloatToHalf(host[i].real);
             out[i * 2 + 1] = blas_common::FloatToHalf(host[i].imag);
         }
-        size_t outBytes = out.size() * sizeof(uint16_t);
-        ret = aclrtMemcpy(dst, outBytes, out.data(), outBytes, ACL_MEMCPY_HOST_TO_DEVICE);
     } else {
-        std::vector<uint16_t> out(count);
-        for (size_t i = 0; i < count; i++) {
+        for (size_t i = 0; i < footprint; i++) {
             out[i] = blas_common::FloatToHalf(host[i].real);
         }
-        size_t outBytes = out.size() * sizeof(uint16_t);
-        ret = aclrtMemcpy(dst, outBytes, out.data(), outBytes, ACL_MEMCPY_HOST_TO_DEVICE);
     }
+    ret = aclrtMemcpy(dst, outBytes, out.data(), outBytes, ACL_MEMCPY_HOST_TO_DEVICE);
     if (ret != ACL_SUCCESS) {
         OP_LOGE("aclblasCgemmEx", "aclrtMemcpy H2D failed in ConvertC32DeviceToHalf");
         return ACLBLAS_STATUS_EXECUTION_FAILED;

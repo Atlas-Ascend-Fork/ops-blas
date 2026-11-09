@@ -91,11 +91,18 @@ if(DEFINED TEST_NAMES AND NOT "${TEST_NAMES}" STREQUAL "")
     endforeach()
     foreach(_src_file ${OP_SRC_FILES} ${ARCH_SRC_FILES})
         set(_keep_src FALSE)
-        if(("gemm_ex" IN_LIST TEST_NAMES OR "sgemm_ex" IN_LIST TEST_NAMES OR "cgemm_ex" IN_LIST TEST_NAMES)
+        # --ops=gemm 子集时，文件名前缀规则会保留各目录下 gemm_* 命名的 host 文件
+        # （含 blas/gemm_ex/arch22/gemm_ex_host.cpp、gemm_ex_fallback_host.cpp），
+        # 这些文件引用的符号定义在 /gemm_ex/ 其余源文件（sgemm_dispatch.cpp、
+        # gemmex_short_nn_kernel.cpp、sgemm_ex_direct_kernel.cpp）与
+        # blas/scal/arch22（blas/gemm/arch22/gemm_host.cpp beta 回退调用
+        # aclblasSscal）中，须一并保留，否则 libops_blas.so 缺符号导致
+        # gemm_test / blas_all_test 链接失败（PreSmoke_A2 冒烟子集构建同理）
+        if(("gemm" IN_LIST TEST_NAMES OR "gemm_ex" IN_LIST TEST_NAMES OR "sgemm_ex" IN_LIST TEST_NAMES OR "cgemm_ex" IN_LIST TEST_NAMES)
            AND _src_file MATCHES "/scal/arch22/")
             set(_keep_src TRUE)
         endif()
-        if(("sgemm_ex" IN_LIST TEST_NAMES OR "cgemm_ex" IN_LIST TEST_NAMES)
+        if(("gemm" IN_LIST TEST_NAMES OR "sgemm_ex" IN_LIST TEST_NAMES OR "cgemm_ex" IN_LIST TEST_NAMES)
            AND _src_file MATCHES "/gemm_ex/")
             set(_keep_src TRUE)
         endif()
