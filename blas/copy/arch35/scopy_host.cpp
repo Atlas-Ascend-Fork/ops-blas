@@ -143,6 +143,20 @@ aclblasStatus_t aclblasScopy(aclblasHandle_t handle, int n, const float* x, int 
         return st;
     }
 
+    // issue #866: (n-1)*|inc| 以 uint64 计算并拒绝超过 uint32 索引域的组合（对齐 #804/#806
+    // sasum/sscal 拒绝式口径），超限输入不再下发 kernel
+    const int64_t absIncx64 = (incx < 0) ? -static_cast<int64_t>(incx) : static_cast<int64_t>(incx);
+    const int64_t absIncy64 = (incy < 0) ? -static_cast<int64_t>(incy) : static_cast<int64_t>(incy);
+    const int64_t spanX = static_cast<int64_t>(n - 1) * absIncx64;
+    const int64_t spanY = static_cast<int64_t>(n - 1) * absIncy64;
+    if (spanX > static_cast<int64_t>(UINT32_MAX) || spanY > static_cast<int64_t>(UINT32_MAX)) {
+        OP_LOGE(
+            "aclblasScopy",
+            "strided offset overflow: n=%d incx=%d incy=%d spanX=%lld spanY=%lld exceeds uint32 index domain", n, incx,
+            incy, static_cast<long long>(spanX), static_cast<long long>(spanY));
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+
     uint32_t aivCoreNum = GetAivCoreCount();
     if (aivCoreNum == 0) {
         OP_LOGE("aclblasScopy", "vector core count is 0");

@@ -30,9 +30,9 @@ private:
     __aicore__ inline void DiscreteWrite(
         const LocalTensor<float>& xOut, uint32_t elementOffset, uint32_t dataCount, int32_t incy);
     __aicore__ inline void DiscreteCompactRead(
-        LocalTensor<float>& xLocal, uint32_t dataCount, uint32_t absIncx, uint32_t xBase);
+        LocalTensor<float>& xLocal, uint32_t dataCount, uint64_t absIncx, uint64_t xBase);
     __aicore__ inline void DiscreteCompactWrite(
-        const LocalTensor<float>& xOut, uint32_t dataCount, uint32_t absIncy, uint32_t yBase);
+        const LocalTensor<float>& xOut, uint32_t dataCount, uint64_t absIncy, uint64_t yBase);
     __aicore__ inline LocalTensor<float> DiscreteReorder(LocalTensor<float>& xIn, uint32_t dataCount);
 
     TPipe* pipe_;
@@ -68,16 +68,17 @@ __aicore__ inline void ScopyAIV::Init(
                 (blockIdx_ < tiling_.extraBlockCores ? blockIdx_ : tiling_.extraBlockCores) * ELEMENTS_PER_BLOCK;
 
     // Compute buffer spans for strided access.
-    uint32_t xBufSize = tiling_.totalN;
+    // issue #866: 跨度乘法统一 uint64 域（host 已拒绝超 uint32 的跨度，此处双保险防残留回绕）
+    uint64_t xBufSize = tiling_.totalN;
     if (tiling_.incx != 1) {
-        uint32_t absIncx =
-            (tiling_.incx > 0) ? static_cast<uint32_t>(tiling_.incx) : static_cast<uint32_t>(-tiling_.incx);
+        uint64_t absIncx = (tiling_.incx > 0) ? static_cast<uint64_t>(tiling_.incx) :
+                                                static_cast<uint64_t>(-static_cast<int64_t>(tiling_.incx));
         xBufSize = absIncx * (tiling_.totalN - 1) + 1;
     }
-    uint32_t yBufSize = tiling_.totalN;
+    uint64_t yBufSize = tiling_.totalN;
     if (tiling_.incy != 1) {
-        uint32_t absIncy =
-            (tiling_.incy > 0) ? static_cast<uint32_t>(tiling_.incy) : static_cast<uint32_t>(-tiling_.incy);
+        uint64_t absIncy = (tiling_.incy > 0) ? static_cast<uint64_t>(tiling_.incy) :
+                                                static_cast<uint64_t>(-static_cast<int64_t>(tiling_.incy));
         yBufSize = absIncy * (tiling_.totalN - 1) + 1;
     }
     xGM_.SetGlobalBuffer((__gm__ float*)x, xBufSize);
@@ -244,7 +245,7 @@ __aicore__ inline void ScopyAIV::ContinuousPumpDrain()
 }
 
 __aicore__ inline void ScopyAIV::DiscreteCompactRead(
-    LocalTensor<float>& xLocal, uint32_t dataCount, uint32_t absIncx, uint32_t xBase)
+    LocalTensor<float>& xLocal, uint32_t dataCount, uint64_t absIncx, uint64_t xBase)
 {
     constexpr uint32_t compactMax = 4088;
     uint32_t readRemaining = dataCount;
@@ -255,14 +256,14 @@ __aicore__ inline void ScopyAIV::DiscreteCompactRead(
         DataCopyExtParams copyParams{static_cast<uint16_t>(batch), sizeof(float), srcStride, 0, 0};
         DataCopyPadExtParams<float> padParams{true, 0, 0, 0.0f};
         DataCopyPad<float, PaddingMode::Compact>(
-            xLocal[readOff], xGM_[xBase + readOff * absIncx], copyParams, padParams);
+            xLocal[readOff], xGM_[xBase + static_cast<uint64_t>(readOff) * absIncx], copyParams, padParams);
         readRemaining -= batch;
         readOff += batch;
     }
 }
 
 __aicore__ inline void ScopyAIV::DiscreteCompactWrite(
-    const LocalTensor<float>& xOut, uint32_t dataCount, uint32_t absIncy, uint32_t yBase)
+    const LocalTensor<float>& xOut, uint32_t dataCount, uint64_t absIncy, uint64_t yBase)
 {
     constexpr uint32_t compactMax = 4088;
     uint32_t writeRemaining = dataCount;
@@ -271,7 +272,8 @@ __aicore__ inline void ScopyAIV::DiscreteCompactWrite(
     while (writeRemaining > 0) {
         uint32_t batch = (writeRemaining > compactMax) ? compactMax : writeRemaining;
         DataCopyExtParams copyParams{static_cast<uint16_t>(batch), sizeof(float), 0, dstStride, 0};
-        DataCopyPad<float, PaddingMode::Compact>(yGM_[yBase + writeOff * absIncy], xOut[writeOff], copyParams);
+        DataCopyPad<float, PaddingMode::Compact>(
+            yGM_[yBase + static_cast<uint64_t>(writeOff) * absIncy], xOut[writeOff], copyParams);
         writeRemaining -= batch;
         writeOff += batch;
     }
@@ -339,8 +341,10 @@ __aicore__ inline void ScopyAIV::DiscreteIteration(
 __aicore__ inline void ScopyAIV::DiscreteRead(
     LocalTensor<float>& xLocal, uint32_t elementOffset, uint32_t dataCount, int32_t incx)
 {
-    uint32_t absIncx = (incx > 0) ? static_cast<uint32_t>(incx) : static_cast<uint32_t>(-incx);
-    uint32_t xBase = (incx < 0) ? (tiling_.totalN - elementOffset - dataCount) * absIncx : elementOffset * absIncx;
+    // issue #866: 基址/步长按 uint64 计算，防止 (n-1)*|inc| 级偏移的 uint32 乘法回绕
+    uint64_t absIncx = (incx > 0) ? static_cast<uint64_t>(incx) : static_cast<uint64_t>(-static_cast<int64_t>(incx));
+    uint64_t xBase = (incx < 0) ? static_cast<uint64_t>(tiling_.totalN - elementOffset - dataCount) * absIncx :
+                                  static_cast<uint64_t>(elementOffset) * absIncx;
 
     if (absIncx == 1) {
         uint32_t alignedCount = (dataCount / ELEMENTS_PER_BLOCK) * ELEMENTS_PER_BLOCK;
@@ -363,8 +367,10 @@ __aicore__ inline void ScopyAIV::DiscreteRead(
 __aicore__ inline void ScopyAIV::DiscreteWrite(
     const LocalTensor<float>& xOut, uint32_t elementOffset, uint32_t dataCount, int32_t incy)
 {
-    uint32_t absIncy = (incy > 0) ? static_cast<uint32_t>(incy) : static_cast<uint32_t>(-incy);
-    uint32_t yBase = (incy < 0) ? (tiling_.totalN - elementOffset - dataCount) * absIncy : elementOffset * absIncy;
+    // issue #866: 基址/步长按 uint64 计算，防止 (n-1)*|inc| 级偏移的 uint32 乘法回绕
+    uint64_t absIncy = (incy > 0) ? static_cast<uint64_t>(incy) : static_cast<uint64_t>(-static_cast<int64_t>(incy));
+    uint64_t yBase = (incy < 0) ? static_cast<uint64_t>(tiling_.totalN - elementOffset - dataCount) * absIncy :
+                                  static_cast<uint64_t>(elementOffset) * absIncy;
 
     if (absIncy == 1) {
         uint32_t alignedCount = (dataCount / ELEMENTS_PER_BLOCK) * ELEMENTS_PER_BLOCK;
