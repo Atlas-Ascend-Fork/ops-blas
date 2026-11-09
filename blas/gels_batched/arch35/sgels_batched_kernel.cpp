@@ -269,8 +269,9 @@ __simt_callee__ __aicore__ inline void ZeroTailRows(
 __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void SgelsTransposeSimt(
     uint32_t origM, uint32_t origN, int32_t origLda, __gm__ float* aGm, __gm__ float* tempA)
 {
-    uint32_t copySize = static_cast<uint32_t>(origLda) * origN;
-    for (uint32_t i = threadIdx.x; i < copySize; i += blockDim.x) {
+    // issue #864: lda*origN 在 32 位域回绕会截断拷贝规模，乘法与循环下标统一 64 位
+    uint64_t copySize = static_cast<uint64_t>(static_cast<uint32_t>(origLda)) * origN;
+    for (uint64_t i = threadIdx.x; i < copySize; i += blockDim.x) {
         tempA[i] = aGm[i];
     }
     asc_syncthreads();
@@ -388,7 +389,9 @@ __global__ __aicore__ void sgels_batched_simt_kernel(
     auto* cAddrArray = reinterpret_cast<__gm__ uint64_t*>(cArray);
     auto* workspaceGm = reinterpret_cast<__gm__ float*>(workspace);
     auto* devInfoGm = reinterpret_cast<__gm__ int*>(devInfo);
-    uint64_t tempAPerCoreFloats = static_cast<uint64_t>(tiling.origLda) * tiling.n;
+    // issue #864: 每 core tempA 尺寸与 host 分配口径一致（origLda * origN，origN=tiling.m），
+    // 此前按 tiling.n 计算步长，n>m 时核间 tempA 交叠
+    uint64_t tempAPerCoreFloats = static_cast<uint64_t>(static_cast<uint32_t>(tiling.origLda)) * tiling.m;
     __gm__ float* tempA = workspaceGm + static_cast<uint64_t>(tiling.batchSize) * tiling.minMN +
                           static_cast<uint64_t>(blkIdx) * tempAPerCoreFloats;
 

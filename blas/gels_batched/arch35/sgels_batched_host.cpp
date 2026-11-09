@@ -30,8 +30,8 @@
 struct SgelsBatchedTilingData;
 
 void sgels_decompose_kernel_do(
-    uint8_t* aArray, uint8_t* cArray, uint8_t* workspace, uint8_t* devInfo,
-    const SgelsBatchedTilingData &tiling, uint32_t numBlocks, void *stream);
+    uint8_t* aArray, uint8_t* cArray, uint8_t* workspace, uint8_t* devInfo, const SgelsBatchedTilingData& tiling,
+    uint32_t numBlocks, void* stream);
 
 static const char* const TAG = "aclblasSgelsBatched";
 static constexpr uint32_t SIMT_OPTIMAL_THREADS = 128;
@@ -122,15 +122,20 @@ static aclblasStatus_t LaunchGelsKernel(
     const SgelsBatchedTilingData& tiling)
 {
     size_t tauBytes = static_cast<size_t>(tiling.batchSize) * tiling.minMN * sizeof(float);
-    size_t tempAPerCoreBytes = tiling.trans ? static_cast<size_t>(tiling.origLda) * tiling.n * sizeof(float) : 0;
+    // issue #864: OP_T 时 kernel 侧转置按 origLda * origN（= 用户 lda * 用户 n，origN=tiling.m）
+    // 复制 A，tempA 每 core 尺寸必须与 kernel 的 tempAPerCoreFloats 一致；此前按 tiling.n
+    // （= 用户 m）分配，n>m 时各核 tempA 交叠且越出 workspace 末尾
+    size_t tempAPerCoreBytes = tiling.trans ? static_cast<size_t>(tiling.origLda) * tiling.m * sizeof(float) : 0;
     size_t tempABytes = tempAPerCoreBytes * tiling.usedCoreNum;
     size_t workspaceBytes = tauBytes + tempABytes;
 
     size_t availableBytes = GetEffectiveWorkspaceSize(h);
     if (workspaceBytes > availableBytes) {
-        OP_LOGE(TAG, "workspace required %zu bytes, but only %zu bytes available. "
-                     "Please call aclblasSetWorkspace with size >= %zu bytes",
-                workspaceBytes, availableBytes, workspaceBytes);
+        OP_LOGE(
+            TAG,
+            "workspace required %zu bytes, but only %zu bytes available. "
+            "Please call aclblasSetWorkspace with size >= %zu bytes",
+            workspaceBytes, availableBytes, workspaceBytes);
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
 
@@ -141,8 +146,9 @@ static aclblasStatus_t LaunchGelsKernel(
         tiling.numThreads);
 
     sgels_decompose_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<float**>(aArray)), reinterpret_cast<uint8_t*>(const_cast<float**>(cArray)),
-        workspace, reinterpret_cast<uint8_t*>(devInfo), tiling, tiling.usedCoreNum, h->stream);
+        reinterpret_cast<uint8_t*>(const_cast<float**>(aArray)),
+        reinterpret_cast<uint8_t*>(const_cast<float**>(cArray)), workspace, reinterpret_cast<uint8_t*>(devInfo), tiling,
+        tiling.usedCoreNum, h->stream);
 
     return ACLBLAS_STATUS_SUCCESS;
 }
