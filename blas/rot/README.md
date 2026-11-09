@@ -17,6 +17,7 @@ y[i] = c * y[i] - s * x[i] (使用原始 x[i])
 |--------|---------|
 | aclblasCsrot | 复数（FP32 complex）向量平面旋转 |
 | aclblasSrot | 单精度（FP32）实数向量平面旋转 |
+| aclblasCrot | 复数（FP32 complex）向量平面旋转，旋转正弦为复数且 y 更新使用其共轭 |
 
 ## 算子执行接口
 
@@ -447,3 +448,92 @@ int main()
     return 0;
 }
 ```
+
+### aclblasCrot
+
+#### 产品支持情况
+
+- Ascend 950PR：支持
+- Ascend 950DT：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasCrot(
+    aclblasHandle_t handle, int n, aclblasComplex* x, int incx, aclblasComplex* y, int incy,
+    const float* c, const aclblasComplex* s);
+```
+
+#### 参数说明
+
+| 参数名 | 输入/输出 | 参数类型 | 说明 |
+|--------|----------|---------|------|
+| handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
+| n | 输入 | int | 参与旋转的元素个数，Host 内存 |
+| x | 输入/输出 | aclblasComplex*（FP32 complex） | 复数向量，in-place 修改为 `c*x + s*y`，按 incx 步长访问，Device 内存 |
+| incx | 输入 | int | 向量 x 中连续元素之间的步长，可为正/负/零，Host 内存 |
+| y | 输入/输出 | aclblasComplex*（FP32 complex） | 复数向量，in-place 修改为 `c*y - conj(s)*x`，按 incy 步长访问，Device 内存 |
+| incy | 输入 | int | 向量 y 中连续元素之间的步长，可为正/负/零，Host 内存 |
+| c | 输入 | const float* | 指向旋转余弦 cos(θ) 的实数标量指针，Host 内存或 Device 内存，不可为 nullptr；算子运行时通过 aclrtPointerGetAttributes 自动判定其内存位置 |
+| s | 输入 | const aclblasComplex* | 指向旋转正弦 sin(θ) 的复数标量指针（实部/虚部各 FP32），Host 内存或 Device 内存，不可为 nullptr；算子运行时通过 aclrtPointerGetAttributes 自动判定其内存位置，与 c 的位置相互独立（可混合） |
+
+#### 约束说明
+
+**Ascend 950PR（arch35）：**
+
+- handle 不能为 nullptr，否则返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR
+- n 为整数；n <= 0 时为 no-op（直接返回 ACLBLAS_STATUS_SUCCESS，不修改 x、y；该约定来自任务书 §2.4 的 n ≤ 0 说明）
+- n > 0 时 x、y、c、s 任一为 nullptr，返回 ACLBLAS_STATUS_INVALID_VALUE
+- incx、incy 为整数，可为正、负、零，均不拦截：
+  - incx == 1 且 incy == 1 时走连续路径（SIMD）
+  - 其余 stride 组合（含正非 1、负、零及其混合）走 stride 路径（SIMT）；负 stride 时从向量尾端起算沿负方向步进
+  - 零 stride 时按任务书 §2.1.4 的约定对同一元素反复旋转（每次迭代重读同一地址，N 次串行累加；参考 BLAS 的 csrot 明确要求 INCX 非零，故此约定只能来自任务书）
+- 当 (n-1) * |stride| 的乘积超出 int32 表示范围时，返回 ACLBLAS_STATUS_INVALID_VALUE，避免 kernel 侧地址偏移溢出
+- c、s 可为 host 内存指针或 device 内存指针，由算子运行时通过 aclrtPointerGetAttributes 自动判定内存位置
+- c、s 指向的标量值可取任意 FP32 值（包括 c == 1 且 s == 0 的单位旋转，不做短路，正常执行旋转公式）
+- **语义与 aclblasCsrot 的差异**：`aclblasCrot` 的旋转正弦 s 为复数，且 y 的更新使用 s 的共轭：
+  ```
+  x'[k] = c*x[k] + s*y[j]
+  y'[j] = c*y[j] - conj(s)*x[k]        （使用旋转前的 x[k]）
+  ```
+  而 `aclblasCsrot` 的 s 为实数，y 的更新为 `c*y - s*x`。
+- 原地语义：x、y 均原地更新；y' 必须使用旋转前的 x 值，实现侧先将原值读入寄存器/UB 再写回
+- **别名输入**：`x == y`（同一基址）且 `incx == incy` 时按元素独立处理，结果确定；`x == y` 且
+  `incx != incy` 时 host 侧检测到基址相同，强制走单线程串行路径（`serialOnly`），按逻辑下标顺序
+  链式求值，与 golden 一致。仅部分重叠（基址不同但区间相交）的缓冲区不做检测，不在契约内
+- **参考出处**：复数 s 与 `conj(s)` 更新是任务书 §2.1.1 规定的扩展语义；§2.1.5 明确参考 BLAS 无
+  crot 例程，任务书引用的是 LAPACK 辅助例程存档（`reference/cublas_docs/netlib/crot.f`）。
+  不应按 `aclblasCsrot`（实 s、无共轭）类推
+- 精度标准：COMPLEX64（实部/虚部分别按 FP32 判定，`atol = rtol = 2^-13`，`required_matched_ratio = 0.99`）
+- 性能标准（Ascend 950PR，kernel 平均单次耗时）：n=1048576 ≤ 21.96us，n=2097152 ≤ 43.70us，n=4194304 ≤ 119.52us
+
+**Atlas A2 / Atlas A3 系列产品：**
+
+- 不支持
+
+#### 调用示例
+
+```cpp
+#include "acl/acl.h"
+#include "cann_ops_blas.h"
+
+// handle 创建与 stream 绑定
+aclblasHandle_t handle = nullptr;
+aclrtStream stream = nullptr;
+aclrtCreateStream(&stream);
+aclblasCreate(&handle);
+aclblasSetStream(handle, stream);
+
+// x、y 为 Device 内存中的 complex64 向量，各 n 个元素（按 incx/incy 步长访问）
+const float c = 0.6f;                        // 旋转余弦（实数）
+aclblasComplex s{0.8f, 0.1f};                // 旋转正弦（复数）
+
+aclblasStatus_t ret = aclblasCrot(handle, n, x, incx, y, incy, &c, &s);
+// 读回结果前需同步 stream
+aclrtSynchronizeStream(stream);
+```
+
+- `c`、`s` 也可以放在 Device 内存：直接把对应的 device 指针传入即可，算子会自动识别（两者位置可不同）。
+- 完整可编译工程示例见 [编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。

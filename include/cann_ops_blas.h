@@ -244,6 +244,10 @@ aclblasStatus_t aclblasCsrot(
     aclblasHandle_t handle, int n, aclblasComplex* x, int incx, aclblasComplex* y, int incy, const float* c,
     const float* s);
 
+aclblasStatus_t aclblasCrot(
+    aclblasHandle_t handle, int n, aclblasComplex* x, int incx, aclblasComplex* y, int incy, const float* c,
+    const aclblasComplex* s);
+
 aclblasStatus_t aclblasComplexMatDot(
     aclblasHandle_t handle, int m, int n, const aclblasComplex* matx, const aclblasComplex* maty,
     aclblasComplex* result);
