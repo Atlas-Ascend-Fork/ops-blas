@@ -13,6 +13,7 @@
  * \brief SSPMV Kernel for ascend950 (DAV_3510)
  */
 
+#include "acl/acl_rt.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
 #include "common/helper/kernel_constant.h"
@@ -21,8 +22,8 @@
 
 template <bool UPLO_IS_UPPER>
 __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void SspmvSimtCompute(
-    uint32_t n, float alpha, float beta, int64_t incx, int64_t incy, __gm__ const float* aGm,
-    __gm__ const float* xGm, __gm__ float* yGm)
+    uint32_t n, float alpha, float beta, int64_t incx, int64_t incy, __gm__ const float* aGm, __gm__ const float* xGm,
+    __gm__ float* yGm)
 {
     for (uint32_t row = blockIdx.x * blockDim.x + threadIdx.x; row < n; row += gridDim.x * blockDim.x) {
         // Column-start for the symmetry path, computed once per row.
@@ -57,8 +58,8 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void SspmvSimtCo
     }
 }
 
-__global__ __aicore__ void sspmv_kernel(GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace,
-                                        const SspmvTilingData tiling)
+__global__ __aicore__ void sspmv_kernel(
+    GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, const SspmvTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
 
@@ -75,9 +76,10 @@ __global__ __aicore__ void sspmv_kernel(GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR
     }
 }
 
-void sspmv_kernel_do(
-    GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace,
-    uint32_t numBlocks, const SspmvTilingData& tiling, void* stream)
+aclError sspmv_kernel_do(
+    GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, uint32_t numBlocks, const SspmvTilingData& tiling, void* stream)
 {
     sspmv_kernel<<<numBlocks, nullptr, stream>>>(a, x, y, workSpace, tiling);
+    // issue #862: 返回发射阶段错误码，host 据此返回 EXECUTION_FAILED（对齐 chpmv 口径）
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

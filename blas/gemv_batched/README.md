@@ -62,6 +62,10 @@ aclblasStatus_t aclblasSgemvBatched(aclblasHandle_t handle, aclblasOperation_t t
 - incx != 0, incy != 0
 - batchCount >= 0
 - trans 必须为 ACLBLAS_OP_N 或 ACLBLAS_OP_T
+- 形状跨度限制（issue #860，与 cgemv_batched 跨度拒绝口径一致，超限时返回 `ACLBLAS_STATUS_INVALID_VALUE`，不下发 kernel）：
+  - 矩阵 A 元素跨度 `(n-1)*lda + m` 不超过 INT32_MAX；
+  - x 跨度 `1 + (dotDim-1)*|incx|`、y 跨度 `1 + (outDim-1)*|incy|` 不超过 INT32_MAX，其中 dotDim = N?n:m，outDim = N?m:n（含负步长组合）；
+  - 总输出数 `batchCount * outDim` 不超过 INT32_MAX（kernel 侧承载域为 uint32）。
 
 #### 调用示例
 
@@ -296,6 +300,10 @@ aclblasStatus_t aclblasHSHgemvBatched(aclblasHandle_t handle, aclblasOperation_t
 - incx != 0, incy != 0
 - batchCount >= 0
 - trans 必须为 ACLBLAS_OP_N 或 ACLBLAS_OP_T
+- 形状跨度限制（issue #860，与 cgemv_batched 跨度拒绝口径一致，超限时返回 `ACLBLAS_STATUS_INVALID_VALUE`，不下发 kernel）：
+  - 矩阵 A 元素跨度 `(n-1)*lda + m` 不超过 INT32_MAX；
+  - x 跨度 `1 + (dotDim-1)*|incx|`、y 跨度 `1 + (outDim-1)*|incy|` 不超过 INT32_MAX，其中 dotDim = N?n:m，outDim = N?m:n（含负步长组合）；
+  - 总输出数 `batchCount * outDim` 不超过 INT32_MAX（kernel 侧承载域为 uint32）。
 
 #### 调用示例
 
@@ -551,6 +559,10 @@ aclblasStatus_t aclblasHSSgemvBatched(aclblasHandle_t handle, aclblasOperation_t
 - incx != 0, incy != 0
 - batchCount >= 0
 - trans 必须为 ACLBLAS_OP_N 或 ACLBLAS_OP_T
+- 形状跨度限制（issue #860，与 cgemv_batched 跨度拒绝口径一致，超限时返回 `ACLBLAS_STATUS_INVALID_VALUE`，不下发 kernel）：
+  - 矩阵 A 元素跨度 `(n-1)*lda + m` 不超过 INT32_MAX；
+  - x 跨度 `1 + (dotDim-1)*|incx|`、y 跨度 `1 + (outDim-1)*|incy|` 不超过 INT32_MAX，其中 dotDim = N?n:m，outDim = N?m:n（含负步长组合）；
+  - 总输出数 `batchCount * outDim` 不超过 INT32_MAX（kernel 侧承载域为 uint32）。
 
 #### 调用示例
 
@@ -1025,6 +1037,10 @@ aclblasStatus_t aclblasTSTgemvBatched(aclblasHandle_t handle, aclblasOperation_t
 - incx != 0, incy != 0
 - batchCount >= 0
 - trans 必须为 ACLBLAS_OP_N 或 ACLBLAS_OP_T
+- 形状跨度限制（issue #860，与 cgemv_batched 跨度拒绝口径一致，超限时返回 `ACLBLAS_STATUS_INVALID_VALUE`，不下发 kernel）：
+  - 矩阵 A 元素跨度 `(n-1)*lda + m` 不超过 INT32_MAX；
+  - x 跨度 `1 + (dotDim-1)*|incx|`、y 跨度 `1 + (outDim-1)*|incy|` 不超过 INT32_MAX，其中 dotDim = N?n:m，outDim = N?m:n（含负步长组合）；
+  - 总输出数 `batchCount * outDim` 不超过 INT32_MAX（kernel 侧承载域为 uint32）。
 
 #### 调用示例
 
@@ -1270,6 +1286,10 @@ aclblasStatus_t aclblasTSSgemvBatched(aclblasHandle_t handle, aclblasOperation_t
 - incx != 0, incy != 0
 - batchCount >= 0
 - trans 必须为 ACLBLAS_OP_N 或 ACLBLAS_OP_T
+- 形状跨度限制（issue #860，与 cgemv_batched 跨度拒绝口径一致，超限时返回 `ACLBLAS_STATUS_INVALID_VALUE`，不下发 kernel）：
+  - 矩阵 A 元素跨度 `(n-1)*lda + m` 不超过 INT32_MAX；
+  - x 跨度 `1 + (dotDim-1)*|incx|`、y 跨度 `1 + (outDim-1)*|incy|` 不超过 INT32_MAX，其中 dotDim = N?n:m，outDim = N?m:n（含负步长组合）；
+  - 总输出数 `batchCount * outDim` 不超过 INT32_MAX（kernel 侧承载域为 uint32）。
 
 #### 调用示例
 

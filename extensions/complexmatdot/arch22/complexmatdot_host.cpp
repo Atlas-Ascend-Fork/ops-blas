@@ -140,7 +140,9 @@ static aclblasStatus_t CopyTilingAndAugToDevice(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-aclblasStatus_t aclblasComplexMatDot(
+// 入参校验独立成段以控制 aclblasComplexMatDot 的函数体规模（CodeCheck 超大函数治理）；
+// 校验顺序与返回码语义与抽取前保持一致（#581/#711 各项入口防护）。
+static aclblasStatus_t ValidateComplexMatDotParams(
     aclblasHandle_t handle, int m, int n, const aclblasComplex* matx, const aclblasComplex* maty,
     aclblasComplex* result)
 {
@@ -167,6 +169,17 @@ aclblasStatus_t aclblasComplexMatDot(
         LOG_PRINT("aclblasComplexMatDot: matx, maty and result must not be nullptr\n");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+aclblasStatus_t aclblasComplexMatDot(
+    aclblasHandle_t handle, int m, int n, const aclblasComplex* matx, const aclblasComplex* maty,
+    aclblasComplex* result)
+{
+    const aclblasStatus_t validRet = ValidateComplexMatDotParams(handle, m, n, matx, maty, result);
+    if (validRet != ACLBLAS_STATUS_SUCCESS) {
+        return validRet;
+    }
     auto* h = handle;
     aclrtStream useStream = h->stream;
 
@@ -186,10 +199,17 @@ aclblasStatus_t aclblasComplexMatDot(
         return copyRet;
     }
 
-    complex_mat_dot_kernel_do(
+    const aclError launchRet = complex_mat_dot_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(matx)),
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(maty)), augDevice, reinterpret_cast<uint8_t*>(result),
         tilingDevice, numBlocks, useStream);
+    if (launchRet != ACL_SUCCESS) {
+        LOG_PRINT("complex_mat_dot_kernel launch failed. ERROR: %d\n", static_cast<int>(launchRet));
+        aclrtFree(tilingDevice);
+        aclrtFree(augDevice);
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
+
     aclError aclRet = aclrtSynchronizeStream(useStream);
     if (aclRet != ACL_SUCCESS) {
         LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);

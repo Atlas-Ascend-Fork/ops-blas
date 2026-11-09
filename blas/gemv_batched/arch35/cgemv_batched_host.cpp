@@ -24,10 +24,12 @@
 #include "cann_ops_blas.h"
 #include "cgemv_batched_tiling_data.h"
 #include "common/helper/aclblas_handle_internal.h"
+#include "common/helper/gemv_batched_span_check.h"
 #include "common/helper/kernel_constant.h"
 #include "common/helper/host_utils.h"
 
-void cgemv_batched_kernel_do(
+// issue #862: kernel_do 返回发射错误码（对齐 chpmv kernel_do 口径）
+aclError cgemv_batched_kernel_do(
     uint8_t* Aarray, uint8_t* xarray, uint8_t* yarray, const CgemvBatchedTilingData& tiling, uint32_t numBlocks,
     void* stream);
 
@@ -55,28 +57,16 @@ aclblasStatus_t ValidateCgemvBatchedScalars(int m, int n, int lda, int incx, int
 }
 
 // issue #848: 形状跨度 int64 域校验（独立成段以控制校验主函数的圈复杂度，
-// 对齐 cher_host 的显式拒绝口径）。kernel 侧 A/x/y 下标与总输出的 32 位
-// 安全上界：
-//  - A 单批元素跨度（两种 trans 布局的 A 下标最大值同式）：(n-1)*lda + m
-//  - x 跨度 1 + (dotDim-1)*|incx|、y 跨度 1 + (outDim-1)*|incy|
-//    （dotDim = N ? n : m，outDim = N ? m : n）
-//  - 总输出 batchCount * outDim（驱动 uint32 核间切分算术，上界取 INT32_MAX）
-// 复数元素在 kernel 侧按 2×float 寻址（元素下标 *2 放大），跨度以元素计
-// 需预留 ×2 余量；SIMT 路径的 AIndex/xOff/yOff/totalOutputs 已同步 64 位
-// 化作双保险，超限形状在此直接拒绝而不进入 kernel。
+// 对齐 cher_host 的显式拒绝口径）。跨度推导与上界口径见
+// common/helper/gemv_batched_span_check.h（CodeCheck 重复代码治理后两 host 共用）；
+// 复数元素在 kernel 侧按 2×float 寻址（元素下标 *2 放大），elemFactor 取 2 预留余量；
+// SIMT 路径的 AIndex/xOff/yOff/totalOutputs 已同步 64 位化作双保险，超限形状在此
+// 直接拒绝而不进入 kernel。
 // 前置：incx/incy 非 0 且非 INT_MIN、batchCount > 0（由调用方先行校验）。
 aclblasStatus_t ValidateCgemvBatchedSpans(
     aclblasOperation_t trans, int m, int n, int lda, int incx, int incy, int batchCount)
 {
-    const int64_t dotDimSpan = (trans == ACLBLAS_OP_N) ? static_cast<int64_t>(n) : static_cast<int64_t>(m);
-    const int64_t outDimSpan = (trans == ACLBLAS_OP_N) ? static_cast<int64_t>(m) : static_cast<int64_t>(n);
-    const int64_t absIncx64 = (incx >= 0) ? static_cast<int64_t>(incx) : -static_cast<int64_t>(incx);
-    const int64_t absIncy64 = (incy >= 0) ? static_cast<int64_t>(incy) : -static_cast<int64_t>(incy);
-    const int64_t aSpan = (static_cast<int64_t>(n) - 1) * static_cast<int64_t>(lda) + static_cast<int64_t>(m);
-    const int64_t xSpan = (dotDimSpan - 1) * absIncx64 + 1;
-    const int64_t ySpan = (outDimSpan - 1) * absIncy64 + 1;
-    const int64_t totalOutputs = static_cast<int64_t>(batchCount) * outDimSpan;
-    if (aSpan * 2 > INT32_MAX || xSpan * 2 > INT32_MAX || ySpan * 2 > INT32_MAX || totalOutputs > INT32_MAX) {
+    if (GemvBatchedSpanExceedsInt32(trans == ACLBLAS_OP_N, 2, m, n, lda, incx, incy, batchCount)) {
         OP_LOGE(
             "aclblasCgemvBatched",
             "shape span exceeds kernel 32-bit index domain: trans=%d m=%d n=%d lda=%d incx=%d incy=%d batchCount=%d",
@@ -254,9 +244,13 @@ aclblasStatus_t aclblasCgemvBatched(
     ApplyColSplit2D(tiling, coreNum, batchCountU);
     usedCoreNum = tiling.usedCoreNum;
 
-    cgemv_batched_kernel_do(
+    const aclError launchRet = cgemv_batched_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex**>(Aarray)),
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex**>(xarray)),
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex**>(yarray)), tiling, usedCoreNum, useStream);
+    if (launchRet != ACL_SUCCESS) {
+        OP_LOGE("aclblasCgemvBatched", "kernel launch failed, ACL error %d.", static_cast<int>(launchRet));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }

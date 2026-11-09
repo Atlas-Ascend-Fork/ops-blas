@@ -1,15 +1,16 @@
 /**
-* Copyright (c) 2026 Huawei Technologies Co., Ltd.
-* This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-* CANN Open Software License Agreement Version 2.0 (the "License").
-* Please refer to the License for details. You may not use the License for the License.
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-* INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-* See LICENSE in the root of the software repository for the full text of the License.
-*/
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd.
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
 
 #include <type_traits>
 #include <cstdint>
+#include "acl/acl_rt.h"
 #include "kernel_operator.h"
 #include "lib/matmul_intf.h"
 #include "complexmatdot_kernel.h"
@@ -39,8 +40,8 @@ public:
     __aicore__ inline void Init(ComplexMatDotKernelParam kernelParam);
     __aicore__ inline void Process();
     __aicore__ inline void SingleIteration(uint64_t offset, uint64_t dataCount, LocalTensor<uint32_t> offsetLocal);
-    __aicore__ inline void SingleIterationAligned(uint64_t offset, uint32_t dataCount,
-                                                  LocalTensor<uint32_t> offsetLocal);
+    __aicore__ inline void SingleIterationAligned(
+        uint64_t offset, uint32_t dataCount, LocalTensor<uint32_t> offsetLocal);
     __aicore__ inline void CopyIn(uint64_t offset, uint32_t dataCount);
     __aicore__ inline void CopyInPad(uint64_t offset, uint32_t dataCount);
     __aicore__ inline void Compute(uint32_t dataCount, LocalTensor<uint32_t> offsetLocal);
@@ -69,23 +70,23 @@ private:
 template <typename T>
 __aicore__ inline void ComplexMatDotAIV<T>::Init(ComplexMatDotKernelParam kernelParam)
 {
-    matxGM.SetGlobalBuffer((__gm__ T *)(kernelParam.matx), kernelParam.m * kernelParam.n);
-    matyGM.SetGlobalBuffer((__gm__ T *)(kernelParam.maty), kernelParam.m * kernelParam.n);
-    resultGM.SetGlobalBuffer((__gm__ T *)(kernelParam.result), kernelParam.m * kernelParam.n);
-    augGM.SetGlobalBuffer((__gm__ uint32_t *)(kernelParam.aug));
+    matxGM.SetGlobalBuffer((__gm__ T*)(kernelParam.matx), kernelParam.m * kernelParam.n);
+    matyGM.SetGlobalBuffer((__gm__ T*)(kernelParam.maty), kernelParam.m * kernelParam.n);
+    resultGM.SetGlobalBuffer((__gm__ T*)(kernelParam.result), kernelParam.m * kernelParam.n);
+    augGM.SetGlobalBuffer((__gm__ uint32_t*)(kernelParam.aug));
 
     calNum = kernelParam.calNumPerCore;
 
     startOffset = kernelParam.offset;
-    maxDataCount = 27 * 1024 / 4;  // 27kb / 4b
+    maxDataCount = 27 * 1024 / 4; // 27kb / 4b
 
     // ub 192kb
-    pipe.InitBuffer(xMatQueue, 2, maxDataCount * sizeof(T));    // 54kb
-    pipe.InitBuffer(yMatQueue, 2, maxDataCount * sizeof(T));    // 54kb
-    pipe.InitBuffer(outMatQueue, 2, maxDataCount * sizeof(T));  // 54kb
+    pipe.InitBuffer(xMatQueue, 2, maxDataCount * sizeof(T));   // 54kb
+    pipe.InitBuffer(yMatQueue, 2, maxDataCount * sizeof(T));   // 54kb
+    pipe.InitBuffer(outMatQueue, 2, maxDataCount * sizeof(T)); // 54kb
 
     uint64_t offsetLen = maxDataCount * 4;
-    pipe.InitBuffer(offsetBuf, offsetLen);  // 27kb
+    pipe.InitBuffer(offsetBuf, offsetLen); // 27kb
 
     return;
 }
@@ -121,8 +122,8 @@ __aicore__ inline void ComplexMatDotAIV<T>::Process()
 }
 
 template <typename T>
-__aicore__ inline void ComplexMatDotAIV<T>::SingleIteration(uint64_t offset, uint64_t dataCount,
-                                                            LocalTensor<uint32_t> offsetLocal)
+__aicore__ inline void ComplexMatDotAIV<T>::SingleIteration(
+    uint64_t offset, uint64_t dataCount, LocalTensor<uint32_t> offsetLocal)
 {
     CopyIn(offset, dataCount);
     Compute(dataCount, offsetLocal);
@@ -130,8 +131,8 @@ __aicore__ inline void ComplexMatDotAIV<T>::SingleIteration(uint64_t offset, uin
 }
 
 template <typename T>
-__aicore__ inline void ComplexMatDotAIV<T>::SingleIterationAligned(uint64_t offset, uint32_t dataCount,
-                                                                   LocalTensor<uint32_t> offsetLocal)
+__aicore__ inline void ComplexMatDotAIV<T>::SingleIterationAligned(
+    uint64_t offset, uint32_t dataCount, LocalTensor<uint32_t> offsetLocal)
 {
     uint32_t dataCountAligned = (dataCount + 7) / 8 * 8;
     CopyInPad(offset, dataCount);
@@ -173,7 +174,7 @@ __aicore__ inline void ComplexMatDotAIV<T>::Compute(uint32_t dataCount, LocalTen
     uint32_t complexNum = dataCount / 2;
     uint32_t alignedComplexNum = (complexNum + 7) / 8 * 8;
 
-    uint32_t maxComplexNum = (27 * 1024 / sizeof(float)) / 2;  // 27kb
+    uint32_t maxComplexNum = (27 * 1024 / sizeof(float)) / 2; // 27kb
     uint32_t realOffset = 0;
     uint32_t imagOffset = (maxComplexNum + 7) / 8 * 8;
 
@@ -230,28 +231,30 @@ __aicore__ inline void ComplexMatDotAIV<T>::CopyOut(uint64_t offset, uint32_t da
     outMatQueue.FreeTensor(outMatLocal);
 }
 
-}  // namespace ComplexMatDot
+} // namespace ComplexMatDot
 
-__global__ __aicore__ void complex_mat_dot_kernel(GM_ADDR matx, GM_ADDR maty, GM_ADDR aug, GM_ADDR result,
-                                                  GM_ADDR tiling_gm)
+__global__ __aicore__ void complex_mat_dot_kernel(
+    GM_ADDR matx, GM_ADDR maty, GM_ADDR aug, GM_ADDR result, GM_ADDR tiling_gm)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
-    auto core_idx = get_block_idx() * get_subblockdim() + get_subblockid();  // 0 ~ 39
-    auto tiling_buf = reinterpret_cast<__gm__ uint8_t *>(tiling_gm);
+    auto core_idx = get_block_idx() * get_subblockdim() + get_subblockid(); // 0 ~ 39
+    auto tiling_buf = reinterpret_cast<__gm__ uint8_t*>(tiling_gm);
 
-    uint32_t m = (*(__gm__ uint32_t *)((__gm__ uint8_t *)tiling_buf));      // num of float elements
-    uint32_t n = (*(__gm__ uint32_t *)((__gm__ uint8_t *)tiling_buf + 4));  // num of float elements
+    uint32_t m = (*(__gm__ uint32_t*)((__gm__ uint8_t*)tiling_buf));     // num of float elements
+    uint32_t n = (*(__gm__ uint32_t*)((__gm__ uint8_t*)tiling_buf + 4)); // num of float elements
 
-    uint64_t offset = (*(__gm__ uint64_t *)((__gm__ uint8_t *)tiling_buf + 8 + 8 * core_idx));            // FP32
-    uint32_t cal_num = (*(__gm__ uint32_t *)((__gm__ uint8_t *)tiling_buf + 8 + 40 * 8 + 4 * core_idx));  // complex num
+    uint64_t offset = (*(__gm__ uint64_t*)((__gm__ uint8_t*)tiling_buf + 8 + 8 * core_idx));           // FP32
+    uint32_t cal_num = (*(__gm__ uint32_t*)((__gm__ uint8_t*)tiling_buf + 8 + 40 * 8 + 4 * core_idx)); // complex num
 
     ComplexMatDot::ComplexMatDotAIV<float> op;
     op.Init({matx, maty, aug, result, m, n, offset, cal_num});
     op.Process();
 }
 
-void complex_mat_dot_kernel_do(GM_ADDR matx, GM_ADDR maty, GM_ADDR aug, GM_ADDR result,
-                               GM_ADDR tilingGm, uint32_t numBlocks, void *stream)
+aclError complex_mat_dot_kernel_do(
+    GM_ADDR matx, GM_ADDR maty, GM_ADDR aug, GM_ADDR result, GM_ADDR tilingGm, uint32_t numBlocks, void* stream)
 {
     complex_mat_dot_kernel<<<numBlocks, nullptr, stream>>>(matx, maty, aug, result, tilingGm);
+    // issue #862: 返回发射阶段错误码，host 据此返回 EXECUTION_FAILED（对齐 chpmv 口径）
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

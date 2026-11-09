@@ -25,8 +25,10 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 #include "common/helper/gemv_batched_layout.h"
+#include "common/helper/gemv_batched_span_check.h"
 
-void gemv_batched_kernel_do(
+// issue #862: kernel_do 返回发射错误码（对齐 chpmv kernel_do 口径）
+aclError gemv_batched_kernel_do(
     uint8_t* A, uint8_t* x, uint8_t* y, const GemvBatchedTilingData& tiling, uint32_t numBlocks, void* stream);
 
 // Helpers
@@ -79,6 +81,39 @@ static GemvBufLayout ComputeBufferLayout(GemvType type, uint32_t mRow, uint32_t 
 static inline uint32_t ComputeUBPerBatch(GemvType type, uint32_t mRow, uint32_t nCol)
 {
     return ComputeBufferLayout(type, mRow, nCol).total;
+}
+
+// 入参校验独立成段以控制 GemvBatchedImpl 的圈复杂度（CodeCheck 超大圈复杂度治理，
+// 对齐 cgemv_batched 的拆分范式）；校验顺序与返回码语义与拆分前保持一致。
+template <typename T_IN, typename T_OUT>
+static aclblasStatus_t ValidateGemvBatchedParams(
+    aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, const float* alpha, const T_IN* const Aarray[],
+    int lda, const T_IN* const xarray[], int incx, const float* beta, T_OUT* const yarray[], int incy, int batchCount)
+{
+    if (handle == nullptr)
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    if (m <= 0 || n <= 0)
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    if (lda < (m > 0 ? m : 1))
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    if (incx == 0 || incy == 0 || batchCount <= 0)
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    if (Aarray == nullptr || xarray == nullptr || yarray == nullptr)
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    if (alpha == nullptr || beta == nullptr)
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    if (trans != ACLBLAS_OP_N && trans != ACLBLAS_OP_T)
+        return ACLBLAS_STATUS_INVALID_ENUM;
+    // issue #860: 大形状跨度超 INT32_MAX 直接拒绝，不下发 kernel（跨度推导与
+    // elemFactor 语义见 common/helper/gemv_batched_span_check.h，实数按元素寻址取 1）
+    if (GemvBatchedSpanExceedsInt32(trans == ACLBLAS_OP_N, 1, m, n, lda, incx, incy, batchCount)) {
+        OP_LOGE(
+            "aclblasGemvBatched",
+            "shape span exceeds kernel 32-bit index domain: trans=%d m=%d n=%d lda=%d incx=%d incy=%d batchCount=%d",
+            static_cast<int>(trans), m, n, lda, incx, incy, batchCount);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
 // Transpose AIV tiling: 优先切点积轴（m）→dotTile，再切输出轴（n）→outTile
@@ -220,20 +255,11 @@ static aclblasStatus_t GemvBatchedImpl(
     int lda, const T_IN* const xarray[], int incx, const float* beta, T_OUT* const yarray[], int incy, int batchCount,
     uint32_t dtype)
 {
-    if (handle == nullptr)
-        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
-    if (m <= 0 || n <= 0)
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    if (lda < (m > 0 ? m : 1))
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    if (incx == 0 || incy == 0 || batchCount <= 0)
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    if (Aarray == nullptr || xarray == nullptr || yarray == nullptr)
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    if (alpha == nullptr || beta == nullptr)
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    if (trans != ACLBLAS_OP_N && trans != ACLBLAS_OP_T)
-        return ACLBLAS_STATUS_INVALID_ENUM;
+    const aclblasStatus_t validRet = ValidateGemvBatchedParams(
+        handle, trans, m, n, alpha, Aarray, lda, xarray, incx, beta, yarray, incy, batchCount);
+    if (validRet != ACLBLAS_STATUS_SUCCESS) {
+        return validRet;
+    }
     auto* h = handle;
     aclrtStream useStream = h->stream;
     uint32_t coreNum = GetAivCoreCount();
@@ -248,9 +274,13 @@ static aclblasStatus_t GemvBatchedImpl(
         (uint32_t)batchCount, (uint32_t)m, (uint32_t)n, dtype, transUint, *alpha, *beta, coreNum, usedCoreNum,
         maxPerCore, (int32_t)lda, (int32_t)incx, (int32_t)incy);
 
-    gemv_batched_kernel_do(
+    const aclError launchRet = gemv_batched_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<T_IN**>(Aarray)), reinterpret_cast<uint8_t*>(const_cast<T_IN**>(xarray)),
         reinterpret_cast<uint8_t*>(const_cast<T_OUT**>(yarray)), tiling, usedCoreNum, useStream);
+    if (launchRet != ACL_SUCCESS) {
+        OP_LOGE("aclblasGemvBatched", "kernel launch failed, ACL error %d.", static_cast<int>(launchRet));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 

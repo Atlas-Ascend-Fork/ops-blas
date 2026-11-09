@@ -24,6 +24,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl_rt.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
 #include "common/helper/kernel_constant.h"
@@ -1321,9 +1322,11 @@ extern "C" __global__ __aicore__ void cgemv_batched(
         td.alphaIsZero, td.betaIsZero, td.lda, td.incx, td.incy, td.trans, Aarray, xarray, yarray);
 }
 
-void cgemv_batched_kernel_do(
+aclError cgemv_batched_kernel_do(
     uint8_t* Aarray, uint8_t* xarray, uint8_t* yarray, const CgemvBatchedTilingData& tiling, uint32_t numBlocks,
     void* stream)
 {
     cgemv_batched<<<numBlocks, nullptr, stream>>>(Aarray, xarray, yarray, tiling);
+    // issue #862: 返回发射阶段错误码，host 据此返回 EXECUTION_FAILED（对齐 chpmv 口径）
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

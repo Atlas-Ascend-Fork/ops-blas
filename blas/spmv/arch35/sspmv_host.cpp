@@ -22,7 +22,8 @@
 #include "common/helper/kernel_constant.h"
 #include "sspmv_tiling_data.h"
 
-void sspmv_kernel_do(
+// issue #862: kernel_do 返回发射错误码（对齐 chpmv kernel_do 口径）
+aclError sspmv_kernel_do(
     uint8_t* a, uint8_t* x, uint8_t* y, uint8_t* workSpace, uint32_t numBlocks, const SspmvTilingData& tiling,
     void* stream);
 
@@ -92,9 +93,13 @@ aclblasStatus_t aclblasSspmv(
         useNumBlocks);
     OP_LOGI("aclblasSspmv", "launching kernel");
 
-    sspmv_kernel_do(
+    const aclError launchRet = sspmv_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float*>(ap)), reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
         reinterpret_cast<uint8_t*>(y), nullptr, useNumBlocks, tiling, useStream);
+    if (launchRet != ACL_SUCCESS) {
+        OP_LOGE("aclblasSspmv", "kernel launch failed, ACL error %d.", static_cast<int>(launchRet));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 
     return ACLBLAS_STATUS_SUCCESS;
 }
