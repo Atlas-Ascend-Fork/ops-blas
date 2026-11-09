@@ -8,6 +8,7 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
+#include <limits>
 #include <vector>
 
 #include "verify.h"
@@ -26,6 +27,17 @@ TEST_F(SsbmvArch35Test, NullHandle)
     aclblasStatus_t ret =
         aclblasSsbmv_npu(nullptr, ACLBLAS_LOWER, 10, 2, &alpha, a.data(), 3, x.data(), 1, &beta, y.data(), 1);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_HANDLE_IS_NULLPTR));
+}
+
+TEST_F(SsbmvArch35Test, KIntMaxLdaCheck)
+{
+    // issue #867: k == INT_MAX 时 k + 1 在 int 域溢出，lda 校验必须仍然拒绝非法组合
+    float alpha = 1.0f, beta = 0.0f;
+    std::vector<float> a(30, 1.0f), x(10, 1.0f), y(10, 0.0f);
+    aclblasStatus_t ret = aclblasSsbmv_npu(
+        SsbmvArch35Test::handle_, ACLBLAS_LOWER, 10, std::numeric_limits<int>::max(), &alpha, a.data(), 3, x.data(), 1,
+        &beta, y.data(), 1);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_INVALID_VALUE));
 }
 
 INSTANTIATE_TEST_SUITE_P(

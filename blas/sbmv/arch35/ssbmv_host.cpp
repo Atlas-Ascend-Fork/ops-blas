@@ -19,26 +19,27 @@
 #include "common/helper/kernel_constant.h"
 #include "common/helper/host_utils.h"
 
-void ssbmv_kernel_do(uint8_t* a, uint8_t* x, uint8_t* y, uint8_t* workSpace,
-                      uint32_t numBlocks, const SsbmvTilingData& tiling, void* stream);
+void ssbmv_kernel_do(
+    uint8_t* a, uint8_t* x, uint8_t* y, uint8_t* workSpace, uint32_t numBlocks, const SsbmvTilingData& tiling,
+    void* stream);
 
 static aclblasStatus_t ValidateSbmvParams(
     aclblasFillMode_t uplo, int k, int lda, int incx, int incy, const float* alpha, const float* beta, const float* A,
     const float* x, const float* y)
 {
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE("aclblasSsbmv", "invalid uplo=%d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE("aclblasSsbmv", "invalid uplo=%d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(k >= 0, OP_LOGE("aclblasSsbmv", "invalid k=%d", k); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        lda >= k + 1, OP_LOGE("aclblasSsbmv", "invalid lda=%d, k=%d", lda, k); return ACLBLAS_STATUS_INVALID_VALUE);
+    // 写成 lda > k 而不是 lda >= k + 1：k == INT_MAX 时 k + 1 在 int 域溢出（UB）；int 域
+    // lda 不可能大于 INT_MAX，该比较等价地拒绝这种不存在合法 lda 的带宽场景。
+    CHECK_RET(lda > k, OP_LOGE("aclblasSsbmv", "invalid lda=%d, k=%d", lda, k); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasSsbmv", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incy != 0, OP_LOGE("aclblasSsbmv", "incy must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        alpha != nullptr, OP_LOGE("aclblasSsbmv", "alpha must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        beta != nullptr, OP_LOGE("aclblasSsbmv", "beta must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(alpha != nullptr, OP_LOGE("aclblasSsbmv", "alpha must not be nullptr");
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(beta != nullptr, OP_LOGE("aclblasSsbmv", "beta must not be nullptr");
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(A != nullptr, OP_LOGE("aclblasSsbmv", "A must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(x != nullptr, OP_LOGE("aclblasSsbmv", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(y != nullptr, OP_LOGE("aclblasSsbmv", "y must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
@@ -98,10 +99,8 @@ aclblasStatus_t aclblasSsbmv(
     OP_LOGI("aclblasSsbmv", "launching kernel");
 
     ssbmv_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<float*>(A)),
-        reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
-        reinterpret_cast<uint8_t*>(y), nullptr,
-        useNumBlocks, tiling, useStream);
+        reinterpret_cast<uint8_t*>(const_cast<float*>(A)), reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
+        reinterpret_cast<uint8_t*>(y), nullptr, useNumBlocks, tiling, useStream);
 
     return ACLBLAS_STATUS_SUCCESS;
 }
