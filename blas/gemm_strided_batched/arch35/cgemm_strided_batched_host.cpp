@@ -12,6 +12,7 @@
 #include <limits>
 #include "cann_ops_blas.h"
 #include "cgemm_strided_batched_kernel.h"
+#include "gemm/arch35/gemm_host_common.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
@@ -329,7 +330,7 @@ void ConfigureComplexTiling(CgemmSbTiling& t)
     t.threeM = t.ar == 1 && t.ai == 0 && t.br == 0 && t.bi == 0;
 
     // Split each FP32 operand into FP16 high and residual parts for compensated Cube multiplication.
-    t.compensatedHalf = t.threeM && t.k >= COMPENSATED_MIN_K;
+    t.compensatedHalf = t.threeM && (t.k >= COMPENSATED_MIN_K || t.cacheHalfInputs);
     if (t.compensatedHalf) {
         t.baseK = CompensatedBaseK(t);
     }
@@ -397,7 +398,9 @@ aclblasStatus_t LaunchGlobal(
         OP_LOGE("aclblasCgemmStridedBatched", "GetAicCoreCount failed (returned 0) for global path");
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
-    if (t.m <= FUSED_MAX_DIM && t.n <= FUSED_MAX_DIM && t.k <= FUSED_MAX_K) {
+    if (((t.m <= FUSED_MAX_DIM && t.n <= FUSED_MAX_DIM) ||
+         (t.cacheHalfInputs && uint64_t(t.m) * t.n <= uint64_t(FUSED_MAX_DIM) * FUSED_MAX_DIM)) &&
+        t.k <= FUSED_MAX_K) {
         cgemm_sb_fused_do(aic, handle->stream, gmA, gmB, gmC, workspace, t);
         return ACLBLAS_STATUS_SUCCESS;
     }
@@ -486,4 +489,51 @@ aclblasStatus_t aclblasCgemmStridedBatched(
     auto gmB = reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(B));
     auto gmC = reinterpret_cast<GM_ADDR>(C);
     return LaunchOperation(handle, gmA, gmB, gmC, t);
+}
+
+aclblasStatus_t LaunchCgemm3mUnitBatches(
+    aclblasHandle_t handle, aclblasOperation_t ta, aclblasOperation_t tb, int m, int n, int k, const aclblasComplex* a,
+    int lda, int64_t strideA, const aclblasComplex* b, int ldb, int64_t strideB, aclblasComplex* c, int ldc,
+    int64_t strideC, int batch)
+{
+    const aclblasComplex alpha{1, 0}, beta{0, 0};
+    auto t = MakeTiling(ta, tb, m, n, k, lda, ldb, ldc, strideA, strideB, strideC, alpha, beta, batch);
+    t.cacheHalfInputs = true;
+    t.mp = CeilAlign<uint32_t>(t.m, CGEMM_SB_FRACTAL_EDGE);
+    t.np = CeilAlign<uint32_t>(t.n, CGEMM_SB_FRACTAL_EDGE);
+    t.kp = CeilAlign<uint32_t>(t.k, CGEMM_SB_FRACTAL_EDGE);
+    const uint32_t aiv = GetAivCoreCount();
+    if (aiv == 0) {
+        OP_LOGE("aclblasCgemm3mStridedBatched", "GetAivCoreCount failed");
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    auto probe = t;
+    ConfigureGlobal(
+        probe, reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(a)),
+        reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(b)), reinterpret_cast<GM_ADDR>(c));
+    probe.flagCores = aiv;
+    size_t workspaceBytes = 0;
+    while (!WorkspaceLayout(probe, workspaceBytes) && probe.batch > 1) {
+        probe.batch = (probe.batch + 1) / 2;
+        probe.batchesA = strideA == 0 ? 1 : probe.batch;
+        probe.batchesB = strideB == 0 ? 1 : probe.batch;
+    }
+    if (!WorkspaceLayout(probe, workspaceBytes)) {
+        return LaunchCgemm3mOnchipBatches(
+            handle, ta, tb, m, n, k, a, lda, strideA, b, ldb, strideB, c, ldc, strideC, batch);
+    }
+    const uint32_t batchTile = probe.batch;
+    for (uint32_t first = 0; first < uint32_t(batch); first += batchTile) {
+        t.batch = std::min(batchTile, uint32_t(batch) - first);
+        const uint32_t vectorBlocks =
+            std::min<uint64_t>(aiv, CeilDiv<uint64_t>(uint64_t(m) * n * t.batch, VECTOR_OUTPUTS_PER_BLOCK));
+        auto status = LaunchGlobal(
+            handle, reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(a + int64_t(first) * strideA)),
+            reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(b + int64_t(first) * strideB)),
+            reinterpret_cast<GM_ADDR>(c + int64_t(first) * strideC), t, aiv, vectorBlocks);
+        if (status != ACLBLAS_STATUS_SUCCESS) {
+            return status;
+        }
+    }
+    return ACLBLAS_STATUS_SUCCESS;
 }

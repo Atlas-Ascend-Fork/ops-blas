@@ -678,6 +678,39 @@ __aicore__ inline void RepairOutputTile(
         t.conjugateB, s.row + start, s.col, rows, s.cols);
 }
 
+template <uint32_t BS>
+__simd_vf__ inline void CheckMergedOutput(__ubuf__ float* p, uint32_t rows)
+{
+    namespace V = AscendC::MicroAPI;
+    auto mask = V::CreateMask<float, V::MaskPattern::ALL>();
+    V::RegTensor<uint32_t> exponentMask, largest, exponent, values;
+    V::Duplicate(exponentMask, FP32_EXPONENT_MASK);
+    V::Duplicate(largest, uint32_t(0));
+    for (uint32_t offset = 0; offset < CGEMM_COMPLEX_COMPONENTS * rows * BS; offset += VECTOR_FLOATS) {
+        V::LoadAlign(values, reinterpret_cast<__ubuf__ uint32_t*>(p + offset));
+        V::And(exponent, values, exponentMask, mask);
+        V::Max(largest, largest, exponent, mask);
+    }
+    V::Reduce<V::ReduceType::MAX>(largest, largest, mask);
+    V::StoreAlign(reinterpret_cast<__ubuf__ uint32_t*>(p + 3 * Storage<BS>::PLANE), largest, mask);
+}
+
+template <uint32_t BS>
+__aicore__ inline void StorePartOutput(
+    GM_ADDR cAddr, const GemmTilingData& t, const TileShape& s, LocalTensor<float> buffer, uint32_t start,
+    uint32_t rows, bool direct)
+{
+    GlobalTensor<float> c;
+    c.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(cAddr));
+    const uint32_t bytes = CGEMM_COMPLEX_COMPONENTS * s.cols * sizeof(float);
+    const uint32_t rowBytes = CGEMM_COMPLEX_COMPONENTS * BS * sizeof(float);
+    const uint32_t sourceGap = (rowBytes - RoundUp<uint32_t>(bytes, CGEMM_DATA_BLOCK_BYTES)) / CGEMM_DATA_BLOCK_BYTES;
+    const uint32_t destGap = (CGEMM_COMPLEX_COMPONENTS * t.ldc - CGEMM_COMPLEX_COMPONENTS * s.cols) * sizeof(float);
+    DataCopyExtParams copy{static_cast<uint16_t>(rows), bytes, sourceGap, destGap, 0};
+    const uint64_t offset = CGEMM_COMPLEX_COMPONENTS * (static_cast<uint64_t>(s.row + start) * t.ldc + s.col);
+    DataCopyPad(c[offset], buffer[direct ? CGEMM_FOUR_PRODUCTS * Storage<BS>::PLANE : 0], copy);
+}
+
 template <uint32_t BS, bool CheckNonFinite = false>
 __aicore__ inline void ConsumePart(
     GM_ADDR cAddr, const GemmTilingData& t, const TileShape& s, bool first, bool last, uint32_t outputStage,
@@ -703,21 +736,16 @@ __aicore__ inline void ConsumePart(
         asc_vf_call<MergeProducts<BS>>(ptr, first, half);
         if (last) {
             asc_vf_call<InterleaveOutput<BS>>(ptr, half);
+            if constexpr (CheckNonFinite) {
+                asc_vf_call<CheckMergedOutput<BS>>(ptr, half);
+                repairTile = OutputNeedsRepair<BS>(buffer, rows);
+            }
         }
     }
     SetFlag<HardEvent::V_MTE3>(GEMM_ZERO_FLAG);
     WaitFlag<HardEvent::V_MTE3>(GEMM_ZERO_FLAG);
     if (last && rows > 0) {
-        GlobalTensor<float> c;
-        c.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(cAddr));
-        const uint32_t bytes = CGEMM_COMPLEX_COMPONENTS * s.cols * sizeof(float);
-        const uint32_t rowBytes = CGEMM_COMPLEX_COMPONENTS * BS * sizeof(float);
-        const uint32_t sourceGap =
-            (rowBytes - RoundUp<uint32_t>(bytes, CGEMM_DATA_BLOCK_BYTES)) / CGEMM_DATA_BLOCK_BYTES;
-        const uint32_t destGap = (CGEMM_COMPLEX_COMPONENTS * t.ldc - CGEMM_COMPLEX_COMPONENTS * s.cols) * sizeof(float);
-        DataCopyExtParams copy{static_cast<uint16_t>(rows), bytes, sourceGap, destGap, 0};
-        const uint64_t offset = CGEMM_COMPLEX_COMPONENTS * (static_cast<uint64_t>(s.row + start) * t.ldc + s.col);
-        DataCopyPad(c[offset], buffer[direct ? CGEMM_FOUR_PRODUCTS * Storage<BS>::PLANE : 0], copy);
+        StorePartOutput<BS>(cAddr, t, s, buffer, start, rows, direct);
         if constexpr (CheckNonFinite) {
             if (repairTile) {
                 RepairOutputTile<BS>(cAddr, a, b, *original, s, start, rows);

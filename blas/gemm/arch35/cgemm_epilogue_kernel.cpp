@@ -13,6 +13,7 @@
 #if ASC_DEVKIT_GE_9_1
 
 #include "cgemm_kernel_common.h"
+#include "gemm_strided_batched/arch35/cgemm_strided_batched_reference.h"
 
 // Cgemm phase 2 — vector alpha/beta epilogue and interleaved store
 // ============================================================================
@@ -122,6 +123,110 @@ __aicore__ inline void LaunchPlanarOutput(
     }
 }
 
+// A coherent long reduction can drift from the ordered BLAS result even when
+// the three matrix products are individually accurate. Reuse the family's
+// ordered arithmetic only for the affected output elements.
+__simt_callee__ __aicore__ __attribute__((always_inline)) inline void CorrectOrderedOutput(
+    __gm__ float* a, __gm__ float* b, __gm__ float* c, uint64_t index, uint32_t m, uint32_t ldc, uint32_t depth,
+    uint32_t lda, uint32_t ldb, uint32_t transA, uint32_t transB, float alphaReal, float alphaImag, float betaReal,
+    float betaImag, float& real, float& imag)
+{
+#pragma clang fp contract(off)
+    const uint32_t row = index % m, col = index / m;
+    const uint64_t offset = uint64_t(col) * ldc + row;
+    const bool normalA = transA == ACLBLAS_OP_N;
+    real = 0;
+    imag = 0;
+    if (normalA && (betaReal != 0 || betaImag != 0)) {
+        CgemmSbScale(betaReal, betaImag, c[2 * offset], c[2 * offset + 1], real, imag);
+    }
+    for (uint32_t k = 0; k < depth; ++k) {
+        const uint64_t ai = 2 * (normalA ? uint64_t(k) * lda + row : uint64_t(row) * lda + k);
+        const uint64_t bi = 2 * (transB == ACLBLAS_OP_N ? uint64_t(col) * ldb + k : uint64_t(k) * ldb + col);
+        const float ar = a[ai], av = transA == ACLBLAS_OP_C ? -a[ai + 1] : a[ai + 1];
+        const float br = b[bi], bv = transB == ACLBLAS_OP_C ? -b[bi + 1] : b[bi + 1];
+        if (normalA) {
+            const float scaledReal = alphaReal * br - alphaImag * bv;
+            const float scaledImag = alphaReal * bv + alphaImag * br;
+            CgemmSbAccumulateComplex(scaledReal, scaledImag, ar, av, real, imag);
+        } else {
+            CgemmSbAccumulateComplex(ar, av, br, bv, real, imag);
+        }
+    }
+    if (!normalA) {
+        float scaledReal, scaledImag;
+        CgemmSbScale(alphaReal, alphaImag, real, imag, scaledReal, scaledImag);
+        real = scaledReal;
+        imag = scaledImag;
+        if (betaReal != 0 || betaImag != 0) {
+            CgemmSbScale(betaReal, betaImag, c[2 * offset], c[2 * offset + 1], scaledReal, scaledImag);
+            real += scaledReal;
+            imag += scaledImag;
+        }
+    }
+}
+
+constexpr uint32_t CORRECTION_THREADS = 256;
+constexpr uint32_t DISPATCH_FIELD_BITS = 8;
+constexpr uint32_t DISPATCH_FIELD_MASK = (1U << DISPATCH_FIELD_BITS) - 1;
+constexpr uint32_t CORRECTION_PART_SHIFT = 2 * DISPATCH_FIELD_BITS;
+
+// A separate 3m epilogue keeps the SIMT argument block compact. Native 4m and
+// pure scaling retain their existing kernel path.
+__simt_vf__ __aicore__ LAUNCH_BOUND(CORRECTION_THREADS) inline void CorrectableEpilogue(
+    __gm__ const float* p0, __gm__ const float* p1, __gm__ const float* p2, __gm__ float* a, __gm__ float* b,
+    __gm__ float* c, uint32_t m, uint32_t n, uint32_t k, uint32_t lda, uint32_t ldb, uint32_t ldc, float ar, float ai,
+    float br, float bi, uint32_t operations, uint32_t dispatch)
+{
+    const uint32_t block = dispatch & DISPATCH_FIELD_MASK;
+    const uint32_t blocks = (dispatch >> DISPATCH_FIELD_BITS) & DISPATCH_FIELD_MASK;
+    const uint32_t parts = dispatch >> CORRECTION_PART_SHIFT;
+    const uint32_t transA = operations & DISPATCH_FIELD_MASK, transB = operations >> DISPATCH_FIELD_BITS;
+    const uint32_t tempLdc = (m + CGEMM_CUBE_FRACTAL - 1) / CGEMM_CUBE_FRACTAL * CGEMM_CUBE_FRACTAL;
+    const uint64_t partStride =
+        uint64_t(tempLdc) * ((n + CGEMM_CUBE_FRACTAL - 1) / CGEMM_CUBE_FRACTAL * CGEMM_CUBE_FRACTAL);
+    for (uint64_t i = uint64_t(block) * blockDim.x + threadIdx.x; i < uint64_t(m) * n;
+         i += uint64_t(blocks) * blockDim.x) {
+        const uint32_t row = i % m, col = i / m;
+        const uint64_t source = uint64_t(col) * tempLdc + row, dest = 2 * (uint64_t(col) * ldc + row);
+        float pr = 0, pi = 0;
+        for (uint32_t part = 0; part < parts; ++part) {
+            const uint64_t offset = source + part * partStride;
+            pr += p0[offset] - p2[offset];
+            pi += p0[offset] + p1[offset];
+        }
+        float real = ar * pr - ai * pi, imag = ar * pi + ai * pr;
+        constexpr float CANCELLATION_RATIO = 0.125f;
+        const bool correct = !isfinite(pr) || !isfinite(pi) || fabsf(pr) > ORDERED_MOMENT_THRESHOLD ||
+                             fabsf(pi) > ORDERED_MOMENT_THRESHOLD ||
+                             fabsf(real) < CANCELLATION_RATIO * (fabsf(ar * pr) + fabsf(ai * pi)) ||
+                             fabsf(imag) < CANCELLATION_RATIO * (fabsf(ar * pi) + fabsf(ai * pr));
+        if (correct) {
+            CorrectOrderedOutput(a, b, c, i, m, ldc, k, lda, ldb, transA, transB, ar, ai, br, bi, real, imag);
+        } else if (br != 0 || bi != 0) {
+            const float oldReal = c[dest], oldImag = c[dest + 1];
+            real += br * oldReal - bi * oldImag;
+            imag += br * oldImag + bi * oldReal;
+        }
+        c[dest] = real;
+        c[dest + 1] = imag;
+    }
+}
+
+__aicore__ inline void LaunchCorrectableEpilogue(
+    GM_ADDR p0, GM_ADDR p1, GM_ADDR p2, GM_ADDR a, GM_ADDR b, GM_ADDR c, const CgemmEpilogueTilingData& t)
+{
+    const uint32_t operations = uint32_t(t.referenceTransA) | (uint32_t(t.referenceTransB) << DISPATCH_FIELD_BITS);
+    const uint32_t dispatch =
+        GetBlockIdx() | (GetBlockNum() << DISPATCH_FIELD_BITS) | (t.kPartitions << CORRECTION_PART_SHIFT);
+    asc_vf_call<CorrectableEpilogue>(
+        dim3{CORRECTION_THREADS, 1, 1}, reinterpret_cast<__gm__ const float*>(p0),
+        reinterpret_cast<__gm__ const float*>(p1), reinterpret_cast<__gm__ const float*>(p2),
+        reinterpret_cast<__gm__ float*>(a), reinterpret_cast<__gm__ float*>(b), reinterpret_cast<__gm__ float*>(c), t.m,
+        t.n, t.referenceK, t.referenceLda, t.referenceLdb, t.ldc, t.alphaReal, t.alphaImag, t.betaReal, t.betaImag,
+        operations, dispatch);
+}
+
 template <bool AlphaZero, bool BetaZero, bool Packed>
 __simt_vf__ __aicore__ LAUNCH_BOUND(CGEMM_SIMT_THREADS) inline void CgemmEpilogueVf(
     __gm__ const float* t1, __gm__ const float* t2, __gm__ const float* t3, __gm__ const float* t4, __gm__ float* c,
@@ -195,9 +300,14 @@ __aicore__ inline void LaunchGenericCgemmEpilogue(
 }
 
 extern "C" __global__ __aicore__ void gemm_cgemm_epilogue_kernel(
-    GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, GM_ADDR c, const CgemmEpilogueTilingData tiling)
+    GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, GM_ADDR c, const CgemmEpilogueTilingData tiling, GM_ADDR originalA,
+    GM_ADDR originalB)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    if (tiling.referenceK != 0) {
+        LaunchCorrectableEpilogue(t1, t2, t3, originalA, originalB, c, tiling);
+        return;
+    }
     if (tiling.threeProducts != 0 && tiling.alphaZero == 0 && tiling.betaZero != 0 && tiling.alphaReal == 1.0f &&
         tiling.alphaImag == 0.0f) {
         LaunchPlanarOutput(t1, t2, t3, c, tiling);
@@ -214,8 +324,9 @@ extern "C" __global__ __aicore__ void gemm_cgemm_epilogue_kernel(
 } // namespace cgemm_epilogue
 void gemm_cgemm_epilogue_do(
     uint32_t numBlocks, void* stream, GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, GM_ADDR cInOut,
-    const CgemmEpilogueTilingData& tilingData)
+    const CgemmEpilogueTilingData& tilingData, GM_ADDR originalA, GM_ADDR originalB)
 {
-    cgemm_epilogue::gemm_cgemm_epilogue_kernel<<<numBlocks, nullptr, stream>>>(t1, t2, t3, t4, cInOut, tilingData);
+    cgemm_epilogue::gemm_cgemm_epilogue_kernel<<<numBlocks, nullptr, stream>>>(
+        t1, t2, t3, t4, cInOut, tilingData, originalA, originalB);
 }
 #endif

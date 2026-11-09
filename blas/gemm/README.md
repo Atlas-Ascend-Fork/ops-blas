@@ -21,6 +21,7 @@ C = alpha * op(A) * op(B) + beta * C
 |--------|---------|
 | aclblasSgemm | 单精度（FP32）通用矩阵乘法，支持矩阵转置和 alpha/beta 缩放 |
 | aclblasCgemm | 复数单精度（COMPLEX64）通用矩阵乘法，支持矩阵转置和 alpha/beta 缩放 |
+| aclblasCgemm3mStridedBatched | COMPLEX64 固定步长批量 GEMM，使用三次实数乘积 |
 | aclblasCgemmEx | 扩展复数通用矩阵乘法，A/B/C 可独立指定元素类型（Ascend 950） |
 
 ## 算子执行接口
@@ -803,3 +804,103 @@ result C (column-major):
   C[1][1] = 4.000000 + 0.000000i
 ```
 
+
+### aclblasCgemm3mStridedBatched
+
+#### 产品支持情况
+
+| 产品 | 是否支持 |
+|------|----------|
+| Atlas 950PR（arch35） | 支持 |
+| 其他产品 | 不支持 |
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasCgemm3mStridedBatched(aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k, const aclblasComplex* alpha, const aclblasComplex* A, int lda, int64_t strideA, const aclblasComplex* B, int ldb, int64_t strideB, const aclblasComplex* beta, aclblasComplex* C, int ldc, int64_t strideC, int batchCount)
+```
+
+#### 参数说明
+
+该接口采用三次实数乘积计算复数矩阵乘法：
+`C_i = alpha * op(A_i) * op(B_i) + beta * C_i`。
+各批次的基址为 `A_i=A+i*strideA`、`B_i=B+i*strideB`、`C_i=C+i*strideC`。
+
+| 参数 | 说明 |
+|------|------|
+| handle | BLAS 句柄，使用其绑定的 stream |
+| transa、transb | 分别指定 A、B 的操作：N（不转置）、T（转置）、C（共轭转置） |
+| m、n、k | op(A) 为 m×k，op(B) 为 k×n，C 为 m×n；均为非负 int |
+| alpha、beta | Host 端 aclblasComplex 标量指针 |
+| A、B、C | 列主序 COMPLEX64 Device 矩阵；C 为输入输出 |
+| lda | A 的前导维，不小于 max(1, transa=N ? m : k) |
+| ldb | B 的前导维，不小于 max(1, transb=N ? k : n) |
+| ldc | C 的前导维，不小于 max(1, m) |
+| strideA、strideB、strideC | int64_t 类型的批次偏移，单位为复数元素，支持零步长和负步长 |
+| batchCount | 批次数，非负 int |
+
+#### 约束说明
+
+- 调用方保证各批次地址有效，C 不与 A/B 共用存储。
+- 参数校验先于 quick return。m、n 或 batchCount 为零时允许 A/B/C 为空，返回 SUCCESS，不访问矩阵、不下发 kernel。
+- k=0 或 alpha=0 时仅逐批次执行 beta 缩放，不读取 A/B；alpha=0 时允许 A/B 为空，遵循附件 TC_ED_313。
+- beta=0 时不读取旧 C。strideC=0 或输出批次重叠时，按批次顺序更新 C。
+- alpha/beta 必须非空；m、n、batchCount 均大于零时 C 必须非空；执行非空乘积时 A/B 必须非空。
+- 空句柄返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR；非法 transa/transb 返回 ACLBLAS_STATUS_INVALID_ENUM。
+- 负维度、非法前导维或必要指针为空返回 ACLBLAS_STATUS_INVALID_VALUE。空矩阵仍校验句柄、枚举、维度、前导维和标量指针。
+- 相同输入重复执行要求逐位一致。精度按 FLOAT32 分量判定：atol=rtol=2^-13，匹配比例至少 0.99，逐元素绝对误差满足 max(1e-2, 32*ULP)。Inf/NaN 按任务书单独判定。
+
+#### 调用示例
+
+下面计算两批 2×2 矩阵，A 为单位矩阵，预期每批 C 等于 B。
+每个进程仅暴露一张设备，使用逻辑设备 0。
+
+```cpp
+#include <cassert>
+#include <cstdint>
+#include <acl/acl.h>
+#include "cann_ops_blas.h"
+
+int main()
+{
+    assert(aclInit(nullptr) == ACL_SUCCESS);
+    assert(aclrtSetDevice(0) == ACL_SUCCESS);
+    aclrtStream stream = nullptr;
+    assert(aclrtCreateStream(&stream) == ACL_SUCCESS);
+    aclblasHandle_t handle = nullptr;
+    assert(aclblasCreate(&handle) == ACLBLAS_STATUS_SUCCESS);
+    assert(aclblasSetStream(handle, stream) == ACLBLAS_STATUS_SUCCESS);
+    const aclblasComplex a[] = {{1, 0}, {0, 0}, {0, 0}, {1, 0},
+                               {1, 0}, {0, 0}, {0, 0}, {1, 0}};
+    const aclblasComplex b[] = {{1, 0}, {2, 0}, {3, 0}, {4, 0},
+                               {5, 0}, {6, 0}, {7, 0}, {8, 0}};
+    aclblasComplex result[8]{};
+    aclblasComplex *da = nullptr, *db = nullptr, *dc = nullptr;
+    const size_t bytes = sizeof(a);
+    assert(aclrtMalloc(reinterpret_cast<void**>(&da), bytes, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS);
+    assert(aclrtMalloc(reinterpret_cast<void**>(&db), bytes, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS);
+    assert(aclrtMalloc(reinterpret_cast<void**>(&dc), bytes, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS);
+    assert(aclrtMemcpy(da, bytes, a, bytes, ACL_MEMCPY_HOST_TO_DEVICE) == ACL_SUCCESS);
+    assert(aclrtMemcpy(db, bytes, b, bytes, ACL_MEMCPY_HOST_TO_DEVICE) == ACL_SUCCESS);
+    const aclblasComplex alpha{1, 0}, beta{0, 0};
+    const int64_t stride = 4;
+    assert(aclblasCgemm3mStridedBatched(handle, ACLBLAS_OP_N, ACLBLAS_OP_N, 2, 2, 2,
+                                     &alpha, da, 2, stride, db, 2, stride,
+                                     &beta, dc, 2, stride, 2) == ACLBLAS_STATUS_SUCCESS);
+    assert(aclrtSynchronizeStream(stream) == ACL_SUCCESS);
+    assert(aclrtMemcpy(result, bytes, dc, bytes, ACL_MEMCPY_DEVICE_TO_HOST) == ACL_SUCCESS);
+    for (int i = 0; i < 8; ++i) {
+        assert(result[i].real == b[i].real && result[i].imag == b[i].imag);
+    }
+    assert(aclrtFree(dc) == ACL_SUCCESS);
+    assert(aclrtFree(db) == ACL_SUCCESS);
+    assert(aclrtFree(da) == ACL_SUCCESS);
+    assert(aclblasDestroy(handle) == ACLBLAS_STATUS_SUCCESS);
+    assert(aclrtDestroyStream(stream) == ACL_SUCCESS);
+    assert(aclrtResetDevice(0) == ACL_SUCCESS);
+    assert(aclFinalize() == ACL_SUCCESS);
+    return 0;
+}
+```
+
+构建、精度和性能测试方法见[测试说明](../../test/gemm/cgemm3m_strided_batched/README.md)。

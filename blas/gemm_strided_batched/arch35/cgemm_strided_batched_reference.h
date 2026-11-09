@@ -94,6 +94,22 @@ __aicore__ inline uint32_t CgemmSbReadReferenceMask(Tensor flagValues, const Cge
     return CGEMM_SB_REFERENCE_NONE;
 }
 
+// Short reductions publish only the replicated exception bit, without input moments.
+__aicore__ inline uint32_t CgemmSbShortReferenceMask(AscendC::LocalTensor<float> flags, uint32_t count)
+{
+    AscendC::LocalTensor<float> result(AscendC::TPosition::VECCALC, count * sizeof(float), CGEMM_SB_FP32_LANES);
+    AscendC::LocalTensor<float> scratch(
+        AscendC::TPosition::VECCALC, (count + CGEMM_SB_FP32_LANES) * sizeof(float), count);
+    AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
+    AscendC::ReduceMax(result, flags, scratch, count);
+    AscendC::SetFlag<AscendC::HardEvent::V_S>(0);
+    AscendC::WaitFlag<AscendC::HardEvent::V_S>(0);
+    uint32_t mask = result.GetValue(0) != 0.0f ? CGEMM_SB_REFERENCE_EXCEPTIONAL : CGEMM_SB_REFERENCE_NONE;
+    AscendC::PipeBarrier<PIPE_ALL>();
+    return mask;
+}
+
 __aicore__ inline uint32_t CgemmSbReferenceMask(__gm__ float* flags, const CgemmSbTiling& t)
 {
     AscendC::GlobalTensor<float> flagValues;
@@ -104,6 +120,8 @@ __aicore__ inline uint32_t CgemmSbReferenceMask(__gm__ float* flags, const Cgemm
         uint32_t count = t.flagCores * CGEMM_SB_FLAG_STRIDE;
         AscendC::LocalTensor<float> cached(AscendC::TPosition::VECIN, 0, count);
         AscendC::DataCopy(cached, flagValues, count);
+        if (t.cacheHalfInputs && t.k < CGEMM_SB_ORDERED_MIN_K)
+            return CgemmSbShortReferenceMask(cached, count);
         AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(0);
         AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(0);
         uint32_t result = CgemmSbReadReferenceMask<false>(cached, t);
@@ -356,6 +374,25 @@ __simt_callee__ __aicore__ inline void CgemmSbStoreExactNan(
         c[2 * ci + 1] = imag;
 }
 
+__simt_callee__ __aicore__ inline void CgemmSbAccumulateBeta(
+    __gm__ float* c, const CgemmSbTiling& t, int64_t ci, uint32_t mode, float& real, float& imag)
+{
+#pragma clang fp contract(off)
+#pragma clang fp reassociate(off)
+    float cr = c[2 * ci];
+    float ciVal = c[2 * ci + 1];
+    float betaReal;
+    float betaImag;
+    CgemmSbScale(t.br, t.bi, cr, ciVal, betaReal, betaImag);
+    if (mode == CGEMM_SB_MODE_SCALE) {
+        real = betaReal;
+        imag = betaImag;
+    } else {
+        real += betaReal;
+        imag += betaImag;
+    }
+}
+
 template <typename Index>
 __simt_vf__ __aicore__ LAUNCH_BOUND(CGEMM_SB_SIMT_LAUNCH_BOUND) inline void CgemmSbVector(
     __gm__ float* a, __gm__ float* b, __gm__ float* c, __gm__ float* ws, CgemmSbTiling t, uint32_t mode, uint32_t core,
@@ -389,18 +426,7 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(CGEMM_SB_SIMT_LAUNCH_BOUND) inline void Cgem
             imag = scaledImag;
         }
         if (t.br != 0 || t.bi != 0) {
-            float cr = c[2 * ci];
-            float ciVal = c[2 * ci + 1];
-            float betaReal;
-            float betaImag;
-            CgemmSbScale(t.br, t.bi, cr, ciVal, betaReal, betaImag);
-            if (mode == CGEMM_SB_MODE_SCALE) {
-                real = betaReal;
-                imag = betaImag;
-            } else {
-                real += betaReal;
-                imag += betaImag;
-            }
+            CgemmSbAccumulateBeta(c, t, ci, mode, real, imag);
         }
         if (mode == CGEMM_SB_MODE_SCALE && (isnan(real) || isnan(imag))) {
             CgemmSbStoreExactNan(c, t, ci, real, imag);

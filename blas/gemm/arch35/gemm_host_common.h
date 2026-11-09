@@ -78,3 +78,20 @@ inline void PrepareGemmCubeTiling(GemmTilingData& tiling, uint32_t cubeCoreNum)
     ApplyGemmColMajorSwap(tiling);
     CalcGemmMultiCorePartition(tiling, cubeCoreNum, tiling.m, tiling.n);
 }
+
+// Internal entry, after public argument validation.
+
+aclblasStatus_t LaunchCgemmThreeProducts(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
+    const aclblasComplex& alpha, const aclblasComplex* a, int lda, const aclblasComplex* b, int ldb,
+    const aclblasComplex& beta, aclblasComplex* c, int ldc);
+
+aclblasStatus_t LaunchCgemm3mUnitBatches(
+    aclblasHandle_t handle, aclblasOperation_t ta, aclblasOperation_t tb, int m, int n, int k, const aclblasComplex* a,
+    int lda, int64_t strideA, const aclblasComplex* b, int ldb, int64_t strideB, aclblasComplex* c, int ldc,
+    int64_t strideC, int batch);
+
+aclblasStatus_t LaunchCgemm3mOnchipBatches(
+    aclblasHandle_t handle, aclblasOperation_t ta, aclblasOperation_t tb, int m, int n, int k, const aclblasComplex* a,
+    int lda, int64_t strideA, const aclblasComplex* b, int ldb, int64_t strideB, aclblasComplex* c, int ldc,
+    int64_t strideC, int batch);

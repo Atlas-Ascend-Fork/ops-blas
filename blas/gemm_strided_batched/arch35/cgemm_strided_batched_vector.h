@@ -25,9 +25,10 @@ constexpr uint32_t PARTIAL_INPUT_PLANES = 4;
 template <class Register, class Mask>
 __simd_callee__ inline void PackComponent(
     Register& value, __ubuf__ half* dst, uint32_t offset, uint32_t lowOffset, Mask mask);
+template <bool RecordMoments>
 __simd_vf__ inline void MicroPackHalf(
-    __ubuf__ float* src, __ubuf__ half* dst, __ubuf__ int32_t* maximum, uint32_t count, bool conjugate,
-    uint32_t stride);
+    __ubuf__ float* src, __ubuf__ half* dst, __ubuf__ int32_t* maximum, uint32_t count, bool conjugate, uint32_t stride,
+    __ubuf__ float* moments);
 template <uint32_t STRIDE>
 __simd_vf__ inline void MicroCombineUnit(__ubuf__ float* src, __ubuf__ float* dst, uint32_t count);
 __aicore__ inline uint32_t ScalarMin(uint32_t a, uint32_t b);
@@ -73,18 +74,29 @@ __aicore__ inline void ReadPackTile(
     AscendC::LocalTensor<float> x, AscendC::GlobalTensor<float> source, const PackGeometry& g, uint64_t index,
     uint64_t& batch, uint64_t& offset, uint32_t& count);
 
-template <uint32_t SIZE>
+template <uint32_t SIZE, uint32_t BUFFERS = 1>
 class FastHalfPacker {
 public:
     __aicore__ inline void Run(
         GM_ADDR a, GM_ADDR b, GM_ADDR workspace, CgemmSbTiling t, uint32_t core, uint32_t cores, AscendC::TPipe& pipe);
 
 private:
+    __aicore__ inline void EnqueueTile(
+        AscendC::GlobalTensor<float> ag, AscendC::GlobalTensor<float> bg, const PackGeometry& ga,
+        const PackGeometry& gb, uint64_t task, uint64_t& batch, uint64_t& off, uint32_t& count);
+    __aicore__ inline void Initialize(AscendC::TPipe& pipe, const CgemmSbTiling& t);
+    __aicore__ inline void PackTile(
+        AscendC::LocalTensor<float> x, AscendC::LocalTensor<half> y, const CgemmSbTiling& t, bool isA, uint32_t count);
+    __aicore__ inline void StoreTile(
+        AscendC::LocalTensor<half> y, AscendC::GlobalTensor<float> wg, const CgemmSbTiling& t,
+        const PackGeometry& geometry, bool isA, uint64_t batch, uint64_t off, uint32_t count);
     __aicore__ inline void PublishFlag(AscendC::GlobalTensor<float> wg, const CgemmSbTiling& t, uint32_t core);
 
-    AscendC::TQue<AscendC::TPosition::VECIN, 1> input;
-    AscendC::TQue<AscendC::TPosition::VECOUT, 1> output, flagq;
-    AscendC::TBuf<AscendC::TPosition::VECCALC> scratch;
+    AscendC::TQue<AscendC::TPosition::VECIN, BUFFERS> input;
+    AscendC::TQue<AscendC::TPosition::VECOUT, BUFFERS> output;
+    AscendC::TQue<AscendC::TPosition::VECOUT, 1> flagq;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> scratch, moments;
+    uint64_t countA = 0, countB = 0;
 };
 template <uint32_t SIZE>
 __simd_vf__ inline void MicroMergeComponent(
@@ -118,6 +130,8 @@ private:
 namespace {
 // Existing UB-sized fast-path tiles; keep capacities and routing unchanged.
 constexpr uint32_t FAST_TILE_ELEMENTS = 8192;
+constexpr uint32_t CACHED_HALF_TILE_ELEMENTS = 6144;
+constexpr uint32_t CACHED_HALF_TILE_SLOTS = 2;
 constexpr uint32_t LARGE_FAST_TILE_ELEMENTS = 12544;
 constexpr uint32_t PARTIAL_TILE_ELEMENTS = 4096;
 constexpr uint32_t SHORT_HALF_K_LIMIT = 512;

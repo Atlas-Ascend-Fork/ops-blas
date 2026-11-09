@@ -23,7 +23,7 @@ void gemm_cgemm_products_do(
 
 void gemm_cgemm_epilogue_do(
     uint32_t numBlocks, void* stream, GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, GM_ADDR cInOut,
-    const CgemmEpilogueTilingData& tilingData);
+    const CgemmEpilogueTilingData& tilingData, GM_ADDR originalA = nullptr, GM_ADDR originalB = nullptr);
 
 void gemm_cgemm_fused_do(
     uint32_t, void*, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, const GemmTilingData&);

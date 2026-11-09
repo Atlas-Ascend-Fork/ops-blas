@@ -45,7 +45,7 @@ constexpr uint32_t CgemmMaxSquareTile()
 constexpr uint32_t CGEMM_MAX_SQUARE_TILE = CgemmMaxSquareTile();
 // Four products share the per-tile accumulator budget in the fused path.
 constexpr uint32_t CGEMM_FUSED_TILE = CGEMM_MAX_SQUARE_TILE / CGEMM_COMPLEX_COMPONENTS;
-constexpr uint32_t CGEMM_VECTOR_BYTES = 256; // 950 vector register width.
+constexpr uint32_t CGEMM_VECTOR_BYTES = 256;                   // 950 vector register width.
 constexpr uint32_t CGEMM_UB_WORKSPACE_BYTES = 192 * CGEMM_KIB; // Conservative per-AIV budget.
 constexpr uint32_t CGEMM_FUSED_MAX_TILE = CGEMM_MAX_SQUARE_TILE;
 
@@ -80,9 +80,15 @@ struct CgemmEpilogueTilingData {
     uint8_t threeProducts;
     uint32_t kPartitions;
     uint64_t partStride;
+    // Nonzero only for the forced-3m scalar epilogue that can require ordered correction.
+    uint32_t referenceK = 0, referenceLda = 0, referenceLdb = 0;
+    uint8_t referenceTransA = 0, referenceTransB = 0;
 };
 
 struct CgemmOnchipTilingData {
     uint32_t m, n, k, lda, ldb, ldc;
     uint8_t transA, transB, conjugateA, conjugateB;
+    uint32_t batchCount = 1;
+    int64_t strideA = 0, strideB = 0, strideC = 0;
+    uint32_t reductionSpan = 0;
 };

@@ -27,6 +27,7 @@
 // 950 Cube tiles are multiples of 16. Two FP32 accumulator tiles share L0C to overlap compute and output.
 constexpr uint32_t CGEMM_MIN_TILE = GEMM_FRACTAL;
 constexpr uint32_t CGEMM_MAX_TILE = CGEMM_MAX_SQUARE_TILE;
+constexpr uint32_t CGEMM3M_PARTITION_K = 256;
 constexpr uint32_t CGEMM_TILE_SIZE_RATIO = 2; // Adjacent supported sizes double each dimension.
 static_assert(CGEMM_OUTPUT_STAGES * CGEMM_MAX_TILE * CGEMM_MAX_TILE * sizeof(float) <= CGEMM_L0C_BYTES);
 constexpr size_t CGEMM_WORKSPACE_ALIGNMENT = CGEMM_CUBE_FRACTAL * CGEMM_DATA_BLOCK_BYTES;
@@ -53,6 +54,7 @@ struct CgemmLaunchContext {
     int ldc;
     uint32_t cubeCores;
     uint32_t vectorCores;
+    bool forceThreeProducts;
 };
 
 struct CgemmWorkspaceLayout {
@@ -174,8 +176,8 @@ static uint32_t SelectCgemmFusedTile(const CgemmLaunchContext& context)
 static bool CalculateCgemmWorkspaceSizes(const CgemmLaunchContext& context, CgemmWorkspaceLayout& layout)
 {
     layout.fusedTile = SelectCgemmFusedTile(context);
-    layout.threeProducts =
-        context.alpha == std::complex<float>(1.0f, 0.0f) && context.beta == std::complex<float>(0.0f, 0.0f);
+    layout.threeProducts = context.forceThreeProducts || context.alpha == std::complex<float>(1.0f, 0.0f) &&
+                                                             context.beta == std::complex<float>(0.0f, 0.0f);
     layout.aRows = context.transa == ACLBLAS_OP_N ? context.m : context.k;
     layout.aCols = context.transa == ACLBLAS_OP_N ? context.k : context.m;
     layout.bRows = context.transb == ACLBLAS_OP_N ? context.k : context.n;
@@ -186,6 +188,10 @@ static bool CalculateCgemmWorkspaceSizes(const CgemmLaunchContext& context, Cgem
     const uint32_t accumulationTile = SelectCgemmAccumulationTile(context);
     const uint32_t panelDepth = CGEMM_L1_OPERAND_STAGE_ELEMENTS / accumulationTile;
     layout.kPartitions = context.k > static_cast<int>(panelDepth) ? 2 : 1;
+    if (context.forceThreeProducts && context.alpha == std::complex<float>(1.0f, 0.0f) &&
+        context.beta == std::complex<float>(0.0f, 0.0f)) {
+        layout.kPartitions = CeilDiv<uint32_t>(context.k, CGEMM3M_PARTITION_K);
+    }
     const uint32_t products = layout.threeProducts ? CGEMM_THREE_PRODUCTS : CGEMM_FOUR_PRODUCTS;
     layout.productTile = SelectCgemmProductTile(context, accumulationTile, products, layout.kPartitions);
     layout.kSpan = CeilDiv(CeilDiv(context.k, static_cast<int>(GEMM_FRACTAL)), static_cast<int>(layout.kPartitions)) *
@@ -317,9 +323,18 @@ static void LaunchCgemmEpilogue(const CgemmLaunchContext& context, const CgemmWo
     tiling.betaReal = context.beta.real();
     tiling.betaImag = context.beta.imag();
     tiling.betaZero = context.beta == std::complex<float>(0.0f, 0.0f) ? 1 : 0;
+    if (context.forceThreeProducts && (context.alpha != std::complex<float>(1.0f, 0.0f) || !tiling.betaZero)) {
+        tiling.referenceK = context.k;
+        tiling.referenceLda = context.lda;
+        tiling.referenceLdb = context.ldb;
+        tiling.referenceTransA = static_cast<uint8_t>(context.transa);
+        tiling.referenceTransB = static_cast<uint8_t>(context.transb);
+    }
     gemm_cgemm_epilogue_do(
         blocks, context.stream, layout.temp1, layout.temp2, layout.temp3, layout.temp4,
-        reinterpret_cast<uint8_t*>(context.c), tiling);
+        reinterpret_cast<uint8_t*>(context.c), tiling,
+        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(context.a)),
+        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(context.b)));
 }
 
 static bool UseCgemmOnchipInput(const CgemmLaunchContext& context)
@@ -352,7 +367,7 @@ static void LaunchCgemmOnchipInput(const CgemmLaunchContext& context)
 
 static aclblasStatus_t LaunchGeneralCgemm(CgemmLaunchContext& context)
 {
-    if (UseCgemmOnchipInput(context)) {
+    if (!context.forceThreeProducts && UseCgemmOnchipInput(context)) {
         LaunchCgemmOnchipInput(context);
         return ACLBLAS_STATUS_SUCCESS;
     }
@@ -389,11 +404,12 @@ static aclblasStatus_t LaunchGeneralCgemm(CgemmLaunchContext& context)
 static aclblasStatus_t LaunchCgemmKernel(
     aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
     std::complex<float> alphaVal, const aclblasComplex* A, int lda, const aclblasComplex* B, int ldb,
-    std::complex<float> betaVal, aclblasComplex* C, int ldc)
+    std::complex<float> betaVal, aclblasComplex* C, int ldc, bool forceThreeProducts = false)
 {
     auto* internal = reinterpret_cast<_aclblas_handle*>(handle);
-    CgemmLaunchContext context{handle, internal, internal->stream, transa, transb, m, n, k, alphaVal, A, lda,
-                               B,      ldb,      betaVal,          C,      ldc,    0, 0};
+    CgemmLaunchContext context{
+        handle, internal, internal->stream,  transa, transb, m, n, k, alphaVal, A, lda, B, ldb, betaVal, C, ldc,
+        0,      0,        forceThreeProducts};
     const aclblasStatus_t coreStatus = InitCgemmCores(context);
     if (coreStatus != ACLBLAS_STATUS_SUCCESS) {
         return coreStatus;
@@ -544,4 +560,47 @@ extern "C" aclblasStatus_t aclblasCgemm(
     return LaunchCgemmKernel(handle, transa, transb, m, n, k, alphaVal, A, lda, B, ldb, betaVal, C, ldc);
 }
 
+aclblasStatus_t LaunchCgemmThreeProducts(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
+    const aclblasComplex& alpha, const aclblasComplex* a, int lda, const aclblasComplex* b, int ldb,
+    const aclblasComplex& beta, aclblasComplex* c, int ldc)
+{
+    return LaunchCgemmKernel(
+        handle, transa, transb, m, n, k, {alpha.real, alpha.imag}, a, lda, b, ldb, {beta.real, beta.imag}, c, ldc,
+        true);
+}
+aclblasStatus_t LaunchCgemm3mOnchipBatches(
+    aclblasHandle_t handle, aclblasOperation_t ta, aclblasOperation_t tb, int m, int n, int k, const aclblasComplex* a,
+    int lda, int64_t strideA, const aclblasComplex* b, int ldb, int64_t strideB, aclblasComplex* c, int ldc,
+    int64_t strideC, int batch)
+{
+    CgemmOnchipTilingData t{
+        uint32_t(m),
+        uint32_t(n),
+        uint32_t(k),
+        uint32_t(lda),
+        uint32_t(ldb),
+        uint32_t(ldc),
+        uint8_t(ta != ACLBLAS_OP_N),
+        uint8_t(tb != ACLBLAS_OP_N),
+        uint8_t(ta == ACLBLAS_OP_C),
+        uint8_t(tb == ACLBLAS_OP_C)};
+    // Netlib's non-transposed A path accumulates directly into C; shorter
+    // parts bound the cancellation error relative to that ordered reduction.
+    t.reductionSpan = k > 128 ? (ta == ACLBLAS_OP_N ? 128 : 256) : 0;
+    t.batchCount = batch;
+    t.strideA = strideA;
+    t.strideB = strideB;
+    t.strideC = strideC;
+    const uint32_t cores = GetAicCoreCount();
+    if (cores == 0) {
+        OP_LOGE("aclblasCgemm3mStridedBatched", "GetAicCoreCount failed");
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    const uint64_t tiles = uint64_t(CeilDiv(m, int(CGEMM_FUSED_TILE))) * CeilDiv(n, int(CGEMM_FUSED_TILE)) * batch;
+    gemm_cgemm_onchip_do(
+        std::min<uint64_t>(cores, tiles), handle->stream, reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(a)),
+        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(b)), reinterpret_cast<uint8_t*>(c), t);
+    return ACLBLAS_STATUS_SUCCESS;
+}
 #endif

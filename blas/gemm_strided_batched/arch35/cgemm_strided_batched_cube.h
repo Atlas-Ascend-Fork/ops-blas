@@ -112,6 +112,55 @@ __aicore__ inline auto CgemmSbMakeHalfTensor(__gm__ half* data, uint32_t rows, u
         AscendC::Te::MakeMemPtr<AscendC::Te::Location::GM>(data), AscendC::Te::MakeFrameLayout<LayoutPtn>(rows, cols));
 }
 
+template <bool Load = true, bool Compute = true, typename Left, typename Right>
+__aicore__ inline void CgemmSbCachedHalfProducts(
+    Left lh, Right rh, Left ll, Right rl, uint32_t cm, uint32_t cn, uint32_t ck, uint32_t m, uint32_t n, uint32_t baseK,
+    uint64_t bank, uint64_t& l0, uint64_t cOffset)
+{
+    namespace T = AscendC::Te;
+    const uint64_t start = bank * CGEMM_HALF_L1_SIZE / CGEMM_HALF_L1_BUF_NUM;
+    const uint64_t leftBytes =
+        RoundUp<uint64_t>(cm, CGEMM_HALF_FRACTAL) * RoundUp<uint64_t>(ck, CGEMM_HALF_FP32_C0) * sizeof(half);
+    const uint64_t rightBytes =
+        RoundUp<uint64_t>(cn, CGEMM_HALF_FRACTAL) * RoundUp<uint64_t>(ck, CGEMM_HALF_FP32_C0) * sizeof(half);
+    const auto leftLayout = T::MakeFrameLayout<T::NZLayoutPtn, AscendC::Std::Int<CGEMM_HALF_FP32_C0>>(cm, ck);
+    const auto rightLayout = T::MakeFrameLayout<T::ZNLayoutPtn, AscendC::Std::Int<CGEMM_HALF_FP32_C0>>(ck, cn);
+    auto highA = T::MakeTensor(T::MakeMemPtr<T::Location::L1, half>(start), leftLayout);
+    auto highB = T::MakeTensor(T::MakeMemPtr<T::Location::L1, half>(start + leftBytes), rightLayout);
+    auto lowA = T::MakeTensor(T::MakeMemPtr<T::Location::L1, half>(start + leftBytes + rightBytes), leftLayout);
+    auto lowB = T::MakeTensor(T::MakeMemPtr<T::Location::L1, half>(start + 2 * leftBytes + rightBytes), rightLayout);
+    if constexpr (Load) {
+        AscendC::WaitFlag<AscendC::HardEvent::MTE1_MTE2>(bank);
+        CgemmHalfCopyGM2L1(lh, highA, m, 0, cm, ck);
+        CgemmHalfCopyGM2L1(rh, highB, 0, n, ck, cn);
+        CgemmHalfCopyGM2L1(ll, lowA, m, 0, cm, ck);
+        CgemmHalfCopyGM2L1(rl, lowB, 0, n, ck, cn);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE1>(bank);
+    }
+    if constexpr (Compute) {
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE1>(bank);
+        CgemmHalfL0MmadLoop(lowA, highB, cm, ck, cn, 1, 0, baseK, l0, true, false, cOffset);
+        CgemmHalfL0MmadLoop(highA, lowB, cm, ck, cn, 1, 0, baseK, l0, false, false, cOffset);
+        CgemmHalfL0MmadLoop(highA, highB, cm, ck, cn, 1, 0, baseK, l0, false, true, cOffset);
+        AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(bank);
+    }
+}
+
+template <typename TensorOut>
+__aicore__ inline void CgemmSbStoreHalfReduction(
+    TensorOut ct, const CgemmSbCubeOperands<half>& o, uint32_t cm, uint32_t cn, uint32_t off, uint32_t outputSlot,
+    uint64_t cOffset)
+{
+    AscendC::SetFlag<AscendC::HardEvent::M_FIX>(0);
+    AscendC::WaitFlag<AscendC::HardEvent::M_FIX>(0);
+    if (off == 0)
+        AscendC::SetAtomicNone();
+    else
+        AscendC::SetAtomicAdd<float>();
+    CgemmHalfCopyOutL0C2GM(ct, o.m, o.n, cm, cn, cOffset);
+    AscendC::SetFlag<AscendC::HardEvent::FIX_M>(outputSlot);
+}
+
 template <typename LeftPtn, typename RightPtn, bool Prefix>
 __aicore__ inline void CgemmSbComputeHalfTile(
     const CgemmSbCubeOperands<half>& o, const CgemmSbTiling& t, const CgemmSbCubePlan& p, uint64_t& l1, uint64_t& l0,
@@ -136,30 +185,92 @@ __aicore__ inline void CgemmSbComputeHalfTile(
         uint32_t outputSlot = p.doubleOutput ? outputIndex++ % 2 : 0;
         uint64_t cOffset = uint64_t(outputSlot) * CGEMM_SB_L0C_SLOT_BYTES;
         AscendC::WaitFlag<AscendC::HardEvent::FIX_M>(outputSlot);
-        CgemmHalfProcessKChunks(
-            lowl, rh, ck, CUBE_L1_CHUNK_K, CeilDiv<uint64_t>(ck, CUBE_L1_CHUNK_K), t.baseK, o.m, o.n, cm, cn, l1, l0,
-            true, false, cOffset);
-        CgemmHalfProcessKChunks(
-            lh, lowr, ck, CUBE_L1_CHUNK_K, CeilDiv<uint64_t>(ck, CUBE_L1_CHUNK_K), t.baseK, o.m, o.n, cm, cn, l1, l0,
-            false, false, cOffset);
-        if (t.mp <= SMALL_CUBE_TILE_DIM && t.np <= SMALL_CUBE_TILE_DIM && t.kp <= SMALL_CUBE_TILE_DIM &&
-            ck <= t.baseK) {
-            CgemmHalfReuseOperands(cm, cn, ck, l0, cOffset);
+        const uint64_t cacheBytes =
+            2 * sizeof(half) * (RoundUp<uint64_t>(cm, CGEMM_HALF_FRACTAL) + RoundUp<uint64_t>(cn, CGEMM_HALF_FRACTAL)) *
+            RoundUp<uint64_t>(ck, CGEMM_HALF_FP32_C0);
+        if (t.cacheHalfInputs && cacheBytes <= CGEMM_HALF_L1_SIZE / CGEMM_HALF_L1_BUF_NUM) {
+            CgemmSbCachedHalfProducts(
+                lh, rh, lowl, lowr, cm, cn, ck, o.m, o.n, t.baseK, l1++ % CGEMM_HALF_L1_BUF_NUM, l0, cOffset);
         } else {
             CgemmHalfProcessKChunks(
-                lh, rh, ck, CUBE_L1_CHUNK_K, CeilDiv<uint64_t>(ck, CUBE_L1_CHUNK_K), t.baseK, o.m, o.n, cm, cn, l1, l0,
-                false, true, cOffset);
+                lowl, rh, ck, CUBE_L1_CHUNK_K, CeilDiv<uint64_t>(ck, CUBE_L1_CHUNK_K), t.baseK, o.m, o.n, cm, cn, l1,
+                l0, true, false, cOffset);
+            CgemmHalfProcessKChunks(
+                lh, lowr, ck, CUBE_L1_CHUNK_K, CeilDiv<uint64_t>(ck, CUBE_L1_CHUNK_K), t.baseK, o.m, o.n, cm, cn, l1,
+                l0, false, false, cOffset);
+            if (t.mp <= SMALL_CUBE_TILE_DIM && t.np <= SMALL_CUBE_TILE_DIM && t.kp <= SMALL_CUBE_TILE_DIM &&
+                ck <= t.baseK) {
+                CgemmHalfReuseOperands(cm, cn, ck, l0, cOffset);
+            } else {
+                CgemmHalfProcessKChunks(
+                    lh, rh, ck, CUBE_L1_CHUNK_K, CeilDiv<uint64_t>(ck, CUBE_L1_CHUNK_K), t.baseK, o.m, o.n, cm, cn, l1,
+                    l0, false, true, cOffset);
+            }
         }
-        AscendC::SetFlag<AscendC::HardEvent::M_FIX>(0);
-        AscendC::WaitFlag<AscendC::HardEvent::M_FIX>(0);
-        if (off == 0)
-            AscendC::SetAtomicNone();
-        else
-            AscendC::SetAtomicAdd<float>();
-        CgemmHalfCopyOutL0C2GM(ct, o.m, o.n, cm, cn, cOffset);
-        AscendC::SetFlag<AscendC::HardEvent::FIX_M>(outputSlot);
+        CgemmSbStoreHalfReduction(ct, o, cm, cn, off, outputSlot, cOffset);
     }
     AscendC::SetAtomicNone();
+}
+
+// Whole-K tiles fit in one L1 bank. Separate producer and consumer calls allow
+// the next independent tile to load before the current tile enters MTE1/MMAD.
+template <typename LeftPtn, typename RightPtn, bool Load>
+__aicore__ inline void CgemmSbPrefetchedHalfTile(
+    const CgemmSbCubeOperands<half>& o, const CgemmSbTiling& t, const CgemmSbCubePlan& p, uint64_t bank, uint64_t& l0)
+{
+    auto lh = CgemmSbMakeHalfTensor<LeftPtn>(o.left, p.effectiveN, p.effectiveK);
+    auto rh = CgemmSbMakeHalfTensor<RightPtn>(o.right, p.effectiveK, t.mp);
+    auto ll =
+        CgemmSbMakeHalfTensor<LeftPtn>(o.left + CGEMM_SB_HALF_RESIDUAL_OFFSET * t.bSize, p.effectiveN, p.effectiveK);
+    auto rl = CgemmSbMakeHalfTensor<RightPtn>(o.right + CGEMM_SB_HALF_RESIDUAL_OFFSET * t.aSize, p.effectiveK, t.mp);
+    const uint32_t cm = Min<uint32_t>(t.tileM, p.effectiveN - o.m);
+    const uint32_t cn = Min<uint32_t>(t.tileN, t.mp - o.n);
+    const uint64_t cOffset = bank * CGEMM_SB_L0C_SLOT_BYTES;
+    if constexpr (!Load)
+        AscendC::WaitFlag<AscendC::HardEvent::FIX_M>(bank);
+    CgemmSbCachedHalfProducts<Load, !Load>(lh, rh, ll, rl, cm, cn, p.effectiveK, o.m, o.n, t.baseK, bank, l0, cOffset);
+    if constexpr (!Load) {
+        auto ct = AscendC::Te::MakeTensor(
+            AscendC::Te::MakeMemPtr<AscendC::Te::Location::GM>(o.out),
+            AscendC::Te::MakeFrameLayout<AscendC::Te::NDExtLayoutPtn>(p.effectiveN, t.mp));
+        AscendC::SetFlag<AscendC::HardEvent::M_FIX>(0);
+        AscendC::WaitFlag<AscendC::HardEvent::M_FIX>(0);
+        CgemmHalfCopyOutL0C2GM(ct, o.m, o.n, cm, cn, cOffset);
+        AscendC::SetFlag<AscendC::HardEvent::FIX_M>(bank);
+    }
+}
+
+__aicore__ inline bool CgemmSbCanPrefetch(const CgemmSbTiling& t, const CgemmSbCubePlan& p)
+{
+    const uint64_t bytes = 2 * sizeof(half) *
+                           (RoundUp<uint64_t>(Min(t.tileM, p.effectiveN), CGEMM_HALF_FRACTAL) +
+                            RoundUp<uint64_t>(Min(t.tileN, t.mp), CGEMM_HALF_FRACTAL)) *
+                           RoundUp<uint64_t>(p.effectiveK, CGEMM_HALF_FP32_C0);
+    return t.cacheHalfInputs && p.effectiveK <= HALF_REDUCTION_CHUNK_K && p.doubleOutput &&
+           bytes <= CGEMM_HALF_L1_SIZE / CGEMM_HALF_L1_BUF_NUM &&
+           p.tiles * p.effectiveBatch * p.products > AscendC::GetBlockNum();
+}
+
+template <typename LeftPtn, typename RightPtn>
+__aicore__ inline void CgemmSbPrefetchedHalfCube(
+    __gm__ float* ws, const CgemmSbTiling& t, const CgemmSbCubePlan& p, uint64_t& l0)
+{
+    const uint64_t step = AscendC::GetBlockNum();
+    const uint64_t total = p.tiles * p.effectiveBatch * p.products;
+    uint64_t task = AscendC::GetBlockIdx();
+    if (task >= total)
+        return;
+    auto current = CgemmSbDecodeCubeTask<half, false, false>(ws, t, p, task);
+    CgemmSbPrefetchedHalfTile<LeftPtn, RightPtn, true>(current, t, p, 0, l0);
+    for (uint64_t index = 0; task < total; task += step, ++index) {
+        const uint64_t bank = index % CGEMM_HALF_L1_BUF_NUM;
+        if (task + step < total) {
+            auto next = CgemmSbDecodeCubeTask<half, false, false>(ws, t, p, task + step);
+            CgemmSbPrefetchedHalfTile<LeftPtn, RightPtn, true>(next, t, p, (index + 1) % CGEMM_HALF_L1_BUF_NUM, l0);
+        }
+        current = CgemmSbDecodeCubeTask<half, false, false>(ws, t, p, task);
+        CgemmSbPrefetchedHalfTile<LeftPtn, RightPtn, false>(current, t, p, bank, l0);
+    }
 }
 
 template <typename LeftPtn, typename RightPtn>
@@ -196,7 +307,13 @@ template <bool TRANS_LEFT, bool TRANS_RIGHT, bool HALF, bool Partial = false, bo
 __aicore__ inline void CgemmSbCube(GM_ADDR workspace, CgemmSbTiling t)
 {
     auto ws = reinterpret_cast<__gm__ float*>(workspace);
-    uint32_t mask = CgemmSbReferenceMask(ws + t.flagOffset, t);
+    // Short-K exceptions are repaired from the original inputs by the final
+    // Vector phase. Cube writes only scratch products; avoid making every AIC
+    // scan the same producer flags before computing those disposable products.
+    uint32_t mask = CGEMM_SB_REFERENCE_NONE;
+    const bool deferredException = HALF && !Partial && !Prefix && t.cacheHalfInputs && t.k < CGEMM_SB_ORDERED_MIN_K;
+    if (!deferredException)
+        mask = CgemmSbReferenceMask(ws + t.flagOffset, t);
     if constexpr (Prefix) {
         if (mask == CGEMM_SB_REFERENCE_NONE || mask == CGEMM_SB_REFERENCE_EXCEPTIONAL)
             return;
@@ -214,6 +331,14 @@ __aicore__ inline void CgemmSbCube(GM_ADDR workspace, CgemmSbTiling t)
     using Input = AscendC::Std::conditional_t<HALF, half, float>;
     using LeftPtn = AscendC::Std::conditional_t<TRANS_LEFT, AscendC::Te::DNExtLayoutPtn, AscendC::Te::NDExtLayoutPtn>;
     using RightPtn = AscendC::Std::conditional_t<TRANS_RIGHT, AscendC::Te::DNExtLayoutPtn, AscendC::Te::NDExtLayoutPtn>;
+    if constexpr (HALF && !Partial && !Prefix) {
+        if (CgemmSbCanPrefetch(t, plan)) {
+            AscendC::SetAtomicNone();
+            CgemmSbPrefetchedHalfCube<LeftPtn, RightPtn>(ws, t, plan, l0);
+            CgemmSbCubePipelineFlags<false>();
+            return;
+        }
+    }
     for (uint64_t task = AscendC::GetBlockIdx(); task < plan.tiles * plan.effectiveBatch * plan.products;
          task += AscendC::GetBlockNum()) {
         auto operands = CgemmSbDecodeCubeTask<Input, Partial, Prefix>(ws, t, plan, task);

@@ -29,13 +29,13 @@ static_assert(PANEL == TILE, "Input packing currently uses equal row and column 
 static_assert(OUTPUT_BYTES + INPUT_PLANES * BYTES <= CGEMM_UB_WORKSPACE_BYTES);
 static_assert(CGEMM_L1_PING_PONG_STAGES * CGEMM_COMPLEX_COMPONENTS * CGEMM_THREE_PRODUCTS * BYTES <= CGEMM_L1_BYTES);
 
-__simd_vf__ inline void ClearInput(__ubuf__ float* raw)
+__simd_vf__ inline void ClearInput(__ubuf__ float* raw, uint32_t rows)
 {
     namespace V = AscendC::MicroAPI;
     V::RegTensor<float> zero;
     V::MaskReg all = V::CreateMask<float, V::MaskPattern::ALL>();
     V::Duplicate(zero, 0.0f);
-    for (uint32_t i = 0; i < CGEMM_COMPLEX_COMPONENTS * ELEMENTS; i += VECTOR_FLOATS) {
+    for (uint32_t i = 0; i < rows * RAW_STRIDE; i += VECTOR_FLOATS) {
         V::StoreAlign(raw + i, zero, all);
     }
 }
@@ -74,7 +74,7 @@ __aicore__ inline DataCopyExtParams InputCopyParams(uint32_t rows, uint32_t cols
     const uint32_t rowBytes = CGEMM_COMPLEX_COMPONENTS * cols * sizeof(float);
     return {
         static_cast<uint16_t>(rows), rowBytes,
-        static_cast<uint32_t>((ld - cols) * CGEMM_COMPLEX_COMPONENTS * sizeof(float)),
+        static_cast<uint32_t>((ld - cols) * int64_t(CGEMM_COMPLEX_COMPONENTS * sizeof(float))),
         static_cast<uint32_t>(
             (RAW_STRIDE * sizeof(float) - RoundUp<uint32_t>(rowBytes, CGEMM_DATA_BLOCK_BYTES)) /
             CGEMM_DATA_BLOCK_BYTES),
@@ -101,7 +101,8 @@ __aicore__ inline void ProducePanel(
     WaitFlag<HardEvent::MTE3_MTE2>(GEMM_ZERO_FLAG);
     // Only incomplete Cube fragments need zero fill before copying the input.
     if (rows % CGEMM_CUBE_FRACTAL != 0 || cols % CGEMM_CUBE_FRACTAL != 0) {
-        asc_vf_call<ClearInput>(reinterpret_cast<__ubuf__ float*>(raw.GetPhyAddr()));
+        asc_vf_call<ClearInput>(
+            reinterpret_cast<__ubuf__ float*>(raw.GetPhyAddr()), RoundUp<uint32_t>(rows, CGEMM_CUBE_FRACTAL));
         SetFlag<HardEvent::V_MTE2>(GEMM_ZERO_FLAG);
         WaitFlag<HardEvent::V_MTE2>(GEMM_ZERO_FLAG);
     }
@@ -198,6 +199,91 @@ __aicore__ inline void DrainPipeline()
     }
 }
 
+__aicore__ inline void ConsumeBatchTile(
+    GM_ADDR a, GM_ADDR b, GM_ADDR c, const CgemmOnchipTilingData& original, const GemmTilingData& t, int64_t batch,
+    const cgemm_fused::TileShape& shape, uint32_t stage)
+{
+    c += batch * original.strideC * int64_t(CGEMM_COMPLEX_COMPONENTS * sizeof(float));
+    a += batch * original.strideA * int64_t(CGEMM_COMPLEX_COMPONENTS * sizeof(float));
+    b += batch * original.strideB * int64_t(CGEMM_COMPLEX_COMPONENTS * sizeof(float));
+    cgemm_fused::ConsumePart<TILE, true>(c, t, shape, true, true, stage, a, b, &original);
+}
+
+__aicore__ inline void PublishSplitOutput(
+    GM_ADDR a, GM_ADDR b, GM_ADDR c, const CgemmOnchipTilingData& original, const GemmTilingData& t,
+    const cgemm_fused::TileShape& shape, int64_t batch, bool first, bool last)
+{
+    if ASCEND_IS_AIC {
+        cgemm_fused::PublishProducts<TILE>(shape, 0);
+    }
+    if ASCEND_IS_AIV {
+        if (last) {
+            cgemm_fused::ConsumePart<TILE, true>(
+                c + batch * original.strideC * int64_t(CGEMM_COMPLEX_COMPONENTS * sizeof(float)), t, shape, first, true,
+                0, a + batch * original.strideA * int64_t(CGEMM_COMPLEX_COMPONENTS * sizeof(float)),
+                b + batch * original.strideB * int64_t(CGEMM_COMPLEX_COMPONENTS * sizeof(float)), &original);
+        }
+    }
+}
+
+// Limit each native-FP32 3m accumulation before merging the complex parts.
+// This controls cancellation error without replacing the main algorithm.
+template <bool TransA, bool TransB>
+__aicore__ inline void RunSplitReduction(
+    GM_ADDR a, GM_ADDR b, GM_ADDR c, const CgemmOnchipTilingData& original, const GemmTilingData& t, uint32_t block)
+{
+    const uint64_t tilesPerBatch = uint64_t(CeilDiv<uint32_t>(t.m, TILE)) * CeilDiv<uint32_t>(t.n, TILE);
+    uint32_t sequence = 0, panelSequence = 0;
+    for (uint64_t tile = block; tile < tilesPerBatch * original.batchCount; tile += t.usedCoreNum) {
+        const int64_t batch = tile / tilesPerBatch;
+        const auto shape = cgemm_fused::Shape<TILE>(t, tile % tilesPerBatch);
+        for (uint32_t start = 0; start < original.k; start += PANEL, ++panelSequence) {
+            const uint32_t depth = Min<uint32_t>(PANEL, original.k - start);
+            const uint32_t stage = panelSequence % CGEMM_L1_PING_PONG_STAGES;
+            if ASCEND_IS_AIV {
+                ProducePanel(
+                    a + batch * original.strideA * int64_t(CGEMM_COMPLEX_COMPONENTS * sizeof(float)),
+                    b + batch * original.strideB * int64_t(CGEMM_COMPLEX_COMPONENTS * sizeof(float)), original, shape,
+                    start, depth, stage);
+                // Prepare the next panel before consuming the previous part.
+                // Cube can start that panel while Vector merges the old output.
+                if (start != 0 && start % original.reductionSpan == 0) {
+                    cgemm_fused::ConsumePart<TILE>(
+                        c + batch * original.strideC * int64_t(CGEMM_COMPLEX_COMPONENTS * sizeof(float)), t, shape,
+                        start == original.reductionSpan, false, 0);
+                }
+            }
+            if ASCEND_IS_AIC {
+                MultiplyPanel<TransA, TransB>(shape, depth, start % original.reductionSpan == 0, stage, sequence);
+            }
+            const bool last = start + depth == original.k;
+            if ((start + depth) % original.reductionSpan == 0 || last) {
+                PublishSplitOutput(a, b, c, original, t, shape, batch, start < original.reductionSpan, last);
+            }
+        }
+    }
+}
+
+template <bool TransA, bool TransB>
+__aicore__ inline void ProduceBatchPanels(
+    GM_ADDR a, GM_ADDR b, const CgemmOnchipTilingData& original, const cgemm_fused::TileShape& s, int64_t batch,
+    uint32_t& panelSequence, uint32_t& sequence)
+{
+    for (uint32_t start = 0; start < original.k; start += PANEL, ++panelSequence) {
+        const uint32_t depth = Min<uint32_t>(PANEL, original.k - start);
+        const uint32_t stage = panelSequence % CGEMM_L1_PING_PONG_STAGES;
+        if ASCEND_IS_AIV {
+            ProducePanel(
+                a + batch * original.strideA * int64_t(CGEMM_COMPLEX_COMPONENTS * sizeof(float)),
+                b + batch * original.strideB * int64_t(CGEMM_COMPLEX_COMPONENTS * sizeof(float)), original, s, start,
+                depth, stage);
+        }
+        if ASCEND_IS_AIC {
+            MultiplyPanel<TransA, TransB>(s, depth, start == 0, stage, sequence);
+        }
+    }
+}
+
 template <bool TransA, bool TransB>
 __aicore__ inline void Run(GM_ADDR a, GM_ADDR b, GM_ADDR c, const CgemmOnchipTilingData& original)
 {
@@ -210,20 +296,20 @@ __aicore__ inline void Run(GM_ADDR a, GM_ADDR b, GM_ADDR c, const CgemmOnchipTil
     t.cgemmKPartitions = 1;
     uint32_t block = GetBlockIdx();
     block = InitializePipeline(block);
-    const uint64_t tiles = static_cast<uint64_t>(CeilDiv<uint32_t>(t.m, TILE)) * CeilDiv<uint32_t>(t.n, TILE);
+    if (original.reductionSpan != 0) {
+        RunSplitReduction<TransA, TransB>(a, b, c, original, t, block);
+        DrainPipeline();
+        return;
+    }
+    const uint64_t tilesPerBatch = static_cast<uint64_t>(CeilDiv<uint32_t>(t.m, TILE)) * CeilDiv<uint32_t>(t.n, TILE);
+    const uint64_t tiles = tilesPerBatch * original.batchCount;
     uint32_t sequence = 0, panelSequence = 0, iteration = 0;
+    int64_t previousBatch = 0;
+    cgemm_fused::TileShape previousShape{};
     for (uint64_t tile = block; tile < tiles; tile += t.usedCoreNum, ++iteration) {
-        const auto s = cgemm_fused::Shape<TILE>(t, tile);
-        for (uint32_t start = 0; start < original.k; start += PANEL, ++panelSequence) {
-            const uint32_t depth = Min<uint32_t>(PANEL, original.k - start);
-            const uint32_t stage = panelSequence % CGEMM_L1_PING_PONG_STAGES;
-            if ASCEND_IS_AIV {
-                ProducePanel(a, b, original, s, start, depth, stage);
-            }
-            if ASCEND_IS_AIC {
-                MultiplyPanel<TransA, TransB>(s, depth, start == 0, stage, sequence);
-            }
-        }
+        const int64_t batch = tile / tilesPerBatch;
+        const auto s = cgemm_fused::Shape<TILE>(t, tile % tilesPerBatch);
+        ProduceBatchPanels<TransA, TransB>(a, b, original, s, batch, panelSequence, sequence);
         const uint32_t stage = iteration % cgemm_fused::Storage<TILE>::STAGES;
         if ASCEND_IS_AIC {
             cgemm_fused::PublishProducts<TILE>(s, stage);
@@ -231,18 +317,18 @@ __aicore__ inline void Run(GM_ADDR a, GM_ADDR b, GM_ADDR c, const CgemmOnchipTil
         if ASCEND_IS_AIV {
             // Produce the next tile before consuming the previous result, overlapping input work with Cube.
             if (iteration > 0) {
-                const auto previous = cgemm_fused::Shape<TILE>(t, tile - t.usedCoreNum);
                 const uint32_t previousStage = (iteration - 1) % cgemm_fused::Storage<TILE>::STAGES;
-                cgemm_fused::ConsumePart<TILE, true>(c, t, previous, true, true, previousStage, a, b, &original);
+                ConsumeBatchTile(a, b, c, original, t, previousBatch, previousShape, previousStage);
             }
         }
+        previousBatch = batch;
+        previousShape = s;
     }
     if ASCEND_IS_AIV {
         if (iteration > 0) {
-            const uint64_t lastTile = block + static_cast<uint64_t>(iteration - 1) * t.usedCoreNum;
-            const auto last = cgemm_fused::Shape<TILE>(t, lastTile);
-            cgemm_fused::ConsumePart<TILE, true>(
-                c, t, last, true, true, (iteration - 1) % cgemm_fused::Storage<TILE>::STAGES, a, b, &original);
+            ConsumeBatchTile(
+                a, b, c, original, t, previousBatch, previousShape,
+                (iteration - 1) % cgemm_fused::Storage<TILE>::STAGES);
         }
     }
     DrainPipeline();

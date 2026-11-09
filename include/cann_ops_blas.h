@@ -640,6 +640,11 @@ aclblasStatus_t aclblasSgemmStridedBatched(
     const float* alpha, const float* A, int lda, int64_t strideA, const float* B, int ldb, int64_t strideB,
     const float* beta, float* C, int ldc, int64_t strideC, int batchCount);
 
+aclblasStatus_t aclblasCgemm3mStridedBatched(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
+    const aclblasComplex* alpha, const aclblasComplex* A, int lda, int64_t strideA, const aclblasComplex* B, int ldb,
+    int64_t strideB, const aclblasComplex* beta, aclblasComplex* C, int ldc, int64_t strideC, int batchCount);
+
 aclblasStatus_t aclblasCgemmStridedBatched(
     aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k,
     const aclblasComplex* alpha, const aclblasComplex* A, int lda, int64_t strideA, const aclblasComplex* B, int ldb,

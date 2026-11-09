@@ -140,6 +140,7 @@ struct CgemmSbTiling {
     uint64_t flagOffset;
     uint32_t orderedM, orderedN, orderedK, normalizeOrdered;
     uint64_t orderedAOffset, orderedBOffset;
+    bool cacheHalfInputs = false;
 };
 
 void cgemm_sb_vector_do(

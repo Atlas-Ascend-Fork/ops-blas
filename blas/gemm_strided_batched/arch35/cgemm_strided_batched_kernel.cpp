@@ -38,8 +38,10 @@ __simd_callee__ inline void PackComponent(
     M::DataCopy<half, M::StoreDist::DIST_PACK_B32>(dst + offset, high, mask);
     M::DataCopy<half, M::StoreDist::DIST_PACK_B32>(dst + offset + lowOffset, low, mask);
 }
+template <bool RecordMoments>
 __simd_vf__ inline void MicroPackHalf(
-    __ubuf__ float* src, __ubuf__ half* dst, __ubuf__ int32_t* maximum, uint32_t count, bool conjugate, uint32_t stride)
+    __ubuf__ float* src, __ubuf__ half* dst, __ubuf__ int32_t* maximum, uint32_t count, bool conjugate, uint32_t stride,
+    __ubuf__ float* moments)
 {
     namespace M = AscendC::MicroAPI;
     M::RegTensor<int32_t> maxReg;
@@ -47,6 +49,11 @@ __simd_vf__ inline void MicroPackHalf(
     M::RegTensor<uint32_t> mag, bits;
     auto all = M::CreateMask<uint32_t, M::MaskPattern::ALL>();
     M::Duplicate(mag, uint32_t(CGEMM_SB_FP32_ABS_MASK), all);
+    M::RegTensor<float> realMoment, imagMoment;
+    if constexpr (RecordMoments) {
+        M::LoadAlign(realMoment, moments);
+        M::LoadAlign(imagMoment, moments + CGEMM_SB_FP32_LANES);
+    }
     for (uint16_t i = 0; i < (count + CGEMM_SB_FP32_LANES - 1) / CGEMM_SB_FP32_LANES; ++i) {
         uint32_t len = count - uint32_t(i) * CGEMM_SB_FP32_LANES;
         auto mask = M::UpdateMask<float>(len);
@@ -62,9 +69,17 @@ __simd_vf__ inline void MicroPackHalf(
         if (conjugate)
             M::Muls(imag, imag, -1.0f, mask);
         M::Add(sum, real, imag, mask);
+        if constexpr (RecordMoments) {
+            M::Add<float, M::MaskMergeMode::MERGING>(realMoment, realMoment, real, mask);
+            M::Add<float, M::MaskMergeMode::MERGING>(imagMoment, imagMoment, imag, mask);
+        }
         PackComponent(real, dst, uint32_t(i) * CGEMM_SB_FP32_LANES, CGEMM_SB_THREE_M_PLANES * stride, mask);
         PackComponent(imag, dst, stride + uint32_t(i) * CGEMM_SB_FP32_LANES, CGEMM_SB_THREE_M_PLANES * stride, mask);
         PackComponent(sum, dst, 2 * stride + uint32_t(i) * CGEMM_SB_FP32_LANES, CGEMM_SB_THREE_M_PLANES * stride, mask);
+    }
+    if constexpr (RecordMoments) {
+        M::StoreAlign(moments, realMoment, all);
+        M::StoreAlign(moments + CGEMM_SB_FP32_LANES, imagMoment, all);
     }
     M::DataCopy(maximum, maxReg, all);
 }
@@ -120,14 +135,16 @@ __aicore__ inline ColumnTile DecodeTile(
 __aicore__ inline void ReadColumns(
     AscendC::LocalTensor<float> dst, AscendC::GlobalTensor<float> src, const ColumnTile& v, uint32_t ld)
 {
-    // Initialize explicit matrix padding, including completely padded columns.
-    AscendC::Duplicate(dst, 0.0f, v.rows * v.cols * 2);
-    AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(PADDING_READY_EVENT);
-    AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(PADDING_READY_EVENT);
-    if (v.validRows == 0 || v.validCols == 0)
-        return;
     uint32_t alignedFloats =
         ((v.validRows * 2 + CGEMM_SB_FP32_PER_BLOCK - 1) / CGEMM_SB_FP32_PER_BLOCK) * CGEMM_SB_FP32_PER_BLOCK;
+    // DataCopyPad writes the aligned tail. Only holes outside that DMA need explicit initialization.
+    if (v.validCols != v.cols || alignedFloats != v.rows * 2) {
+        AscendC::Duplicate(dst, 0.0f, v.rows * v.cols * 2);
+        AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(PADDING_READY_EVENT);
+        AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(PADDING_READY_EVENT);
+    }
+    if (v.validRows == 0 || v.validCols == 0)
+        return;
     AscendC::DataCopyExtParams cp{
         static_cast<uint16_t>(v.validCols), v.validRows * CGEMM_SB_COMPLEX_BYTES,
         (ld - v.validRows) * CGEMM_SB_COMPLEX_BYTES, (v.rows * 2 - alignedFloats) / CGEMM_SB_FP32_PER_BLOCK, 0};
@@ -187,16 +204,70 @@ __aicore__ inline void ReadPackTile(
     ReadColumns(x, source[src * 2], v, g.ld);
 }
 
-template <uint32_t SIZE>
-__aicore__ inline void FastHalfPacker<SIZE>::Run(
-    GM_ADDR a, GM_ADDR b, GM_ADDR workspace, CgemmSbTiling t, uint32_t core, uint32_t cores, AscendC::TPipe& pipe)
+template <uint32_t SIZE, uint32_t BUFFERS>
+__aicore__ inline void FastHalfPacker<SIZE, BUFFERS>::Initialize(AscendC::TPipe& pipe, const CgemmSbTiling& t)
 {
-    pipe.InitBuffer(input, 1, 2 * SIZE * CGEMM_SB_FP32_BYTES);
-    pipe.InitBuffer(output, 1, HALF_PACK_PLANES * SIZE * CGEMM_SB_FP16_BYTES);
+    pipe.InitBuffer(input, BUFFERS, 2 * SIZE * CGEMM_SB_FP32_BYTES);
+    pipe.InitBuffer(output, BUFFERS, HALF_PACK_PLANES * SIZE * CGEMM_SB_FP16_BYTES);
     pipe.InitBuffer(flagq, 1, CGEMM_SB_DMA_BLOCK_BYTES);
     pipe.InitBuffer(scratch, CGEMM_SB_MAX_SCRATCH_BYTES);
+    if (t.k >= CGEMM_SB_ORDERED_MIN_K) {
+        pipe.InitBuffer(moments, CGEMM_SB_MOMENT_PLANES * CGEMM_SB_FP32_LANES * sizeof(float));
+        AscendC::Duplicate(moments.Get<float>(), 0.0f, CGEMM_SB_MOMENT_PLANES * CGEMM_SB_FP32_LANES);
+    }
     auto maxbuf = scratch.Get<int32_t>();
     AscendC::Duplicate(maxbuf, int32_t(0), CGEMM_SB_FP32_LANES);
+}
+
+template <uint32_t SIZE, uint32_t BUFFERS>
+__aicore__ inline void FastHalfPacker<SIZE, BUFFERS>::PackTile(
+    AscendC::LocalTensor<float> x, AscendC::LocalTensor<half> y, const CgemmSbTiling& t, bool isA, uint32_t count)
+{
+    auto maxbuf = scratch.Get<int32_t>();
+    if (t.k >= CGEMM_SB_ORDERED_MIN_K) {
+        auto sums = moments.Get<float>()[(isA ? 0 : CGEMM_SB_COMPONENT_PLANES) * CGEMM_SB_FP32_LANES];
+        asc_vf_call<MicroPackHalf<true>>(
+            reinterpret_cast<__ubuf__ float*>(x.GetPhyAddr()), reinterpret_cast<__ubuf__ half*>(y.GetPhyAddr()),
+            reinterpret_cast<__ubuf__ int32_t*>(maxbuf.GetPhyAddr()), count,
+            (isA ? t.transA : t.transB) == ACLBLAS_OP_C, SIZE, reinterpret_cast<__ubuf__ float*>(sums.GetPhyAddr()));
+        (isA ? countA : countB) += count;
+    } else {
+        asc_vf_call<MicroPackHalf<false>>(
+            reinterpret_cast<__ubuf__ float*>(x.GetPhyAddr()), reinterpret_cast<__ubuf__ half*>(y.GetPhyAddr()),
+            reinterpret_cast<__ubuf__ int32_t*>(maxbuf.GetPhyAddr()), count,
+            (isA ? t.transA : t.transB) == ACLBLAS_OP_C, SIZE, static_cast<__ubuf__ float*>(nullptr));
+    }
+}
+
+template <uint32_t SIZE, uint32_t BUFFERS>
+__aicore__ inline void FastHalfPacker<SIZE, BUFFERS>::StoreTile(
+    AscendC::LocalTensor<half> y, AscendC::GlobalTensor<float> wg, const CgemmSbTiling& t, const PackGeometry& geometry,
+    bool isA, uint64_t batch, uint64_t off, uint32_t count)
+{
+    AscendC::GlobalTensor<half> dst;
+    dst.SetGlobalBuffer(reinterpret_cast<__gm__ half*>(wg.GetPhyAddr(isA ? 0 : t.bOffset)));
+    AscendC::DataCopyExtParams copyPlanes{
+        HALF_PACK_PLANES, count * CGEMM_SB_FP16_BYTES, (SIZE - count) / CGEMM_SB_FP16_PER_BLOCK,
+        static_cast<uint32_t>((isA ? t.aSize : t.bSize) * CGEMM_SB_FP32_BYTES - count * CGEMM_SB_FP16_BYTES), 0};
+    AscendC::DataCopyPad(dst[batch * geometry.matrix + off], y, copyPlanes);
+}
+
+template <uint32_t SIZE, uint32_t BUFFERS>
+__aicore__ inline void FastHalfPacker<SIZE, BUFFERS>::EnqueueTile(
+    AscendC::GlobalTensor<float> ag, AscendC::GlobalTensor<float> bg, const PackGeometry& ga, const PackGeometry& gb,
+    uint64_t task, uint64_t& batch, uint64_t& off, uint32_t& count)
+{
+    const bool isA = task < ga.total;
+    auto x = input.template AllocTensor<float>();
+    ReadPackTile(x, isA ? ag : bg, isA ? ga : gb, isA ? task : task - ga.total, batch, off, count);
+    input.EnQue(x);
+}
+
+template <uint32_t SIZE, uint32_t BUFFERS>
+__aicore__ inline void FastHalfPacker<SIZE, BUFFERS>::Run(
+    GM_ADDR a, GM_ADDR b, GM_ADDR workspace, CgemmSbTiling t, uint32_t core, uint32_t cores, AscendC::TPipe& pipe)
+{
+    Initialize(pipe, t);
     AscendC::GlobalTensor<float> ag;
     AscendC::GlobalTensor<float> bg;
     AscendC::GlobalTensor<float> wg;
@@ -205,37 +276,45 @@ __aicore__ inline void FastHalfPacker<SIZE>::Run(
     wg.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(workspace));
     auto ga = MakePackGeometry(t, true, SIZE);
     auto gb = MakePackGeometry(t, false, SIZE);
+    uint64_t batch = 0, off = 0;
+    uint32_t count = 0;
+    if constexpr (BUFFERS == 2) {
+        if (core < ga.total + gb.total) {
+            EnqueueTile(ag, bg, ga, gb, core, batch, off, count);
+        }
+    }
     for (uint64_t task = core; task < ga.total + gb.total; task += cores) {
         bool isA = task < ga.total;
         auto geometry = isA ? ga : gb;
-        uint64_t batch = 0;
-        uint64_t off = 0;
-        uint32_t count = 0;
-        auto x = input.AllocTensor<float>();
-        ReadPackTile(x, isA ? ag : bg, geometry, isA ? task : task - ga.total, batch, off, count);
-        input.EnQue(x);
-        x = input.DeQue<float>();
-        auto y = output.AllocTensor<half>();
-        asc_vf_call<MicroPackHalf>(
-            reinterpret_cast<__ubuf__ float*>(x.GetPhyAddr()), reinterpret_cast<__ubuf__ half*>(y.GetPhyAddr()),
-            reinterpret_cast<__ubuf__ int32_t*>(maxbuf.GetPhyAddr()), count,
-            (isA ? t.transA : t.transB) == ACLBLAS_OP_C, SIZE);
+        uint64_t nextBatch = 0, nextOff = 0;
+        uint32_t nextCount = 0;
+        if constexpr (BUFFERS == 1) {
+            EnqueueTile(ag, bg, ga, gb, task, batch, off, count);
+        } else {
+            const uint64_t next = task + cores;
+            if (next < ga.total + gb.total) {
+                EnqueueTile(ag, bg, ga, gb, next, nextBatch, nextOff, nextCount);
+            }
+        }
+        auto x = input.template DeQue<float>();
+        auto y = output.template AllocTensor<half>();
+        PackTile(x, y, t, isA, count);
         output.EnQue(y);
-        y = output.DeQue<half>();
-        AscendC::GlobalTensor<half> dst;
-        dst.SetGlobalBuffer(reinterpret_cast<__gm__ half*>(wg.GetPhyAddr(isA ? 0 : t.bOffset)));
-        AscendC::DataCopyExtParams copyPlanes{
-            HALF_PACK_PLANES, count * CGEMM_SB_FP16_BYTES, (SIZE - count) / CGEMM_SB_FP16_PER_BLOCK,
-            static_cast<uint32_t>((isA ? t.aSize : t.bSize) * CGEMM_SB_FP32_BYTES - count * CGEMM_SB_FP16_BYTES), 0};
-        AscendC::DataCopyPad(dst[batch * geometry.matrix + off], y, copyPlanes);
+        y = output.template DeQue<half>();
+        StoreTile(y, wg, t, geometry, isA, batch, off, count);
         output.FreeTensor(y);
         input.FreeTensor(x);
+        if constexpr (BUFFERS == 2) {
+            batch = nextBatch;
+            off = nextOff;
+            count = nextCount;
+        }
     }
     PublishFlag(wg, t, core);
 }
 
-template <uint32_t SIZE>
-__aicore__ inline void FastHalfPacker<SIZE>::PublishFlag(
+template <uint32_t SIZE, uint32_t BUFFERS>
+__aicore__ inline void FastHalfPacker<SIZE, BUFFERS>::PublishFlag(
     AscendC::GlobalTensor<float> wg, const CgemmSbTiling& t, uint32_t core)
 {
     auto maxbuf = scratch.Get<int32_t>();
@@ -247,6 +326,20 @@ __aicore__ inline void FastHalfPacker<SIZE>::PublishFlag(
     AscendC::Duplicate(
         flag, maxbuf.GetValue(CGEMM_SB_MAX_RESULT_OFFSET) >= CGEMM_SB_HALF_FALLBACK_BITS ? 1.0f : 0.0f,
         CGEMM_SB_FLAG_STRIDE);
+    if (t.k >= CGEMM_SB_ORDERED_MIN_K) {
+        AscendC::PipeBarrier<PIPE_ALL>();
+        for (uint32_t p = 0; p < CGEMM_SB_MOMENT_PLANES; ++p) {
+            auto result = scratch.Get<float>()[CGEMM_SB_MAX_RESULT_OFFSET];
+            AscendC::ReduceSum(
+                result, moments.Get<float>()[p * CGEMM_SB_FP32_LANES], scratch.Get<float>()[CGEMM_SB_MAX_TEMP_OFFSET],
+                CGEMM_SB_FP32_LANES);
+            AscendC::PipeBarrier<PIPE_ALL>();
+            flag.SetValue(p + CGEMM_SB_META_A_REAL, result.GetValue(0));
+        }
+        flag.SetValue(CGEMM_SB_META_A_COUNT, float(countA));
+        flag.SetValue(CGEMM_SB_META_B_COUNT, float(countB));
+        AscendC::PipeBarrier<PIPE_ALL>();
+    }
     flagq.EnQue(flag);
     flag = flagq.DeQue<float>();
     AscendC::DataCopy(wg[t.flagOffset + uint64_t(core) * CGEMM_SB_FLAG_STRIDE], flag, CGEMM_SB_FLAG_STRIDE);
@@ -535,10 +628,10 @@ __aicore__ inline void CgemmStridedBatchedVectorImpl::PackShortHalf(
     AscendC::LocalTensor<float> data, bool isA, uint64_t batch, uint64_t matrix, uint64_t offset, uint32_t count)
 {
     auto packed = halfOutput_.AllocTensor<half>();
-    asc_vf_call<MicroPackHalf>(
+    asc_vf_call<MicroPackHalf<false>>(
         reinterpret_cast<__ubuf__ float*>(data.GetPhyAddr()), reinterpret_cast<__ubuf__ half*>(packed.GetPhyAddr()),
         reinterpret_cast<__ubuf__ int32_t*>(calc_.Get<int32_t>().GetPhyAddr()), count,
-        (isA ? t_.transA : t_.transB) == ACLBLAS_OP_C, TILE);
+        (isA ? t_.transA : t_.transB) == ACLBLAS_OP_C, TILE, static_cast<__ubuf__ float*>(nullptr));
     halfOutput_.EnQue(packed);
     packed = halfOutput_.DeQue<half>();
     for (uint32_t p = 0; p < CGEMM_SB_HALF_PLANES; ++p) {
@@ -777,7 +870,7 @@ __aicore__ inline void CgemmSbRunExceptional(
 
 __aicore__ inline bool UseFastHalfPacker(const CgemmSbTiling& t, bool pack)
 {
-    return pack && t.compensatedHalf && t.k < SHORT_HALF_K_LIMIT && t.mp <= FAST_TILE_ELEMENTS &&
+    return pack && t.compensatedHalf && (t.k < SHORT_HALF_K_LIMIT || t.cacheHalfInputs) && t.mp <= FAST_TILE_ELEMENTS &&
            t.np <= FAST_TILE_ELEMENTS;
 }
 
@@ -802,6 +895,11 @@ __aicore__ inline void CgemmSbRunVector(GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR
     }
     AscendC::TPipe pipe;
     if (UseFastHalfPacker(t, pack)) {
+        if (t.cacheHalfInputs) {
+            FastHalfPacker<CACHED_HALF_TILE_ELEMENTS, CACHED_HALF_TILE_SLOTS> op;
+            op.Run(a, b, ws, t, core, cores, pipe);
+            return;
+        }
         if (t.mp == FAST_CUBE_DIM && t.np == FAST_CUBE_DIM && t.kp == FAST_CUBE_DIM) {
             FastHalfPacker<FAST_TILE_ELEMENTS> op;
             op.Run(a, b, ws, t, core, cores, pipe);
@@ -1048,6 +1146,22 @@ __aicore__ inline void LoadNormalizeInput(
     DataCopyPad(in, input[2 * offset], copy, pad);
 }
 
+__aicore__ inline void TransformNormalizedTile(
+    AscendC::GlobalTensor<float> output, AscendC::LocalTensor<float> in, AscendC::LocalTensor<float> out,
+    uint32_t trans, uint32_t batch, uint32_t row0, uint32_t col0, uint32_t rows, uint32_t cols)
+{
+    using namespace AscendC;
+    SetFlag<HardEvent::MTE2_V>(0);
+    WaitFlag<HardEvent::MTE2_V>(0);
+    asc_vf_call<NormalizeTile>(
+        reinterpret_cast<__ubuf__ float*>(in.GetPhyAddr()), reinterpret_cast<__ubuf__ float*>(out.GetPhyAddr()), trans);
+    SetFlag<HardEvent::V_MTE3>(0);
+    WaitFlag<HardEvent::V_MTE3>(0);
+    StoreNormalizedTile(output, out, batch, row0, col0, rows, cols);
+    SetFlag<HardEvent::MTE3_V>(0);
+    WaitFlag<HardEvent::MTE3_V>(0);
+}
+
 __aicore__ inline void NormalizeMatrix(GM_ADDR source, GM_ADDR destination, const CgemmSbTiling& t, bool left)
 {
     using namespace AscendC;
@@ -1089,16 +1203,7 @@ __aicore__ inline void NormalizeMatrix(GM_ADDR source, GM_ADDR destination, cons
                              (trans == ACLBLAS_OP_N ? int64_t(col0) * ld + row0 : int64_t(row0) * ld + col0);
             LoadNormalizeInput(in, input, offset, physicalRows, physicalCols, ld);
         }
-        SetFlag<HardEvent::MTE2_V>(0);
-        WaitFlag<HardEvent::MTE2_V>(0);
-        asc_vf_call<NormalizeTile>(
-            reinterpret_cast<__ubuf__ float*>(in.GetPhyAddr()), reinterpret_cast<__ubuf__ float*>(out.GetPhyAddr()),
-            trans);
-        SetFlag<HardEvent::V_MTE3>(0);
-        WaitFlag<HardEvent::V_MTE3>(0);
-        StoreNormalizedTile(output, out, batch, row0, col0, rows, cols);
-        SetFlag<HardEvent::MTE3_V>(0);
-        WaitFlag<HardEvent::MTE3_V>(0);
+        TransformNormalizedTile(output, in, out, trans, batch, row0, col0, rows, cols);
     }
 }
 } // namespace
