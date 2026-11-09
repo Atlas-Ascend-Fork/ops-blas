@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <vector>
 #include "acl/acl.h"
 #include "log/log.h"
@@ -21,8 +22,7 @@
 
 // ---- kernel entry (local declaration, replacing aclblas_kernel_do.h) ----
 void gemm_grouped_batched_kernel_do(
-    uint8_t* tilingGm, uint8_t* groupParamsGm,
-    uint8_t* aPtrArrayGm, uint8_t* bPtrArrayGm, uint8_t* cPtrArrayGm,
+    uint8_t* tilingGm, uint8_t* groupParamsGm, uint8_t* aPtrArrayGm, uint8_t* bPtrArrayGm, uint8_t* cPtrArrayGm,
     uint32_t numBlocks, void* stream);
 
 constexpr uint32_t K_TILE_MAX = 256;
@@ -30,10 +30,7 @@ constexpr uint32_t FP32_ALIGN = GEMM_GROUPED_FP32_ALIGN;
 constexpr uint32_t UB_BYTES = GEMM_GROUPED_UB_SIZE;
 constexpr uint32_t BUF_ALIGN = 256u;
 
-static uint32_t MinGemmTileBufSize()
-{
-    return CeilAlign<uint32_t>(FP32_ALIGN * FP32_ALIGN * sizeof(float), BUF_ALIGN);
-}
+static uint32_t MinGemmTileBufSize() { return CeilAlign<uint32_t>(FP32_ALIGN * FP32_ALIGN * sizeof(float), BUF_ALIGN); }
 
 static uint32_t CeilAlignTileMNBuf(uint32_t tM_a, uint32_t tN_a)
 {
@@ -41,8 +38,7 @@ static uint32_t CeilAlignTileMNBuf(uint32_t tM_a, uint32_t tN_a)
 }
 
 static void AssignGroupParamBufSizes(
-    GroupParam& gp, uint32_t szA, uint32_t szB, uint32_t szC,
-    uint32_t szCIn, uint32_t szMul, uint32_t szVec)
+    GroupParam& gp, uint32_t szA, uint32_t szB, uint32_t szC, uint32_t szCIn, uint32_t szMul, uint32_t szVec)
 {
     gp.bufSizeA = szA;
     gp.bufSizeB = szB;
@@ -52,8 +48,7 @@ static void AssignGroupParamBufSizes(
     gp.bufSizeVecTmp = szVec;
 }
 
-static void SetGroupParamTiles(
-    GroupParam& gp, uint32_t tileM, uint32_t tileK, uint32_t tileN)
+static void SetGroupParamTiles(GroupParam& gp, uint32_t tileM, uint32_t tileK, uint32_t tileN)
 {
     gp.tileM = tileM;
     gp.tileK = tileK;
@@ -67,17 +62,16 @@ static void SetInactiveGroupParamTilesAndBufs(GroupParam& gp)
 {
     SetGroupParamTiles(gp, FP32_ALIGN, FP32_ALIGN, FP32_ALIGN);
     const uint32_t minBuf = MinGemmTileBufSize();
-    AssignGroupParamBufSizes(gp, minBuf, minBuf, minBuf, minBuf, minBuf,
-        CeilAlign<uint32_t>(FP32_ALIGN * sizeof(float), BUF_ALIGN));
+    AssignGroupParamBufSizes(
+        gp, minBuf, minBuf, minBuf, minBuf, minBuf, CeilAlign<uint32_t>(FP32_ALIGN * sizeof(float), BUF_ALIGN));
 }
 
-static aclblasStatus_t ValidateOneGroupTranspose(
-    int g, aclblasOperation_t trans, const char* transName)
+static aclblasStatus_t ValidateOneGroupTranspose(int g, aclblasOperation_t trans, const char* transName)
 {
     if (trans != ACLBLAS_OP_N && trans != ACLBLAS_OP_T) {
-        OP_LOGE("aclblasGemmGroupedBatched",
-                "trans must be OP_N(111) or OP_T(112), got %s=%d, group=%d",
-                transName, static_cast<int>(trans), g);
+        OP_LOGE(
+            "aclblasGemmGroupedBatched", "trans must be OP_N(111) or OP_T(112), got %s=%d, group=%d", transName,
+            static_cast<int>(trans), g);
         return ACLBLAS_STATUS_INVALID_ENUM;
     }
     return ACLBLAS_STATUS_SUCCESS;
@@ -95,8 +89,7 @@ static aclblasStatus_t CopyScratchHostToDevice(
 }
 
 template <typename FitFn>
-static void SearchTileSizesInUb(
-    uint32_t mVal, uint32_t nVal, FitFn&& fits, uint32_t& bestTM, uint32_t& bestTN)
+static void SearchTileSizesInUb(uint32_t mVal, uint32_t nVal, FitFn&& fits, uint32_t& bestTM, uint32_t& bestTN)
 {
     bestTM = 0;
     bestTN = 0;
@@ -153,14 +146,10 @@ static GemmGroupedScratchLayout ComputeScratchLayout(size_t groupParamCount, uin
 }
 
 static aclblasStatus_t ValidateCommonParams(
-    aclblasHandle_t handle, int groupCount,
-    const aclblasOperation_t* transaArray, const aclblasOperation_t* transbArray,
-    const int* mArray, const int* nArray, const int* kArray,
-    const void* alphaArray, const void* Aarray,
-    const int* ldaArray, const void* Barray,
-    const int* ldbArray, const void* betaArray,
-    const void* Carray, const int* ldcArray,
-    const int* groupSizeArray)
+    aclblasHandle_t handle, int groupCount, const aclblasOperation_t* transaArray,
+    const aclblasOperation_t* transbArray, const int* mArray, const int* nArray, const int* kArray,
+    const void* alphaArray, const void* Aarray, const int* ldaArray, const void* Barray, const int* ldbArray,
+    const void* betaArray, const void* Carray, const int* ldcArray, const int* groupSizeArray)
 {
     if (handle == nullptr) {
         OP_LOGE("aclblasGemmGroupedBatched", "handle is nullptr");
@@ -200,24 +189,20 @@ static aclblasStatus_t ValidateCommonParams(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static aclblasStatus_t ValidateGroupDimensions(
-    int g, int m, int n, int k, int groupSize)
+static aclblasStatus_t ValidateGroupDimensions(int g, int m, int n, int k, int groupSize)
 {
     if (m < 0 || n < 0 || k < 0) {
-        OP_LOGE("aclblasGemmGroupedBatched",
-                "m/n/k must be >= 0, got group[%d]: m=%d n=%d k=%d", g, m, n, k);
+        OP_LOGE("aclblasGemmGroupedBatched", "m/n/k must be >= 0, got group[%d]: m=%d n=%d k=%d", g, m, n, k);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (groupSize < 0) {
-        OP_LOGE("aclblasGemmGroupedBatched",
-                "groupSize must be >= 0, got group[%d]: groupSize=%d", g, groupSize);
+        OP_LOGE("aclblasGemmGroupedBatched", "groupSize must be >= 0, got group[%d]: groupSize=%d", g, groupSize);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static aclblasStatus_t ValidateGroupTranspose(
-    int g, aclblasOperation_t transa, aclblasOperation_t transb)
+static aclblasStatus_t ValidateGroupTranspose(int g, aclblasOperation_t transa, aclblasOperation_t transb)
 {
     aclblasStatus_t ret = ValidateOneGroupTranspose(g, transa, "transa");
     if (ret != ACLBLAS_STATUS_SUCCESS) {
@@ -227,8 +212,7 @@ static aclblasStatus_t ValidateGroupTranspose(
 }
 
 static aclblasStatus_t ValidateGroupLeadingDims(
-    int g, aclblasOperation_t transa, aclblasOperation_t transb,
-    int m, int n, int k, int lda, int ldb, int ldc)
+    int g, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k, int lda, int ldb, int ldc)
 {
     // For transpose operations: op(A) is k×m, so A is k×m column-major with lda≥k
     // For trans=N: op(A) is m×k, so A is m×k column-major with lda≥m
@@ -237,34 +221,30 @@ static aclblasStatus_t ValidateGroupLeadingDims(
     int ldaMin = transaIsTranspose ? std::max(1, k) : std::max(1, m);
     int ldbMin = transbIsTranspose ? std::max(1, n) : std::max(1, k);
     if (lda < ldaMin) {
-        OP_LOGE("aclblasGemmGroupedBatched",
-                "lda must be >= %d, got lda=%d, group=%d", ldaMin, lda, g);
+        OP_LOGE("aclblasGemmGroupedBatched", "lda must be >= %d, got lda=%d, group=%d", ldaMin, lda, g);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (ldb < ldbMin) {
-        OP_LOGE("aclblasGemmGroupedBatched",
-                "ldb must be >= %d, got ldb=%d, group=%d", ldbMin, ldb, g);
+        OP_LOGE("aclblasGemmGroupedBatched", "ldb must be >= %d, got ldb=%d, group=%d", ldbMin, ldb, g);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (ldc < std::max(1, m)) {
-        OP_LOGE("aclblasGemmGroupedBatched",
-                "ldc must be >= max(1, m), got ldc=%d, m=%d, group=%d", ldc, m, g);
+        OP_LOGE("aclblasGemmGroupedBatched", "ldc must be >= max(1, m), got ldc=%d, m=%d, group=%d", ldc, m, g);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
 static aclblasStatus_t ValidateGroupParams(
-    int groupCount, const aclblasOperation_t* transaArray,
-    const aclblasOperation_t* transbArray,
-    const int* mArray, const int* nArray, const int* kArray,
-    const int* ldaArray, const int* ldbArray, const int* ldcArray,
-    const int* groupSizeArray, int& totalBatchCount)
+    int groupCount, const aclblasOperation_t* transaArray, const aclblasOperation_t* transbArray, const int* mArray,
+    const int* nArray, const int* kArray, const int* ldaArray, const int* ldbArray, const int* ldcArray,
+    const int* groupSizeArray, int64_t& totalBatchCount)
 {
-    totalBatchCount = 0;
+    // issue #870: 总批次以 uint64 累加并封顶 uint32 可承载上限（对齐 Ex 版 AddWithinUint32），
+    // 防止 int 累加溢出为负后经 size_t 无符号放大触发 resize 异常、进程终止
+    uint64_t totalBatches = 0;
     for (int g = 0; g < groupCount; g++) {
-        aclblasStatus_t ret = ValidateGroupDimensions(
-            g, mArray[g], nArray[g], kArray[g], groupSizeArray[g]);
+        aclblasStatus_t ret = ValidateGroupDimensions(g, mArray[g], nArray[g], kArray[g], groupSizeArray[g]);
         if (ret != ACLBLAS_STATUS_SUCCESS) {
             return ret;
         }
@@ -276,27 +256,32 @@ static aclblasStatus_t ValidateGroupParams(
             return ret;
         }
         ret = ValidateGroupLeadingDims(
-            g, transaArray[g], transbArray[g],
-            mArray[g], nArray[g], kArray[g],
-            ldaArray[g], ldbArray[g], ldcArray[g]);
+            g, transaArray[g], transbArray[g], mArray[g], nArray[g], kArray[g], ldaArray[g], ldbArray[g], ldcArray[g]);
         if (ret != ACLBLAS_STATUS_SUCCESS) {
             return ret;
         }
-        totalBatchCount += groupSizeArray[g];
+        totalBatches += static_cast<uint64_t>(groupSizeArray[g]);
+        if (totalBatches > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
+            OP_LOGE(
+                "aclblasGemmGroupedBatched", "total batch count exceeds uint32 range: %llu",
+                static_cast<unsigned long long>(totalBatches));
+            return ACLBLAS_STATUS_INVALID_VALUE;
+        }
     }
+    totalBatchCount = static_cast<int64_t>(totalBatches);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static uint32_t ComputeBufSizes(uint32_t tM, uint32_t tK, uint32_t tN,
-                                 uint32_t& szA, uint32_t& szB, uint32_t& szC,
-                                 uint32_t& szCIn, uint32_t& szMul, uint32_t& szVec)
+static uint32_t ComputeBufSizes(
+    uint32_t tM, uint32_t tK, uint32_t tN, uint32_t& szA, uint32_t& szB, uint32_t& szC, uint32_t& szCIn,
+    uint32_t& szMul, uint32_t& szVec)
 {
     uint32_t tM_a = CeilAlign<uint32_t>(tM, FP32_ALIGN);
     uint32_t tK_a = CeilAlign<uint32_t>(tK, FP32_ALIGN);
     uint32_t tN_a = CeilAlign<uint32_t>(tN, FP32_ALIGN);
-    szA   = CeilAlign<uint32_t>(tM_a * tK_a * sizeof(float), BUF_ALIGN);
-    szB   = CeilAlign<uint32_t>(tK_a * tN_a * sizeof(float), BUF_ALIGN);
-    szC   = CeilAlignTileMNBuf(tM_a, tN_a);
+    szA = CeilAlign<uint32_t>(tM_a * tK_a * sizeof(float), BUF_ALIGN);
+    szB = CeilAlign<uint32_t>(tK_a * tN_a * sizeof(float), BUF_ALIGN);
+    szC = CeilAlignTileMNBuf(tM_a, tN_a);
     szCIn = CeilAlignTileMNBuf(tM_a, tN_a);
     szMul = CeilAlignTileMNBuf(tM_a, tN_a);
     szVec = CeilAlign<uint32_t>(std::max(tM_a, tK_a) * sizeof(float), BUF_ALIGN);
@@ -304,12 +289,9 @@ static uint32_t ComputeBufSizes(uint32_t tM, uint32_t tK, uint32_t tN,
 }
 
 static GroupParam InitGroupParamCommonFields(
-    int g, const aclblasOperation_t* transaArray,
-    const aclblasOperation_t* transbArray,
-    const int* mArray, const int* nArray, const int* kArray,
-    const float* alphaArray, const float* betaArray,
-    const int* ldaArray, const int* ldbArray, const int* ldcArray,
-    const int* groupSizeArray, int groupOffset)
+    int g, const aclblasOperation_t* transaArray, const aclblasOperation_t* transbArray, const int* mArray,
+    const int* nArray, const int* kArray, const float* alphaArray, const float* betaArray, const int* ldaArray,
+    const int* ldbArray, const int* ldcArray, const int* groupSizeArray, int groupOffset)
 {
     GroupParam gp = {};
     gp.transa = (transaArray[g] == ACLBLAS_OP_T) ? 1 : 0;
@@ -332,13 +314,16 @@ static GroupParam InitGroupParamCommonFields(
 static void SearchBetaOnlyTileSizes(uint32_t mVal, uint32_t nVal, uint32_t& bestTM, uint32_t& bestTN)
 {
     const uint32_t minBuf = MinGemmTileBufSize();
-    SearchTileSizesInUb(mVal, nVal, [&](uint32_t tM, uint32_t tN) {
-        uint32_t tM_a = CeilAlign<uint32_t>(tM, FP32_ALIGN);
-        uint32_t tN_a = CeilAlign<uint32_t>(tN, FP32_ALIGN);
-        uint32_t mnBuf = CeilAlignTileMNBuf(tM_a, tN_a);
-        uint32_t szVec = CeilAlign<uint32_t>(tM_a * sizeof(float), BUF_ALIGN);
-        return minBuf + minBuf + mnBuf + mnBuf + mnBuf + szVec <= UB_BYTES;
-    }, bestTM, bestTN);
+    SearchTileSizesInUb(
+        mVal, nVal,
+        [&](uint32_t tM, uint32_t tN) {
+            uint32_t tM_a = CeilAlign<uint32_t>(tM, FP32_ALIGN);
+            uint32_t tN_a = CeilAlign<uint32_t>(tN, FP32_ALIGN);
+            uint32_t mnBuf = CeilAlignTileMNBuf(tM_a, tN_a);
+            uint32_t szVec = CeilAlign<uint32_t>(tM_a * sizeof(float), BUF_ALIGN);
+            return minBuf + minBuf + mnBuf + mnBuf + mnBuf + szVec <= UB_BYTES;
+        },
+        bestTM, bestTN);
 }
 
 static void ConfigureBetaOnlyGroupParam(GroupParam& gp, uint32_t mVal, uint32_t nVal)
@@ -360,24 +345,26 @@ static void ConfigureBetaOnlyGroupParam(GroupParam& gp, uint32_t mVal, uint32_t 
 }
 
 static void SearchGemmTileSizes(
-    uint32_t mVal, uint32_t nVal, uint32_t kVal,
-    uint32_t& bestTM, uint32_t& bestTK, uint32_t& bestTN)
+    uint32_t mVal, uint32_t nVal, uint32_t kVal, uint32_t& bestTM, uint32_t& bestTK, uint32_t& bestTN)
 {
     bestTK = 0;
-    SearchTileSizesInUb(mVal, nVal, [&](uint32_t tM, uint32_t tN) {
-        uint32_t tK = CeilAlign<uint32_t>(std::min(kVal, K_TILE_MAX), FP32_ALIGN);
-        uint32_t szA = 0;
-        uint32_t szB = 0;
-        uint32_t szC = 0;
-        uint32_t szCIn = 0;
-        uint32_t szMul = 0;
-        uint32_t szVec = 0;
-        if (ComputeBufSizes(tM, tK, tN, szA, szB, szC, szCIn, szMul, szVec) <= UB_BYTES) {
-            bestTK = tK;
-            return true;
-        }
-        return false;
-    }, bestTM, bestTN);
+    SearchTileSizesInUb(
+        mVal, nVal,
+        [&](uint32_t tM, uint32_t tN) {
+            uint32_t tK = CeilAlign<uint32_t>(std::min(kVal, K_TILE_MAX), FP32_ALIGN);
+            uint32_t szA = 0;
+            uint32_t szB = 0;
+            uint32_t szC = 0;
+            uint32_t szCIn = 0;
+            uint32_t szMul = 0;
+            uint32_t szVec = 0;
+            if (ComputeBufSizes(tM, tK, tN, szA, szB, szC, szCIn, szMul, szVec) <= UB_BYTES) {
+                bestTK = tK;
+                return true;
+            }
+            return false;
+        },
+        bestTM, bestTN);
     if (bestTK == 0) {
         bestTK = FP32_ALIGN;
     }
@@ -389,8 +376,7 @@ static void ConfigureGemmGroupParam(GroupParam& gp, uint32_t mVal, uint32_t nVal
     uint32_t bestTK = 0;
     uint32_t bestTN = 0;
     SearchGemmTileSizes(mVal, nVal, kVal, bestTM, bestTK, bestTN);
-    SetGroupParamTiles(
-        gp, std::min(bestTM, mVal), std::min(bestTK, kVal), std::min(bestTN, nVal));
+    SetGroupParamTiles(gp, std::min(bestTM, mVal), std::min(bestTK, kVal), std::min(bestTN, nVal));
     uint32_t szA = 0;
     uint32_t szB = 0;
     uint32_t szC = 0;
@@ -402,16 +388,12 @@ static void ConfigureGemmGroupParam(GroupParam& gp, uint32_t mVal, uint32_t nVal
 }
 
 static GroupParam BuildGroupParam(
-    int g, const aclblasOperation_t* transaArray,
-    const aclblasOperation_t* transbArray,
-    const int* mArray, const int* nArray, const int* kArray,
-    const float* alphaArray, const float* betaArray,
-    const int* ldaArray, const int* ldbArray, const int* ldcArray,
-    const int* groupSizeArray, int groupOffset, bool inactive)
+    int g, const aclblasOperation_t* transaArray, const aclblasOperation_t* transbArray, const int* mArray,
+    const int* nArray, const int* kArray, const float* alphaArray, const float* betaArray, const int* ldaArray,
+    const int* ldbArray, const int* ldcArray, const int* groupSizeArray, int groupOffset, bool inactive)
 {
     GroupParam gp = InitGroupParamCommonFields(
-        g, transaArray, transbArray, mArray, nArray, kArray,
-        alphaArray, betaArray, ldaArray, ldbArray, ldcArray,
+        g, transaArray, transbArray, mArray, nArray, kArray, alphaArray, betaArray, ldaArray, ldbArray, ldcArray,
         groupSizeArray, groupOffset);
     if (inactive) {
         SetInactiveGroupParamTilesAndBufs(gp);
@@ -446,30 +428,22 @@ struct GemmGroupedHostPtrArrays {
 };
 
 static aclblasStatus_t ValidateGemmGroupedBatchedInputs(
-    aclblasHandle_t handle, int groupCount,
-    const aclblasOperation_t* transaArray, const aclblasOperation_t* transbArray,
-    const int* mArray, const int* nArray, const int* kArray,
-    const void* alphaArray, const void* Aarray,
-    const int* ldaArray, const void* Barray,
-    const int* ldbArray, const void* betaArray,
-    const void* Carray, const int* ldcArray,
-    const int* groupSizeArray, int& totalBatchCount)
+    aclblasHandle_t handle, int groupCount, const aclblasOperation_t* transaArray,
+    const aclblasOperation_t* transbArray, const int* mArray, const int* nArray, const int* kArray,
+    const void* alphaArray, const void* Aarray, const int* ldaArray, const void* Barray, const int* ldbArray,
+    const void* betaArray, const void* Carray, const int* ldcArray, const int* groupSizeArray, int64_t& totalBatchCount)
 {
     aclblasStatus_t ret = ValidateCommonParams(
-        handle, groupCount, transaArray, transbArray,
-        mArray, nArray, kArray, alphaArray, Aarray,
-        ldaArray, Barray, ldbArray, betaArray,
-        Carray, ldcArray, groupSizeArray);
+        handle, groupCount, transaArray, transbArray, mArray, nArray, kArray, alphaArray, Aarray, ldaArray, Barray,
+        ldbArray, betaArray, Carray, ldcArray, groupSizeArray);
     if (ret != ACLBLAS_STATUS_SUCCESS || groupCount == 0) {
         return ret;
     }
 
     totalBatchCount = 0;
     ret = ValidateGroupParams(
-        groupCount, transaArray, transbArray,
-        mArray, nArray, kArray,
-        ldaArray, ldbArray, ldcArray,
-        groupSizeArray, totalBatchCount);
+        groupCount, transaArray, transbArray, mArray, nArray, kArray, ldaArray, ldbArray, ldcArray, groupSizeArray,
+        totalBatchCount);
     if (ret != ACLBLAS_STATUS_SUCCESS || totalBatchCount == 0) {
         return ret;
     }
@@ -477,12 +451,9 @@ static aclblasStatus_t ValidateGemmGroupedBatchedInputs(
 }
 
 static std::vector<GroupParam> BuildAllGroupParams(
-    int groupCount,
-    const aclblasOperation_t* transaArray, const aclblasOperation_t* transbArray,
-    const int* mArray, const int* nArray, const int* kArray,
-    const float* alphaArray, const float* betaArray,
-    const int* ldaArray, const int* ldbArray, const int* ldcArray,
-    const int* groupSizeArray)
+    int groupCount, const aclblasOperation_t* transaArray, const aclblasOperation_t* transbArray, const int* mArray,
+    const int* nArray, const int* kArray, const float* alphaArray, const float* betaArray, const int* ldaArray,
+    const int* ldbArray, const int* ldcArray, const int* groupSizeArray)
 {
     std::vector<GroupParam> groupParams;
     groupParams.reserve(groupCount);
@@ -490,8 +461,7 @@ static std::vector<GroupParam> BuildAllGroupParams(
     for (int g = 0; g < groupCount; g++) {
         const bool inactive = (groupSizeArray[g] == 0 || mArray[g] == 0 || nArray[g] == 0);
         groupParams.push_back(BuildGroupParam(
-            g, transaArray, transbArray, mArray, nArray, kArray,
-            alphaArray, betaArray, ldaArray, ldbArray, ldcArray,
+            g, transaArray, transbArray, mArray, nArray, kArray, alphaArray, betaArray, ldaArray, ldbArray, ldcArray,
             groupSizeArray, batchSlotOffset, inactive));
         batchSlotOffset += groupSizeArray[g];
     }
@@ -514,14 +484,13 @@ static GemmGroupedMaxBufSizes ComputeMaxGroupBufSizes(const std::vector<GroupPar
 
 template <typename T>
 static GemmGroupedHostPtrArrays FlattenHostPtrArrays(
-    int totalBatchCount,
-    const T* const* Aarray, const T* const* Barray, T* const* Carray)
+    int64_t totalBatchCount, const T* const* Aarray, const T* const* Barray, T* const* Carray)
 {
     GemmGroupedHostPtrArrays hostPtrs;
     hostPtrs.aPtr.resize(static_cast<size_t>(totalBatchCount));
     hostPtrs.bPtr.resize(static_cast<size_t>(totalBatchCount));
     hostPtrs.cPtr.resize(static_cast<size_t>(totalBatchCount));
-    for (int b = 0; b < totalBatchCount; b++) {
+    for (int64_t b = 0; b < totalBatchCount; b++) {
         hostPtrs.aPtr[b] = reinterpret_cast<uint64_t>(const_cast<T*>(Aarray[b]));
         hostPtrs.bPtr[b] = reinterpret_cast<uint64_t>(const_cast<T*>(Barray[b]));
         hostPtrs.cPtr[b] = reinterpret_cast<uint64_t>(Carray[b]);
@@ -529,8 +498,7 @@ static GemmGroupedHostPtrArrays FlattenHostPtrArrays(
     return hostPtrs;
 }
 
-static aclblasStatus_t ComputeGemmGroupedCoreDistribution(
-    uint32_t totalB, GemmGroupedCoreDistribution& cores)
+static aclblasStatus_t ComputeGemmGroupedCoreDistribution(uint32_t totalB, GemmGroupedCoreDistribution& cores)
 {
     cores.coreNum = GetAivCoreCount();
     if (cores.coreNum == 0) {
@@ -544,8 +512,8 @@ static aclblasStatus_t ComputeGemmGroupedCoreDistribution(
 }
 
 static GemmGroupedBatchedTilingData BuildGemmGroupedTilingData(
-    int groupCount, uint32_t totalB, uint32_t dtype,
-    const GemmGroupedCoreDistribution& cores, const GemmGroupedMaxBufSizes& maxBuf)
+    int groupCount, uint32_t totalB, uint32_t dtype, const GemmGroupedCoreDistribution& cores,
+    const GemmGroupedMaxBufSizes& maxBuf)
 {
     GemmGroupedBatchedTilingData tiling = {};
     tiling.groupCount = static_cast<uint32_t>(groupCount);
@@ -562,13 +530,13 @@ static GemmGroupedBatchedTilingData BuildGemmGroupedTilingData(
     tiling.maxBufSizeMulTmp = maxBuf.maxBufSizeMulTmp;
     tiling.maxBufSizeVecTmp = maxBuf.maxBufSizeVecTmp;
 
-    OP_LOGD("aclblasGemmGroupedBatched",
-            "tiling: groupCount=%u totalBatch=%u dtype=%u "
-            "coreNum=%u usedCoreNum=%u batchPerCore=%u batchTail=%u",
-            tiling.groupCount, tiling.totalBatchCount, tiling.dtype,
-            tiling.coreNum, tiling.usedCoreNum, tiling.batchPerCore, tiling.batchTail);
-    OP_LOGI("aclblasGemmGroupedBatched",
-            "launching kernel: blocks=%u, cores=%u", cores.usedCoreNum, cores.coreNum);
+    OP_LOGD(
+        "aclblasGemmGroupedBatched",
+        "tiling: groupCount=%u totalBatch=%u dtype=%u "
+        "coreNum=%u usedCoreNum=%u batchPerCore=%u batchTail=%u",
+        tiling.groupCount, tiling.totalBatchCount, tiling.dtype, tiling.coreNum, tiling.usedCoreNum,
+        tiling.batchPerCore, tiling.batchTail);
+    OP_LOGI("aclblasGemmGroupedBatched", "launching kernel: blocks=%u, cores=%u", cores.usedCoreNum, cores.coreNum);
     return tiling;
 }
 
@@ -582,50 +550,46 @@ struct GemmGroupedScratchDevicePtrs {
 
 static aclblasStatus_t CopyGemmGroupedScratchToDevice(
     const GemmGroupedScratchDevicePtrs& devPtrs, GemmGroupedBatchedTilingData& tiling,
-    const std::vector<GroupParam>& groupParams, uint32_t totalB,
-    const GemmGroupedHostPtrArrays& hostPtrs)
+    const std::vector<GroupParam>& groupParams, uint32_t totalB, const GemmGroupedHostPtrArrays& hostPtrs)
 {
     aclblasStatus_t ret = CopyScratchHostToDevice(
-        devPtrs.devTiling, sizeof(GemmGroupedBatchedTilingData),
-        &tiling, sizeof(GemmGroupedBatchedTilingData), "tiling");
+        devPtrs.devTiling, sizeof(GemmGroupedBatchedTilingData), &tiling, sizeof(GemmGroupedBatchedTilingData),
+        "tiling");
     if (ret != ACLBLAS_STATUS_SUCCESS) {
         return ret;
     }
     ret = CopyScratchHostToDevice(
-        devPtrs.devGroupParams, groupParams.size() * sizeof(GroupParam),
-        groupParams.data(), groupParams.size() * sizeof(GroupParam), "groupParams");
+        devPtrs.devGroupParams, groupParams.size() * sizeof(GroupParam), groupParams.data(),
+        groupParams.size() * sizeof(GroupParam), "groupParams");
     if (ret != ACLBLAS_STATUS_SUCCESS) {
         return ret;
     }
     ret = CopyScratchHostToDevice(
-        devPtrs.devAPtrArray, totalB * sizeof(uint64_t),
-        hostPtrs.aPtr.data(), totalB * sizeof(uint64_t), "aPtrArray");
+        devPtrs.devAPtrArray, totalB * sizeof(uint64_t), hostPtrs.aPtr.data(), totalB * sizeof(uint64_t), "aPtrArray");
     if (ret != ACLBLAS_STATUS_SUCCESS) {
         return ret;
     }
     ret = CopyScratchHostToDevice(
-        devPtrs.devBPtrArray, totalB * sizeof(uint64_t),
-        hostPtrs.bPtr.data(), totalB * sizeof(uint64_t), "bPtrArray");
+        devPtrs.devBPtrArray, totalB * sizeof(uint64_t), hostPtrs.bPtr.data(), totalB * sizeof(uint64_t), "bPtrArray");
     if (ret != ACLBLAS_STATUS_SUCCESS) {
         return ret;
     }
     return CopyScratchHostToDevice(
-        devPtrs.devCPtrArray, totalB * sizeof(uint64_t),
-        hostPtrs.cPtr.data(), totalB * sizeof(uint64_t), "cPtrArray");
+        devPtrs.devCPtrArray, totalB * sizeof(uint64_t), hostPtrs.cPtr.data(), totalB * sizeof(uint64_t), "cPtrArray");
 }
 
 static aclblasStatus_t UploadScratchAndLaunchKernel(
-    _aclblas_handle* h, GemmGroupedBatchedTilingData& tiling,
-    const std::vector<GroupParam>& groupParams, uint32_t totalB,
-    const GemmGroupedHostPtrArrays& hostPtrs, uint32_t usedCoreNum)
+    _aclblas_handle* h, GemmGroupedBatchedTilingData& tiling, const std::vector<GroupParam>& groupParams,
+    uint32_t totalB, const GemmGroupedHostPtrArrays& hostPtrs, uint32_t usedCoreNum)
 {
     GemmGroupedScratchLayout scratch = ComputeScratchLayout(groupParams.size(), totalB);
     size_t availableBytes = GetEffectiveWorkspaceSize(h);
     if (scratch.totalBytes > availableBytes) {
-        OP_LOGE("aclblasGemmGroupedBatched",
-                "scratch required %zu bytes, but only %zu bytes available. "
-                "Please call aclblasSetWorkspace with size >= %zu bytes",
-                scratch.totalBytes, availableBytes, scratch.totalBytes);
+        OP_LOGE(
+            "aclblasGemmGroupedBatched",
+            "scratch required %zu bytes, but only %zu bytes available. "
+            "Please call aclblasSetWorkspace with size >= %zu bytes",
+            scratch.totalBytes, availableBytes, scratch.totalBytes);
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
 
@@ -642,71 +606,64 @@ static aclblasStatus_t UploadScratchAndLaunchKernel(
     tiling.bPtrArrayGmAddr = reinterpret_cast<uint64_t>(devPtrs.devBPtrArray);
     tiling.cPtrArrayGmAddr = reinterpret_cast<uint64_t>(devPtrs.devCPtrArray);
 
-    aclblasStatus_t ret = CopyGemmGroupedScratchToDevice(
-        devPtrs, tiling, groupParams, totalB, hostPtrs);
+    aclblasStatus_t ret = CopyGemmGroupedScratchToDevice(devPtrs, tiling, groupParams, totalB, hostPtrs);
     if (ret != ACLBLAS_STATUS_SUCCESS) {
         return ret;
     }
 
     gemm_grouped_batched_kernel_do(
-        devPtrs.devTiling, devPtrs.devGroupParams, devPtrs.devAPtrArray,
-        devPtrs.devBPtrArray, devPtrs.devCPtrArray, usedCoreNum, h->stream);
+        devPtrs.devTiling, devPtrs.devGroupParams, devPtrs.devAPtrArray, devPtrs.devBPtrArray, devPtrs.devCPtrArray,
+        usedCoreNum, h->stream);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
 template <typename T>
 static aclblasStatus_t GemmGroupedBatchedImpl(
-    aclblasHandle_t handle, int groupCount,
-    const aclblasOperation_t* transaArray, const aclblasOperation_t* transbArray,
-    const int* mArray, const int* nArray, const int* kArray,
-    const T* alphaArray, const T* const* Aarray, const int* ldaArray,
-    const T* const* Barray, const int* ldbArray,
-    const T* betaArray, T* const* Carray, const int* ldcArray,
-    const int* groupSizeArray, uint32_t dtype)
+    aclblasHandle_t handle, int groupCount, const aclblasOperation_t* transaArray,
+    const aclblasOperation_t* transbArray, const int* mArray, const int* nArray, const int* kArray, const T* alphaArray,
+    const T* const* Aarray, const int* ldaArray, const T* const* Barray, const int* ldbArray, const T* betaArray,
+    T* const* Carray, const int* ldcArray, const int* groupSizeArray, uint32_t dtype)
 {
-    int totalBatchCount = 0;
+    int64_t totalBatchCount = 0;
     aclblasStatus_t ret = ValidateGemmGroupedBatchedInputs(
-        handle, groupCount, transaArray, transbArray,
-        mArray, nArray, kArray, alphaArray, Aarray,
-        ldaArray, Barray, ldbArray, betaArray,
-        Carray, ldcArray, groupSizeArray, totalBatchCount);
+        handle, groupCount, transaArray, transbArray, mArray, nArray, kArray, alphaArray, Aarray, ldaArray, Barray,
+        ldbArray, betaArray, Carray, ldcArray, groupSizeArray, totalBatchCount);
     if (ret != ACLBLAS_STATUS_SUCCESS || totalBatchCount == 0) {
         return ret;
     }
 
-    std::vector<GroupParam> groupParams = BuildAllGroupParams(
-        groupCount, transaArray, transbArray, mArray, nArray, kArray,
-        alphaArray, betaArray, ldaArray, ldbArray, ldcArray, groupSizeArray);
-    GemmGroupedMaxBufSizes maxBuf = ComputeMaxGroupBufSizes(groupParams);
+    // issue #870: 对齐 arch22/Ex 版本，host 侧构建与发射路径的异常不再 terminate 进程
+    try {
+        std::vector<GroupParam> groupParams = BuildAllGroupParams(
+            groupCount, transaArray, transbArray, mArray, nArray, kArray, alphaArray, betaArray, ldaArray, ldbArray,
+            ldcArray, groupSizeArray);
+        GemmGroupedMaxBufSizes maxBuf = ComputeMaxGroupBufSizes(groupParams);
 
-    uint32_t totalB = static_cast<uint32_t>(totalBatchCount);
-    GemmGroupedHostPtrArrays hostPtrs =
-        FlattenHostPtrArrays(totalBatchCount, Aarray, Barray, Carray);
+        uint32_t totalB = static_cast<uint32_t>(totalBatchCount);
+        GemmGroupedHostPtrArrays hostPtrs = FlattenHostPtrArrays(totalBatchCount, Aarray, Barray, Carray);
 
-    GemmGroupedCoreDistribution cores{};
-    ret = ComputeGemmGroupedCoreDistribution(totalB, cores);
-    if (ret != ACLBLAS_STATUS_SUCCESS || cores.usedCoreNum == 0) {
-        return ret;
+        GemmGroupedCoreDistribution cores{};
+        ret = ComputeGemmGroupedCoreDistribution(totalB, cores);
+        if (ret != ACLBLAS_STATUS_SUCCESS || cores.usedCoreNum == 0) {
+            return ret;
+        }
+
+        GemmGroupedBatchedTilingData tiling = BuildGemmGroupedTilingData(groupCount, totalB, dtype, cores, maxBuf);
+        auto* h = handle;
+        return UploadScratchAndLaunchKernel(h, tiling, groupParams, totalB, hostPtrs, cores.usedCoreNum);
+    } catch (const std::exception&) {
+        OP_LOGE("aclblasGemmGroupedBatched", "host-side execution failed with an exception");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
-
-    GemmGroupedBatchedTilingData tiling =
-        BuildGemmGroupedTilingData(groupCount, totalB, dtype, cores, maxBuf);
-    auto* h = handle;
-    return UploadScratchAndLaunchKernel(h, tiling, groupParams, totalB, hostPtrs, cores.usedCoreNum);
 }
 
 aclblasStatus_t aclblasSgemmGroupedBatched(
-    aclblasHandle_t handle, int groupCount,
-    const aclblasOperation_t* transaArray, const aclblasOperation_t* transbArray,
-    const int* mArray, const int* nArray, const int* kArray,
-    const float* alphaArray, const float* const* Aarray, const int* ldaArray,
-    const float* const* Barray, const int* ldbArray,
-    const float* betaArray, float* const* Carray, const int* ldcArray,
-    const int* groupSizeArray)
+    aclblasHandle_t handle, int groupCount, const aclblasOperation_t* transaArray,
+    const aclblasOperation_t* transbArray, const int* mArray, const int* nArray, const int* kArray,
+    const float* alphaArray, const float* const* Aarray, const int* ldaArray, const float* const* Barray,
+    const int* ldbArray, const float* betaArray, float* const* Carray, const int* ldcArray, const int* groupSizeArray)
 {
     return GemmGroupedBatchedImpl<float>(
-        handle, groupCount, transaArray, transbArray,
-        mArray, nArray, kArray, alphaArray, Aarray, ldaArray,
-        Barray, ldbArray, betaArray, Carray, ldcArray,
-        groupSizeArray, 0);
+        handle, groupCount, transaArray, transbArray, mArray, nArray, kArray, alphaArray, Aarray, ldaArray, Barray,
+        ldbArray, betaArray, Carray, ldcArray, groupSizeArray, 0);
 }

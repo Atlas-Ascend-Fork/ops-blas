@@ -9,6 +9,7 @@
  */
 
 #include <algorithm>
+#include <limits>
 #include <vector>
 
 #include "verify.h"
@@ -21,8 +22,7 @@
 namespace {
 
 void CopyFloatSegment(
-    std::vector<float>& dst, size_t dstOffset, size_t dstCapacity,
-    const std::vector<float>& src, size_t count)
+    std::vector<float>& dst, size_t dstOffset, size_t dstCapacity, const std::vector<float>& src, size_t count)
 {
     ASSERT_LE(dstCapacity, dst.size());
     ASSERT_LE(dstOffset, dstCapacity);
@@ -96,28 +96,26 @@ GemmGroupedSafeGroupDims GetSafeGroupDims(const GemmGroupedBatchedParam& p, int 
 }
 
 void FillOneBatchHostData(
-    const GemmGroupedBatchedParam& p, int batchIdx, const GemmGroupedSafeGroupDims& dims,
-    GemmGroupedFp32HostData& data)
+    const GemmGroupedBatchedParam& p, int batchIdx, const GemmGroupedSafeGroupDims& dims, GemmGroupedFp32HostData& data)
 {
     if (p.A_fill.method != BlasFillMode::M_NULLPTR) {
-        data.aHostVec[batchIdx] = makeBlasMatrix(
-            dims.safeLda, dims.safeACols, dims.safeLda, p.A_fill, p.randomSeed + batchIdx * 3);
+        data.aHostVec[batchIdx] =
+            makeBlasMatrix(dims.safeLda, dims.safeACols, dims.safeLda, p.A_fill, p.randomSeed + batchIdx * 3);
         data.aPtrs[batchIdx] = data.aHostVec[batchIdx].data();
     }
     if (p.B_fill.method != BlasFillMode::M_NULLPTR) {
-        data.bHostVec[batchIdx] = makeBlasMatrix(
-            dims.safeLdb, dims.safeBCols, dims.safeLdb, p.B_fill, p.randomSeed + batchIdx * 3 + 1);
+        data.bHostVec[batchIdx] =
+            makeBlasMatrix(dims.safeLdb, dims.safeBCols, dims.safeLdb, p.B_fill, p.randomSeed + batchIdx * 3 + 1);
         data.bPtrs[batchIdx] = data.bHostVec[batchIdx].data();
     }
     if (p.C_fill.method != BlasFillMode::M_NULLPTR) {
-        data.cHostVec[batchIdx] = makeBlasMatrix(
-            dims.safeLdc, dims.safeN, dims.safeLdc, p.C_fill, p.randomSeed + batchIdx * 3 + 2);
+        data.cHostVec[batchIdx] =
+            makeBlasMatrix(dims.safeLdc, dims.safeN, dims.safeLdc, p.C_fill, p.randomSeed + batchIdx * 3 + 2);
         data.cPtrs[batchIdx] = data.cHostVec[batchIdx].data();
     }
 }
 
-GemmGroupedFp32HostData GenerateGemmGroupedFp32HostData(
-    const GemmGroupedBatchedParam& p, int totalBatchCount)
+GemmGroupedFp32HostData GenerateGemmGroupedFp32HostData(const GemmGroupedBatchedParam& p, int totalBatchCount)
 {
     GemmGroupedFp32HostData data;
     if (!p.alphaArrayNull) {
@@ -166,31 +164,21 @@ aclblasStatus_t CallGemmGroupedFp32Npu(
 {
     const float* alphaPtr = ResolveAlphaPtr(p, data);
     const float* betaPtr = ResolveBetaPtr(p, data);
-    const float* const* aArr =
-        (p.A_fill.method == BlasFillMode::M_NULLPTR) ? nullptr : data.aPtrs.data();
-    const float* const* bArr =
-        (p.B_fill.method == BlasFillMode::M_NULLPTR) ? nullptr : data.bPtrs.data();
-    float* const* cArr =
-        (p.C_fill.method == BlasFillMode::M_NULLPTR) ? nullptr : data.cPtrs.data();
+    const float* const* aArr = (p.A_fill.method == BlasFillMode::M_NULLPTR) ? nullptr : data.aPtrs.data();
+    const float* const* bArr = (p.B_fill.method == BlasFillMode::M_NULLPTR) ? nullptr : data.bPtrs.data();
+    float* const* cArr = (p.C_fill.method == BlasFillMode::M_NULLPTR) ? nullptr : data.cPtrs.data();
 
     return aclblasSgemmGroupedBatched_npu(
-        handle, p.groupCount,
-        p.transaArrayNull ? nullptr : p.transaArray.data(),
-        p.transbArrayNull ? nullptr : p.transbArray.data(),
-        p.mArrayNull ? nullptr : p.mArray.data(),
-        p.nArrayNull ? nullptr : p.nArray.data(),
-        p.kArrayNull ? nullptr : p.kArray.data(),
-        alphaPtr, aArr, p.ldaArrayNull ? nullptr : p.ldaArray.data(),
-        bArr, p.ldbArrayNull ? nullptr : p.ldbArray.data(),
-        betaPtr, cArr, p.ldcArrayNull ? nullptr : p.ldcArray.data(),
-        p.groupSizeArrayNull ? nullptr : p.groupSizeArray.data());
+        handle, p.groupCount, p.transaArrayNull ? nullptr : p.transaArray.data(),
+        p.transbArrayNull ? nullptr : p.transbArray.data(), p.mArrayNull ? nullptr : p.mArray.data(),
+        p.nArrayNull ? nullptr : p.nArray.data(), p.kArrayNull ? nullptr : p.kArray.data(), alphaPtr, aArr,
+        p.ldaArrayNull ? nullptr : p.ldaArray.data(), bArr, p.ldbArrayNull ? nullptr : p.ldbArray.data(), betaPtr, cArr,
+        p.ldcArrayNull ? nullptr : p.ldcArray.data(), p.groupSizeArrayNull ? nullptr : p.groupSizeArray.data());
 }
 
 void ComputeGemmGroupedFp32Golden(
-    aclblasHandle_t handle, const GemmGroupedBatchedParam& p,
-    const GemmGroupedFp32HostData& data,
-    const std::vector<std::vector<float>>& cInputVec, int totalBatchCount,
-    std::vector<std::vector<float>>& cGoldenVec)
+    aclblasHandle_t handle, const GemmGroupedBatchedParam& p, const GemmGroupedFp32HostData& data,
+    const std::vector<std::vector<float>>& cInputVec, int totalBatchCount, std::vector<std::vector<float>>& cGoldenVec)
 {
     cGoldenVec.resize(static_cast<size_t>(totalBatchCount));
     std::vector<float*> cGoldenPtrs(static_cast<size_t>(totalBatchCount));
@@ -204,13 +192,9 @@ void ComputeGemmGroupedFp32Golden(
     }
 
     aclblasSgemmGroupedBatched_cpu(
-        handle, p.groupCount,
-        p.transaArray.data(), p.transbArray.data(),
-        p.mArray.data(), p.nArray.data(), p.kArray.data(),
-        ResolveAlphaPtr(p, data), data.aPtrs.data(), p.ldaArray.data(),
-        data.bPtrs.data(), p.ldbArray.data(),
-        ResolveBetaPtr(p, data), cGoldenPtrs.data(), p.ldcArray.data(),
-        p.groupSizeArray.data());
+        handle, p.groupCount, p.transaArray.data(), p.transbArray.data(), p.mArray.data(), p.nArray.data(),
+        p.kArray.data(), ResolveAlphaPtr(p, data), data.aPtrs.data(), p.ldaArray.data(), data.bPtrs.data(),
+        p.ldbArray.data(), ResolveBetaPtr(p, data), cGoldenPtrs.data(), p.ldcArray.data(), p.groupSizeArray.data());
 }
 
 void VerifyGemmGroupedFp32Results(
@@ -243,8 +227,7 @@ void VerifyGemmGroupedFp32Results(
     cfg.mode = PrecisionMode::MERE_MARE;
     cfg.mereThreshold = p.mereThreshold;
     cfg.mareMultiplier = p.mareMultiplier;
-    EXPECT_TRUE(Verifier::verifyVector(
-        npuFlat.data(), goldFlat.data(), totalCElements, 1, cfg, p.caseName));
+    EXPECT_TRUE(Verifier::verifyVector(npuFlat.data(), goldFlat.data(), totalCElements, 1, cfg, p.caseName));
 }
 
 void RunGemmGroupedFp32CsvCase(aclblasHandle_t handle, const GemmGroupedBatchedParam& p)
@@ -273,10 +256,40 @@ class GemmGroupedBatchedArch35Test : public BlasTest<GemmGroupedBatchedParam> {}
 TEST_F(GemmGroupedBatchedArch35Test, NullHandle)
 {
     aclblasStatus_t ret = aclblasSgemmGroupedBatched_npu(
-        nullptr, 1, nullptr, nullptr, nullptr, nullptr, nullptr,
-        nullptr, nullptr, nullptr, nullptr, nullptr,
-        nullptr, nullptr, nullptr, nullptr);
+        nullptr, 1, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_HANDLE_IS_NULLPTR));
+}
+
+TEST_F(GemmGroupedBatchedArch35Test, TotalBatchOverflow)
+{
+    // issue #870: sum(groupSize) 超过 uint32 可承载上限时校验阶段返回 INVALID_VALUE，
+    // 不进入构建/发射路径（此前 int 溢出经 resize 异常导致进程终止）
+    constexpr int kGroupCount = 3;
+    std::vector<aclblasOperation_t> transa(kGroupCount, ACLBLAS_OP_N);
+    std::vector<aclblasOperation_t> transb(kGroupCount, ACLBLAS_OP_N);
+    std::vector<int> m(kGroupCount, 1);
+    std::vector<int> n(kGroupCount, 1);
+    std::vector<int> k(kGroupCount, 1);
+    std::vector<int> lda(kGroupCount, 1);
+    std::vector<int> ldb(kGroupCount, 1);
+    std::vector<int> ldc(kGroupCount, 1);
+    std::vector<float> alpha(kGroupCount, 1.0f);
+    std::vector<float> beta(kGroupCount, 0.0f);
+    std::vector<int> groupSize(kGroupCount, std::numeric_limits<int>::max());
+
+    float dummyA = 1.0f;
+    float dummyB = 1.0f;
+    float dummyC = 0.0f;
+    std::vector<const float*> aArray(kGroupCount, &dummyA);
+    std::vector<const float*> bArray(kGroupCount, &dummyB);
+    std::vector<float*> cArray(kGroupCount, &dummyC);
+
+    aclblasStatus_t ret = aclblasSgemmGroupedBatched(
+        GemmGroupedBatchedArch35Test::handle_, kGroupCount, transa.data(), transb.data(), m.data(), n.data(), k.data(),
+        alpha.data(), aArray.data(), lda.data(), bArray.data(), ldb.data(), beta.data(), cArray.data(), ldc.data(),
+        groupSize.data());
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_INVALID_VALUE));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -289,10 +302,10 @@ TEST_P(GemmGroupedBatchedArch35Test, CsvDriven)
     const auto& p = GetParam();
 
     switch (p.dtype) {
-    case 0:
-        RunGemmGroupedFp32CsvCase(GemmGroupedBatchedArch35Test::handle_, p);
-        break;
-    default:
-        ASSERT_TRUE(false) << "Unknown dtype: " << p.dtype;
+        case 0:
+            RunGemmGroupedFp32CsvCase(GemmGroupedBatchedArch35Test::handle_, p);
+            break;
+        default:
+            ASSERT_TRUE(false) << "Unknown dtype: " << p.dtype;
     }
 }
