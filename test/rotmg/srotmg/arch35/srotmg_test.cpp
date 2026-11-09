@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cstdlib>
+#include <limits>
 #include <vector>
 
 #include "verify.h"
@@ -30,9 +31,33 @@ TEST_F(SrotmgArch35Test, NullHandle)
     EXPECT_EQ(ret, ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 }
 
+// issue #871: d1=±Inf 时 host/device 两条路径的 rescale 循环均有上限，不再挂死。
+// host 路径取 +inf：-inf 会命中 srotmg_host 的 `sd1 < ZERO` 早退分支而不进入 rescale
+// 循环，覆盖不到守卫；+inf 走正常分支且 rescale 不收敛，可真实触发上限退出。
+TEST_F(SrotmgArch35Test, NonFiniteD1)
+{
+    const float inf = std::numeric_limits<float>::infinity();
+
+    float d1Host = inf;
+    float d2Host = 1.0f;
+    float x1Host = 1.0f;
+    const float y1Host = 1.0f;
+    float paramHost[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    EXPECT_EQ(
+        aclblasSrotmg(SrotmgArch35Test::handle_, &d1Host, &d2Host, &x1Host, &y1Host, paramHost),
+        ACLBLAS_STATUS_SUCCESS);
+
+    float d1Dev = inf;
+    float d2Dev = 1.0f;
+    float x1Dev = 1.0f;
+    const float y1Dev = 1.0f;
+    float paramDev[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    EXPECT_EQ(
+        aclblasSrotmg_npu(SrotmgArch35Test::handle_, &d1Dev, &d2Dev, &x1Dev, &y1Dev, paramDev), ACLBLAS_STATUS_SUCCESS);
+}
+
 INSTANTIATE_TEST_SUITE_P(
-    Srotmg, SrotmgArch35Test,
-    ::testing::ValuesIn(GetCasesFromCsv<SrotmgParam>(ReplaceFileExtension2Csv(__FILE__))),
+    Srotmg, SrotmgArch35Test, ::testing::ValuesIn(GetCasesFromCsv<SrotmgParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<SrotmgParam>);
 
 // CSV-driven: all-device path (via NPU wrapper)
@@ -47,12 +72,13 @@ TEST_P(SrotmgArch35Test, CsvDrivenDevice)
     float d1Golden = p.d1, d2Golden = p.d2, x1Golden = p.x1;
     float y1Golden = p.y1;
     float paramGolden[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-    EXPECT_EQ(aclblasSrotmg_cpu(handle_, &d1Golden, &d2Golden, &x1Golden, &y1Golden, paramGolden),
-              ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(
+        aclblasSrotmg_cpu(handle_, &d1Golden, &d2Golden, &x1Golden, &y1Golden, paramGolden), ACLBLAS_STATUS_SUCCESS);
 
     aclblasStatus_t ret = aclblasSrotmg_npu(handle_, &d1Npu, &d2Npu, &x1Npu, &y1Val, paramNpu);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
-    if (p.expectResult != ACLBLAS_STATUS_SUCCESS) return;
+    if (p.expectResult != ACLBLAS_STATUS_SUCCESS)
+        return;
 
     VerifyConfig cfg;
     applyMixedTolerance(cfg, ACL_FLOAT, d1Golden);
@@ -79,13 +105,15 @@ TEST_P(SrotmgArch35Test, CsvDrivenHost)
     ASSERT_EQ(aclrtMallocHost(reinterpret_cast<void**>(&y1), sizeof(float)), ACL_SUCCESS);
     ASSERT_EQ(aclrtMallocHost(reinterpret_cast<void**>(&param), 5 * sizeof(float)), ACL_SUCCESS);
 
-    *d1 = p.d1; *d2 = p.d2; *x1 = p.x1; *y1 = p.y1;
+    *d1 = p.d1;
+    *d2 = p.d2;
+    *x1 = p.x1;
+    *y1 = p.y1;
 
     // Golden
     float d1G = p.d1, d2G = p.d2, x1G = p.x1, y1G = p.y1;
     float paramG[5] = {};
-    EXPECT_EQ(aclblasSrotmg_cpu(handle_, &d1G, &d2G, &x1G, &y1G, paramG),
-              ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(aclblasSrotmg_cpu(handle_, &d1G, &d2G, &x1G, &y1G, paramG), ACLBLAS_STATUS_SUCCESS);
 
     aclblasStatus_t ret = aclblasSrotmg(handle_, d1, d2, x1, y1, param);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
@@ -110,9 +138,14 @@ TEST_P(SrotmgArch35Test, CsvDrivenHost)
         EXPECT_TRUE(Verifier::verifyScalar(param[4], paramG[4], cfg, p.caseName + "_param_h22"));
     }
 
-    if (d1) aclrtFreeHost(d1);
-    if (d2) aclrtFreeHost(d2);
-    if (x1) aclrtFreeHost(x1);
-    if (y1) aclrtFreeHost(y1);
-    if (param) aclrtFreeHost(param);
+    if (d1)
+        aclrtFreeHost(d1);
+    if (d2)
+        aclrtFreeHost(d2);
+    if (x1)
+        aclrtFreeHost(x1);
+    if (y1)
+        aclrtFreeHost(y1);
+    if (param)
+        aclrtFreeHost(param);
 }
