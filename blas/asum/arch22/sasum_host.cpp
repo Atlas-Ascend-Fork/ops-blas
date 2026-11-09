@@ -103,6 +103,11 @@ AsumTilingData CalAsumTilingData(uint32_t totalEleNum, int32_t incx, uint32_t ve
 
 aclblasStatus_t aclblasSasum(aclblasHandle_t handle, int n, const float* x, int incx, float* result)
 {
+    if (handle == nullptr) {
+        // issue #861: 对齐 arch35 sasum（#722）与 sspmv/complexmatdot 全库口径，空 handle 拒绝执行
+        LOG_PRINT("aclblasSasum: handle is nullptr\n");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
     auto* h = handle;
     aclrtStream useStream = h->stream;
 

@@ -147,6 +147,14 @@ static int TestSsyrCase(const char* label, aclblasFillMode_t uplo)
         aclFinalize();
         return ret;
     }
+
+    // issue #861: 空 handle 一律返回 HANDLE_IS_NULLPTR（优先于 n==0 快速返回）
+    ret = aclblasSsyr(nullptr, uplo, 0, &alphaVal, x.data(), incx, a.data(), lda);
+    if (ret != ACLBLAS_STATUS_HANDLE_IS_NULLPTR) {
+        std::cout << "aclblasSsyr null-handle expect HANDLE_IS_NULLPTR, got " << ret << std::endl;
+        goto cleanup;
+    }
+
     aclrtCreateStream(&stream);
     ret = aclblasSetStream(handle, stream);
     if (ret != ACLBLAS_STATUS_SUCCESS) {

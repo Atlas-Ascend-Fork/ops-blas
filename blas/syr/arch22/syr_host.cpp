@@ -33,6 +33,12 @@ aclblasStatus_t aclblasSsyr(
     aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const float* alpha, const float* x, const int incx,
     float* A, const int lda)
 {
+    // issue #861: 对齐全库空 handle 口径（HANDLE_IS_NULLPTR），且先于 n==0 快速返回
+    if (handle == nullptr) {
+        LOG_PRINT("aclblasSsyr: handle is nullptr\n");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+
     if (n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }

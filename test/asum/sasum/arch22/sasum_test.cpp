@@ -49,13 +49,14 @@ uint32_t VerifyResult(float output, float golden)
     }
 }
 
-int32_t RunStridedCase(aclblasHandle_t handle, aclrtStream stream, float* xDevice, float* resultDevice,
-                      float& stridedResult)
+int32_t RunStridedCase(
+    aclblasHandle_t handle, aclrtStream stream, float* xDevice, float* resultDevice, float& stridedResult)
 {
     constexpr size_t outputByteSize = sizeof(float);
     const float stridedInput[] = {1.0f, 99.0f, 2.0f, 99.0f, 3.0f};
     constexpr size_t stridedInputBytes = sizeof(stridedInput);
-    aclError aclRet = aclrtMemcpy(xDevice, stridedInputBytes, stridedInput, stridedInputBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    aclError aclRet =
+        aclrtMemcpy(xDevice, stridedInputBytes, stridedInput, stridedInputBytes, ACL_MEMCPY_HOST_TO_DEVICE);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy strided input failed. ERROR: %d\n", aclRet); return aclRet);
 
     constexpr int stridedLength = 3;
@@ -109,6 +110,12 @@ int32_t main(int32_t argc, char* argv[])
 
     aclRet = aclrtMemcpy(xDevice, totalByteSize, x.data(), totalByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); return aclRet);
+
+    // issue #861: 空 handle 必须返回 HANDLE_IS_NULLPTR，不得解引用空指针
+    ret = aclblasSasum(nullptr, totalLength, xDevice, incx, resultDevice);
+    CHECK_RET(ret == ACLBLAS_STATUS_HANDLE_IS_NULLPTR,
+              LOG_PRINT("aclblasSasum null-handle expect HANDLE_IS_NULLPTR, got %d\n", ret);
+              return 1);
 
     ret = aclblasSasum(handle, totalLength, xDevice, incx, resultDevice);
     CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSasum failed. ERROR: %d\n", ret); return ret);
