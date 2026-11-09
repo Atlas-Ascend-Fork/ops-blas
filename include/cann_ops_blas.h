@@ -428,6 +428,10 @@ aclblasStatus_t aclblasChpr(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* alpha, const aclblasComplex* x, int incx,
     aclblasComplex* ap);
 
+aclblasStatus_t aclblasChpr2(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const aclblasComplex* alpha, const aclblasComplex* x,
+    const int incx, const aclblasComplex* y, const int incy, aclblasComplex* ap);
+
 aclblasStatus_t aclblasCtrmv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
     const aclblasComplex* A, int lda, aclblasComplex* x, int incx);
