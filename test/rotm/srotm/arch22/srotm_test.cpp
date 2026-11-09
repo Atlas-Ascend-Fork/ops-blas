@@ -18,14 +18,46 @@
 #include "srotm_golden.h"
 #include "srotm_npu_wrapper.h"
 
-class SrotmArch22Test : public BlasTest<SrotmParam> { };
+class SrotmArch22Test : public BlasTest<SrotmParam> {};
+
+TEST_F(SrotmArch22Test, DeviceParam)
+{
+    // issue #869: sparam 位于 device 内存时不崩溃，结果与 host-param 等价输入一致
+    const int n = 64;
+    auto x = makeBlasStrided(n, 1, "RANDOM_NORM_2_2", 11);
+    auto y = makeBlasStrided(n, 1, "RANDOM_NORM_2_2", 12);
+    std::array<float, 5> sparam = {-1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+
+    std::vector<float> hostX = x;
+    std::vector<float> hostY = y;
+    ASSERT_EQ(
+        aclblasSrotm_npu(SrotmArch22Test::handle_, n, hostX.data(), 1, hostY.data(), 1, sparam.data()),
+        ACLBLAS_STATUS_SUCCESS);
+
+    void* paramDev = nullptr;
+    ASSERT_EQ(aclrtMalloc(&paramDev, sizeof(sparam), ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(
+        aclrtMemcpy(paramDev, sizeof(sparam), sparam.data(), sizeof(sparam), ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+
+    std::vector<float> devX = x;
+    std::vector<float> devY = y;
+    aclblasStatus_t ret = aclblasSrotm_npu(
+        SrotmArch22Test::handle_, n, devX.data(), 1, devY.data(), 1, static_cast<const float*>(paramDev));
+    aclrtFree(paramDev);
+    ASSERT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
+
+    for (int i = 0; i < n; ++i) {
+        ASSERT_EQ(devX[i], hostX[i]) << "device-param x mismatch at " << i;
+        ASSERT_EQ(devY[i], hostY[i]) << "device-param y mismatch at " << i;
+    }
+}
 
 INSTANTIATE_TEST_SUITE_P(
-    Srotm, SrotmArch22Test,
-    ::testing::ValuesIn(GetCasesFromCsv<SrotmParam>(ReplaceFileExtension2Csv(__FILE__))),
+    Srotm, SrotmArch22Test, ::testing::ValuesIn(GetCasesFromCsv<SrotmParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<SrotmParam>);
 
-TEST_P(SrotmArch22Test, CsvDriven) {
+TEST_P(SrotmArch22Test, CsvDriven)
+{
     const auto& p = GetParam();
 
     auto x = makeBlasStrided(p.n, p.incx, "RANDOM_NORM_2_2", p.randomSeed);
@@ -37,9 +69,8 @@ TEST_P(SrotmArch22Test, CsvDriven) {
 
     std::array<float, 5> sparam = p.sparam;
 
-    aclblasStatus_t ret = aclblasSrotm_npu(
-        SrotmArch22Test::handle_,
-        p.n, resultX.data(), p.incx, resultY.data(), p.incy, sparam.data());
+    aclblasStatus_t ret =
+        aclblasSrotm_npu(SrotmArch22Test::handle_, p.n, resultX.data(), p.incx, resultY.data(), p.incy, sparam.data());
 
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
         EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
@@ -47,17 +78,15 @@ TEST_P(SrotmArch22Test, CsvDriven) {
     }
     ASSERT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
 
-    aclblasSrotm_cpu(
-        SrotmArch22Test::handle_,
-        p.n, goldenX.data(), p.incx, goldenY.data(), p.incy, sparam.data());
+    aclblasSrotm_cpu(SrotmArch22Test::handle_, p.n, goldenX.data(), p.incx, goldenY.data(), p.incy, sparam.data());
 
     VerifyConfig cfg;
     cfg.mode = PrecisionMode::MERE_MARE;
     cfg.mereThreshold = p.mereThreshold;
     cfg.mareMultiplier = p.mareMultiplier;
 
-    EXPECT_TRUE(Verifier::verifyVector(resultX.data(), goldenX.data(),
-        static_cast<size_t>(x.size()), 1, cfg, p.caseName));
-    EXPECT_TRUE(Verifier::verifyVector(resultY.data(), goldenY.data(),
-        static_cast<size_t>(y.size()), 1, cfg, p.caseName));
+    EXPECT_TRUE(
+        Verifier::verifyVector(resultX.data(), goldenX.data(), static_cast<size_t>(x.size()), 1, cfg, p.caseName));
+    EXPECT_TRUE(
+        Verifier::verifyVector(resultY.data(), goldenY.data(), static_cast<size_t>(y.size()), 1, cfg, p.caseName));
 }

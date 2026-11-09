@@ -20,7 +20,7 @@
 
 struct SrotmTilingData;
 
-void srotm_kernel_do(const SrotmTilingData &tiling, uint32_t numBlocks, void *stream);
+void srotm_kernel_do(const SrotmTilingData& tiling, uint32_t numBlocks, void* stream);
 
 constexpr uint32_t MAX_CORE_NUM = 50;
 constexpr uint32_t MIN_ELEMENTS_PER_CORE = 2048;
@@ -49,8 +49,8 @@ static uint32_t SelectCoreNum(uint32_t n)
     return std::min(coreNum, std::min(MAX_SELECTED_CORES, MAX_CORE_NUM));
 }
 
-static aclblasStatus_t CheckSrotmParams(aclblasHandle handle, float *x, float *y, const float *sparam,
-                                        int64_t n, int64_t incx, int64_t incy)
+static aclblasStatus_t CheckSrotmParams(
+    aclblasHandle handle, float* x, float* y, const float* sparam, int64_t n, int64_t incx, int64_t incy)
 {
     // BLAS 约定 n<=0 时无需执行计算，直接按成功返回。
     if (n <= 0) {
@@ -82,7 +82,7 @@ static aclblasStatus_t CheckSrotmParams(aclblasHandle handle, float *x, float *y
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static void FillSrotmCoefficients(SrotmTilingData &tiling, const float *sparam)
+static void FillSrotmCoefficients(SrotmTilingData& tiling, const float* sparam)
 {
     tiling.sflag = sparam[0];
     tiling.h11 = 1.0f;
@@ -105,8 +105,31 @@ static void FillSrotmCoefficients(SrotmTilingData &tiling, const float *sparam)
     }
 }
 
+// issue #869: param 数组位置探测 + device 时整组 D2H 读回（与 arch35 ResolveSrotmParam
+// 同口径），host 不再直接解引用可能位于 device 侧的 sparam
+static aclblasStatus_t ResolveSrotmParam(const float* param, float (&paramHost)[5])
+{
+    bool paramDevice = false;
+    const aclblasStatus_t locStatus = CheckPtrLocation(param, &paramDevice);
+    if (locStatus != ACLBLAS_STATUS_SUCCESS) {
+        return locStatus;
+    }
+    if (paramDevice) {
+        const aclError copyRet =
+            aclrtMemcpy(paramHost, sizeof(paramHost), param, sizeof(paramHost), ACL_MEMCPY_DEVICE_TO_HOST);
+        if (copyRet != ACL_SUCCESS) {
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+    } else {
+        for (int i = 0; i < 5; ++i) {
+            paramHost[i] = param[i];
+        }
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 static SrotmTilingData BuildSrotmTilingData(
-    float *x, float *y, const float *sparam, int64_t n, int64_t incx, int64_t incy)
+    float* x, float* y, const float* sparam, int64_t n, int64_t incx, int64_t incy)
 {
     SrotmTilingData tiling = {};
     tiling.x = reinterpret_cast<uint64_t>(x);
@@ -122,27 +145,36 @@ static SrotmTilingData BuildSrotmTilingData(
     return tiling;
 }
 
-static aclblasStatus_t LaunchSrotmKernel(
-    const SrotmTilingData &tiling, aclrtStream useStream)
+static aclblasStatus_t LaunchSrotmKernel(const SrotmTilingData& tiling, aclrtStream useStream)
 {
     srotm_kernel_do(tiling, std::max<uint32_t>(DEFAULT_LAUNCH_BLOCKS, tiling.useCoreNum), useStream);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-aclblasStatus_t aclblasSrotm(
-    aclblasHandle_t handle, int n, float *x, int incx, float *y, int incy, const float *sparam)
+aclblasStatus_t aclblasSrotm(aclblasHandle_t handle, int n, float* x, int incx, float* y, int incy, const float* sparam)
 {
     aclblasStatus_t status = CheckSrotmParams(handle, x, y, sparam, n, incx, incy);
     if (status != ACLBLAS_STATUS_SUCCESS) {
         return status;
     }
-    if (n <= 0 || sparam[0] == -2.0f) {
+    // BLAS 约定 n<=0 时无需执行计算，直接按成功返回；此路径不触碰 sparam。
+    if (n <= 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    // issue #869: param 数组按 rot 族惯例探测位置（与 arch35 一致），device 侧整组 D2H
+    // 后在 host 读取控制标量，避免主机直接访问设备地址
+    float paramHost[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    const aclblasStatus_t paramStatus = ResolveSrotmParam(sparam, paramHost);
+    if (paramStatus != ACLBLAS_STATUS_SUCCESS) {
+        return paramStatus;
+    }
+    if (paramHost[0] == -2.0f) {
         return ACLBLAS_STATUS_SUCCESS;
     }
 
-    auto *h = handle;
+    auto* h = handle;
     aclrtStream useStream = h->stream;
-    SrotmTilingData tiling = BuildSrotmTilingData(x, y, sparam, n, incx, incy);
+    SrotmTilingData tiling = BuildSrotmTilingData(x, y, paramHost, n, incx, incy);
 
     return LaunchSrotmKernel(tiling, useStream);
 }
