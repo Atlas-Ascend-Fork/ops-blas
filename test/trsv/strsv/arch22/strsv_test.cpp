@@ -22,11 +22,17 @@ class TrsvArch22Test : public BlasTest<TrsvParam> {};
 
 TEST_F(TrsvArch22Test, NullHandle)
 {
-    // aclblasStrsv host checks A==nullptr || x==nullptr before accessing handle,
-    // so null handle with null data returns ACLBLAS_STATUS_INVALID_VALUE.
-    aclblasStatus_t ret =
-        aclblasStrsv_npu(nullptr, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 5, nullptr, 5, nullptr, 1);
-    EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_VALUE);
+    // handle 判空必须最先执行；即使 A/x 指针有效，也应返回 HANDLE_IS_NULLPTR
+    std::vector<float> aHost(25, 1.0f);
+    std::vector<float> xHost(5, 1.0f);
+    DeviceBuffer aDev(aHost.size() * sizeof(float));
+    DeviceBuffer xDev(xHost.size() * sizeof(float));
+    aDev.copyFromHost(aHost.data(), aDev.size());
+    xDev.copyFromHost(xHost.data(), xDev.size());
+    aclblasStatus_t ret = aclblasStrsv_npu(
+        nullptr, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 5, static_cast<const float*>(aDev.ptr()), 5,
+        static_cast<float*>(xDev.ptr()), 1);
+    EXPECT_EQ(ret, ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 }
 
 INSTANTIATE_TEST_SUITE_P(

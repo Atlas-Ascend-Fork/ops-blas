@@ -11,6 +11,7 @@
 #include <vector>
 #include <algorithm>
 #include "acl/acl.h"
+#include "log/log.h"
 #include "cann_ops_blas.h"
 #include "cann_ops_blas_common.h"
 #include "common/helper/aclblas_handle_internal.h"
@@ -85,20 +86,70 @@ static void ScatterStrsvVector(
     }
 }
 
+static bool IsValidStrsvEnums(aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag)
+{
+    return (uplo == ACLBLAS_LOWER || uplo == ACLBLAS_UPPER) &&
+           (trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C) &&
+           (diag == ACLBLAS_NON_UNIT || diag == ACLBLAS_UNIT);
+}
+
+static bool HasStrsvSpanOverflow(int n, int lda, int incx)
+{
+    const uint64_t stride = incx < 0 ? -static_cast<int64_t>(incx) : static_cast<int64_t>(incx);
+    const uint64_t extent = static_cast<uint64_t>(n - 1) * stride + 1;
+    return static_cast<uint64_t>(n) * static_cast<uint64_t>(lda) > UINT32_MAX || extent > UINT32_MAX;
+}
+
+static aclblasStatus_t ValidateStrsvParams(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
+    const float* A, int lda, const float* x, int incx)
+{
+    if (handle == nullptr) {
+        OP_LOGE("aclblasStrsv", "handle is nullptr");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    if (n < 0) {
+        OP_LOGE("aclblasStrsv", "invalid n=%d", n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (!IsValidStrsvEnums(uplo, trans, diag)) {
+        OP_LOGE(
+            "aclblasStrsv", "invalid uplo=%d trans=%d diag=%d", static_cast<int>(uplo), static_cast<int>(trans),
+            static_cast<int>(diag));
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (incx == 0) {
+        OP_LOGE("aclblasStrsv", "incx must not be zero");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (lda < std::max(1, n)) {
+        OP_LOGE("aclblasStrsv", "invalid lda=%d, n=%d", lda, n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (A == nullptr || x == nullptr) {
+        OP_LOGE("aclblasStrsv", "A or x is nullptr");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (HasStrsvSpanOverflow(n, lda, incx)) {
+        OP_LOGE("aclblasStrsv", "matrix or vector extent exceeds uint32 range: n=%d lda=%d incx=%d", n, lda, incx);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 aclblasStatus_t aclblasStrsv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
     const float* A, int lda, float* x, int incx)
 {
-    if (n <= 0) {
+    aclblasStatus_t status = ValidateStrsvParams(handle, uplo, trans, diag, n, A, lda, x, incx);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    if (n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
-    }
-
-    if (incx == 0) {
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-
-    if (A == nullptr || x == nullptr) {
-        return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
     aclrtContext currentCtx = nullptr;
@@ -107,12 +158,9 @@ aclblasStatus_t aclblasStrsv(
         return ACLBLAS_STATUS_NOT_INITIALIZED;
     }
 
-    // 从 handle 获取 stream
-    aclrtStream useStream = nullptr;
-    if (handle != nullptr) {
-        auto* h = handle;
-        useStream = h->stream;
-    }
+    // handle 已在入口判空，直接取 stream
+    auto* h = handle;
+    aclrtStream useStream = h->stream;
 
     const size_t absIncx = static_cast<size_t>(incx < 0 ? -static_cast<int64_t>(incx) : incx);
     const size_t xElements = (static_cast<size_t>(n) - 1) * absIncx + 1;
