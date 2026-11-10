@@ -1,0 +1,68 @@
+[
+  {
+    "file": "sgemm.f",
+    "source": "https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.10.0/BLAS/SRC/sgemm.f",
+    "sha256": "ff047930751f2cbbfa3777e89c5285417c79d24ee59d6fd99e254c29a30175ed",
+    "bytes": 10829
+  },
+  {
+    "file": "lsame.f",
+    "source": "https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.10.0/BLAS/SRC/lsame.f",
+    "sha256": "750ea271cefb9a7c734da8b26c7fee3a045ceba10da53afe3c09e316adbe7b40",
+    "bytes": 3078
+  },
+  {
+    "file": "xerbla.f",
+    "source": "https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.10.0/BLAS/SRC/xerbla.f",
+    "sha256": "430e9a2d8588c840420cff755dfe96a2c6cd43a4c75abe9eae4cf90b70433066",
+    "bytes": 2091
+  },
+  {
+    "file": "cblas_sgemm.c",
+    "source": "https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.10.0/CBLAS/src/cblas_sgemm.c",
+    "sha256": "2ca2ef3afb4311d8b765c1f976c16d971ed70d2708f39d1e2838276f827fa465",
+    "bytes": 3084
+  },
+  {
+    "file": "cblas_globals.c",
+    "source": "https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.10.0/CBLAS/src/cblas_globals.c",
+    "sha256": "aa2c1e0691a6eedea9977701f03627323f56b0951925f5b9314df888f6a4335d",
+    "bytes": 49
+  },
+  {
+    "file": "cblas_xerbla.c",
+    "source": "https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.10.0/CBLAS/src/cblas_xerbla.c",
+    "sha256": "450cc04ab2733a9794ed1f8242c80bddab6b3681e57ee91d7da3e3af5ee0d43a",
+    "bytes": 1982
+  },
+  {
+    "file": "cblas.h",
+    "source": "https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.10.0/CBLAS/include/cblas.h",
+    "sha256": "97d599f4b20c410759b9185b91097c1f86695439d33d23d7de90b2c11afc1ffb",
+    "bytes": 33938
+  },
+  {
+    "file": "cblas_f77.h",
+    "source": "https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.10.0/CBLAS/include/cblas_f77.h",
+    "sha256": "38c71f140bad244132c5a7deb304df4e73b164ea96b96ca25dd125480ef6dd3e",
+    "bytes": 43990
+  },
+  {
+    "file": "LICENSE",
+    "source": "https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.10.0/LICENSE",
+    "sha256": "66246b7d3e6736aea46e63fd5e087659474d07edfe2f9b051d085d9b42aaac61",
+    "bytes": 2266
+  },
+  {
+    "file": "cgemm.f",
+    "source": "https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.10.0/BLAS/SRC/cgemm.f",
+    "bytes": 14131,
+    "sha256": "4940b413f7f48697018e23ea277466a5975a7af8e9f497413c1c8311291f250a"
+  },
+  {
+    "file": "cblas_cgemm.c",
+    "source": "https://raw.githubusercontent.com/Reference-LAPACK/lapack/v3.10.0/CBLAS/src/cblas_cgemm.c",
+    "bytes": 3013,
+    "sha256": "7da8a60aec640c6019d56a148ce79b3c3db2ff257a71f9344f917d6b303d5873"
+  }
+]

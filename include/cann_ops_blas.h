@@ -24,6 +24,9 @@ typedef void (*aclblasLogCallback)(const char*);
 
 typedef struct _aclblas_handle* aclblasHandle_t;
 
+/** IEEE 754 binary16 storage. Host scalar pointers contain the half bit pattern. */
+typedef uint16_t aclblasHalf;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -643,6 +646,17 @@ aclblasStatus_t aclblasSgemmStridedBatched(
     aclblasHandle_t handle, aclblasOperation_t transA, aclblasOperation_t transB, int m, int n, int k,
     const float* alpha, const float* A, int lda, int64_t strideA, const float* B, int ldb, int64_t strideB,
     const float* beta, float* C, int ldc, int64_t strideC, int batchCount);
+
+/** Column-major binary16 strided-batch GEMM; host scalars, FP32 accumulation.
+ * Strides are nonnegative element offsets. Input batches may share storage;
+ * For nonempty outputs with batchCount > 1, strideC must be at least
+ * (n - 1) * ldc + m; overlapping output spans return INVALID_VALUE.
+ * beta=0 does not read old C.
+ */
+aclblasStatus_t aclblasHgemmStridedBatched(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
+    const aclblasHalf* alpha, const aclblasHalf* A, int lda, int64_t strideA, const aclblasHalf* B, int ldb,
+    int64_t strideB, const aclblasHalf* beta, aclblasHalf* C, int ldc, int64_t strideC, int batchCount);
 
 aclblasStatus_t aclblasCgemm3mStridedBatched(
     aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,

@@ -11,7 +11,7 @@
 #pragma once
 
 #include <cstdint>
-#include "gemm_strided_batched_ex_tiling_data.h"
+#include "common/helper/gemm_strided_tiling_arch35.h"
 
 void gemm_strided_batched_ex_kernel_do(
     uint32_t numBlocks, void* stream, uint8_t* a, uint8_t* b, uint8_t* c,

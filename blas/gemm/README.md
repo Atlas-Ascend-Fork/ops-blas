@@ -19,12 +19,47 @@ C = alpha * op(A) * op(B) + beta * C
 
 | 接口名 | 功能简述 |
 |--------|---------|
+| aclblasHgemmStridedBatched | 半精度固定步长批量矩阵乘法，FP32累加 |
 | aclblasSgemm | 单精度（FP32）通用矩阵乘法，支持矩阵转置和 alpha/beta 缩放 |
 | aclblasCgemm | 复数单精度（COMPLEX64）通用矩阵乘法，支持矩阵转置和 alpha/beta 缩放 |
 | aclblasCgemm3mStridedBatched | COMPLEX64 固定步长批量 GEMM，使用三次实数乘积 |
 | aclblasCgemmEx | 扩展复数通用矩阵乘法，A/B/C 可独立指定元素类型（Ascend 950） |
 
 ## 算子执行接口
+
+### aclblasHgemmStridedBatched
+
+#### 产品支持情况
+
+| 产品 | 支持情况 |
+| --- | --- |
+| Ascend 950PR | 支持 |
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasHgemmStridedBatched(aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k, const aclblasHalf* alpha, const aclblasHalf* A, int lda, int64_t strideA, const aclblasHalf* B, int ldb, int64_t strideB, const aclblasHalf* beta, aclblasHalf* C, int ldc, int64_t strideC, int batchCount)
+```
+
+公共头`include/cann_ops_blas.h`中的`aclblasHalf`保存IEEE754 binary16位模式，底层为16位无符号存储类型；例如1.0为`0x3c00`，不能把整数1的位模式当成半精度1.0。alpha/beta指向Host半精度标量，A/B/C指向Device半精度缓冲。
+
+对每个batch b计算`C_b=alpha*op(A_b)*op(B_b)+beta*C_b`，矩阵为列主序，元素地址为`base+b*stride+row+column*ld`。步长单位是元素而非字节，取非负int64_t；N/T/C均支持，实数C等价于T。A物理行数在N时为m、T/C时为k；B物理行数在N时为k、T/C时为n；相应ld至少为max(1,物理行数)，ldc至少为max(1,m)。A/B可共享只读存储，包括零步长；C的逻辑输出批次应互不重叠。
+
+先校验句柄、枚举、非负尺寸/批数、ld、stride和标量指针，再处理m/n/batchCount为零的合法no-op。有效输出且k>0时A/B/C均必须非空，包括alpha为零。k=0不读取A/B，仅缩放C；beta=0时不读取旧C，C为空时按该接口边界约定返回成功，非空时将逻辑输出置零。beta非零时C必须非空。仅覆写逻辑m×n区域，保留padding及batch间隙。
+
+计算使用FP16输入、FP32累加；一般alpha/beta合并保持FP32中间结果，最终RNE到FP16。工作区使用句柄有效工作区，按列条带和batch分组复用；用户注入工作区不足以容纳一个对齐FP32输出列时返回分配失败。操作提交至handle绑定stream，由调用者同步并检查异步错误。
+
+返回码包括SUCCESS、HANDLE_IS_NULLPTR、INVALID_ENUM、INVALID_VALUE及资源/执行失败。构建要求CANN9.1.0及Ascend950PR；完整精度、原始CSV、Netlib参考和复现入口见[测试说明](../../test/gemm/hgemmStridedBatched/README.md)。
+
+示例：已创建的handle绑定有效stream，dA/dB/dC各为至少512个半精度元素的设备缓冲，A/B已初始化。
+
+```cpp
+aclblasHalf alpha = 0x3c00; // binary16 1.0
+aclblasHalf beta = 0;       // binary16 0.0
+auto status = aclblasHgemmStridedBatched(handle, ACLBLAS_OP_N, ACLBLAS_OP_N,
+    16, 16, 16, &alpha, dA, 16, 256, dB, 16, 256, &beta, dC, 16, 256, 2);
+// 检查status后，以handle绑定的stream同步并检查执行状态。
+```
 
 ### aclblasSgemm
 

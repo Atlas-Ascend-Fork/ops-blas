@@ -9,7 +9,7 @@
  */
 
 /*!
- * \file gemm_strided_batched_ex_tiling_data.h
+ * \file gemm_strided_tiling_arch35.h
  * \brief Host/kernel contract for the DAV-3510 strided-batched GEMM implementation.
  */
 
