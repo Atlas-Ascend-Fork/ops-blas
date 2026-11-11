@@ -271,6 +271,8 @@ set_source_files_properties(
     PROPERTIES LANGUAGE ASC
 )
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/blas/symv/arch22/CMakeLists.txt")
+
 if(SOC_VERSION_LOWER MATCHES "^ascend950")
     # CSYMV's register-tiled hot loops need optimization even when the test build
     # is explicitly configured as Debug; the default build type is Release

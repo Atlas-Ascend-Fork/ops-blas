@@ -1,47 +1,70 @@
-# aclblasCsymv 自测
+# aclblasCsymv 测试
 
-## 范围
-
-- 硬件：Ascend 950PR（arch35）
-- CANN：9.1.0
-- 数据类型：`COMPLEX64`
-- 语义：`y = alpha * A * x + beta * y`，A 为列主序复数对称矩阵，未存储三角按转置读取且不取共轭
-
-`arch35/csymv_test.csv` 共 1202 条：1002 条功能/精度用例和 200 条性能参考用例。功能用例按固定种子奇偶选择均匀或正态输入，比例各 50%；未使用的矩阵三角填入 NaN，用于检测误读和错误共轭。
-
-## 构建
+加载 CANN 9.1.0 的 `set_env.sh` 后，在仓库根目录构建并运行：
 
 ```bash
-bash build.sh --soc=ascend950 --ops=csymv
-```
+# Atlas A2
+bash build.sh --soc=ascend910b3 --ops=csymv --run --device=0
 
-在 950PR 上使用仓库的测试入口运行全部用例：
+# Atlas A3
+bash build.sh --soc=Ascend910_9391 --ops=csymv --run --device=0
 
-```bash
+# Ascend 950PR
 bash build.sh --soc=ascend950 --ops=csymv --run --device=0
 ```
 
-若需分别保存精度和性能原始日志，构建后可直接调用 GTest 二进制：
+构建后可分别运行精度和性能用例：
 
 ```bash
-build/test/symv/csymv/csymv_test --gtest_filter='-*TC_PF*' | tee accuracy.log
-build/test/symv/csymv/csymv_test --gtest_filter='*TC_PF*' | tee performance.log
+export BLAS_DEVICE_ID=0
+build/test/symv/csymv/csymv_test --gtest_filter='-*TC_PF*'
+build/test/symv/csymv/csymv_test --gtest_filter='*TC_PF*'
 ```
 
-`--device` 指定逻辑设备索引；资源映射不同时可先设置 `ASCEND_RT_VISIBLE_DEVICES`。
+A2/A3 构建完成后，通过 CMake 目标执行自测和内存检查：
 
-## 测试口径
+```bash
+BLAS_DEVICE_ID=0 cmake --build build --target csymv_self_test
+BLAS_DEVICE_ID=0 cmake --build build --target csymv_memcheck
+```
 
-- 精度：实部、虚部分别使用 `rtol=2^-10`、`atol=2^-16`、匹配率至少 0.99，并限制逐元素最大绝对误差为 `max(1e-2, 32*ULP)`。
-- 特殊值：golden 为 NaN 时要求结果为 NaN；golden 为正负 Inf 时要求符号一致。
-- 性能：全部 200 条 `TC_PF` 用例逐条执行；每条先预热 10 次，再连续调用 60 次并同步 stream，使用平均耗时判定。
-- 判定：`NPU_ms <= GPU_ms / 0.4`，其中 `GPU_ms` 来自同目录 `gpu_baseline.csv`；前三条基线分别对应任务书的三项硬门槛。
+这两个目标分别调用本目录的 `run_self_test.py` 和 `run_memcheck.py`，并依赖
+`csymv_test`。自测核对 1244 条 CSV、200 条 GPU 基准、GTest 注册与实际执行清单，
+默认运行 1044 条精度用例及独立接口、边界测试。失败、跳过、漏执行或零用例均返回非零。
+结果写入 `build/test/symv/csymv/self_test/self_test_summary.json`。
 
-| uplo | n | 最大平均耗时 |
-|---|---:|---:|
-| UPPER | 512 | 22.75 us |
-| UPPER | 2048 | 55.62 us |
-| LOWER | 2048 | 40.25 us |
+内存检查要求已加载 CANN 环境且 `mssanitizer` 在 PATH 中，以 `--tool=memcheck`
+执行 TC_ED/TC_INC、GENERIC 的 incx=±2/±3、n=16/32/64、T64 的 n=697、
+T128 的 n=2048/4096、n=8192、Device 标量和 workspace 回退。
+不同 fixture 分进程运行，逐 kernel 配对检查 `Start memcheck` 与 `No error detected`；
+插桩缺失或诊断异常均失败。结果写入 `build/test/symv/csymv/memcheck/memcheck_summary.json`。
 
-性能日志为每条用例输出 case、uplo、n、NPU 平均耗时、GPU 基线、性能比、门槛和 PASS/FAIL。
-验收时应核对 200 条 `[PERF]` 均为 PASS，以及 GTest 的通过总数；不要只依赖末尾汇总。
+直接调用可指定设备、测试程序和输出目录；完整性能门禁额外检查全部 200 条性能判定：
+
+```bash
+python3 test/symv/csymv/run_self_test.py \
+  --binary build/test/symv/csymv/csymv_test --device 0 \
+  --output build/test/symv/csymv/full_self_test --include-performance
+python3 test/symv/csymv/run_memcheck.py \
+  --binary build/test/symv/csymv/csymv_test --device 0 \
+  --output build/test/symv/csymv/memcheck
+```
+
+A2/A3 的每条性能用例预热 5 次，再运行 100 次，取每次调用的 kernel 总耗时的平均值。全部 200 条用例报告 `GPU_us / NPU_us >= 0.8` 的达标情况，GPU 基准见 `arch22/gpu_baseline.csv`。前五条按任务书时延上限和该比例断言，其余用例仅报告性能判定。
+
+外部 kernel-only 采集器通过 `CSYMV_EXTERNAL_PROFILER=1` 接管计时：
+
+```bash
+CSYMV_EXTERNAL_PROFILER=1 \
+CSYMV_KERNEL_CSV=./kernel_activity.csv \
+LD_PRELOAD=/path/to/libcsymv_kernel_collector.so \
+  build/test/symv/csymv/csymv_test --gtest_filter='*TC_PF*'
+```
+
+外部采集器只订阅 MSPTI 的 kernel activity，不记录 Host 全量任务，不重放 kernel；直接输出起止时间 CSV。测试程序关闭内部 MSPTI，但保留完整公共 API 调用、数值校验、5 次真实预热和连续 100 次调用。100 次调用之间不插入同步，批末统一同步并校验结果。
+
+每条用例依次产生 1 次数值校验、5 次预热和 100 次批量调用的 kernel 记录。按用例执行顺序分组，每组跳过前 6 条，以后 100 条 kernel duration 的平均值作为 `NPU_us`，沿用原 GPU 基准和门限。记录不完整或数值校验失败时，该次结果无效；外部模式的 GTest 通过仅表示执行和数值校验通过，性能判定使用外部记录。
+
+`msprof op` 注入时也会关闭内部 MSPTI，避免采集器冲突；其逐 kernel 调优采集与上述 kernel-only 批量采集不同，不混用结果。
+
+Ascend 950PR 的全部 200 条性能用例要求 `GPU_us / NPU_us >= 0.4`，GPU 基准见 `arch35/gpu_baseline.csv`。
