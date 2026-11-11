@@ -17,6 +17,8 @@
 #include <cstdio>
 #include <string>
 #include <fstream>
+#include <sstream>
+#include <vector>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -68,6 +70,35 @@ aclblasStatus_t aclblasCtrsmBatched(
 #ifndef ERROR_LOG
 #define ERROR_LOG(fmt, args...) fprintf(stdout, "[ERROR]  " fmt "\n", ##args)
 #endif
+
+// 配置用例行可选尾列解析（trsm/ctrsm 批量测试 harness 共用）：
+// ldb（0=默认 n）、expect（1=期望入参校验拒绝），缺失或非法时保持默认值
+template <typename T>
+inline void ParseCfgOptionalColumns(std::istringstream& ss, T& ldb, T& expect)
+{
+    if (!(ss >> ldb) || ldb < 0) {
+        ldb = 0;
+    }
+    ss.clear();
+    if (!(ss >> expect) || expect < 0) {
+        expect = 0;
+    }
+}
+
+// 批量释放 device/host 指针数组（未分配的指针保持 nullptr，跳过）：device 侧
+// aclrtFree、host 侧 aclrtFreeHost（trsm/ctrsm 测试 harness 共用，两数组按 batch 等长）
+template <typename TD, typename TH>
+inline void FreeBatchPtrs(std::vector<TD*>& dev, std::vector<TH*>& host)
+{
+    for (size_t i = 0; i < host.size(); i++) {
+        if (dev[i] != nullptr) {
+            aclrtFree(dev[i]);
+        }
+        if (host[i] != nullptr) {
+            aclrtFreeHost(host[i]);
+        }
+    }
+}
 
 /**
  * @brief Read data from file

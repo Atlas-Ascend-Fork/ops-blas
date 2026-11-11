@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
+#include <algorithm>
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -76,7 +77,7 @@ static int LoadInputs(
     return 0;
 }
 
-// 将 device 结果回写 .bin，并释放所有 host/device 内存
+// 将 device 结果回写 .bin，并释放所有 host/device 内存（未分配的指针保持 nullptr，跳过）
 static int StoreOutputsAndFree(
     int32_t batchCount, size_t sizeB, std::vector<uint8_t*>& hostA, std::vector<uint8_t*>& hostB,
     std::vector<float*>& devA, std::vector<float*>& devB)
@@ -86,12 +87,8 @@ static int StoreOutputsAndFree(
         std::string fname = "output/output_b_" + std::to_string(i) + ".bin";
         WriteFile(fname, hostB[i], sizeB);
     }
-    for (int32_t i = 0; i < batchCount; i++) {
-        aclrtFree(devA[i]);
-        aclrtFreeHost(hostA[i]);
-        aclrtFree(devB[i]);
-        aclrtFreeHost(hostB[i]);
-    }
+    FreeBatchPtrs(devA, hostA);
+    FreeBatchPtrs(devB, hostB);
     return 0;
 }
 
@@ -125,7 +122,9 @@ static TrsmArgs ParseTrsmArgs(int32_t argc, char* argv[])
     a.lda = (a.sideI == 0) ? a.m : a.n;
     a.ldb = a.n;
     a.sizeA = (size_t)((a.sideI == 0) ? a.m : a.n) * a.lda * sizeof(float);
-    a.sizeB = (size_t)a.m * a.ldb * sizeof(float);
+    // B 分配长度取 max(真实足迹 (n-1)*ldb+m, 旧式 m*ldb)：覆盖 host alpha=0 的整段
+    // 清零范围与 kernel 的读写范围（m<n 默认步长时旧式 m*ldb 小于足迹，会越界写）
+    a.sizeB = std::max((size_t)(a.n - 1) * a.ldb + a.m, (size_t)a.m * a.ldb) * sizeof(float);
     return a;
 }
 
@@ -134,6 +133,8 @@ struct CfgCase {
     int32_t m, n, batch, side, uplo, transa, diag;
     float alpha;
     std::string tag;
+    int32_t ldb = 0; // 可选列（tag 之后）：>0 时按该步长调用；0 表示沿用默认 ldb=n
+    int32_t expect = 0; // 可选列（tag 之后）：1 表示期望被入参校验拒绝（ACLBLAS_STATUS_INVALID_VALUE）
 };
 
 // 运行单个配置用例：从 <tag>/input_*.bin 加载 -> 调用算子 -> 成功则写 <tag>/output_b_*.bin
@@ -141,20 +142,69 @@ struct CfgCase {
 static void FreeTrsmCaseBuffers(
     std::vector<uint8_t*>& hostA, std::vector<float*>& devA, std::vector<uint8_t*>& hostB, std::vector<float*>& devB)
 {
-    for (size_t j = 0; j < hostA.size(); j++) {
-        if (devA[j] != nullptr) {
-            aclrtFree(devA[j]);
+    FreeBatchPtrs(devA, hostA);
+    FreeBatchPtrs(devB, hostB);
+}
+
+// 普通用例（期望成功且 alpha!=0）的输入加载：分配 host/device 内存、读取 .bin 并拷贝到 device
+// 失败时不做内部释放，由调用方统一走 FreeTrsmCaseBuffers（未分配的指针保持 nullptr，跳过）
+static bool LoadTrsmCaseBuffers(
+    const CfgCase& c, size_t sizeA, size_t sizeB, std::vector<uint8_t*>& hostA, std::vector<uint8_t*>& hostB,
+    std::vector<float*>& devA, std::vector<float*>& devB)
+{
+    for (int32_t i = 0; i < c.batch; i++) {
+        // issue #479: 分配失败时不能继续对空指针拷贝，需报错并返回失败
+        if (aclrtMallocHost((void**)&hostA[i], sizeA) != ACL_SUCCESS ||
+            aclrtMalloc((void**)&devA[i], sizeA, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
+            aclrtMallocHost((void**)&hostB[i], sizeB) != ACL_SUCCESS ||
+            aclrtMalloc((void**)&devB[i], sizeB, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMalloc/aclrtMallocHost failed at %s:%d\n", __FILE__, __LINE__);
+            return false;
         }
-        if (hostA[j] != nullptr) {
-            aclrtFreeHost(hostA[j]);
+        std::string fnA = c.tag + "/input_a_" + std::to_string(i) + ".bin";
+        ReadFile(fnA, sizeA, hostA[i], sizeA);
+        if (aclrtMemcpy(devA[i], sizeA, hostA[i], sizeA, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMemcpy failed at %s:%d\n", __FILE__, __LINE__);
+            return false;
         }
-        if (devB[j] != nullptr) {
-            aclrtFree(devB[j]);
-        }
-        if (hostB[j] != nullptr) {
-            aclrtFreeHost(hostB[j]);
+        std::string fnB = c.tag + "/input_b_" + std::to_string(i) + ".bin";
+        ReadFile(fnB, sizeB, hostB[i], sizeB);
+        if (aclrtMemcpy(devB[i], sizeB, hostB[i], sizeB, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMemcpy failed at %s:%d\n", __FILE__, __LINE__);
+            return false;
         }
     }
+    return true;
+}
+
+// alpha=0 用例仅整段清零 B：只分配 B 的 host/device 缓冲（无需输入数据文件）
+static bool AllocTrsmZeroCaseBuffers(
+    const CfgCase& c, size_t sizeB, std::vector<uint8_t*>& hostB, std::vector<float*>& devB)
+{
+    for (int32_t i = 0; i < c.batch; i++) {
+        if (aclrtMallocHost((void**)&hostB[i], sizeB) != ACL_SUCCESS ||
+            aclrtMalloc((void**)&devB[i], sizeB, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
+            printf("[ERROR] aclrtMalloc/aclrtMallocHost failed at %s:%d\n", __FILE__, __LINE__);
+            return false;
+        }
+    }
+    return true;
+}
+
+// alpha=0 语义（X := 0）：断言整段 B 足迹（含最后一列）被清零
+static bool VerifyTrsmZeroed(size_t sizeB, const std::vector<uint8_t*>& hostB)
+{
+    const size_t count = sizeB / sizeof(float);
+    for (size_t i = 0; i < hostB.size(); i++) {
+        const float* vals = reinterpret_cast<const float*>(hostB[i]);
+        for (size_t k = 0; k < count; k++) {
+            if (vals[k] != 0.0f) {
+                printf("[ERROR] batch %zu: B[%zu]=%g not zeroed\n", i, k, vals[k]);
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 static bool RunOneTrsmCase(_aclblas_handle& handle, const CfgCase& c)
@@ -164,56 +214,44 @@ static bool RunOneTrsmCase(_aclblas_handle& handle, const CfgCase& c)
     aclblasOperation_t transa = (c.transa == 0) ? ACLBLAS_OP_N : ACLBLAS_OP_T;
     aclblasDiagType_t diag = (c.diag == 0) ? ACLBLAS_NON_UNIT : ACLBLAS_UNIT;
     int32_t lda = (c.side == 0) ? c.m : c.n;
-    int32_t ldb = c.n;
+    // 可选 ldb 列：>0 时使用配置步长（覆盖紧致 ldb=m 等场景）；0 时沿用原默认 ldb=n
+    int32_t ldb = (c.ldb > 0) ? c.ldb : c.n;
     size_t sizeA = (size_t)((c.side == 0) ? c.m : c.n) * lda * sizeof(float);
-    size_t sizeB = (size_t)c.m * ldb * sizeof(float);
+    // 自定义 ldb 时按 B 的真实足迹分配（列主序 m×n、步长 ldb，末元素下标 (n-1)*ldb + m-1）
+    // 两种分支统一取 max(足迹, m*ldb)：覆盖 host alpha=0 的整段清零范围与 kernel 读写范围
+    size_t sizeB = std::max((size_t)(c.n - 1) * ldb + c.m, (size_t)c.m * ldb) * sizeof(float);
 
     std::vector<uint8_t*> hostA(c.batch), hostB(c.batch);
     std::vector<float*> devA(c.batch), devB(c.batch);
-    for (int32_t i = 0; i < c.batch; i++) {
-        // issue #479: 分配失败时不能继续对空指针拷贝，需报错并释放已分配内存
-        if (aclrtMallocHost((void**)&hostA[i], sizeA) != ACL_SUCCESS ||
-            aclrtMalloc((void**)&devA[i], sizeA, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
-            aclrtMallocHost((void**)&hostB[i], sizeB) != ACL_SUCCESS ||
-            aclrtMalloc((void**)&devB[i], sizeB, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
-            printf("[ERROR] aclrtMalloc/aclrtMallocHost failed at %s:%d\n", __FILE__, __LINE__);
-            FreeTrsmCaseBuffers(hostA, devA, hostB, devB);
-            return false;
-        }
-        std::string fnA = c.tag + "/input_a_" + std::to_string(i) + ".bin";
-        ReadFile(fnA, sizeA, hostA[i], sizeA);
-        if (aclrtMemcpy(devA[i], sizeA, hostA[i], sizeA, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
-            printf("[ERROR] aclrtMemcpy failed at %s:%d\n", __FILE__, __LINE__);
-            FreeTrsmCaseBuffers(hostA, devA, hostB, devB);
-            return false;
-        }
-        std::string fnB = c.tag + "/input_b_" + std::to_string(i) + ".bin";
-        ReadFile(fnB, sizeB, hostB[i], sizeB);
-        if (aclrtMemcpy(devB[i], sizeB, hostB[i], sizeB, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS) {
-            printf("[ERROR] aclrtMemcpy failed at %s:%d\n", __FILE__, __LINE__);
-            FreeTrsmCaseBuffers(hostA, devA, hostB, devB);
-            return false;
-        }
+    // 校验拒绝用例（expect=1）不触碰设备内存；alpha=0 用例仅整段清零 B，均无需输入数据文件
+    bool loaded = true;
+    if (c.expect == 0 && c.alpha == 0.0f) {
+        loaded = AllocTrsmZeroCaseBuffers(c, sizeB, hostB, devB);
+    } else if (c.expect == 0) {
+        loaded = LoadTrsmCaseBuffers(c, sizeA, sizeB, hostA, hostB, devA, devB);
+    }
+    if (!loaded) {
+        FreeTrsmCaseBuffers(hostA, devA, hostB, devB);
+        return false;
     }
     std::vector<const float*> aArray(devA.begin(), devA.end());
     std::vector<float*> bArray(devB.begin(), devB.end());
     aclblasStatus_t status = aclblasStrsmBatchedEx(
         (aclblasHandle_t)&handle, side, uplo, transa, diag, c.m, c.n, &c.alpha, aArray.data(), lda, bArray.data(), ldb,
         c.batch);
-    bool ok = (status == ACLBLAS_STATUS_SUCCESS);
-    if (ok) {
+    // expect=1 的用例期望被入参校验拒绝；其余用例要求算子返回 SUCCESS
+    bool ok = (c.expect == 1) ? (status == ACLBLAS_STATUS_INVALID_VALUE) : (status == ACLBLAS_STATUS_SUCCESS);
+    if (ok && status == ACLBLAS_STATUS_SUCCESS) {
         for (int32_t i = 0; i < c.batch; i++) {
             CHECK_ACL_BOOL(aclrtMemcpy(hostB[i], sizeB, devB[i], sizeB, ACL_MEMCPY_DEVICE_TO_HOST));
             std::string fn = c.tag + "/output_b_" + std::to_string(i) + ".bin";
             WriteFile(fn, hostB[i], sizeB);
         }
+        if (c.alpha == 0.0f) {
+            ok = VerifyTrsmZeroed(sizeB, hostB);
+        }
     }
-    for (int32_t i = 0; i < c.batch; i++) {
-        aclrtFree(devA[i]);
-        aclrtFreeHost(hostA[i]);
-        aclrtFree(devB[i]);
-        aclrtFreeHost(hostB[i]);
-    }
+    FreeTrsmCaseBuffers(hostA, devA, hostB, devB);
     return ok;
 }
 
@@ -233,8 +271,11 @@ static int RunConfigMode(const char* cfgPath)
         CfgCase c;
         std::istringstream ss(line);
         ss >> c.m >> c.n >> c.batch >> c.side >> c.uplo >> c.transa >> c.diag >> c.alpha >> c.tag;
-        if (!ss.fail())
+        if (!ss.fail()) {
+            // 可选列 ldb/expect 语义见 aclblas_minimal.h 的 ParseCfgOptionalColumns
+            ParseCfgOptionalColumns(ss, c.ldb, c.expect);
             cases.push_back(c);
+        }
     }
     int32_t deviceId = 0;
     CHECK_ACL(aclInit(nullptr));
@@ -280,9 +321,21 @@ int32_t main(int32_t argc, char* argv[])
 
     std::vector<uint8_t*> hostA(a.batchCount), hostB(a.batchCount);
     std::vector<float*> devA(a.batchCount), devB(a.batchCount);
-    int loadRet = LoadInputs(a.batchCount, a.sizeA, a.sizeB, hostA, hostB, devA, devB);
-    if (loadRet != 0)
-        return loadRet;
+    // alpha=0 仅整段清零 B：跳过输入文件加载（A 不参与，B 由算子清零），避免
+    // m<n 时足迹大于 gen_data 的 m*n 文件长度导致 ReadFile 失败
+    if (a.alpha == 0.0f) {
+        for (int32_t i = 0; i < a.batchCount; i++) {
+            if (aclrtMallocHost((void**)&hostB[i], a.sizeB) != ACL_SUCCESS ||
+                aclrtMalloc((void**)&devB[i], a.sizeB, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
+                printf("[ERROR] aclrtMalloc/aclrtMallocHost failed at %s:%d\n", __FILE__, __LINE__);
+                return -1;
+            }
+        }
+    } else {
+        int loadRet = LoadInputs(a.batchCount, a.sizeA, a.sizeB, hostA, hostB, devA, devB);
+        if (loadRet != 0)
+            return loadRet;
+    }
 
     std::vector<const float*> aArray(devA.begin(), devA.end());
     std::vector<float*> bArray(devB.begin(), devB.end());

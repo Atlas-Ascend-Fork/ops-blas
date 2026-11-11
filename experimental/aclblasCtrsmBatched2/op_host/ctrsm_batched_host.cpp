@@ -237,6 +237,13 @@ static aclblasStatus_t LaunchCtrsmKernel(
         }
 
         size_t gemmWsSize = (size_t)effectiveBatch * td.workspaceOffset;
+        // master 上 LaunchCtrsmKernel 缺失 sysWsSize 计算导致无法编译，
+        // 按 trsm_batched_host.cpp 同款实现补齐（lib API workspace 下限 16MiB）
+        auto platformInst = platform_ascendc::PlatformAscendCManager::GetInstance(GetSocVersion());
+        size_t sysWsSize = static_cast<size_t>(platformInst->GetLibApiWorkSpaceSize());
+        if (sysWsSize < 16 * 1024 * 1024) {
+            sysWsSize = 16 * 1024 * 1024;
+        }
         if (aclrtMalloc((void**)&gemmWsDevice, gemmWsSize, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
             aclrtMemset(gemmWsDevice, gemmWsSize, 0, gemmWsSize) != ACL_SUCCESS ||
             aclrtMalloc((void**)&sysWsDevice, sysWsSize, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
@@ -281,7 +288,7 @@ static aclblasStatus_t ValidateCtrsmArgs(
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     int64_t minLda = (side == ACLBLAS_SIDE_LEFT) ? std::max((int64_t)1, m) : std::max((int64_t)1, n);
-    if (lda < minLda || ldb < std::max((int64_t)1, n)) {
+    if (lda < minLda || ldb < std::max((int64_t)1, m)) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     return ACLBLAS_STATUS_SUCCESS;
@@ -306,7 +313,10 @@ aclblasStatus_t aclblasCtrsmBatched(
     float alphaImag = alpha->imag();
     if (alphaReal == 0.0f && alphaImag == 0.0f) {
         for (int64_t i = 0; i < batchCount; i++) {
-            size_t bytes = (size_t)m * ldb * 2 * sizeof(float);
+            // B 为 m×n 复数列主序（步长 ldb，每元素 2 个 float），真实足迹为
+            // (n-1)*ldb + m 个复元素；该路径 m >= 1 且 n >= 1（m == 0 || n == 0 已在前序提前返回）
+            size_t bytes =
+                (static_cast<size_t>(n - 1) * static_cast<size_t>(ldb) + static_cast<size_t>(m)) * 2 * sizeof(float);
             CHECK_RET(aclrtMemset(bArray[i], bytes, 0, bytes) == ACL_SUCCESS, return ACLBLAS_STATUS_INTERNAL_ERROR);
         }
         return ACLBLAS_STATUS_SUCCESS;

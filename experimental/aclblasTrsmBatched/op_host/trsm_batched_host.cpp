@@ -329,7 +329,7 @@ extern "C" aclblasStatus_t aclblasStrsmBatchedEx(
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     int64_t minLda = (side == ACLBLAS_SIDE_LEFT) ? std::max((int64_t)1, m) : std::max((int64_t)1, n);
-    if (lda < minLda || ldb < std::max((int64_t)1, n)) {
+    if (lda < minLda || ldb < std::max((int64_t)1, m)) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (m == 0 || n == 0 || batchCount == 0) {
@@ -337,7 +337,10 @@ extern "C" aclblasStatus_t aclblasStrsmBatchedEx(
     }
     if (*alpha == 0.0f) {
         for (int64_t i = 0; i < batchCount; i++) {
-            size_t bytes = (size_t)m * ldb * sizeof(float);
+            // B 为 m×n 列主序（步长 ldb），真实足迹为最后一列末元素下标 (n-1)*ldb + m；
+            // 该路径 m >= 1 且 n >= 1（m == 0 || n == 0 已在前序提前返回）
+            size_t bytes =
+                (static_cast<size_t>(n - 1) * static_cast<size_t>(ldb) + static_cast<size_t>(m)) * sizeof(float);
             CHECK_RET(aclrtMemset(bArray[i], bytes, 0, bytes) == ACL_SUCCESS, return ACLBLAS_STATUS_INTERNAL_ERROR);
         }
         return ACLBLAS_STATUS_SUCCESS;
