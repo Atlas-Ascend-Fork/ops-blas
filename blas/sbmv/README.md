@@ -15,6 +15,7 @@ y = alpha * A * x + beta * y
 | 接口名 | 功能简述 |
 |--------|---------|
 | aclblasSsbmv | 单精度浮点对称带状矩阵-向量乘法 |
+| aclblasChbmv | 单精度复数 Hermitian 带状矩阵-向量乘法 |
 
 ## 算子执行接口
 
@@ -212,3 +213,42 @@ int main()
     return 0;
 }
 ```
+
+### aclblasChbmv
+
+#### 产品支持情况
+
+- Ascend 950PR：支持
+- 其他产品：不支持
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasChbmv(aclblasHandle_t handle, aclblasFillMode_t uplo, int n, int k, const aclblasComplex* alpha, const aclblasComplex* A, int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y, int incy)
+```
+
+#### 参数说明
+
+| 参数名 | 输入/输出 | 参数类型 | 说明 |
+|--------|----------|---------|------|
+| handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带执行 stream，Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | 指定厄米特带状矩阵 A 存储上三角带（`ACLBLAS_UPPER`）或下三角带（`ACLBLAS_LOWER`），Host 内存 |
+| n | 输入 | int | 厄米特带状矩阵 A 的行数和列数，n >= 0，Host 内存 |
+| k | 输入 | int | 矩阵 A 的超对角线（或次对角线）条数（半带宽），k >= 0，Host 内存 |
+| alpha | 输入 | const aclblasComplex*（COMPLEX64） | 复数标量乘数，Host 内存 |
+| A | 输入 | const aclblasComplex*（COMPLEX64） | 厄米特带状矩阵，列主序带状紧凑存储，物理维度为 lda x n，对角线元素虚部假定为 0（不参与读取），未存储侧按共轭对称推断，Device 内存 |
+| lda | 输入 | int | 用于存储带状矩阵 A 的二维数组的主维，lda >= k + 1，Host 内存 |
+| x | 输入 | const aclblasComplex*（COMPLEX64） | 输入复数向量，包含 n 个逻辑元素，Device 内存 |
+| incx | 输入 | int | x 中连续元素之间的步长，支持正负非零值（incx != 0），Host 内存 |
+| beta | 输入 | const aclblasComplex*（COMPLEX64） | 复数标量乘数；当 beta == (0, 0) 时不读取 y 的输入值，Host 内存 |
+| y | 输入/输出 | aclblasComplex*（COMPLEX64） | 输入/输出复数向量，包含 n 个逻辑元素，原地写回计算结果，Device 内存 |
+| incy | 输入 | int | y 中连续元素之间的步长，支持正负非零值（incy != 0），Host 内存 |
+
+#### 约束说明
+
+- n >= 0（n == 0 时在校验 handle 非空后直接返回 `ACLBLAS_STATUS_SUCCESS`）
+- k >= 0
+- lda >= k + 1
+- incx != 0，incy != 0
+- uplo 仅支持 `ACLBLAS_UPPER` 和 `ACLBLAS_LOWER`
+- 对角线元素仅实部参与计算，虚部忽略（按 0 处理）；非对角对称位置自动取复共轭 `conj(A[j, i])`
