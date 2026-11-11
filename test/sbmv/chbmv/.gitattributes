@@ -1,0 +1,2 @@
+# Preserve the published task CSV byte identity used by coverage generators.
+arch22/chbmv_test.csv -text whitespace=cr-at-eol

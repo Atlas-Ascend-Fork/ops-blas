@@ -1,0 +1,227 @@
+{
+  "status": "GENERATED_COVERAGE_NOT_NPU_EXECUTED",
+  "source_sha256": {
+    "chbmv_test.csv": "190f8cd07fa4691051280ae421ecb8c721e63dd4abecc519e0beaf35613b658f",
+    "chbmv_supplement_test.csv": "69ac4d00bc155224313a4a2672d929c13b354169ec3ac5125603c70a8fd1c347",
+    "gpu_baseline.csv": "dd2cb87a50589bde139bd42014e911eb4c8c05f31aac0fbdfb0633359bad4369"
+  },
+  "original_main_rows": 1200,
+  "original_supplement_rows": 131,
+  "gaussian_mirror_rows": 1194,
+  "csv_total": 2525,
+  "numeric_compare_csv_rows": 2484,
+  "original_pf_rows": 200,
+  "gaussian_mirrors_from_original_pf_are_accuracy_only": 200,
+  "directed_ut_names": [
+    "ChbmvTest.NullHandlePrecedesQuickReturn",
+    "ChbmvTest.ZeroDimensionDoesNotWrite",
+    "ChbmvTest.DiagonalImaginaryAndUnusedCellsNaN",
+    "ChbmvTest.BetaOneMixedInfinityKeepsFiniteComponent"
+  ],
+  "directed_ut_count": 4,
+  "all_registered_gtest_count": 2529,
+  "mirror_source_counts": {
+    "chbmv_test.csv": 1176,
+    "chbmv_supplement_test.csv": 18
+  },
+  "optional_csv_omitted_registry": {
+    "gaussian_absent_main_and_supplement_present": 1335
+  },
+  "scalar_origin_facts": {
+    "official_task_zip_sha256": "152a3b97380f893a925ae638bf5b4fedad1afd9ec7fce477c80261f2ab98abf2",
+    "official_gen_csv_py_sha256": "69e262093a8729894b46bd19ea572b02624628dd3dd0571a40147a4fd1519388",
+    "official_random_methods": [
+      "randrange"
+    ],
+    "official_uniform_or_gaussian_scalar_calls": 0,
+    "official_scalar_origin": "All original alpha/beta values are fixed SCALARS/literals/null; never random.uniform",
+    "official_scalar_functions": {
+      "TC_AB": "Gen.l2_scalar / fixed SCALARS",
+      "TC_EX": "Gen.ex_extend / fixed SCALARS",
+      "TC_PF": "Gen.perf / fixed alpha=(1,0), beta=(0,0)",
+      "others": "Gen.l0_basic/l1_size/l1b_band/l4_ld_inc/l5_fill/l5b_cover/l6_edge / fixed literals"
+    },
+    "supplement_random_scalar_origin": "Only TC_SU_DIST_*_U/G, from gen_supplement.scalars; 48 pairs",
+    "mirror_scalar_rule": "Preserve every fixed scalar exactly. Selected source rows contain no random scalar draw.",
+    "scalar_gaussian_draws_added_by_this_mirror": 0
+  },
+  "before": {
+    "tensor_components": {
+      "A": {
+        "uniform": {
+          "generated_real": 287263711,
+          "generated_imag": 287263711,
+          "mathematically_referenced_real": 204623830,
+          "mathematically_referenced_imag": 203999371
+        },
+        "gaussian": {
+          "generated_real": 1268152,
+          "generated_imag": 1268152,
+          "mathematically_referenced_real": 1036304,
+          "mathematically_referenced_imag": 1025096
+        },
+        "fixed_or_special": {
+          "generated_real": 800,
+          "generated_imag": 800,
+          "mathematically_referenced_real": 694,
+          "mathematically_referenced_imag": 502
+        }
+      },
+      "x": {
+        "uniform": {
+          "generated_real": 686350,
+          "generated_imag": 686350,
+          "mathematically_referenced_real": 624439,
+          "mathematically_referenced_imag": 624439
+        },
+        "gaussian": {
+          "generated_real": 11208,
+          "generated_imag": 11208,
+          "mathematically_referenced_real": 11208,
+          "mathematically_referenced_imag": 11208
+        },
+        "fixed_or_special": {
+          "generated_real": 212,
+          "generated_imag": 212,
+          "mathematically_referenced_real": 212,
+          "mathematically_referenced_imag": 212
+        }
+      },
+      "y": {
+        "uniform": {
+          "generated_real": 686198,
+          "generated_imag": 686198,
+          "mathematically_referenced_real": 155619,
+          "mathematically_referenced_imag": 155619
+        },
+        "gaussian": {
+          "generated_real": 11208,
+          "generated_imag": 11208,
+          "mathematically_referenced_real": 11208,
+          "mathematically_referenced_imag": 11208
+        },
+        "fixed_or_special": {
+          "generated_real": 364,
+          "generated_imag": 364,
+          "mathematically_referenced_real": 194,
+          "mathematically_referenced_imag": 194
+        }
+      }
+    },
+    "scalar_components": {
+      "alpha": {
+        "uniform": 96,
+        "gaussian": 96,
+        "fixed_nonrandom": 2388
+      },
+      "beta": {
+        "uniform": 96,
+        "gaussian": 96,
+        "fixed_nonrandom": 2388
+      }
+    },
+    "tensor_uniform_gaussian_equal_by_parameter": {
+      "A": false,
+      "x": false,
+      "y": false
+    },
+    "random_scalar_uniform_gaussian_equal_by_parameter": {
+      "alpha": true,
+      "beta": true
+    },
+    "fixed_special_and_no_numeric_rows_are_separate_strata": true,
+    "all_scalar_values_including_fixed_claimed_50_50": false,
+    "unit": "unique generated input components per numeric comparison, not repeated PF launches",
+    "matrix_diagonal_imaginary_and_padding_draws": "generated counts include them; mathematical counts exclude them"
+  },
+  "after": {
+    "tensor_components": {
+      "A": {
+        "uniform": {
+          "generated_real": 287263711,
+          "generated_imag": 287263711,
+          "mathematically_referenced_real": 204623830,
+          "mathematically_referenced_imag": 203999371
+        },
+        "gaussian": {
+          "generated_real": 287263711,
+          "generated_imag": 287263711,
+          "mathematically_referenced_real": 204623830,
+          "mathematically_referenced_imag": 203999371
+        },
+        "fixed_or_special": {
+          "generated_real": 1600,
+          "generated_imag": 1600,
+          "mathematically_referenced_real": 1388,
+          "mathematically_referenced_imag": 1004
+        }
+      },
+      "x": {
+        "uniform": {
+          "generated_real": 686350,
+          "generated_imag": 686350,
+          "mathematically_referenced_real": 624439,
+          "mathematically_referenced_imag": 624439
+        },
+        "gaussian": {
+          "generated_real": 686350,
+          "generated_imag": 686350,
+          "mathematically_referenced_real": 624439,
+          "mathematically_referenced_imag": 624439
+        },
+        "fixed_or_special": {
+          "generated_real": 424,
+          "generated_imag": 424,
+          "mathematically_referenced_real": 424,
+          "mathematically_referenced_imag": 424
+        }
+      },
+      "y": {
+        "uniform": {
+          "generated_real": 686198,
+          "generated_imag": 686198,
+          "mathematically_referenced_real": 155619,
+          "mathematically_referenced_imag": 155619
+        },
+        "gaussian": {
+          "generated_real": 686198,
+          "generated_imag": 686198,
+          "mathematically_referenced_real": 155619,
+          "mathematically_referenced_imag": 155619
+        },
+        "fixed_or_special": {
+          "generated_real": 728,
+          "generated_imag": 728,
+          "mathematically_referenced_real": 388,
+          "mathematically_referenced_imag": 388
+        }
+      }
+    },
+    "scalar_components": {
+      "alpha": {
+        "uniform": 96,
+        "gaussian": 96,
+        "fixed_nonrandom": 4776
+      },
+      "beta": {
+        "uniform": 96,
+        "gaussian": 96,
+        "fixed_nonrandom": 4776
+      }
+    },
+    "tensor_uniform_gaussian_equal_by_parameter": {
+      "A": true,
+      "x": true,
+      "y": true
+    },
+    "random_scalar_uniform_gaussian_equal_by_parameter": {
+      "alpha": true,
+      "beta": true
+    },
+    "fixed_special_and_no_numeric_rows_are_separate_strata": true,
+    "all_scalar_values_including_fixed_claimed_50_50": false,
+    "unit": "unique generated input components per numeric comparison, not repeated PF launches",
+    "matrix_diagonal_imaginary_and_padding_draws": "generated counts include them; mathematical counts exclude them"
+  },
+  "gaussian_csv_sha256": "a70b43f7e6a79ecc86873b5776cb2424de7ce198db0bad88c1d50daf4dfd23dd"
+}
