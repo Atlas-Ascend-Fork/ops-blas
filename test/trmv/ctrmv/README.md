@@ -53,7 +53,7 @@ bash build.sh --ops=ctrmv --soc=ascend950
 ## Test Execution
 ```bash
 # Full accuracy suite (precision cases only; perf cases excluded)
-./build/test/trmv/ctrmv/ctrmv_test --gtest_filter='*:*' '-*TC_PF*'
+./build/test/trmv/ctrmv/ctrmv_test --gtest_filter='*-*TC_PF*'
 
 # Perf cases (warmup 10 + 100 samples, prints avg_single_us per case)
 ./build/test/trmv/ctrmv/ctrmv_test --gtest_filter='*TC_PF*'
@@ -64,7 +64,7 @@ python3 verify_performance.py --repo /path/to/ops-blas --soc ascend950
 ```
 
 ## Expected Result
-- Accuracy: `[  PASSED  ] 1200 tests.` (verified on Ascend 950PR, CANN 9.1.0)
+- Accuracy: `[  PASSED  ] 1004 tests.` (precision cases only; 200 perf cases excluded)
 - Perf (task spec §3.3 baseline, warmup + >50 samples avg):
   | case | n | uplo | trans | diag | baseline (us) | measured (us) | verdict |
   |---|---|---|---|---|---|---|
@@ -93,5 +93,5 @@ python3 verify_performance.py --repo /path/to/ops-blas --soc ascend950
 ## Test Steps (reproducible)
 1. Source CANN env: `source /usr/local/Ascend/cann-9.1.0/set_env.sh`
 2. Build: `cd /workspace/ops-blas && bash build.sh --ops=ctrmv --soc=ascend950`
-3. Accuracy: `./build/test/trmv/ctrmv/ctrmv_test --gtest_filter='*:*' '-*TC_PF*'` → expect `[  PASSED  ] 1004 tests.`
+3. Accuracy: `./build/test/trmv/ctrmv/ctrmv_test --gtest_filter='*-*TC_PF*'` → expect `[  PASSED  ] 1004 tests.`
 4. Perf: `./build/test/trmv/ctrmv/ctrmv_test --gtest_filter='*TC_PF*'` → expect 200 PASS with avg_single_us ≤ baseline
