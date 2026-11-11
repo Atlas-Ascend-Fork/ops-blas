@@ -42,7 +42,6 @@ For the local Release/O2 build on 910B:
 
 ```bash
 source /usr/local/Ascend/cann-9.1.0-beta.3/set_env.sh
-export LINUX_INCLUDE_PATH=/usr/local/Ascend/cann-9.1.0-beta.3/aarch64-linux/include
 export EAGER_LIBRARY_PATH=/usr/local/Ascend/cann-9.1.0-beta.3/aarch64-linux/lib64
 cmake -S . -B build-o2 -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_ASC_FLAGS_RELEASE='-O2 -DNDEBUG' \
@@ -76,7 +75,6 @@ and retain the existing MERE/MARE thresholds and nonfinite-value checks.
 set -e -o pipefail
 source /usr/local/Ascend/cann-9.1.0/set_env.sh
 export EAGER_LIBRARY_PATH=/usr/local/Ascend/cann-9.1.0/x86_64-linux/lib64
-export LINUX_INCLUDE_PATH=/usr/local/Ascend/cann-9.1.0/x86_64-linux/include
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DREFBLAS_LIB=/usr/lib/x86_64-linux-gnu/blas/libblas.so.3 \
   -DCTRSV_NETLIB_LIBRARY=/usr/lib/x86_64-linux-gnu/blas/libblas.so.3 \

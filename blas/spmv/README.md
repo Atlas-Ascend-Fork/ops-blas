@@ -256,7 +256,6 @@ source /usr/local/Ascend/cann-9.1.0/set_env.sh
 export CHPMV_NETLIB_CBLAS=/absolute/path/netlib-build/lib/libcblas.so.3.10.0
 export CHPMV_NETLIB_BLAS=/absolute/path/netlib-build/lib/libblas.so.3.10.0
 export BLAS_DEVICE_ID=0
-export LINUX_INCLUDE_PATH="$ASCEND_HOME_PATH/include"
 export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64"
 cmake -S . -B build -DSOC_VERSION=ascend950 -DBUILD_TEST=ON -DTEST_NAMES=chpmv \
   -DREFBLAS_INCLUDE_DIR=/absolute/path/netlib-build/include \

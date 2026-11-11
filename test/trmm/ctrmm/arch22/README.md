@@ -11,7 +11,6 @@ Inf/NaN 回归须使用与验收一致的参考库构建。已确认的验收库
 
 ```bash
 source /usr/local/Ascend/cann/bin/setenv.bash
-export LINUX_INCLUDE_PATH="$ASCEND_HOME_PATH/$(uname -m)-linux/include"
 export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64"
 cmake -S . -B build-ctrmm \
   -DSOC_VERSION=ascend910b3 -DBUILD_TEST=ON -DTEST_NAMES=ctrmm \

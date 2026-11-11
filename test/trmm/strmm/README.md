@@ -26,7 +26,6 @@ arch35 仍使用原有测试和构建路径。
 ```bash
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
 export INCLUDE_PATH="$ASCEND_HOME_PATH/include"
-export LINUX_INCLUDE_PATH="$ASCEND_HOME_PATH/$(uname -m)-linux/include"
 export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64"
 cmake -S . -B build -DSOC_VERSION=ascend910b3 -DBUILD_TEST=ON -DTEST_NAMES=strmm \
   -DREFBLAS_LIB=/usr/lib64/libblas.so -DREFBLAS_INCLUDE_DIR=/usr/include/openblas \

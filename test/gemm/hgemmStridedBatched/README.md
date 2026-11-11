@@ -63,7 +63,6 @@ source /usr/local/Ascend/cann-9.1.0/set_env.sh
 TEST=test/gemm/hgemmStridedBatched
 python3 "$TEST/reference/build_reference.py" build-memcheck/reference
 export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64"
-export LINUX_INCLUDE_PATH="$ASCEND_HOME_PATH/x86_64-linux/include"
 cmake -S . -B build-memcheck -DSOC_VERSION=ascend950 -DCMAKE_BUILD_TYPE=Release \
   -DASCEND_CANN_PACKAGE_PATH="$ASCEND_HOME_PATH" \
   -DCMAKE_PREFIX_PATH="$ASCEND_HOME_PATH/lib64/cmake" \

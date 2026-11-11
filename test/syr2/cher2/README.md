@@ -52,7 +52,6 @@ export NETLIB_BUILD=$(realpath netlib-build)
 
 ```bash
 source /usr/local/Ascend/cann/set_env.sh
-export LINUX_INCLUDE_PATH=$ASCEND_HOME_PATH/include
 export EAGER_LIBRARY_PATH=$ASCEND_HOME_PATH/lib64
 export LD_LIBRARY_PATH=$NETLIB_BUILD/lib:$LD_LIBRARY_PATH
 cmake -S . -B build -DSOC_VERSION=ascend950 -DBUILD_TEST=ON -DTEST_NAMES=cher2 \

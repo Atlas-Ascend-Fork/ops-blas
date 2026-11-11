@@ -31,7 +31,6 @@ export NETLIB_LAPACK="${NETLIB_ROOT}/usr/lib/x86_64-linux-gnu/lapack"
 test -f "${NETLIB_INCLUDE}/cblas-netlib.h"
 test -e "${NETLIB_INCLUDE}/cblas.h" || ln -s cblas-netlib.h "${NETLIB_INCLUDE}/cblas.h"
 export EAGER_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64"
-export LINUX_INCLUDE_PATH="${ASCEND_HOME_PATH}/x86_64-linux/include"
 export LD_LIBRARY_PATH="${NETLIB_BLAS}:${NETLIB_LAPACK}:${EAGER_LIBRARY_PATH}:${PWD}/build:${LD_LIBRARY_PATH}"
 cmake -S . -B build \
   -DBUILD_TEST=ON -DTEST_NAMES=chpr -DSOC_VERSION=ascend950 \

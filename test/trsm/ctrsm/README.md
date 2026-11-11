@@ -31,10 +31,10 @@ OpenBLAS 虽然提供同名 CBLAS 接口，但极值和 Inf / NaN 的结果可�
 ```bash
 source /usr/local/Ascend/cann-9.1.0/set_env.sh
 export EAGER_LIBRARY_PATH=/usr/local/Ascend/cann-9.1.0/x86_64-linux/lib64
-export LINUX_INCLUDE_PATH=/usr/local/Ascend/cann-9.1.0/x86_64-linux/include
 ```
 
-`EAGER_LIBRARY_PATH` 和 `LINUX_INCLUDE_PATH` 请根据实际 CANN 安装目录调整。上述路径已在
+`EAGER_LIBRARY_PATH` 请根据实际 CANN 安装目录调整。include 路径已由构建系统从
+`ASCEND_CANN_PACKAGE_PATH` 统一推导，无需手动导出。上述路径已在
 Ascend 950PR / CANN 9.1.0 正式版环境验证。
 
 ## 编译

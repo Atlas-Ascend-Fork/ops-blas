@@ -8,7 +8,6 @@
 
 ```bash
 source /usr/local/Ascend/cann-9.1.0/set_env.sh
-export LINUX_INCLUDE_PATH="$ASCEND_HOME_PATH/$(uname -m)-linux/include"
 export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64"
 cmake -S . -B build-release -DSOC_VERSION=ascend950 \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TEST=ON -DTEST_NAMES=csyr2 \

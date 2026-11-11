@@ -7,7 +7,6 @@
 ```bash
 source /path/to/cann/set_env.sh
 export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64"
-export LINUX_INCLUDE_PATH="$ASCEND_HOME_PATH/include"
 bash build.sh --ops=chpr2 --soc=ascend950
 cmake --build build --target chpr2_test -j8
 TEST=build/test/spr2/chpr2/chpr2_test

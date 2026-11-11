@@ -23,8 +23,7 @@ Golden 由 `test/sbmv/ssbmv/ssbmv_golden.h` 调用 **Netlib `cblas_ssbmv`** 生�
 
 ```bash
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
-# 两个变量 set_env.sh 不设置；为空时测试目标会去链 /libascendcl.so 并报 "acl/acl.h: No such file"
-export LINUX_INCLUDE_PATH=/usr/local/Ascend/ascend-toolkit/latest/include
+# 该变量 set_env.sh 不设置；为空时测试目标会去链 /libascendcl.so 并报 "acl/acl.h: No such file"
 export EAGER_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/lib64
 cd <ops-blas>
 # 注意：测试目标由 BUILD_TEST + TEST_NAMES 控制，缺一不可

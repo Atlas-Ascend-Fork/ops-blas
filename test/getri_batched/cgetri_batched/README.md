@@ -30,7 +30,6 @@ PIVOT 输入通过 LAPACK `cgetrf_` 得到 LU 和 1-based pivot，NO_PIVOT 输�
 ```bash
 source /usr/local/Ascend/cann-9.1.0-beta.3/set_env.sh
 export PATH=/workspace/venvs/pytorch-npu/bin:$PATH
-export LINUX_INCLUDE_PATH="$ASCEND_HOME_PATH/$(uname -m)-linux/include"
 export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64"
 bash build.sh --soc=ascend950 --ops=cgetri_batched --device=0
 ```

@@ -151,8 +151,7 @@ DIRS_GRANTED_WRITE=()
 grant_write_if_needed() {
   local dir="$1"
   if [ -d "${dir}" ] && [ ! -w "${dir}" ]; then
-    chmod u+w "${dir}" 2>/dev/null
-    if [ $? -eq 0 ]; then
+    if chmod u+w "${dir}" 2>/dev/null; then
       DIRS_GRANTED_WRITE+=("${dir}")
     else
       logandprint "[WARNING]: Failed to grant write permission on ${dir}."

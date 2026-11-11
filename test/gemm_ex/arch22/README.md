@@ -38,7 +38,6 @@ kernel replay采用公共默认stream，使CANN9.1回放快照恢复与被测调
 
 ```bash
 source /path/to/cann-9.1.0/set_env.sh
-export LINUX_INCLUDE_PATH="${ASCEND_HOME_PATH}/include"
 export EAGER_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64"
 cmake -S . -B build -DSOC_VERSION=ascend910b3 \
   -DBUILD_TEST=ON '-DTEST_NAMES=gemm_ex;sgemm_ex;cgemm_ex' \

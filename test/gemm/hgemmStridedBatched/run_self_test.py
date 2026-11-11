@@ -35,7 +35,7 @@ def build(repo):
     build_reference(ref)
     cann = Path(os.environ.get("ASCEND_HOME_PATH", "/usr/local/Ascend/cann-9.1.0"))
     env = os.environ.copy()
-    env.update(EAGER_LIBRARY_PATH=str(cann / "lib64"), LINUX_INCLUDE_PATH=str(cann / "x86_64-linux/include"))
+    env.update(EAGER_LIBRARY_PATH=str(cann / "lib64"))
     subprocess.run(
         [
             tool_path("cmake"),

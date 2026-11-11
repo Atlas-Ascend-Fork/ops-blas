@@ -200,7 +200,6 @@ test/tbsv/ctbsv/
 source /usr/local/Ascend/cann-9.1.0/set_env.sh
 cd /path/to/ops-blas
 
-export LINUX_INCLUDE_PATH="$ASCEND_HOME_PATH/include"
 export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64"
 
 # Atlas A2（Ascend 910B3）

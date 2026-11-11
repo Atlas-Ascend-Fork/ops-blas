@@ -9,7 +9,6 @@
 ```bash
 source /usr/local/Ascend/cann-9.1.0/set_env.sh
 export EAGER_LIBRARY_PATH=$ASCEND_HOME_PATH/lib64
-export LINUX_INCLUDE_PATH=$ASCEND_HOME_PATH/$(uname -m)-linux/include
 bash build.sh --soc=ascend910b3 --ops=cgemm_strided_batched --device=0
 export LD_LIBRARY_PATH=$PWD/build:$ASCEND_HOME_PATH/lib64:$LD_LIBRARY_PATH
 build/test/cgemm_strided_batched/cgemm_strided_batched_test
