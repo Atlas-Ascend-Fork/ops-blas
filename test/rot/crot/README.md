@@ -46,10 +46,10 @@ bash build.sh --soc=ascend950 --ops=crot
 ASCEND_DEVICE_ID=1 ./build/test/rot/crot/crot_test --gtest_filter='-*TC_PF*'
 ```
 
-或用随任务提供的脚本（会自行编译并解析结果）：
+或用自检门禁脚本（会自行编译并解析结果，详见下文「自检门禁」）：
 
 ```bash
-python3 verify_accuracy.py --repo <repo-root> --soc ascend950 --csv ./crot_test.csv
+python3 test/rot/crot/run_self_test.py --repo <repo-root> --device 0
 ```
 
 ## CSV 列说明
@@ -64,17 +64,21 @@ python3 verify_accuracy.py --repo <repo-root> --soc ascend950 --csv ./crot_test.
 | `c` | 旋转余弦（实数） |
 | `s_real` / `s_imag` | 旋转正弦（复数）的实部/虚部 |
 | `expect_result` | 期望返回码（`ACLBLAS_STATUS_SUCCESS` / `ACLBLAS_STATUS_INVALID_VALUE`） |
-| `mere_threshold` / `mare_multiplier` | 精度阈值参数（实部/虚部分别应用） |
+| `mere_threshold` / `mare_multiplier` | 模板保留列（与同族工程 CSV 格式对齐），当前判定实现未消费该列（见下文「判定逻辑」） |
 | `random_seed` | 填充用随机种子（虚部使用 `seed + 1000`） |
 | `cs_ptr_mode` | c/s 标量指针位置：`host` / `device` / `mixed` |
 
 ## 判定逻辑
 
 - **返回码**：与 `expect_result` 严格相等；非 SUCCESS 的用例只比对返回码。
-- **精度**：golden 由 `crot_golden.h` 在 CPU 上按任务书 §2.1.1 公式重算，实部/虚部分别按
-  `|actual - golden| <= atol + rtol*|golden|` 判定，`atol = rtol = 2^-13`，
-  要求 `matched_ratio >= 0.99` 且 `max_abs_error <= max(1e-2, 32*ULP)`。
-- **特殊值**：输入含 NaN 时要求输出实部/虚部全为 NaN；单位旋转（c=1,s=0）按逐位相等判定。
+- **精度**：golden 由 `crot_golden.h` 在 CPU 上按任务书 §2.1.1 公式重算，实部/虚部分别经
+  `applyMixedTolerance(ACL_FLOAT)` 取容差（`atol = rtol = 2^-13`，即
+  `test/frame/mixed_tolerance.h` 的 ACL_FLOAT 默认值），经 `Verifier::verifyVector` 按
+  `|actual - golden| <= atol + rtol*|golden|` 判定，要求 `matched_ratio >= 0.99` 且
+  `max_abs_error <= max(1e-2, 32*ULP)`。CSV 的 `mere_threshold` / `mare_multiplier`
+  列为模板保留字段，当前不参与判定。
+- **特殊值**：输入含 NaN 时要求输出实部/虚部全为 NaN；单位旋转（c=1,s=0）与普通用例
+  一致走混合容差判定，无逐位相等/EXACT 比对分支。
 - **n <= 0**：只比对返回码（应为 SUCCESS），并确认 x/y 未被修改。
 
 ## 用例构成
