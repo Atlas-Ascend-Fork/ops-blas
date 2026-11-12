@@ -16,6 +16,7 @@ y = alpha * A * x + beta * y
 |--------|---------|
 | aclblasSsymv | 单精度对称矩阵-向量乘法 |
 | aclblasCsymv | 单精度复数对称矩阵-向量乘法 |
+| aclblasChemv | 单精度复数 Hermitian 矩阵-向量乘法 |
 
 ## 算子执行接口
 
@@ -436,3 +437,45 @@ int main()
     return 0;
 }
 ```
+
+### aclblasChemv
+
+#### 产品支持情况
+
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
+- 其他产品：不支持
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasChemv(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha,
+    const aclblasComplex* A, int lda, const aclblasComplex* x, int incx,
+    const aclblasComplex* beta, aclblasComplex* y, int incy);
+```
+
+#### 参数说明
+
+| 参数名 | 输入/输出 | 参数类型 | 说明 |
+|--------|----------|---------|------|
+| handle | 输入 | aclblasHandle_t | ops-blas 上下文句柄，携带执行 stream，Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | `ACLBLAS_UPPER` 使用 A 的上三角，`ACLBLAS_LOWER` 使用 A 的下三角，Host 内存 |
+| n | 输入 | int | Hermitian 矩阵 A 的行列数以及 x、y 的逻辑长度，`n >= 0`，Host 内存 |
+| alpha | 输入 | const aclblasComplex* | 复数乘数，支持 Host/Device 内存，不可为空 |
+| A | 输入 | const aclblasComplex* | 列主序单精度复数 Hermitian 矩阵，数组大小至少 `lda * n`，Device 内存 |
+| lda | 输入 | int | A 的前导维度，`lda >= max(1, n)`，Host 内存 |
+| x | 输入 | const aclblasComplex* | 逻辑长度为 n 的单精度复数向量，Device 内存 |
+| incx | 输入 | int | x 的元素步长，支持正负值且 `incx != 0`，Host 内存 |
+| beta | 输入 | const aclblasComplex* | 复数乘数，支持 Host/Device 内存，不可为空 |
+| y | 输入/输出 | aclblasComplex* | 逻辑长度为 n 的单精度复数向量，原地写回，Device 内存 |
+| incy | 输入 | int | y 的元素步长，支持正负值且 `incy != 0`，Host 内存 |
+
+#### 约束说明
+
+- 计算 `y = alpha * A * x + beta * y`，其中 A 为 `n x n` 单精度复数 Hermitian 矩阵（`A = A^H`）。
+- 仅读取 `uplo` 指定的上/下三角元素；严格非存储三角元素由共轭对称关系 `A[i, j] = conj(A[j, i])` 推导，对角线元素视为实数（虚部强制忽略且不参与计算）。
+- `n == 0` 或 `alpha == (0, 0) && beta == (1, 0)` 时直接返回 `ACLBLAS_STATUS_SUCCESS`，不访问矩阵与向量内存。
+- `alpha == (0, 0)` 时退化为 `y = beta * y`，不读取 A 和 x；`beta == (0, 0)` 时不读取 y 的原值（y 指针仍须非空）。
+- `uplo` 非法时返回 `ACLBLAS_STATUS_INVALID_ENUM`；`handle == nullptr` 返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`；其他非法维度、步长或空指针返回 `ACLBLAS_STATUS_INVALID_VALUE`。
+

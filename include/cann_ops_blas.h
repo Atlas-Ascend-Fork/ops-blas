@@ -186,6 +186,10 @@ aclblasStatus_t aclblasCsymv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, const aclblasComplex* A,
     int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y, int incy);
 
+aclblasStatus_t aclblasChemv(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, const aclblasComplex* A,
+    int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y, int incy);
+
 aclblasStatus_t aclblasSsbmv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, int k, const float* alpha, const float* A, int lda,
     const float* x, int incx, const float* beta, float* y, int incy);
