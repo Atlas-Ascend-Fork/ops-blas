@@ -51,6 +51,9 @@ stages:
         container:
           image: swr.cn-north-4.myhuaweicloud.com/ci_cann/ubuntu20.04.05_x86:k8s_v1.1006
       JOB_pre:
+        permissions:
+          repository: read
+          id-token: write
         name: Test_PreBuild
         uses: cann/.gitcode/.gitcode/workflows/pre_action.yml@master
     pre:
@@ -60,6 +63,9 @@ stages:
     name: Compile
     jobs:
       JOB_x86_compile_A2:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_x86_A2
         uses: .gitcode/workflows/compile_action.yml
         with:
@@ -69,6 +75,9 @@ stages:
           arch: 'x64'
           package_name: 'cann-ops-blas-A2_linux-x86_64.run'
       JOB_arm_compile_A2:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_arm_A2
         uses: .gitcode/workflows/compile_action.yml
         with:
@@ -78,6 +87,9 @@ stages:
           arch: 'arm64'
           package_name: 'cann-ops-blas-A2_linux-aarch64.run'
       JOB_x86_compile_ubuntu24_A2:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_x86_ubuntu24_A2
         uses: .gitcode/workflows/compile_action.yml
         with:
@@ -87,6 +99,9 @@ stages:
           arch: 'x64'
           package_name: 'cann-ops-blas-A2_linux-x86_64_ubuntu24.run'
       JOB_arm_compile_ubuntu24_A2:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_arm_ubuntu24_A2
         uses: .gitcode/workflows/compile_action.yml
         with:
@@ -96,6 +111,9 @@ stages:
           arch: 'arm64'
           package_name: 'cann-ops-blas-A2_linux-aarch64_ubuntu24.run'
       JOB_x86_compile_A5:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_x86_A5
         uses: .gitcode/workflows/compile_action.yml
         with:
@@ -105,6 +123,9 @@ stages:
           arch: 'x64'
           package_name: 'cann-ops-blas-A5_linux-x86_64.run'
       JOB_arm_compile_A5:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_arm_A5
         uses: .gitcode/workflows/compile_action.yml
         with:
@@ -114,6 +135,9 @@ stages:
           arch: 'arm64'
           package_name: 'cann-ops-blas-A5_linux-aarch64.run'
       JOB_x86_compile_ubuntu24_A5:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_x86_ubuntu24_A5
         uses: .gitcode/workflows/compile_action.yml
         with:
@@ -123,6 +147,9 @@ stages:
           arch: 'x64'
           package_name: 'cann-ops-blas-A5_linux-x86_64_ubuntu24.run'
       JOB_arm_compile_ubuntu24_A5:
+        permissions:
+          repository: read
+          id-token: write
         name: Compile_arm_ubuntu24_A5
         uses: .gitcode/workflows/compile_action.yml
         with:
@@ -132,6 +159,9 @@ stages:
           arch: 'arm64'
           package_name: 'cann-ops-blas-A5_linux-aarch64_ubuntu24.run'
       JOB_codecheck:
+        permissions:
+          repository: read
+          id-token: write
         name: CodeCheck
         uses: cann/.gitcode/.gitcode/workflows/codecheck_action.yml@master
         with:
@@ -144,6 +174,9 @@ stages:
     name: PreSmoke
     jobs:
       A2_smoke:
+        permissions:
+          repository: read
+          id-token: write
         name: PreSmoke_A2
         steps:
           -
@@ -154,13 +187,20 @@ stages:
               allow-unsafe-pr-checkout: true
               ref: ${{ atomgit.event.pull_request.merge_commit_sha }}
           -
+            name: oidc_auth
+            uses: huaweicloud-oidc-auth
+            with:
+              audience: ${{ secrets.audience }}
+              agency_urn: ${{ secrets.agency_urn }}
+              provider_urn: ${{ secrets.provider_urn }}
+              region: cn-north-4
+              duration: 3600
+          -
             name: download
             uses: obs-download
             with:
               endpoint: "https://obs.cn-north-4.myhuaweicloud.com"
               bucket: "ascend-ci"
-              access-key: ${{ secrets.AK }}
-              secret-key: ${{ secrets.SK }}
               key: |
                 ${{ env.obs_path }}/pr_filelist.txt
                 ${{ env.obs_path }}/pr_filelist_mod.txt
@@ -174,19 +214,16 @@ stages:
               set -e
               export repo_name=${{env.repo_name}}
               export pr_id=${{ env.MERGE_ID }}
-              export AK=${{secrets.AK}}
-              export SK=${{secrets.SK}}
               export obs_smoke_path=${{ env.obs_smoke_path }}
               export obs_path=${{ env.obs_path }}
               export WORKSPACE=${{ steps.process_checkout.outputs.path }}
               bash ${{ steps.process_checkout.outputs.path }}/pre_smoke.sh
           - name: upload
+            if: ${{ always() }}
             uses: obs-upload
             with:
               endpoint: "https://obs.cn-north-4.myhuaweicloud.com"
               bucket: "ascend-ci"
-              access-key: ${{ secrets.AK }}
-              secret-key: ${{ secrets.SK }}
               artifact-path: "${{ steps.process_checkout.outputs.path }}/slog*.tar.gz"
               object-prefix: ${{ env.obs_smoke_path }}/plog/
         if: env.TARGET_BRANCH == 'master'
