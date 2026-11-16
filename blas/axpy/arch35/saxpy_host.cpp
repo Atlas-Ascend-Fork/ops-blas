@@ -59,10 +59,13 @@ static SaxpyTilingData CalSaxpyTilingDataContiguous(uint32_t totalN, uint32_t co
     tiling.remainder = totalN - tiling.perCoreN * coreNum;
 
     constexpr uint32_t queueCount = 2;
+    // 连续路径单轮搬运 tile 的元素数上限（2^15）：kernel 按 tileLoop/tileTail 分轮搬运，
+    // 该上限约束单轮 DataCopy 规模；UB 容量推导值低于上限时此封顶不生效
+    constexpr uint32_t SAXPY_CONTIG_TILE_MAX_ELEMENTS = 32768;
     uint32_t maxElements = UB_SIZE / (queueCount * sizeof(float));
     maxElements = (maxElements / alignUnit) * alignUnit;
-    if (maxElements > 32768) {
-        maxElements = 32768;
+    if (maxElements > SAXPY_CONTIG_TILE_MAX_ELEMENTS) {
+        maxElements = SAXPY_CONTIG_TILE_MAX_ELEMENTS;
     }
     tiling.tileSize = maxElements;
 
@@ -127,6 +130,12 @@ static aclblasStatus_t LaunchSaxpyKernel(
         tiling = CalSaxpyTilingDataContiguous(totalN, numBlocks, *alpha);
     } else {
         numBlocks = std::min(CeilDiv<uint32_t>(totalN, SIMT_MIN_THREAD_NUM), coreNum);
+        // kernel 以 blockIdx 直接索引 tiling.calCount[SAXPY_MAX_CORE_NUM] 定长数组，
+        // 启动块数必须同步按该上限封顶（对照 sasum/scasum 的封顶口径），
+        // 否则核数大于 SAXPY_MAX_CORE_NUM 的硬件上 blockIdx 越界读取 calCount
+        if (numBlocks > SAXPY_MAX_CORE_NUM) {
+            numBlocks = SAXPY_MAX_CORE_NUM;
+        }
         tiling = CalSaxpyTilingDataStrided(n, incx, incy, numBlocks, *alpha);
     }
 

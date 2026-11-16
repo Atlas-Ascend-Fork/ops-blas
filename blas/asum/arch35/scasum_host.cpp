@@ -90,7 +90,11 @@ static aclblasStatus_t CalcScasumLaunchConfig(int n, int incx, uint32_t* numBloc
 
     // More threads help hide RVECLD memory latency for large vectors, but the
     // per-thread work becomes too small (thread launch dominates) for small n.
-    uint32_t maxThreads = (static_cast<uint32_t>(n) >= 2097152) ? 2048u : 1024u;
+    constexpr uint32_t SCASUM_LARGE_VECTOR_ELEMENTS = 2097152; // 2^21 elements
+    constexpr uint32_t SCASUM_MAX_THREADS_LARGE = 2048;
+    constexpr uint32_t SCASUM_MAX_THREADS_SMALL = 1024;
+    uint32_t maxThreads = (static_cast<uint32_t>(n) >= SCASUM_LARGE_VECTOR_ELEMENTS) ? SCASUM_MAX_THREADS_LARGE :
+                                                                                       SCASUM_MAX_THREADS_SMALL;
     *nthreads = std::min(
         CeilAlign<uint32_t>(CeilDiv<uint32_t>(static_cast<uint32_t>(n), *numBlocks), SIMT_MIN_THREAD_NUM), maxThreads);
     return ACLBLAS_STATUS_SUCCESS;

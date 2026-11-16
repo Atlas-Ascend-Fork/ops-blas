@@ -155,6 +155,12 @@ aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, 
         tiling = CalSscalTilingDataContiguous(totalN, numBlocks, *alpha);
     } else {
         numBlocks = std::min(CeilDiv<uint32_t>(totalN, SIMT_MIN_THREAD_NUM), aivCoreNum);
+        // kernel 以 blockIdx 直接索引 tiling.calCount[SSCAL_MAX_CORE_NUM] 定长数组，
+        // 启动块数必须同步按该上限封顶（对照 sasum/scasum 的封顶口径），
+        // 否则核数大于 SSCAL_MAX_CORE_NUM 的硬件上 blockIdx 越界读取 calCount
+        if (numBlocks > SSCAL_MAX_CORE_NUM) {
+            numBlocks = SSCAL_MAX_CORE_NUM;
+        }
         tiling = CalSscalTilingDataStrided(n, incx, numBlocks, *alpha);
     }
 

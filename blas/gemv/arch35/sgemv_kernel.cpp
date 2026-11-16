@@ -177,8 +177,11 @@ __global__ __aicore__ void sgemv_kernel(GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR
     uint32_t outDim = (tiling.trans == 0) ? tiling.m : tiling.n;
     uint32_t xDim = (tiling.trans == 0) ? tiling.n : tiling.m;
 
-    // UB path requires incx==1 and x vector fits in UB and enough work
-    bool useUb = (tiling.incx == 1) && (xDim <= UB_X_FLOATS) && (outDim >= 32);
+    // UB path requires incx==1 and x vector fits in UB and enough work:
+    // SGEMV_UB_MIN_OUT_DIM 为 UB 驻留路径的最小输出维度门槛，
+    // 输出行数低于该值时 per-launch 启动开销大于 UB 路径收益
+    constexpr uint32_t SGEMV_UB_MIN_OUT_DIM = 32;
+    bool useUb = (tiling.incx == 1) && (xDim <= UB_X_FLOATS) && (outDim >= SGEMV_UB_MIN_OUT_DIM);
 
     if (tiling.trans == 0) {
         if (useUb) {

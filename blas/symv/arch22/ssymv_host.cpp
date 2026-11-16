@@ -103,7 +103,9 @@ aclblasStatus_t aclblasSsymv(
     auto* h = handle;
     aclrtStream useStream = h->stream;
 
-    constexpr uint32_t numBlocks = 8;
+    // phase 1（alpha*A*x 原子累加）固定启动块数：小固定值降低跨核原子争用，
+    // 属性能敏感参数，当前未按核数与矩阵规模自适应，调优/移植时需一并评估
+    constexpr uint32_t SSYMV_PHASE1_BLOCKS = 8;
     float alphaHost = 0.0f;
     float betaHost = 0.0f;
     aclblasStatus_t readSt = ReadScalarFromHostOrDevice(alpha, useStream, alphaHost);
@@ -129,10 +131,11 @@ aclblasStatus_t aclblasSsymv(
     ssymv_kernel_do(const_cast<uint8_t*>(aPtr), const_cast<uint8_t*>(xPtr), yPtr, nullptr, tilingBeta, 1U, useStream);
 
     SymvTilingData tilingAxpy = CalSymvTilingData(
-        static_cast<uint32_t>(n), static_cast<uint32_t>(lda), numBlocks, alphaHost, 1.0f, incx, incy,
+        static_cast<uint32_t>(n), static_cast<uint32_t>(lda), SSYMV_PHASE1_BLOCKS, alphaHost, 1.0f, incx, incy,
         static_cast<uint32_t>(uplo), 1U);
     ssymv_kernel_do(
-        const_cast<uint8_t*>(aPtr), const_cast<uint8_t*>(xPtr), yPtr, nullptr, tilingAxpy, numBlocks, useStream);
+        const_cast<uint8_t*>(aPtr), const_cast<uint8_t*>(xPtr), yPtr, nullptr, tilingAxpy, SSYMV_PHASE1_BLOCKS,
+        useStream);
 
     return ACLBLAS_STATUS_SUCCESS;
 }
