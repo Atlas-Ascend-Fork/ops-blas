@@ -142,18 +142,10 @@ typedef enum aclblasLtEpilogue {
     ACLBLASLT_EPILOGUE_GELU_BIAS = 36, /**<Apply Bias and then GELU transform.*/
     ACLBLASLT_EPILOGUE_RELU_AUX = 130, /**<Output GEMM results before applying RELU transform.*/
     ACLBLASLT_EPILOGUE_RELU_AUX_BIAS =
-        134, /**<Output GEMM results after applying bias but before applying RELU transform.*/
-    ACLBLASLT_EPILOGUE_DRELU = 136,
-    ACLBLASLT_EPILOGUE_DRELU_BGRAD = 152,
-    /**<Apply gradient RELU transform and bias gradient to the results. Requires additional auxiliary input. */ /**<Apply
-                                                                                                                   gradient
-                                                                                                                   RELU
-                                                                                                                   transform.
-                                                                                                                   Requires
-                                                                                                                   additional
-                                                                                                                   auxiliary
-                                                                                                                   input.
-                                                                                                                 */
+        134,                        /**<Output GEMM results after applying bias but before applying RELU transform.*/
+    ACLBLASLT_EPILOGUE_DRELU = 136, /**<Apply gradient RELU transform. Requires additional auxiliary input. */
+    ACLBLASLT_EPILOGUE_DRELU_BGRAD =
+        152, /**<Apply gradient RELU transform and bias gradient to the results. Requires additional auxiliary input. */
     ACLBLASLT_EPILOGUE_GELU_AUX = 160, /**<Output GEMM results before applying GELU transform.*/
     ACLBLASLT_EPILOGUE_GELU_AUX_BIAS =
         164,                        /**<Output GEMM results after applying bias but before applying GELU transform.*/
@@ -217,8 +209,8 @@ typedef enum aclblasLtMatmulDescAttribute {
         5, /**<Device pointer to the scale factor value that converts data in matrix A to the compute data type range.
               The scaling factor must have the same type as the compute type. If not specified, or set to NULL, the
               scaling factor is assumed to be ``1``. If set for an unsupported matrix data, scale, and compute type
-              combination, calling aclblasLtMatmul() will return ``ACLBLAS_INVALID_VALUE``. Default value: NULL. Data
-              type: ``void*`` ``/const void*``. */
+              combination, calling aclblasLtMatmul() will return ``ACLBLAS_STATUS_INVALID_VALUE``. Default value: NULL.
+              Data type: ``void*`` ``/const void*``. */
     ACLBLASLT_MATMUL_DESC_B_SCALE_POINTER = 6, /**<Equivalent to ``ACLBLASLT_MATMUL_DESC_A_SCALE_POINTER`` for matrix B.
                                                   Default value: NULL. Data type: ``void*`` / ``const void*``. */
     ACLBLASLT_MATMUL_DESC_C_SCALE_POINTER = 7, /**<Equivalent to ``ACLBLASLT_MATMUL_DESC_A_SCALE_POINTER`` for matrix C.
@@ -421,60 +413,61 @@ typedef enum aclblasLtMatmulAlgoConfigAttributes {
  *  per-enumerator comments below.
  */
 typedef enum aclblasLtMatmulAlgoCapAttributes {
-    ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT = 0, /**< uint32_t 0/1, always 0. Implementation-capability
-                                            *  view (cuBLASLt semantics: "split-K implementation is
-                                            *  supported"): the current kernel set has no split-K
-                                            *  reduction stage and the FP32 tiling path does not
-                                            *  consume splitK. Note: ConfigSetSplitK still accepts
-                                            *  [1,255] and the algoId encoding domain is {1,2,3};
-                                            *  splitK > 1 is recorded but not executed as a real
-                                            *  split. Self-consistent with REDUCTION_SCHEME_MASK = 0
-                                            *  (no reduction scheme is implemented, hence no
-                                            *  split-K execution). */
-    ACLBLASLT_ALGO_CAP_REDUCTION_SCHEME_MASK = 1, /**< uint32_t bitmask, always 0. Mask semantics
-                                                   *  follow cuBLASLt: the value is the bitwise OR
-                                                   *  of the supported aclblasLtReductionScheme_t
-                                                   *  enumerator values, and NONE (= 0) contributes
-                                                   *  no bit; INPLACE/WORKSPACE have no
-                                                   *  implementation, so no bit is set.
-                                                   *  Self-consistent with SPLITK_SUPPORT = 0.
-                                                   *  Migration check example:
-                                                   *  (mask & ACLBLASLT_REDUCTION_SCHEME_INPLACE)
-                                                   *  == 0 means INPLACE reduction is
-                                                   *  unsupported. */
-    ACLBLASLT_ALGO_CAP_CTA_SWIZZLING_SUPPORT = 2, /**< uint32_t 0/1, always 0: this library has no
-                                                   *  CTA swizzling concept. */
-    ACLBLASLT_ALGO_CAP_STRIDED_BATCH_SUPPORT = 3, /**< uint32_t 0/1, always 0: the layout attributes
-                                                   *  BATCH_COUNT / STRIDED_BATCH_OFFSET remain storable
-                                                   *  and readable, but the aclblasLtMatmul compute path
-                                                   *  does not consume the batch fields (single matrix
-                                                   *  only). */
+    ACLBLASLT_ALGO_CAP_SPLITK_SUPPORT = 0,              /**< uint32_t 0/1, always 0. Implementation-capability
+                                                         *  view (cuBLASLt semantics: "split-K implementation is
+                                                         *  supported"): the current kernel set has no split-K
+                                                         *  reduction stage and the FP32 tiling path does not
+                                                         *  consume splitK. Note: ConfigSetSplitK still accepts
+                                                         *  [1,255] and the algoId encoding domain is {1,2,3};
+                                                         *  splitK > 1 is recorded but not executed as a real
+                                                         *  split. Self-consistent with REDUCTION_SCHEME_MASK = 0
+                                                         *  (no reduction scheme is implemented, hence no
+                                                         *  split-K execution). */
+    ACLBLASLT_ALGO_CAP_REDUCTION_SCHEME_MASK = 1,       /**< uint32_t bitmask, always 0. Mask semantics
+                                                         *  follow cuBLASLt: the value is the bitwise OR
+                                                         *  of the supported aclblasLtReductionScheme_t
+                                                         *  enumerator values, and NONE (= 0) contributes
+                                                         *  no bit; INPLACE/WORKSPACE have no
+                                                         *  implementation, so no bit is set.
+                                                         *  Self-consistent with SPLITK_SUPPORT = 0.
+                                                         *  Migration check example:
+                                                         *  (mask & ACLBLASLT_REDUCTION_SCHEME_INPLACE)
+                                                         *  == 0 means INPLACE reduction is
+                                                         *  unsupported. */
+    ACLBLASLT_ALGO_CAP_CTA_SWIZZLING_SUPPORT = 2,       /**< uint32_t 0/1, always 0: this library has no
+                                                         *  CTA swizzling concept. */
+    ACLBLASLT_ALGO_CAP_STRIDED_BATCH_SUPPORT = 3,       /**< uint32_t 0/1, always 0: the layout attributes
+                                                         *  BATCH_COUNT / STRIDED_BATCH_OFFSET remain storable
+                                                         *  and readable, but the aclblasLtMatmul compute path
+                                                         *  does not consume the batch fields (single matrix
+                                                         *  only). */
     ACLBLASLT_ALGO_CAP_OUT_OF_PLACE_RESULT_SUPPORT = 4, /**< uint32_t 0/1, always 1: aclblasLtMatmul
                                                          *  supports both in-place (C == D) and
                                                          *  out-of-place (C != D) results. */
-    ACLBLASLT_ALGO_CAP_UPLO_SUPPORT = 5, /**< uint32_t 0/1, always 0: matmul descriptors carry no
-                                          *  uplo / triangular attribute. */
-    ACLBLASLT_ALGO_CAP_TILE_IDS = 6, /**< Ascending uint32_t array: {1,2,3,4} = every
-                                      *  aclblasLtMatmulTile_t shape (128x128 .. 256x256). Probe with
-                                      *  capAttributeSize == 0 to obtain the required byte count (16).
-                                      *  Note: the FP32 tiling path consumes only the N and K tiles
-                                      *  (ApplyAlgoTilingOverrideFp32); the M tile (the 256-row
-                                      *  shapes) is reported as part of the acceptance/encoding
-                                      *  domain but not applied. */
-    ACLBLASLT_ALGO_CAP_CUSTOM_OPTION_MAX = 7, /**< uint32_t, always 2: upper bound of the
-                                               *  ConfigSetCustomOption acceptance domain [0,2];
-                                               *  cuBLASLt official semantics: "custom option range is
-                                               *  from 0 to CUSTOM_OPTION_MAX (inclusive)"
-                                               *  (acceptance-domain view, kept under the mixed
-                                               *  reporting view). Note: the policy is decoded and
-                                               *  recorded, but the current FP32 tiling path does not
-                                               *  alter its behavior. */
-    ACLBLASLT_ALGO_CAP_STAGES_IDS = 13, /**< Ascending uint32_t array: {1,2,3,4} = the ConfigSetStages
-                                         *  acceptance domain [1,4]; cuBLASLt official semantics:
-                                         *  "stages ids possible to use" (acceptance-domain view kept).
-                                         *  Probe with capAttributeSize == 0 to obtain the required
-                                         *  byte count (16). Note: stages are decoded and recorded,
-                                         *  but not effective in the current FP32 tiling path. */
+    ACLBLASLT_ALGO_CAP_UPLO_SUPPORT = 5,                /**< uint32_t 0/1, always 0: matmul descriptors carry no
+                                                         *  uplo / triangular attribute. */
+    ACLBLASLT_ALGO_CAP_TILE_IDS = 6,                    /**< Ascending uint32_t array: {1,2,3,4} = every
+                                                         *  aclblasLtMatmulTile_t shape (128x128 .. 256x256).
+                                                         *  Probe with capAttributeSize == 0 to obtain the
+                                                         *  required byte count (16). Note: the FP32 tiling path
+                                                         *  consumes only the N and K tiles
+                                                         *  (ApplyAlgoTilingOverrideFp32); the M tile (the 256-row
+                                                         *  shapes) is reported as part of the acceptance/encoding
+                                                         *  domain but not applied. */
+    ACLBLASLT_ALGO_CAP_CUSTOM_OPTION_MAX = 7,           /**< uint32_t, always 2: upper bound of the
+                                                         *  ConfigSetCustomOption acceptance domain [0,2];
+                                                         *  cuBLASLt official semantics: "custom option range is
+                                                         *  from 0 to CUSTOM_OPTION_MAX (inclusive)"
+                                                         *  (acceptance-domain view, kept under the mixed
+                                                         *  reporting view). Note: the policy is decoded and
+                                                         *  recorded, but the current FP32 tiling path does not
+                                                         *  alter its behavior. */
+    ACLBLASLT_ALGO_CAP_STAGES_IDS = 13,                 /**< Ascending uint32_t array: {1,2,3,4} = the ConfigSetStages
+                                                         *  acceptance domain [1,4]; cuBLASLt official semantics:
+                                                         *  "stages ids possible to use" (acceptance-domain view kept).
+                                                         *  Probe with capAttributeSize == 0 to obtain the required
+                                                         *  byte count (16). Note: stages are decoded and recorded,
+                                                         *  but not effective in the current FP32 tiling path. */
     ACLBLASLT_ALGO_CAP_MAX, /**< Repo-local sentinel (implicit value 14 = STAGES_IDS + 1); cuBLASLt
                              *  has no such sentinel. Querying it returns NOT_SUPPORTED like any
                              *  other value outside the enumerated subset. */
@@ -1141,11 +1134,9 @@ aclblasStatus_t aclblasLtMatmulAlgoConfigGetAttribute(
  *  included).
  *  \retval ACLBLAS_STATUS_INTERNAL_ERROR If the securec copy fails.
  */
-aclblasStatus_t aclblasLtMatmulAlgoCapGetAttribute(const aclblasLtMatmulAlgo_t* algo,
-                                                   aclblasLtMatmulAlgoCapAttributes_t cap,
-                                                   void* capAttribute,
-                                                   size_t capAttributeSize,
-                                                   size_t* sizeWritten);
+aclblasStatus_t aclblasLtMatmulAlgoCapGetAttribute(
+    const aclblasLtMatmulAlgo_t* algo, aclblasLtMatmulAlgoCapAttributes_t cap, void* capAttribute,
+    size_t capAttributeSize, size_t* sizeWritten);
 
 /*! \ingroup library_module
  *  \brief Retrieve the supported algorithm IDs for a matmul configuration.
@@ -1279,7 +1270,7 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(
  *  with default search preferences will be performed to determine the actual
  *  algorithm to use.
  *  @param[in]
- *  workspace Pointer to the workspace buffer allocated in the GPU
+ *  workspace Pointer to the workspace buffer allocated in the NPU
  *  memory. Pointer must be 16B aligned.
  *  @param[in]
  *  workspaceSizeInBytes Size of the workspace.
@@ -1357,8 +1348,7 @@ aclblasStatus_t aclblasLtMatrixTransformDescCreate(
  *  \retval ACLBLAS_STATUS_INVALID_VALUE If \p transformDesc is NULL.
  *  \retval ACLBLAS_STATUS_INTERNAL_ERROR If an internal copy fails.
  */
-aclblasStatus_t aclblasLtMatrixTransformDescInit(
-    aclblasLtMatrixTransformDesc_t transformDesc, aclDataType scaleType);
+aclblasStatus_t aclblasLtMatrixTransformDescInit(aclblasLtMatrixTransformDesc_t transformDesc, aclDataType scaleType);
 
 /*! \ingroup matrix_transform_module
  *  \brief Destroy a matrix transform descriptor.
