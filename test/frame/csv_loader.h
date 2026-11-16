@@ -162,7 +162,12 @@ inline int ParseIntColumn(const csv_map& row, const char* key, const std::string
 {
     const std::string raw = ReadMap(row, key, def);
     try {
-        return std::stoi(raw);
+        size_t parsed = 0;
+        const int value = std::stoi(raw, &parsed);
+        if (raw.find_first_not_of(" \t\r\n", parsed) != std::string::npos) {
+            throw std::invalid_argument("trailing characters in integer column");
+        }
+        return value;
     } catch (const std::exception&) {
         throw std::runtime_error(std::string("column '") + key + "' is missing, empty or non-numeric: '" + raw + "'");
     }
@@ -172,7 +177,12 @@ inline float ParseFloatColumn(const csv_map& row, const char* key, const std::st
 {
     const std::string raw = ReadMap(row, key, def);
     try {
-        return std::stof(raw);
+        size_t parsed = 0;
+        const float value = std::stof(raw, &parsed);
+        if (raw.find_first_not_of(" \t\r\n", parsed) != std::string::npos) {
+            throw std::invalid_argument("trailing characters in floating-point column");
+        }
+        return value;
     } catch (const std::exception&) {
         throw std::runtime_error(std::string("column '") + key + "' is missing, empty or non-numeric: '" + raw + "'");
     }
