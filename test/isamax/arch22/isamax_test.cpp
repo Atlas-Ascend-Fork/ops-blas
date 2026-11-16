@@ -88,18 +88,53 @@ int TestBasicRealFloat(aclblasHandle_t handle, aclrtStream stream)
     return VerifyResult(result, 51, "Real Float Test");
 }
 
-int TestN0QuickReturn(aclblasHandle_t handle)
+int TestQuickReturn(aclblasHandle_t handle, aclrtStream stream, int n, int incx, const char* testName)
 {
-    std::cout << "\n========== Testing n=0 Quick Return ==========" << std::endl;
+    std::cout << "\n========== Testing " << testName << " ==========" << std::endl;
+    float input = 1.0f;
+    int32_t sentinel = -1;
     int32_t result = -1;
-    auto statusRet = aclblasIsamax(handle, 0, nullptr, 1, &result);
+    float* xDevice = nullptr;
+    int32_t* resultDevice = nullptr;
+    size_t inputByteSize = sizeof(float);
+    size_t outputByteSize = sizeof(int32_t);
+
+    aclError aclRet = aclrtMalloc((void**)&xDevice, inputByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc xDevice failed. ERROR: %d\n", aclRet); return 1);
+    aclRet = aclrtMalloc((void**)&resultDevice, outputByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (aclRet != ACL_SUCCESS) {
+        LOG_PRINT("aclrtMalloc resultDevice failed. ERROR: %d\n", aclRet);
+        aclrtFree(xDevice);
+        return 1;
+    }
+    aclRet = aclrtMemcpy(xDevice, inputByteSize, &input, inputByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet == ACL_SUCCESS) {
+        aclRet = aclrtMemcpy(resultDevice, outputByteSize, &sentinel, outputByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    }
+    if (aclRet != ACL_SUCCESS) {
+        LOG_PRINT("aclrtMemcpy initialization failed. ERROR: %d\n", aclRet);
+        aclrtFree(xDevice);
+        aclrtFree(resultDevice);
+        return 1;
+    }
+
+    auto statusRet = aclblasIsamax(handle, n, xDevice, incx, resultDevice);
+    if (statusRet == ACLBLAS_STATUS_SUCCESS) {
+        aclRet = aclrtSynchronizeStream(stream);
+        if (aclRet == ACL_SUCCESS) {
+            aclRet = aclrtMemcpy(&result, outputByteSize, resultDevice, outputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
+        }
+    }
+    aclrtFree(xDevice);
+    aclrtFree(resultDevice);
     bool pass = (statusRet == ACLBLAS_STATUS_SUCCESS && result == 0);
     std::cout << "Status: " << statusRet << ", Result: " << result << std::endl;
     if (pass) {
-        std::cout << "[Success] n=0 quick return passed." << std::endl;
+        std::cout << "[Success] " << testName << " passed." << std::endl;
         return 0;
     }
-    std::cout << "[Failed] n=0 quick return failed!" << std::endl;
+    std::cout << "[Failed] " << testName << " failed (API status: " << statusRet
+              << ", sync/copy status: " << aclRet << ")." << std::endl;
     return 1;
 }
 
@@ -140,7 +175,8 @@ int32_t main(int32_t argc, char* argv[])
 
     int testRet = 0;
     testRet |= TestNullHandle();
-    testRet |= TestN0QuickReturn(handle);
+    testRet |= TestQuickReturn(handle, stream, 0, 1, "n=0 Quick Return");
+    testRet |= TestQuickReturn(handle, stream, 1, 0, "incx=0 Quick Return");
     testRet |= TestBasicRealFloat(handle, stream);
 
     aclblasDestroy(handle);

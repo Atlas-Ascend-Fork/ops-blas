@@ -49,7 +49,7 @@ aclblasStatus_t aclblasIsamax(aclblasHandle_t handle, int n, const float *x, int
 #### 约束说明
 
 - n < 0 时返回 ACLBLAS_STATUS_INVALID_VALUE
-- n = 0 或 incx < 1 时 result 写 0，返回 ACLBLAS_STATUS_SUCCESS
+- n = 0 或 incx < 1 时在函数返回前将 result 的设备内存写 0，返回 ACLBLAS_STATUS_SUCCESS
 - handle 不可为 nullptr
 - x、result 不可为 nullptr
 - 当多个元素绝对值相同时，返回索引最小的元素

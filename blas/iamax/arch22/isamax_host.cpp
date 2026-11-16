@@ -219,9 +219,17 @@ static aclblasStatus_t ValidateIsamaxParams(
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (n == 0 || incx < 1) {
-        if (result != nullptr) {
-            *result = 0;
+        if (result == nullptr) {
+            return ACLBLAS_STATUS_INVALID_VALUE;
         }
+        aclError aclRet = aclrtMemsetAsync(result, sizeof(int32_t), 0, sizeof(int32_t), handle->stream);
+        CHECK_RET(
+            aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemsetAsync failed. ERROR: %d\n", aclRet);
+            return ACLBLAS_STATUS_EXECUTION_FAILED);
+        aclRet = aclrtSynchronizeStream(handle->stream);
+        CHECK_RET(
+            aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+            return ACLBLAS_STATUS_EXECUTION_FAILED);
         earlyReturn = true;
         return ACLBLAS_STATUS_SUCCESS;
     }
