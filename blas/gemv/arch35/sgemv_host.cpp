@@ -117,7 +117,6 @@ uint32_t ConfigureSgemvGeneric(uint32_t outDim, uint32_t aivCoreNum, SgemvTiling
     }
     tiling.numThreads = std::min(
         CeilAlign<uint32_t>(CeilDiv<uint32_t>(outDim, useNumBlocks), SIMT_MIN_THREAD_NUM), SIMT_MAX_THREAD_NUM);
-    tiling.rowsPerBlock = CeilDiv<uint32_t>(outDim, useNumBlocks);
     return useNumBlocks;
 }
 

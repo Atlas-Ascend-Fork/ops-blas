@@ -3,7 +3,7 @@
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OR ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
@@ -57,15 +57,15 @@ constexpr uint32_t CDOTU_MAX_WARPS = 64;
 // Negative stride: Netlib semantics -> 0-based (n-1-idx)*|inc|.
 __simt_callee__ __aicore__ inline uint64_t CdotuOffset(uint32_t idx, int32_t inc, uint32_t incAbs, uint32_t nU)
 {
-    return (inc > 0) ? static_cast<uint64_t>(idx) * static_cast<uint64_t>(inc)
-                     : static_cast<uint64_t>(nU - 1 - idx) * static_cast<uint64_t>(incAbs);
+    return (inc > 0) ? static_cast<uint64_t>(idx) * static_cast<uint64_t>(inc) :
+                       static_cast<uint64_t>(nU - 1 - idx) * static_cast<uint64_t>(incAbs);
 }
 
 // Simplified warp-level reduction: asc_reduce_add collapses each warp in
 // hardware, then a single warp collects and reduces the per-warp partials.
 __simt_callee__ __aicore__ inline void CdotuWarpReduce(
-    __ubuf__ float* ubReal, __ubuf__ float* ubImag, float real, float imag,
-    __gm__ float* partialRealOut, __gm__ float* partialImagOut)
+    __ubuf__ float* ubReal, __ubuf__ float* ubImag, float real, float imag, __gm__ float* partialRealOut,
+    __gm__ float* partialImagOut)
 {
     // Step 1: hardware warp reduction (one instruction per warp)
     float warpReal = asc_reduce_add(real);
@@ -87,15 +87,12 @@ __simt_callee__ __aicore__ inline void CdotuWarpReduce(
         float si = asc_reduce_add(vi);
 
         if (threadIdx.x == 0) {
-            float totalR = sr;
-            float totalI = si;
-            // Handle warps beyond the first 32 (up to CDOTU_MAX_WARPS)
-            for (uint32_t w = 32u; w < numWarps; w++) {
-                totalR += ubReal[w];
-                totalI += ubImag[w];
-            }
-            partialRealOut[0] = totalR;
-            partialImagOut[0] = totalI;
+            // host 侧 nthreads 封顶 1024（tiling_data 注释 128..1024），numWarps = blockDim.x >> 5
+            // 恒不超过首个 warp 的硬件归约容量 32，ubReal/ubImag 仅前 numWarps 项有效；
+            // 若未来将每块线程数提升到 2048（numWarps 达 CDOTU_MAX_WARPS），
+            // 需在此恢复对 32 号之后 warp 部分和的显式累加
+            partialRealOut[0] = sr;
+            partialImagOut[0] = si;
         }
     }
 }
@@ -117,12 +114,13 @@ __simt_callee__ __aicore__ inline void CdotuWarpReduce(
 // float4 feed separate chains) to break the serial FMA dependency.
 template <bool DUAL_ACC>
 __simt_vf__ __aicore__ LAUNCH_BOUND(1024) inline void CdotuSimtComputeContig(
-    uint32_t calNum, uint32_t startIdx, int32_t n,
-    __gm__ const float* xf, __gm__ const float* yf,
+    uint32_t calNum, uint32_t startIdx, int32_t n, __gm__ const float* xf, __gm__ const float* yf,
     __gm__ float* partialRealOut, __gm__ float* partialImagOut)
 {
     (void)n;
-    if (calNum == 0) { return; }
+    if (calNum == 0) {
+        return;
+    }
 
     __ubuf__ float ubReal[CDOTU_MAX_WARPS];
     __ubuf__ float ubImag[CDOTU_MAX_WARPS];
@@ -134,8 +132,8 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(1024) inline void CdotuSimtComputeContig(
     // (read-only; the kernel never writes through xf4/yf4).
     __gm__ float4* xf4 = const_cast<__gm__ float4*>(reinterpret_cast<const __gm__ float4*>(xf));
     __gm__ float4* yf4 = const_cast<__gm__ float4*>(reinterpret_cast<const __gm__ float4*>(yf));
-    uint32_t base4 = startIdx >> 1;          // startIdx is even (host guarantee)
-    uint32_t numQuad = calNum >> 1;          // full complex pairs handled by float4
+    uint32_t base4 = startIdx >> 1; // startIdx is even (host guarantee)
+    uint32_t numQuad = calNum >> 1; // full complex pairs handled by float4
     uint32_t step = blockDim.x;
 
     for (uint32_t q = threadIdx.x; q < numQuad; q += step) {
@@ -176,12 +174,12 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(1024) inline void CdotuSimtComputeContig(
 // beyond 2x yields diminishing returns (the offset calculation dominates).
 template <bool DUAL_ACC>
 __simt_vf__ __aicore__ LAUNCH_BOUND(1024) inline void CdotuSimtComputeStrided(
-    uint32_t calNum, uint32_t startIdx, int32_t n,
-    int32_t incx, int32_t incy,
-    __gm__ const float* xf, __gm__ const float* yf,
-    __gm__ float* partialRealOut, __gm__ float* partialImagOut)
+    uint32_t calNum, uint32_t startIdx, int32_t n, int32_t incx, int32_t incy, __gm__ const float* xf,
+    __gm__ const float* yf, __gm__ float* partialRealOut, __gm__ float* partialImagOut)
 {
-    if (calNum == 0) { return; }
+    if (calNum == 0) {
+        return;
+    }
 
     __ubuf__ float ubReal[CDOTU_MAX_WARPS];
     __ubuf__ float ubImag[CDOTU_MAX_WARPS];
@@ -196,7 +194,7 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(1024) inline void CdotuSimtComputeStrided(
     uint32_t incxAbs = (incx >= 0) ? static_cast<uint32_t>(incx) : static_cast<uint32_t>(-static_cast<int64_t>(incx));
     uint32_t incyAbs = (incy >= 0) ? static_cast<uint32_t>(incy) : static_cast<uint32_t>(-static_cast<int64_t>(incy));
 
-    #pragma unroll 2
+#pragma unroll 2
     for (; i + step < calNum; i += 2 * step) {
         uint32_t idx = startIdx + i;
         uint32_t idx1 = idx + step;
@@ -243,19 +241,17 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(1024) inline void CdotuSimtComputeStrided(
 // accumulator chains.
 template <bool DUAL_ACC>
 __aicore__ inline void CdotuDispatchSimt(
-    uint32_t calNum, uint32_t startIdx, int32_t n, int32_t incx, int32_t incy,
-    GM_ADDR inX, GM_ADDR inY, __gm__ float* ws, uint32_t useCoreNum, uint32_t nthreads, bool contiguous)
+    uint32_t calNum, uint32_t startIdx, int32_t n, int32_t incx, int32_t incy, GM_ADDR inX, GM_ADDR inY,
+    __gm__ float* ws, uint32_t useCoreNum, uint32_t nthreads, bool contiguous)
 {
     if (contiguous) {
         asc_vf_call<CdotuSimtComputeContig<DUAL_ACC>>(
-            dim3{nthreads, 1, 1}, calNum, startIdx, n,
-            reinterpret_cast<__gm__ const float*>(inX), reinterpret_cast<__gm__ const float*>(inY),
-            ws, ws + useCoreNum);
+            dim3{nthreads, 1, 1}, calNum, startIdx, n, reinterpret_cast<__gm__ const float*>(inX),
+            reinterpret_cast<__gm__ const float*>(inY), ws, ws + useCoreNum);
     } else {
         asc_vf_call<CdotuSimtComputeStrided<DUAL_ACC>>(
-            dim3{nthreads, 1, 1}, calNum, startIdx, n, incx, incy,
-            reinterpret_cast<__gm__ const float*>(inX), reinterpret_cast<__gm__ const float*>(inY),
-            ws, ws + useCoreNum);
+            dim3{nthreads, 1, 1}, calNum, startIdx, n, incx, incy, reinterpret_cast<__gm__ const float*>(inX),
+            reinterpret_cast<__gm__ const float*>(inY), ws, ws + useCoreNum);
     }
 }
 
@@ -281,8 +277,8 @@ __aicore__ inline void CdotuCombinePartials(__gm__ const float* ws, uint32_t use
     res[1] = imag;
 }
 
-extern "C" __global__ __aicore__ void cdotu_simt_kernel(GM_ADDR inX, GM_ADDR inY, GM_ADDR result, GM_ADDR workSpace,
-                                                        CdotuTilingData tdata)
+extern "C" __global__ __aicore__ void cdotu_simt_kernel(
+    GM_ADDR inX, GM_ADDR inY, GM_ADDR result, GM_ADDR workSpace, CdotuTilingData tdata)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
 
@@ -307,8 +303,9 @@ extern "C" __global__ __aicore__ void cdotu_simt_kernel(GM_ADDR inX, GM_ADDR inY
         calNum += 1u;
     }
     // startIdx = base * blockIdx + 2 * min(blockIdx, givePairs); all even.
-    uint32_t startIdx = base * static_cast<uint32_t>(blockIdx)
-                        + 2u * (static_cast<uint32_t>(blockIdx) < givePairs ? static_cast<uint32_t>(blockIdx) : givePairs);
+    uint32_t startIdx =
+        base * static_cast<uint32_t>(blockIdx) +
+        2u * (static_cast<uint32_t>(blockIdx) < givePairs ? static_cast<uint32_t>(blockIdx) : givePairs);
 
     // calNum==0 cores must still zero their partial slots: CdotuCombinePartials
     // sums ws[0..useCoreNum) unconditionally, and a pair-aligned partition can
@@ -320,11 +317,13 @@ extern "C" __global__ __aicore__ void cdotu_simt_kernel(GM_ADDR inX, GM_ADDR inY
     if (calNum > 0) {
         bool contiguous = (tdata.incx == 1 && tdata.incy == 1);
         if (tdata.useDualAcc) {
-            CdotuDispatchSimt<true>(calNum, startIdx, tdata.n, tdata.incx, tdata.incy, inX, inY,
-                                    ws + blockIdx, tdata.useCoreNum, tdata.nthreads, contiguous);
+            CdotuDispatchSimt<true>(
+                calNum, startIdx, tdata.n, tdata.incx, tdata.incy, inX, inY, ws + blockIdx, tdata.useCoreNum,
+                tdata.nthreads, contiguous);
         } else {
-            CdotuDispatchSimt<false>(calNum, startIdx, tdata.n, tdata.incx, tdata.incy, inX, inY,
-                                     ws + blockIdx, tdata.useCoreNum, tdata.nthreads, contiguous);
+            CdotuDispatchSimt<false>(
+                calNum, startIdx, tdata.n, tdata.incx, tdata.incy, inX, inY, ws + blockIdx, tdata.useCoreNum,
+                tdata.nthreads, contiguous);
         }
     } else {
         ws[blockIdx] = 0.0f;
@@ -343,8 +342,9 @@ extern "C" __global__ __aicore__ void cdotu_simt_kernel(GM_ADDR inX, GM_ADDR inY
     }
 }
 
-void cdotu_kernel_do(GM_ADDR inX, GM_ADDR inY, GM_ADDR result, GM_ADDR workSpace,
-                     const CdotuTilingData& tiling, uint32_t numBlocks, void* stream)
+void cdotu_kernel_do(
+    GM_ADDR inX, GM_ADDR inY, GM_ADDR result, GM_ADDR workSpace, const CdotuTilingData& tiling, uint32_t numBlocks,
+    void* stream)
 {
     auto aclStream = static_cast<aclrtStream>(stream);
 

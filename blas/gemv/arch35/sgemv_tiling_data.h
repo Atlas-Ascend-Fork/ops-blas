@@ -18,16 +18,15 @@
 #include <cstdint>
 
 struct SgemvTilingData {
-    uint32_t numThreads;   // threads per block
-    uint32_t rowsPerBlock; // ceil(outDim / numBlocks)
-    uint32_t m;            // matrix A rows
-    uint32_t n;            // matrix A columns
-    uint32_t lda;          // A leading dimension
-    uint32_t trans;        // 0 = N, 1 = T/C
-    float alpha;           // scalar alpha
-    float beta;            // scalar beta
-    int64_t incx;          // x stride
-    int64_t incy;          // y stride
+    uint32_t numThreads; // threads per block
+    uint32_t m;          // matrix A rows
+    uint32_t n;          // matrix A columns
+    uint32_t lda;        // A leading dimension
+    uint32_t trans;      // 0 = N, 1 = T/C
+    float alpha;         // scalar alpha
+    float beta;          // scalar beta
+    int64_t incx;        // x stride
+    int64_t incy;        // y stride
     // Slab fast-path fields (host fills them when useSlab != 0; the generic
     // path leaves them zeroed).
     uint32_t useSlab;    // 1 = column-chunked slab kernel family

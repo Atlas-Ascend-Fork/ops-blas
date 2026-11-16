@@ -36,8 +36,8 @@ aclblasStatus_t ValidateCaxpyParams(
 }
 
 aclblasStatus_t LaunchCaxpyKernel(
-    aclblasHandle_t handle, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,
-    aclblasComplex* y, int incy)
+    aclblasHandle_t handle, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx, aclblasComplex* y,
+    int incy)
 {
     uint32_t aivCoreNum = GetAivCoreCount();
     if (aivCoreNum == 0) {
@@ -46,8 +46,9 @@ aclblasStatus_t LaunchCaxpyKernel(
     }
 
     uint32_t totalN = static_cast<uint32_t>(n);
+    // 调用方 aclblasCaxpy 对 n==0 提前返回且 aivCoreNum 已判非零，
+    // CeilDiv(totalN, SIMT_MIN_THREAD_NUM) 与 aivCoreNum 均恒 >= 1，numBlocks 无需再兜底
     uint32_t numBlocks = std::min(CeilDiv<uint32_t>(totalN, SIMT_MIN_THREAD_NUM), aivCoreNum);
-    numBlocks = std::max(numBlocks, 1U);
     uint32_t threadCount =
         std::min(CeilAlign<uint32_t>(CeilDiv<uint32_t>(totalN, numBlocks), SIMT_MIN_THREAD_NUM), SIMT_MAX_THREAD_NUM);
 
@@ -72,8 +73,8 @@ aclblasStatus_t LaunchCaxpyKernel(
 } // namespace
 
 extern "C" aclblasStatus_t aclblasCaxpy(
-    aclblasHandle_t handle, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,
-    aclblasComplex* y, int incy)
+    aclblasHandle_t handle, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx, aclblasComplex* y,
+    int incy)
 {
     if (handle == nullptr) {
         OP_LOGE("aclblasCaxpy", "handle is nullptr");

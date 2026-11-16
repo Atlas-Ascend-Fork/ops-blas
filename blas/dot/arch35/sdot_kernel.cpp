@@ -40,8 +40,8 @@ template <typename T>
 class SdotKernel {
 public:
     __aicore__ inline SdotKernel() {}
-    __aicore__ inline void Init(TPipe* pipe, GM_ADDR x, GM_ADDR y, GM_ADDR result, GM_ADDR workSpace,
-                                SdotTilingData tiling);
+    __aicore__ inline void Init(
+        TPipe* pipe, GM_ADDR x, GM_ADDR y, GM_ADDR result, GM_ADDR workSpace, SdotTilingData tiling);
     __aicore__ inline void Process();
 
 private:
@@ -217,7 +217,8 @@ __aicore__ inline void SdotKernel<T>::Process()
         ProcessStrided();
     }
 
-    SyncVToMTE();
+    // 各分支（ProcessContiguous/ProcessStrided/calCount_==0）均已在其写出 workspace 的
+    // DataCopyPad 前完成 V→MTE 同步，此处汇合点无新的向量写，无需重复同步
     AscendC::CrossCoreSetFlag<0, PIPE_MTE3>(0);
     AscendC::CrossCoreWaitFlag<0, PIPE_MTE3>(0);
 
@@ -236,8 +237,7 @@ __aicore__ inline void SdotKernel<T>::Process()
     }
 }
 
-__global__ __aicore__ void sdot_kernel(GM_ADDR x, GM_ADDR y, GM_ADDR result, GM_ADDR workSpace,
-                                       SdotTilingData tiling)
+__global__ __aicore__ void sdot_kernel(GM_ADDR x, GM_ADDR y, GM_ADDR result, GM_ADDR workSpace, SdotTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     TPipe pipe;
@@ -247,8 +247,8 @@ __global__ __aicore__ void sdot_kernel(GM_ADDR x, GM_ADDR y, GM_ADDR result, GM_
 }
 
 void sdot_kernel_do(
-    GM_ADDR x, GM_ADDR y, GM_ADDR result, GM_ADDR workSpace,
-    uint32_t numBlocks, const SdotTilingData& tiling, void* stream)
+    GM_ADDR x, GM_ADDR y, GM_ADDR result, GM_ADDR workSpace, uint32_t numBlocks, const SdotTilingData& tiling,
+    void* stream)
 {
     sdot_kernel<<<numBlocks, nullptr, stream>>>(x, y, result, workSpace, tiling);
 }
