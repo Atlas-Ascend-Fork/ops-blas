@@ -8,9 +8,9 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-// Reuse private device templates while keeping kernel UB allocation isolated.
-#define CTRSM_BATCHED_SHARED_ONLY
-#include "ctrsmbatched_kernel.cpp"
+// Reuse the shared device templates while keeping kernel UB allocation
+// isolated in this translation unit.
+#include "ctrsmbatched_kernel_shared.h"
 
 namespace CtrsmBatchedBlockedVector {
 using namespace CtrsmBatchedSimd;

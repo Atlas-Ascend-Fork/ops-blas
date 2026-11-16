@@ -8,9 +8,9 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-// Reuse private device templates while keeping kernel UB allocation isolated.
-#define CTRSM_BATCHED_SHARED_ONLY
-#include "ctrsmbatched_kernel.cpp"
+// Reuse the shared device templates while keeping kernel UB allocation
+// isolated in this translation unit.
+#include "ctrsmbatched_kernel_shared.h"
 
 // Pipelined square NON_UNIT solve for identity alpha.
 namespace CtrsmBatchedSquare {
@@ -176,7 +176,7 @@ __aicore__ inline void ComputeSquareTile(
             PrefetchSquare<K, W>(
                 a, b, t, next, reinterpret_cast<__ubuf__ float*>(badBase + ((iteration + 1) % 2) * REGION + T + 8));
     }
-    if constexpr (K == 8)
+    if constexpr (K == 8 && W <= 128)
         CtrsmBatchedSmallVector::ComputeFixed8<K, G, W, 9>(aa, bb, indices);
     else
         CtrsmBatchedSmallVector::Compute<K, G, W, 9>(aa, bb, indices, K, 0, W);
