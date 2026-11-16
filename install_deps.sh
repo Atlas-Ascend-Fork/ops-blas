@@ -427,9 +427,13 @@ find_cblas_header() {
     if [[ -n "${HOMEBREW_PREFIX:-}" ]]; then
         paths+=("${HOMEBREW_PREFIX}/include/cblas.h")
     fi
-    if [[ "$(uname -s)" == "Linux" ]] && command -v dpkg-architecture &> /dev/null; then
-        local multiarch
-        multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        local multiarch=""
+        if command -v dpkg-architecture &> /dev/null; then
+            multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || true)
+        elif command -v gcc &> /dev/null; then
+            multiarch=$(gcc -print-multiarch 2>/dev/null || true)
+        fi
         if [[ -n "$multiarch" ]]; then
             paths+=("/usr/include/${multiarch}/cblas.h")
         fi
