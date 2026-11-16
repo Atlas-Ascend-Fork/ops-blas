@@ -28,4 +28,13 @@ struct SgemvTilingData {
     float beta;            // scalar beta
     int64_t incx;          // x stride
     int64_t incy;          // y stride
+    // Slab fast-path fields (host fills them when useSlab != 0; the generic
+    // path leaves them zeroed).
+    uint32_t useSlab;    // 1 = column-chunked slab kernel family
+    uint32_t chunkLen;   // columns per chunk
+    uint32_t colChunks;  // number of column chunks
+    uint32_t segShift;   // trans=T small-m: log2(row segments per column)
+    uint32_t rowTiles;   // N: row tiles per chunk; T large-m: row tiles (0 = direct write-back)
+    uint32_t betaIsZero; // 1 = beta == 0 (y is not read)
+    uint32_t usePairs;   // 1 = float2 row-pair loads (m even and lda even)
 };

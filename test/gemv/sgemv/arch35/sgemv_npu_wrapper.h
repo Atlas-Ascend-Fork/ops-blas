@@ -29,9 +29,64 @@ inline std::unique_ptr<DeviceBuffer> tryAllocAndCopy(const void* hostPtr, size_t
     return buf;
 }
 
+// Performance measurement helper: warmup (5x) + event-wrapped sampling (100x)
+// on the handle stream. Returns the steady-state average kernel time in
+// milliseconds via *kernelMs; H2D/D2H copies stay outside the measured window.
+inline aclblasStatus_t SgemvMeasureKernelMs(
+    aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, const float* alpha, const float* dA, int lda,
+    const float* dX, int incx, const float* beta, float* dY, int incy, float* kernelMs)
+{
+    constexpr int kSgemvWarmup = 5;
+    constexpr int kSgemvSamples = 100;
+
+    for (int i = 0; i < kSgemvWarmup; i++) {
+        aclblasStatus_t ret = aclblasSgemv(handle, trans, m, n, alpha, dA, lda, dX, incx, beta, dY, incy);
+        if (ret != ACLBLAS_STATUS_SUCCESS) {
+            return ret;
+        }
+    }
+
+    aclrtStream stream = nullptr;
+    if (aclblasGetStream(handle, &stream) != ACLBLAS_STATUS_SUCCESS) {
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    aclrtEvent startEvent = nullptr;
+    aclrtEvent stopEvent = nullptr;
+    if (aclrtCreateEvent(&startEvent) != ACL_SUCCESS) {
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    if (aclrtCreateEvent(&stopEvent) != ACL_SUCCESS) {
+        (void)aclrtDestroyEvent(startEvent);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+
+    aclrtRecordEvent(startEvent, stream);
+    for (int i = 0; i < kSgemvSamples; i++) {
+        aclblasStatus_t ret = aclblasSgemv(handle, trans, m, n, alpha, dA, lda, dX, incx, beta, dY, incy);
+        if (ret != ACLBLAS_STATUS_SUCCESS) {
+            (void)aclrtDestroyEvent(startEvent);
+            (void)aclrtDestroyEvent(stopEvent);
+            return ret;
+        }
+    }
+    aclrtRecordEvent(stopEvent, stream);
+
+    aclblasStatus_t status = ACLBLAS_STATUS_SUCCESS;
+    float totalMs = 0.0f;
+    if (aclrtSynchronizeEvent(stopEvent) != ACL_SUCCESS ||
+        aclrtEventElapsedTime(&totalMs, startEvent, stopEvent) != ACL_SUCCESS) {
+        status = ACLBLAS_STATUS_INTERNAL_ERROR;
+    } else {
+        *kernelMs = totalMs / static_cast<float>(kSgemvSamples);
+    }
+    (void)aclrtDestroyEvent(startEvent);
+    (void)aclrtDestroyEvent(stopEvent);
+    return status;
+}
+
 inline aclblasStatus_t aclblasSgemv_npu(
     aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, const float* alpha, const float* a, int lda,
-    const float* x, int incx, const float* beta, float* y, int incy)
+    const float* x, int incx, const float* beta, float* y, int incy, float* kernelMs = nullptr)
 {
     if (handle == nullptr) {
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
@@ -50,11 +105,16 @@ inline aclblasStatus_t aclblasSgemv_npu(
     auto dA = tryAllocAndCopy(a, aBytes);
     auto dX = tryAllocAndCopy(x, xBytes);
     auto dY = tryAllocAndCopy(y, yBytes);
+    const float* dAPtr = dA ? static_cast<const float*>(dA->ptr()) : nullptr;
+    const float* dXPtr = dX ? static_cast<const float*>(dX->ptr()) : nullptr;
+    float* dYPtr = dY ? static_cast<float*>(dY->ptr()) : nullptr;
 
-    aclblasStatus_t ret = aclblasSgemv(
-        handle, trans, m, n, alpha, dA ? static_cast<const float*>(dA->ptr()) : nullptr, lda,
-        dX ? static_cast<const float*>(dX->ptr()) : nullptr, incx, beta, dY ? static_cast<float*>(dY->ptr()) : nullptr,
-        incy);
+    // Performance cases (TC_PF_*): warmup + event-wrapped sampling on the device
+    // buffers, average kernel time reported via *kernelMs.
+    aclblasStatus_t ret =
+        (kernelMs != nullptr) ?
+            SgemvMeasureKernelMs(handle, trans, m, n, alpha, dAPtr, lda, dXPtr, incx, beta, dYPtr, incy, kernelMs) :
+            aclblasSgemv(handle, trans, m, n, alpha, dAPtr, lda, dXPtr, incx, beta, dYPtr, incy);
 
     aclError syncRet = aclrtSynchronizeDevice();
     if (syncRet != ACL_SUCCESS)
@@ -66,4 +126,3 @@ inline aclblasStatus_t aclblasSgemv_npu(
 
     return ret;
 }
-

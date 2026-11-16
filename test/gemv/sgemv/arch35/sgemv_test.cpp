@@ -49,11 +49,19 @@ TEST_P(SgemvArch35Test, CsvDriven)
     const float* alphaPtr = (p.alphaFill.method == BlasFillMode::M_NULLPTR) ? nullptr : &p.alpha;
     const float* betaPtr = (p.betaFill.method == BlasFillMode::M_NULLPTR) ? nullptr : &p.beta;
 
-    // NPU path: copy y, run kernel, result lands in yNpu
+    // NPU path: copy y, run kernel, result lands in yNpu. Performance cases
+    // (TC_PF_*) take the warmup + event-sampled path and report the steady-state
+    // kernel time (H2D/D2H excluded); the remaining precision cases stay
+    // single-call so the regression run is not slowed by repeated executions.
     std::vector<float> yNpu = yHost;
+    const bool perfCase = (p.caseName.rfind("TC_PF_", 0) == 0);
+    float kernelMs = 0.0f;
     aclblasStatus_t ret = aclblasSgemv_npu(
         SgemvArch35Test::handle_, p.trans, p.m, p.n, alphaPtr, aHost.data(), p.lda, xHost.data(), p.incx, betaPtr,
-        yNpu.data(), p.incy);
+        yNpu.data(), p.incy, perfCase ? &kernelMs : nullptr);
+    if (perfCase) {
+        printf("[SGEMV_KERNEL_MS] %s %.6f\n", p.caseName.c_str(), kernelMs);
+    }
 
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
         EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));

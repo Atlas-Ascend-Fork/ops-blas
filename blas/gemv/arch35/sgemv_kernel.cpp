@@ -25,6 +25,11 @@
 #include "sgemv_tiling_data.h"
 #include "common/helper/kernel_constant.h"
 
+// Slab fast-path launcher (sgemv_slab_kernel.cpp).
+void SgemvLaunchSlab(
+    uint8_t* a, uint8_t* x, uint8_t* y, uint8_t* workSpace, const SgemvTilingData& tiling, uint32_t numBlocks,
+    void* stream);
+
 static constexpr uint32_t UB_X_FLOATS = 16384; // 64 KB __ubuf__ for x vector
 
 // ==========================================================================
@@ -201,5 +206,10 @@ __global__ __aicore__ void sgemv_kernel(GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR
 void sgemv_kernel_do(
     GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, const SgemvTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    // Column-chunked slab fast paths (see sgemv_slab_kernel.cpp).
+    if (tiling.useSlab != 0) {
+        SgemvLaunchSlab(a, x, y, workSpace, tiling, numBlocks, stream);
+        return;
+    }
     sgemv_kernel<<<numBlocks, nullptr, stream>>>(a, x, y, workSpace, tiling);
 }
