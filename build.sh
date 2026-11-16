@@ -242,7 +242,12 @@ deduplicate_ops() {
 
 # 展开家族名
 if [ -n "${BUILD_OPS}" ]; then
+  REQUESTED_BUILD_OPS="${BUILD_OPS}"
   BUILD_OPS=$(expand_family_ops "${BUILD_OPS}")
+  if [ -z "${BUILD_OPS}" ]; then
+    print_error "No requested operators support SOC '${SOC_VERSION}': ${REQUESTED_BUILD_OPS}"
+    exit 1
+  fi
 fi
 
 # 如果 --run 单独使用（没有指定算子），自动发现所有测试目录
