@@ -8,9 +8,9 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef GEMM_BATCHED_EX_PARAM_H
-#define GEMM_BATCHED_EX_PARAM_H
+#pragma once
 
+#include <iostream>
 #include <string>
 #include <algorithm>
 #include <unordered_map>
@@ -18,27 +18,28 @@
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "csv_loader.h"
-#include "gemm_ex_param.h"  // reuse parseAclDataType, physRows, physCols
+#include "gemm_ex_param.h" // reuse parseAclDataType, physRows, physCols
 
 // Parse aclblasGemmAlgo_t (batched-specific)
 inline aclblasGemmAlgo_t parseGemmAlgo(const std::string& s)
 {
     static const std::unordered_map<std::string, aclblasGemmAlgo_t> m = {
-        {"ACLBLAS_GEMM_DEFAULT", ACLBLAS_GEMM_DEFAULT},
-        {"DEFAULT", ACLBLAS_GEMM_DEFAULT},
-        {"0", ACLBLAS_GEMM_DEFAULT},
-        {"ACLBLAS_GEMM_ALGO0", ACLBLAS_GEMM_ALGO0},
-        {"ALGO0", ACLBLAS_GEMM_ALGO0},
-        {"1", ACLBLAS_GEMM_ALGO0},
-        {"ACLBLAS_GEMM_ALGO1", ACLBLAS_GEMM_ALGO1},
-        {"ALGO1", ACLBLAS_GEMM_ALGO1},
-        {"2", ACLBLAS_GEMM_ALGO1},
+        {"ACLBLAS_GEMM_DEFAULT", ACLBLAS_GEMM_DEFAULT},  {"DEFAULT", ACLBLAS_GEMM_DEFAULT}, {"0", ACLBLAS_GEMM_DEFAULT},
+        {"ACLBLAS_GEMM_ALGO0", ACLBLAS_GEMM_ALGO0},      {"ALGO0", ACLBLAS_GEMM_ALGO0},     {"1", ACLBLAS_GEMM_ALGO0},
+        {"ACLBLAS_GEMM_ALGO1", ACLBLAS_GEMM_ALGO1},      {"ALGO1", ACLBLAS_GEMM_ALGO1},     {"2", ACLBLAS_GEMM_ALGO1},
         {"INVALID", static_cast<aclblasGemmAlgo_t>(99)},
     };
     auto it = m.find(s);
-    if (it != m.end()) return it->second;
-    try { return static_cast<aclblasGemmAlgo_t>(std::stoi(s)); }
-    catch (...) { return ACLBLAS_GEMM_DEFAULT; }
+    if (it != m.end())
+        return it->second;
+    try {
+        return static_cast<aclblasGemmAlgo_t>(std::stoi(s));
+    } catch (...) {
+        // issue #918: 未知 algo 字符串静默回退 DEFAULT 会掩盖用例覆盖意图，
+        // 对齐 csv_loader.h parseEnum 的"解析失败必须可见"口径输出告警
+        std::cout << "[gemm_batched_ex] unknown algo string '" << s << "', using ACLBLAS_GEMM_DEFAULT" << std::endl;
+        return ACLBLAS_GEMM_DEFAULT;
+    }
 }
 
 struct GemmBatchedExParam : public BlasTestParamBase {
@@ -75,7 +76,7 @@ struct GemmBatchedExParam : public BlasTestParamBase {
         n = parseInt(ReadMap(map, "n", "0"));
         k = parseInt(ReadMap(map, "k", "0"));
         alpha = parseFloat(ReadMap(map, "alpha", "1.0"));
-        beta  = parseFloat(ReadMap(map, "beta", "0.0"));
+        beta = parseFloat(ReadMap(map, "beta", "0.0"));
 
         Atype = parseAclDataType(ReadMap(map, "Atype", "FP16"));
         Btype = parseAclDataType(ReadMap(map, "Btype", "FP16"));
@@ -98,11 +99,9 @@ struct GemmBatchedExParam : public BlasTestParamBase {
         cFill = parseFill(ReadMap(map, "c_fill", "VALUE_NORM_0"));
 
         alphaNull = (ReadMap(map, "alpha_null", "false") == "true");
-        betaNull  = (ReadMap(map, "beta_null", "false") == "true");
+        betaNull = (ReadMap(map, "beta_null", "false") == "true");
         aarrayNull = (ReadMap(map, "aarray_null", "false") == "true");
         barrayNull = (ReadMap(map, "barray_null", "false") == "true");
         carrayNull = (ReadMap(map, "carray_null", "false") == "true");
     }
 };
-
-#endif // GEMM_BATCHED_EX_PARAM_H
