@@ -48,8 +48,7 @@
  *                GEMM output.
  */
 
-#ifndef COMPLEX_BLAS3_ARCH22_H
-#define COMPLEX_BLAS3_ARCH22_H
+#pragma once
 
 #include "kernel_operator.h"
 #include "lib/matmul_intf.h"
@@ -559,12 +558,6 @@ __aicore__ inline void SplitInterleaveBody(
 // ---------------------------------------------------------------------------
 //  Phase 2 helpers (the combine body itself is per-operator)
 // ---------------------------------------------------------------------------
-// Byte-offset table that interleaves a [re | im] pair of half-buffers into one
-// complex run: idx[2t] = 4*t, idx[2t+1] = 4*(halfStride + t). Built once per
-// kernel with integer vector ops, so no host-side auxiliary buffer and no H2D
-// copy is needed on the critical path. Integer rather than float arithmetic
-// because Gather takes byte offsets and fp32 is exact only up to 2^24 bytes --
-// a limit that would be invisible in the source if the chunk size grew.
 // Negate a packed real buffer of `count` floats in place, spread over all cores.
 //
 // CHER2K needs Bi with both signs: its real part accumulates +Ai*Bi^T and
@@ -615,6 +608,12 @@ __aicore__ inline void NegateBody(GM_ADDR buf, uint32_t count)
     }
 }
 
+// Byte-offset table that interleaves a [re | im] pair of half-buffers into one
+// complex run: idx[2t] = 4*t, idx[2t+1] = 4*(halfStride + t). Built once per
+// kernel with integer vector ops, so no host-side auxiliary buffer and no H2D
+// copy is needed on the critical path. Integer rather than float arithmetic
+// because Gather takes byte offsets and fp32 is exact only up to 2^24 bytes --
+// a limit that would be invisible in the source if the chunk size grew.
 __aicore__ inline void BuildInterleaveIndex(
     const LocalTensor<int32_t>& idx, const LocalTensor<int32_t>& s0, const LocalTensor<int32_t>& s1, uint32_t pairs,
     uint32_t halfStride)
@@ -661,5 +660,3 @@ __aicore__ inline void ZeroDiagonalImag(
     PipeBarrier<PIPE_V>();
 }
 } // namespace cblas3
-
-#endif // COMPLEX_BLAS3_ARCH22_H

@@ -416,7 +416,11 @@ static inline double CsymmPerfSampleLoop(
             aclrtRecordEvent(pollEvt, stream);
             aclrtEventStatus evtStatus = ACL_EVENT_STATUS_NOT_READY;
             while (evtStatus != ACL_EVENT_STATUS_COMPLETE) {
+#if defined(__x86_64__) || defined(__i386__)
                 __builtin_ia32_pause();
+#else
+                __asm__ __volatile__("yield");
+#endif
                 aclrtQueryEvent(pollEvt, &evtStatus);
             }
         } else if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
