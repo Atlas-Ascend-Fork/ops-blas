@@ -14,6 +14,7 @@
 #include <vector>
 #include <chrono>
 #include <algorithm>
+#include <memory>
 
 #include "fill.h"
 #include "verify.h"
@@ -31,6 +32,53 @@ static void VerifyCrotgResult(float result, float golden, const std::string& cas
     VerifyConfig cfg;
     applyMixedTolerance(cfg, ACL_FLOAT, golden);
     EXPECT_TRUE(Verifier::verifyScalar(result, golden, cfg, caseName));
+}
+
+// A complex norm may overflow FP32 while every output component is finite.
+// Exercise both public API paths; compare components to the double golden
+// instead of computing an overflowing FP32 residual or skipping extreme inputs.
+TEST_F(CrotgArch35Test, FiniteComponentsWithLargeNorm)
+{
+    struct Scalars {
+        aclblasComplex a;
+        aclblasComplex b;
+        float c;
+        aclblasComplex s;
+    };
+    void* storage = nullptr;
+    ASSERT_EQ(aclrtMallocHost(&storage, sizeof(Scalars)), ACL_SUCCESS);
+    std::unique_ptr<Scalars, decltype(&aclrtFreeHost)> values(
+        static_cast<Scalars*>(storage), &aclrtFreeHost);
+    const aclblasComplex inputs[][2] = {
+        {{2e38f, 2e38f}, {2e38f, 2e38f}},
+        {{-2e38f, 2e38f}, {2e38f, -2e38f}},
+        {{3e38f, 3e38f}, {1.0f, -1.0f}},
+        {{3e38f, 3e38f}, {0.0f, 0.0f}},
+        {{0.0f, 0.0f}, {2e38f, 2e38f}},
+    };
+    for (const auto& input : inputs) {
+        for (bool device : {false, true}) {
+            SCOPED_TRACE(device ? "device" : "host");
+            *values = {input[0], input[1], 0.0f, {0.0f, 0.0f}};
+            aclblasComplex goldenA = input[0], goldenB = input[1], goldenS{};
+            float goldenC = 0.0f;
+            CrotgGoldenCompute(&goldenA, &goldenB, &goldenC, &goldenS);
+            const auto compute = device ? aclblasCrotg_npu : aclblasCrotg;
+            ASSERT_EQ(compute(handle_, &values->a, &values->b, &values->c, &values->s),
+                      ACLBLAS_STATUS_SUCCESS);
+            const float actual[] = {values->a.real, values->a.imag, values->c,
+                                    values->s.real, values->s.imag};
+            const float expected[] = {goldenA.real, goldenA.imag, goldenC, goldenS.real, goldenS.imag};
+            for (size_t i = 0; i < 5; ++i) {
+                ASSERT_TRUE(std::isfinite(actual[i])) << "component " << i;
+                VerifyCrotgResult(actual[i], expected[i], "large_norm_" + std::to_string(i));
+            }
+            if (!device) {
+                EXPECT_EQ(values->b.real, input[1].real);
+                EXPECT_EQ(values->b.imag, input[1].imag);
+            }
+        }
+    }
 }
 
 // Check whether a float is inf or nan

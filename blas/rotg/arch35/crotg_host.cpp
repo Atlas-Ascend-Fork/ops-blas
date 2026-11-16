@@ -53,10 +53,10 @@ static aclblasStatus_t CrotgCheckPtrLocation(const void* ptr, bool* isDevice)
 // ==========================================================================
 // Core crotg algorithm - reference BLAS CPU implementation (Netlib crotg)
 // The algorithm body is defined by the CROTG_ALGO macro in crotg_common.h
-// (shared with the device kernel), ensuring bit-exact host/device results.
+// (shared with the device kernel), using the same scaled algorithm on both paths.
 // Reference: https://www.netlib.org/blas/crotg.f
-// rnorm is computed via hypotf(anorm, bnorm), whose internal scaling avoids
-// overflow/underflow even when anorm/bnorm are near FLT_MAX/FLT_MIN.
+// Keep the combined norm scaled until restoring each output component; the
+// unscaled norm can exceed FLT_MAX even when the components of r are finite.
 // ==========================================================================
 static void CrotgCpuCompute(aclblasComplex* a, aclblasComplex* b, float* c, aclblasComplex* s)
 {
