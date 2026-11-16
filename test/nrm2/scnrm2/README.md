@@ -1,6 +1,6 @@
 # scnrm2 测试用例及测试指导参考
 
-> **任务书**: ./aclblasScnrm2任务书
+> **任务书**: 社区任务提供的外部材料，未随本仓库分发
 > **适配硬件**: Ascend 950PR
 > **CANN 版本**: 9.1.0
 > **数据类型**: complex64（单精度复数）输入，FLOAT32 实数标量输出
@@ -16,25 +16,16 @@
 
 ## 用例规模
 
-`gen_csv.py` 使用固定随机种子生成 **1200 条**用例（条数可扩展）：
+仓内 [`arch35/scnrm2_test.csv`](arch35/scnrm2_test.csv) 保存 **1200 条** CSV 用例：
 
 - 精度：1000 条，覆盖基础组合 × 尺寸扫描 × 步长组合 × 填充模式 × 边界负向
 - 性能/内存：200 条（TC_PF 前缀），前 3 条与任务书 §3.3 精确匹配的典型 case（n=1048576/2097152/4194304，incx=1）
 
 尺寸范围 [0, 1048576]（精度）/ [1, 4194304]（性能），含 0、1、小质数、2 的幂及 2 的幂 ±1、非对齐值。性能用例一律连续访存（incx=1，生成脚本末尾带断言自检）；步长等非连续场景属功能维度，由精度用例 TC_INC/TC_EX 覆盖。
 
-生成/重新生成用例（条数可灵活扩展）：
-
-```bash
-python gen_csv.py                            # 默认 1000 精度 + 200 性能
-python gen_csv.py --accuracy 1500 --perf 300 # 扩展条数
-python gen_csv.py --seed 12345               # 更换随机种子
-```
-
-生成文件：
-
-- `scnrm2_test.csv`：1200 条 CSV 驱动用例。
-- `gpu_baseline.csv`：200 条性能/内存基线占位（`gpu_ms` 列待基线测试后回填，前 3 条与任务书 §3.3 典型 case 对应）。
+原始任务的 `gen_csv.py` 和 `gpu_baseline.csv` 未随本目录分发。仓内测试直接读取上述
+CSV；性能验收需要另行取得与该 CSV 对应的 200 条权威 GPU 基线，并通过 `--baseline`
+指定文件路径。
 
 ## 用例分类
 
@@ -48,7 +39,7 @@ python gen_csv.py --seed 12345               # 更换随机种子
 | EX 扩展 | TC_EX | 914 | 尺寸 × 步长 × 填充的确定性采样（扩展精度条数的主力类别） |
 | PF 性能 | TC_PF | 200 | 3 条任务书典型 case + 小尺寸 + 规模扫描 + 特殊填充 + 混合（均为连续访存，incx=1） |
 
-> 扩展条数时，固定类别（L0~L6）保持全集覆盖，TC_EX 与 TC_PF 的补足部分随 `--accuracy` / `--perf` 自动伸缩。
+> 仓内性能验收脚本要求恰好 200 条性能用例及 200 条基线；本目录不提供扩展条数的生成命令。
 
 > 边界语义说明：n <= 0（含负 n）为合法 quick return（result = 0.0f，期望 `ACLBLAS_STATUS_SUCCESS`），对齐 cuBLAS 文档与仓内同族接口 aclblasSnrm2/Snrm2Ex 口径；incx = 0、n > 0 时 x/result 空指针为负向用例（期望 `ACLBLAS_STATUS_INVALID_VALUE`）。handle 空指针（`ACLBLAS_STATUS_HANDLE_IS_NULLPTR`）由测试工程层面覆盖，不在 CSV 中表达。
 
@@ -85,22 +76,28 @@ Golden 使用 Netlib CBLAS 复数范数：将原始 FLOAT32 分量无损提升�
 同时避免 `cblas_scnrm2` 在长向量上串行 FP32 累加误差超过验收的 32 ULP 限制。
 精度阈值不变，负步长按照任务书允许的绝对步长等价计算。
 
-`verify_accuracy.py` 调用 ops-blas 仓 `build.sh` 编译算子测试，执行 C++ GTest 二进制，解析逐条 PASS/FAIL（自动排除 TC_PF_ 前缀的性能用例）：
+仅运行精度用例时，在仓库根目录编译并直接执行 GTest 二进制，使用过滤器排除
+`TC_PF_` 前缀的性能用例。本目录未提供 `verify_accuracy.py`：
 
 ```bash
-python verify_accuracy.py --repo /path/to/ops-blas --soc ascend950 --csv ./scnrm2_test.csv
-python verify_accuracy.py --repo /path/to/ops-blas --soc ascend950 --skip-build --device 1
-python verify_accuracy.py --repo /path/to/ops-blas --soc ascend950 --filter TC_L0 --timeout 3600
+bash build.sh --ops=scnrm2 --soc=ascend950
+./build/test/nrm2/scnrm2/scnrm2_test --gtest_filter='-*TC_PF*'
+# 使用已编译的二进制在设备 1 上运行精度用例
+BLAS_DEVICE_ID=1 ./build/test/nrm2/scnrm2/scnrm2_test --gtest_filter='-*TC_PF*'
+# 仅运行 L0 基础用例
+./build/test/nrm2/scnrm2/scnrm2_test --gtest_filter='*TC_L0*'
 ```
 
 ### 精度阈值
 
-遵循生态算子开源精度标准（输出 FLOAT32 标量按 FLOAT32 判定）：
+测试通过 `applyMixedTolerance(cfg, ACL_FLOAT, golden)` 设置 FLOAT32 混合容差，
+默认值见 [`test/frame/mixed_tolerance.h`](../../frame/mixed_tolerance.h)：
 
-- atol = 2⁻¹⁶ ≈ 1.5259e-5，rtol = 2⁻¹⁰ ≈ 9.7656e-4
-- matched_ratio ≥ 0.99 且 max_abs_error ≤ 1e-2 或 32×ULP
+- atol = rtol = 2⁻¹³ = 0.0001220703125
+- matched_ratio ≥ 0.99，且每个元素的绝对误差 ≤ max(1e-2, 32×ULP(golden))。
+  本算子输出只有一个标量，因此该标量必须满足混合容差判定及绝对误差上限。
 
-参考: https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/experimental_standard.md
+参考: https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/mixed_tolerance_standard.md
 
 ## 性能验收
 
