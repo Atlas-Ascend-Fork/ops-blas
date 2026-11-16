@@ -10,8 +10,14 @@
 
 /* !
  * \file cgeru_host.cpp
- * \brief Host side implementation for cgeru (arch22): parameter validation,
- *        column-split tiling and asynchronous kernel launch.
+ * \brief Host side of arch22 cgeru: argument validation, no-op folding, tiling
+ *        computation and asynchronous kernel launch.
+ *
+ * Semantics follow the BLAS reference cgeru (Netlib) and cuBLAS cublasCgeru:
+ *   A = alpha * x * y^T + A      (column-major, y NOT conjugated)
+ * m == 0 or n == 0 and alpha == (0,0) are quick returns that never touch the
+ * device pointers, so callers may pass nullptr there (test contract of the
+ * CSV driven suite and of cublasCgeru).
  */
 
 #include <algorithm>
@@ -32,31 +38,36 @@ namespace {
 
 static_assert(sizeof(aclblasComplex) == 2 * sizeof(float), "aclblasComplex must contain two FP32 values");
 
+// Fast path envelope. 3*8*m bytes for the staged x vectors + the interleave
+// table, 2*16 KiB twice for the double-buffered chunk queues, <= 6 KiB for the
+// per-core coefficient planes; 4096 rows and 256 columns per core keep the
+// whole layout inside the 192 KiB arch22 UB.
+constexpr uint32_t CGERU_FAST_MAX_M = 4096;
+constexpr uint32_t CGERU_FAST_MAX_COLS_PER_CORE = 256;
+
+// Scalar-division helpers keep every index in int64/uint64 domain so negative
+// strides (down to INT_MIN) and full int lda/m/n cannot overflow.
 uint64_t AbsStride(int64_t stride) { return static_cast<uint64_t>(stride < 0 ? -stride : stride); }
 
-bool IsComplexVectorAddressable(uint32_t length, int64_t stride)
+bool IsComplexVectorAddressable(int64_t logicalLength, int64_t stride)
 {
-    if (length == 0) {
+    if (logicalLength <= 0) {
         return true;
     }
-    const uint64_t absStride = AbsStride(stride);
-    const uint64_t lastComplex = static_cast<uint64_t>(length - 1) * absStride;
+    const uint64_t lastComplex = static_cast<uint64_t>(logicalLength - 1) * AbsStride(stride);
     constexpr uint64_t maxFloatIndex = std::numeric_limits<size_t>::max() / sizeof(float);
     return lastComplex <= (maxFloatIndex - 1) / 2;
 }
 
 bool IsComplexMatrixAddressable(uint32_t m, uint32_t n, uint32_t lda)
 {
-    if (m == 0 || n == 0) {
-        return true;
-    }
     const uint64_t lastComplex =
         static_cast<uint64_t>(n - 1) * static_cast<uint64_t>(lda) + static_cast<uint64_t>(m - 1);
     constexpr uint64_t maxFloatIndex = std::numeric_limits<size_t>::max() / sizeof(float);
     return lastComplex <= (maxFloatIndex - 1) / 2;
 }
 
-aclblasStatus_t ValidateCgeruShape(int m, int n, const aclblasComplex* alpha, int incx, int incy, int lda)
+aclblasStatus_t ValidateCgeruArguments(int m, int n, const aclblasComplex* alpha, int incx, int incy, int lda)
 {
     if (m < 0) {
         OP_LOGE("aclblasCgeru", "m must be >= 0, got %d", m);
@@ -70,7 +81,6 @@ aclblasStatus_t ValidateCgeruShape(int m, int n, const aclblasComplex* alpha, in
         OP_LOGE("aclblasCgeru", "alpha must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    // 与 950PR 合入版测试契约一致：只拒绝 0；INT_MIN 作负步长由寻址范围校验兜底
     if (incx == 0) {
         OP_LOGE("aclblasCgeru", "incx must not be zero");
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -79,7 +89,6 @@ aclblasStatus_t ValidateCgeruShape(int m, int n, const aclblasComplex* alpha, in
         OP_LOGE("aclblasCgeru", "incy must not be zero");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    // A is column-major: lda is the physical column stride and must cover m rows.
     if (lda < std::max(1, m)) {
         OP_LOGE("aclblasCgeru", "lda must be >= max(1,m), got lda=%d, m=%d", lda, m);
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -87,61 +96,48 @@ aclblasStatus_t ValidateCgeruShape(int m, int n, const aclblasComplex* alpha, in
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-aclblasStatus_t ValidateCgeruAddressRange(int m, int n, int lda, int incx, int incy)
-{
-    if (!IsComplexVectorAddressable(static_cast<uint32_t>(m), incx)) {
-        OP_LOGE("aclblasCgeru", "x address range overflows size_t");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (!IsComplexVectorAddressable(static_cast<uint32_t>(n), incy)) {
-        OP_LOGE("aclblasCgeru", "y address range overflows size_t");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (!IsComplexMatrixAddressable(static_cast<uint32_t>(m), static_cast<uint32_t>(n), static_cast<uint32_t>(lda))) {
-        OP_LOGE("aclblasCgeru", "A address range overflows size_t");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
 CgeruTilingData CalCgeruTilingData(
-    int m, int n, int lda, int incx, int incy, const aclblasComplex& alpha, uint32_t aivCoreNum)
+    int m, int n, int lda, int incx, int incy, const aclblasComplex& alpha, uint32_t coreNum)
 {
     CgeruTilingData tiling{};
     tiling.m = static_cast<uint32_t>(m);
     tiling.n = static_cast<uint32_t>(n);
     tiling.lda = static_cast<uint32_t>(lda);
-    tiling.alphaReal = alpha.real;
-    tiling.alphaImag = alpha.imag;
+    tiling.useCoreNum = coreNum;
     tiling.incx = static_cast<int64_t>(incx);
     tiling.incy = static_cast<int64_t>(incy);
-    tiling.xStart = (incx < 0) ? static_cast<uint64_t>(m - 1) * AbsStride(incx) : 0;
-    tiling.yStart = (incy < 0) ? static_cast<uint64_t>(n - 1) * AbsStride(incy) : 0;
+    tiling.xStart = (incx < 0) ? (static_cast<uint64_t>(m - 1) * AbsStride(incx)) : 0U;
+    tiling.yStart = (incy < 0) ? (static_cast<uint64_t>(n - 1) * AbsStride(incy)) : 0U;
+    tiling.alphaReal = alpha.real;
+    tiling.alphaImag = alpha.imag;
 
-    // Even column split across AIV cores (kernel derives colStart/colCount).
-    const uint32_t cores = std::min(static_cast<uint32_t>(n), aivCoreNum);
-    tiling.colsPerCore = (cores == 0U) ? 0U : ((n + cores - 1U) / cores);
+    const uint32_t colsPerCore = (coreNum == 0U) ? 0U : ((static_cast<uint32_t>(n) + coreNum - 1U) / coreNum);
+    // The fast path additionally requires every A column to be a contiguous,
+    // 32 B aligned interleaved run (m % 4 == 0) and the per-core coefficient
+    // planes to stay inside the fixed UB envelope.
+    tiling.useFast = (incx == 1 && static_cast<uint32_t>(lda) == tiling.m && m % 4 == 0 &&
+                      m <= static_cast<int>(CGERU_FAST_MAX_M) && colsPerCore <= CGERU_FAST_MAX_COLS_PER_CORE) ?
+                         1U :
+                         0U;
     return tiling;
 }
 
 aclblasStatus_t LaunchCgeru(
-    aclblasHandle_t handle, int m, int n, const aclblasComplex& alphaValue, const aclblasComplex* x, int incx,
-    const aclblasComplex* y, int incy, aclblasComplex* A, int lda)
+    aclblasHandle_t handle, int m, int n, int lda, int incx, int incy, const aclblasComplex& alphaValue,
+    const aclblasComplex* x, const aclblasComplex* y, aclblasComplex* A)
 {
     const uint32_t aivCoreNum = GetAivCoreCount();
     if (aivCoreNum == 0) {
         OP_LOGE("aclblasCgeru", "GetAivCoreCount failed");
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
-
-    const CgeruTilingData tiling = CalCgeruTilingData(m, n, lda, incx, incy, alphaValue, aivCoreNum);
     const uint32_t numBlocks = std::min(static_cast<uint32_t>(n), aivCoreNum);
+    const CgeruTilingData tiling = CalCgeruTilingData(m, n, lda, incx, incy, alphaValue, numBlocks);
     OP_LOGD(
-        "aclblasCgeru", "tiling: m=%u n=%u lda=%u incx=%lld incy=%lld colsPerCore=%u numBlocks=%u", tiling.m, tiling.n,
-        tiling.lda, static_cast<long long>(tiling.incx), static_cast<long long>(tiling.incy), tiling.colsPerCore,
-        numBlocks);
+        "aclblasCgeru", "tiling: m=%u n=%u lda=%u cores=%u incx=%lld incy=%lld useFast=%u", tiling.m, tiling.n,
+        tiling.lda, tiling.useCoreNum, static_cast<long long>(tiling.incx), static_cast<long long>(tiling.incy),
+        tiling.useFast);
 
-    // All paths use per-core UB scratch only; no GM workspace is needed.
     cgeru_kernel_do(
         reinterpret_cast<const uint8_t*>(x), reinterpret_cast<const uint8_t*>(y), reinterpret_cast<uint8_t*>(A), tiling,
         numBlocks, handle->stream);
@@ -159,7 +155,7 @@ extern "C" aclblasStatus_t aclblasCgeru(
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
 
-    aclblasStatus_t status = ValidateCgeruShape(m, n, alpha, incx, incy, lda);
+    const aclblasStatus_t status = ValidateCgeruArguments(m, n, alpha, incx, incy, lda);
     if (status != ACLBLAS_STATUS_SUCCESS) {
         return status;
     }
@@ -174,21 +170,22 @@ extern "C" aclblasStatus_t aclblasCgeru(
     }
 
     if (x == nullptr) {
-        OP_LOGE("aclblasCgeru", "x must not be nullptr");
+        OP_LOGE("aclblasCgeru", "x must not be nullptr when m*n > 0 and alpha != 0");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (y == nullptr) {
-        OP_LOGE("aclblasCgeru", "y must not be nullptr");
+        OP_LOGE("aclblasCgeru", "y must not be nullptr when m*n > 0 and alpha != 0");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (A == nullptr) {
-        OP_LOGE("aclblasCgeru", "A must not be nullptr");
+        OP_LOGE("aclblasCgeru", "A must not be nullptr when m*n > 0 and alpha != 0");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
-    status = ValidateCgeruAddressRange(m, n, lda, incx, incy);
-    if (status != ACLBLAS_STATUS_SUCCESS) {
-        return status;
+    if (!IsComplexVectorAddressable(m, incx) || !IsComplexVectorAddressable(n, incy) ||
+        !IsComplexMatrixAddressable(static_cast<uint32_t>(m), static_cast<uint32_t>(n), static_cast<uint32_t>(lda))) {
+        OP_LOGE("aclblasCgeru", "operand address range overflows size_t");
+        return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
     if (handle->stream == nullptr) {
@@ -196,5 +193,5 @@ extern "C" aclblasStatus_t aclblasCgeru(
         return ACLBLAS_STATUS_NOT_INITIALIZED;
     }
 
-    return LaunchCgeru(handle, m, n, alphaValue, x, incx, y, incy, A, lda);
+    return LaunchCgeru(handle, m, n, lda, incx, incy, alphaValue, x, y, A);
 }

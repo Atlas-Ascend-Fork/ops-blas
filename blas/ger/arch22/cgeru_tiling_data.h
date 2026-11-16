@@ -10,37 +10,33 @@
 
 /* !
  * \file cgeru_tiling_data.h
- * \brief Tiling data for cgeru (arch22): complex64 non-conjugate rank-1 update.
+ * \brief Tiling descriptor for the arch22 cgeru kernel (complex64 rank-1 update).
  */
 
-#ifndef CGERU_TILING_DATA_ARCH22_H
-#define CGERU_TILING_DATA_ARCH22_H
+#pragma once
 
 #include <cstdint>
 
-// Row-chunk cap for the arch22 kernel. The TPipe managed UB layout keeps three
-// 2*chunk-float TQue buffers (x in / A in / A out), six chunk-float scratch
-// planes, the (2*chunk uint32) interleave table and its two (2*chunk int32)
-// build temporaries:
-//   3*2*(2*chunk)*4 + 6*chunk*4 + 2*chunk*4 + 2*(2*chunk)*4 <= 192 KiB
-// => chunk = 1024 uses 96 KiB, leaving 96 KiB of headroom for TPipe alignment.
-constexpr uint32_t CGERU_MAX_CHUNK_ROWS = 1024;
-// Interleave table covers a full max-size chunk: idx[2t] = 4t, idx[2t+1] = 4*(chunk + t).
-constexpr uint32_t CGERU_INTERLEAVE_ENTRIES = 2 * CGERU_MAX_CHUNK_ROWS;
-
-// Tile descriptor handed to the kernel. The host validates arguments, folds
-// negative strides into xStart/yStart, and splits columns evenly across cores.
+// Kernel-side split strategy. Both paths partition columns across AIV cores with
+// the balanced rule colStart = n * blockIdx / useCoreNum so no core carries more
+// than one column more than any other.
+//
+//  - Fast path (useFast): incx == 1 && lda == m && m % 4 == 0 && m <= 4096 &&
+//    ceil(n / useCoreNum) <= 256. Every A column then is a contiguous 32 B
+//    aligned run, the core slab is one contiguous GM range, and the kernel
+//    streams it in fixed-size chunks with double-buffered MTE2/V/MTE3 stages.
+//  - General path: per-column pieces for strided x, padded lda, or shapes the
+//    fast path cannot address.
 struct CgeruTilingData {
     uint32_t m;
     uint32_t n;
     uint32_t lda;
-    float alphaReal;
-    float alphaImag;
+    uint32_t useCoreNum;
     int64_t incx;
     int64_t incy;
-    uint64_t xStart; // complex-element offset of x[0] (accounts for incx < 0)
-    uint64_t yStart; // complex-element offset of y[0] (accounts for incy < 0)
-    uint32_t colsPerCore;
+    uint64_t xStart; // complex-element offset of logical x[0] (negative incx folded in)
+    uint64_t yStart; // complex-element offset of logical y[0] (negative incy folded in)
+    float alphaReal;
+    float alphaImag;
+    uint32_t useFast;
 };
-
-#endif // CGERU_TILING_DATA_ARCH22_H
