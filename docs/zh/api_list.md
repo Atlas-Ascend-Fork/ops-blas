@@ -627,9 +627,9 @@ aclblasStatus_t aclblasLtMatmulAlgoCapGetAttribute(const aclblasLtMatmulAlgo_t* 
 | 返回值 | 含义 |
 |---|---|
 | `ACLBLAS_STATUS_SUCCESS` | 查询成功（含 `capAttributeSize=0` 探长）。 |
-| `ACLBLAS_STATUS_INVALID_VALUE` | `algo` 为空、magic 校验失败、`capAttributeSize=0` 且 `sizeWritten` 为空、`capAttributeSize!=0` 且 `capAttribute` 为空，或缓冲区过小（此时 `sizeWritten` 仍回传所需字节数）。 |
+| `ACLBLAS_STATUS_INVALID_VALUE` | `algo` 为空、magic 校验失败、`capAttributeSize=0` 且 `sizeWritten` 为空、`capAttributeSize!=0` 且 `capAttribute` 为空，或缓冲区过小。参数、algo 或能力值校验失败时不修改 `sizeWritten`；能力值有效并进入结果写出阶段后，`sizeWritten` 会先回传所需字节数，因此缓冲区过小时仍可读取该值。 |
 | `ACLBLAS_STATUS_NOT_SUPPORTED` | `cap` 为枚举子集外任意取值（8~12、14 及以上，含哨兵；不使用 `INVALID_ENUM`）。 |
-| `ACLBLAS_STATUS_INTERNAL_ERROR` | securec 拷贝失败（防御性分支，正常不可达）。 |
+| `ACLBLAS_STATUS_INTERNAL_ERROR` | securec 拷贝失败（防御性分支，正常不可达）；进入结果写出阶段时 `sizeWritten` 已先回传所需字节数。 |
 
 #### aclblasLtMatmulAlgoGetIds()
 
@@ -670,7 +670,7 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(aclblasLtHandle_t lightHandle,
                                                 int* returnAlgoCount);
 ```
 
-根据给定的 matmul 描述符与 A/B/C/D 矩阵 layout，检索可用的矩阵乘法算法启发式结果。结果按预估计算时间递增顺序写入 `heuristicResultsArray`；实际返回数量写入 `returnAlgoCount`。调用 `aclblasLtMatmul` 时可将 `heuristicResultsArray[i].algo` 传入 `algo` 参数。`pref` 允许为空，但**空偏好与显式传入默认偏好并不等价**：arch35（Ascend 950 系列）实现下 `pref` 为空时 workspace 预算取 0，而本仓 0 值预算的语义是「关闭预算过滤」（即无上限），显式传入 `Create`/`Init` 产物则按默认 32MB 预算过滤候选，两者在存在超 32MB workspace 候选时结果不同；arch22（Atlas A2/A3 系列）实现下 `pref` 为空时预算取默认 32MB，与显式传入默认偏好一致。两种实现下 `pref` 为空时均不设置 L0 tile 偏好。
+根据给定的 matmul 描述符与 A/B/C/D 矩阵 layout，检索可用的矩阵乘法算法启发式结果。结果按当前构建目标的内部启发式规则写入 `heuristicResultsArray`；该顺序不是实测或估算计算时间的保证，也不承诺跨设备、版本保持一致。arch35（Ascend 950 系列）当前按综合多核负载平衡、L1 利用率和 L0 tile 偏好匹配的评分排序；arch22（Atlas A2/A3 系列）按形状相关的算法优先级列出候选。调用方不应依赖固定索引代表固定性能顺序，应检查每项状态和 workspace，并按实际 workload 测量。实际返回数量写入 `returnAlgoCount`。调用 `aclblasLtMatmul` 时可将 `heuristicResultsArray[i].algo` 传入 `algo` 参数。`pref` 允许为空，但**空偏好与显式传入默认偏好并不等价**：arch35（Ascend 950 系列）实现下 `pref` 为空时 workspace 预算取 0，而本仓 0 值预算的语义是「关闭预算过滤」（即无上限），显式传入 `Create`/`Init` 产物则按默认 32MB 预算过滤候选，两者在存在超 32MB workspace 候选时结果不同；arch22（Atlas A2/A3 系列）实现下 `pref` 为空时预算取默认 32MB，与显式传入默认偏好一致。两种实现下 `pref` 为空时均不设置 L0 tile 偏好。
 
 成功返回后应检查 `heuristicResultsArray[0 .. returnAlgoCount-1].state` 确认各候选算法是否可用。超过偏好中 workspace 预算的候选算法会被跳过（不计入返回数量，不写对应结果项）；**预算为 0 时的语义按构建目标不同**——arch35（Ascend 950 系列）实现把 0 读作「关闭预算过滤」（即无上限，不过滤任何候选），arch22（Atlas A2/A3 系列）实现与 cuBLASLt 一致、把 0 读作「零字节预算」（只保留无 workspace 需求的候选），详见 `aclblasLtMatmulPreferenceAttribute_t`；计算类型与输入矩阵数据类型不兼容时返回 `INVALID_VALUE`，且 `heuristicResultsArray[0].state` 会被写为 `INVALID_VALUE`。无论返回码如何，`returnAlgoCount` 均会被写入（失败路径写 0）。结果项中 `wavesCount` 当前为固定填充值 1.0（不代表实测设备利用率），`reserved` 为保留字段（填 0，调用方忽略）。
 

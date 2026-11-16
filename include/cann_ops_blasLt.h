@@ -1186,7 +1186,9 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(
  *  This function retrieves the possible algorithms for the matrix multiply
  *  operation aclblasLtMatmul() with the given input matrices A, B, and
  *  C, and the output matrix D. The output is placed in ``heuristicResultsArray``
- *  in order of increasing estimated compute time.
+ *  in the order selected by the implementation's internal heuristic for the
+ *  build target; see the parameter documentation below for target-specific
+ *  details. This order is not a measured or estimated runtime guarantee.
  *
  *  Candidates whose workspace demand exceeds the ``MAX_WORKSPACE_BYTES`` budget
  *  carried by \p pref are skipped. How a 0 budget is read differs per build
@@ -1216,8 +1218,15 @@ aclblasStatus_t aclblasLtMatmulAlgoGetIds(
  *  This is the requested maximum number of algorithms to return.
  *  @param[out]
  *  heuristicResultsArray[] Array containing the algorithm heuristics and
- *  associated runtime characteristics returned by this function, in order
- *  of increasing estimated compute time.
+ *  associated runtime characteristics returned by this function, ordered by
+ *  the internal heuristic for the build target. The current arch35
+ *  implementation ranks candidates with a score combining multi-core load
+ *  balance, L1 utilization, and preferred L0 tile match; the current arch22
+ *  implementation lists candidates by a shape-dependent algorithm priority.
+ *  This order is not a measured or estimated runtime guarantee, and no fixed
+ *  order is guaranteed across devices or versions. Callers should inspect each
+ *  result's state and workspace requirements and benchmark their workload
+ *  when performance ordering matters.
  *  @param[out]
  *  returnAlgoCount Number of algorithms returned by this function. This
  *  is the number of \p heuristicResultsArray elements written.
