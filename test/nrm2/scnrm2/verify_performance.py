@@ -102,7 +102,7 @@ def build(repo, soc):
 def run_gtest(binary, device, timeout, strict):
     env = os.environ.copy()
     if device is not None:
-        env["ASCEND_DEVICE_ID"] = str(device)
+        env["BLAS_DEVICE_ID"] = str(device)
     if strict:
         env["SCNRM2_STRICT_PERF"] = "1"
     cmd = [str(binary), "--gtest_filter=*TC_PF*", "--gtest_color=no", "--gtest_brief=1"]

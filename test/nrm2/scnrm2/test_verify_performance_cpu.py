@@ -9,11 +9,43 @@
 """Host CSV/report regressions using synthetic timings, without running an NPU."""
 
 import csv
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import verify_performance as verifier
+
+
+class DeviceSelectionTest(unittest.TestCase):
+    def run_device_check(self, device, inherited, expected):
+        with tempfile.TemporaryDirectory() as workspace:
+            binary = Path(workspace) / "check_device.sh"
+            binary.write_text(
+                '#!/bin/sh\n[ "${BLAS_DEVICE_ID-unset}" = "' + expected + '" ]\n',
+                encoding="utf-8",
+            )
+            binary.chmod(0o755)
+            env = os.environ.copy()
+            env.pop("BLAS_DEVICE_ID", None)
+            if inherited is not None:
+                env["BLAS_DEVICE_ID"] = inherited
+            with mock.patch.dict(os.environ, env, clear=True):
+                returncode, _ = verifier.run_gtest(binary, device, timeout=5, strict=True)
+            self.assertEqual(returncode, 0)
+
+    def test_explicit_device_reaches_test_process(self):
+        self.run_device_check(device=1, inherited=None, expected="1")
+
+    def test_explicit_device_overrides_inherited_device(self):
+        self.run_device_check(device=1, inherited="2", expected="1")
+
+    def test_omitted_device_preserves_inherited_device(self):
+        self.run_device_check(device=None, inherited="2", expected="2")
+
+    def test_omitted_device_preserves_compile_time_default(self):
+        self.run_device_check(device=None, inherited=None, expected="unset")
 
 
 class BaselineValidationTest(unittest.TestCase):
