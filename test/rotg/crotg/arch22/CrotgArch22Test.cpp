@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <memory>
 #include "verify.h"
 #include "blas_test.h"
 #include "csv_loader.h"
@@ -212,4 +213,46 @@ void CrotgArch22Test::RunCrotgCsvCase(const CrotgParam &p)
 TEST_P(CrotgArch22Test, CsvDriven)
 {
     RunCrotgCsvCase(GetParam());
+}
+
+// Call the production Host API, not aclblasCrotg_cpu (which is only a golden).
+// Extreme inputs must still preserve the BLAS phase convention componentwise.
+TEST_F(CrotgArch22Test, SmallNonzeroHostPhase)
+{
+    struct Scalars {
+        aclblasComplex a;
+        aclblasComplex b;
+        float c;
+        aclblasComplex s;
+    };
+    void* storage = nullptr;
+    ASSERT_EQ(aclrtMallocHost(&storage, sizeof(Scalars)), ACL_SUCCESS);
+    std::unique_ptr<Scalars, decltype(&aclrtFreeHost)> values(
+        static_cast<Scalars*>(storage), &aclrtFreeHost);
+    const aclblasComplex inputs[][2] = {
+        {{0.0f, 1e-30f}, {1.0f, 0.0f}},
+        {{0.0f, -1e-30f}, {1.0f, 0.0f}},
+        {{-1e-30f, 0.0f}, {0.0f, -1.0f}},
+        {{1e-30f, -1e-30f}, {1e30f, -1e30f}},
+        {{0.0f, 1e-30f}, {1e30f, 0.0f}},
+        {{0.0f, 1e-30f}, {0.0f, 0.0f}},
+        {{0.0f, 0.0f}, {3.0f, -4.0f}},
+    };
+    for (const auto& input : inputs) {
+        *values = {input[0], input[1], 0.0f, {0.0f, 0.0f}};
+        aclblasComplex goldenA = input[0], goldenB = input[1], goldenS{};
+        float goldenC = 0.0f;
+        CrotgGoldenCompute(&goldenA, &goldenB, &goldenC, &goldenS);
+        ASSERT_EQ(aclblasCrotg(handle_, &values->a, &values->b, &values->c, &values->s),
+                  ACLBLAS_STATUS_SUCCESS);
+        const float actual[] = {values->a.real, values->a.imag, values->c,
+                                values->s.real, values->s.imag};
+        const float expected[] = {goldenA.real, goldenA.imag, goldenC, goldenS.real, goldenS.imag};
+        for (size_t i = 0; i < 5; ++i) {
+            ASSERT_TRUE(std::isfinite(actual[i])) << "component " << i;
+            EXPECT_TRUE(ElementPass(actual[i], expected[i])) << "component " << i;
+        }
+        EXPECT_EQ(values->b.real, input[1].real);
+        EXPECT_EQ(values->b.imag, input[1].imag);
+    }
 }

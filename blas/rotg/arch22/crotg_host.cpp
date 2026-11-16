@@ -52,18 +52,19 @@ static void SetCrotgZeroResult(aclblasComplex* a, float* c, aclblasComplex* s)
 
 // ==========================================================================
 // Core crotg algorithm — reference BLAS CPU implementation (design 3.2.2)
-// Global scaling ma + three-way branch; host side uses std::fmax/fabs/sqrt
+// Global scaling ma + three-way branch. Double intermediates retain every
+// finite FP32 component ratio and its square, including very small nonzero a.
 // ==========================================================================
 static void CrotgCpuCompute(aclblasComplex* a, aclblasComplex* b, float* c, aclblasComplex* s)
 {
-    const float a_r = a->real;
-    const float a_i = a->imag;
-    const float b_r = b->real;
-    const float b_i = b->imag;
+    const double a_r = a->real;
+    const double a_i = a->imag;
+    const double b_r = b->real;
+    const double b_i = b->imag;
 
     // Global scaling: max of the 4 component absolute values
-    const float ma = std::fmax(std::fmax(std::fabs(a_r), std::fabs(a_i)),
-                               std::fmax(std::fabs(b_r), std::fabs(b_i)));
+    const double ma = std::fmax(std::fmax(std::fabs(a_r), std::fabs(a_i)),
+                                std::fmax(std::fabs(b_r), std::fabs(b_i)));
     if (ma == 0.0f) {
         // All-zero input
         SetCrotgZeroResult(a, c, s);
@@ -71,33 +72,33 @@ static void CrotgCpuCompute(aclblasComplex* a, aclblasComplex* b, float* c, aclb
     }
 
     // Normalize to O(1)
-    const float a_sr = a_r / ma;
-    const float a_si = a_i / ma;
-    const float b_sr = b_r / ma;
-    const float b_si = b_i / ma;
-    const float abs_a = std::sqrt(a_sr * a_sr + a_si * a_si);
-    const float abs_b = std::sqrt(b_sr * b_sr + b_si * b_si);
+    const double a_sr = a_r / ma;
+    const double a_si = a_i / ma;
+    const double b_sr = b_r / ma;
+    const double b_si = b_i / ma;
+    const double abs_a = std::sqrt(a_sr * a_sr + a_si * a_si);
+    const double abs_b = std::sqrt(b_sr * b_sr + b_si * b_si);
     if (abs_b == 0.0f) {
         // b vanishes while a does not: a keeps its original value (do NOT reuse the
         // all-zero convention here — a and b all zero is already handled by `ma == 0.0f`)
         *c = 1.0f;
         s->real = 0.0f;
         s->imag = 0.0f;
-        a->real = a_r;
-        a->imag = a_i;
+        a->real = static_cast<float>(a_r);
+        a->imag = static_cast<float>(a_i);
         return;
     }
     if (abs_a == 0.0f) {
         // a vanishes while b does not: |a| is replaced by |b| * ma
         *c = 0.0f;
-        s->real = b_sr / abs_b;
-        s->imag = -b_si / abs_b;
-        a->real = abs_b * ma;
+        s->real = static_cast<float>(b_sr / abs_b);
+        s->imag = static_cast<float>(-b_si / abs_b);
+        a->real = static_cast<float>(abs_b * ma);
         a->imag = 0.0f;
         return;
     }
 
-    const float norm_s = std::sqrt(abs_a * abs_a + abs_b * abs_b);
+    const double norm_s = std::sqrt(abs_a * abs_a + abs_b * abs_b);
     // Zero-divisor guard. The two branches above already returned, so at this point
     // abs_a > 0 and abs_b > 0, hence norm_s = sqrt(abs_a^2 + abs_b^2) > 0 and the guard is
     // unreachable in exact arithmetic — it exists so that every division below is dominated
@@ -115,13 +116,13 @@ static void CrotgCpuCompute(aclblasComplex* a, aclblasComplex* b, float* c, aclb
         return;
     }
 
-    *c = abs_a / norm_s;
-    const float sgn_ar = a_sr / abs_a;
-    const float sgn_ai = a_si / abs_a;
-    s->real = (sgn_ar * b_sr + sgn_ai * b_si) / norm_s;
-    s->imag = (sgn_ai * b_sr - sgn_ar * b_si) / norm_s;
-    a->real = sgn_ar * norm_s * ma;
-    a->imag = sgn_ai * norm_s * ma;
+    *c = static_cast<float>(abs_a / norm_s);
+    const double sgn_ar = a_sr / abs_a;
+    const double sgn_ai = a_si / abs_a;
+    s->real = static_cast<float>((sgn_ar * b_sr + sgn_ai * b_si) / norm_s);
+    s->imag = static_cast<float>((sgn_ai * b_sr - sgn_ar * b_si) / norm_s);
+    a->real = static_cast<float>(sgn_ar * norm_s * ma);
+    a->imag = static_cast<float>(sgn_ai * norm_s * ma);
 }
 
 // ==========================================================================
