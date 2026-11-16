@@ -243,13 +243,8 @@ __aicore__ inline void CopyCbufToBt(
 
 #include "cann_ops_blas_common.h"
 
-static constexpr int64_t BIT_4 = 4;
-static constexpr int64_t BIT_8 = 8;
-
-__aicore__ inline int64_t GET_FFST_MSG(int64_t mode, int64_t flagId) { return 1 | (mode << BIT_4) | (flagId << BIT_8); }
-
 #if defined(__NPU_ARCH__) && (__NPU_ARCH__ != 3510)
-#ifndef INCLUDE_ITERTOR_H
+#ifndef INCLUDE_ITERATOR_H
 #include "../iterator/iterator.h"
 #endif
 #endif
@@ -332,7 +327,6 @@ __aicore__ __inline__ void matrix_gm2ubuf(
     AscendC::LocalTensor<float> dst, AscendC::GlobalTensor<float> src, int64_t mActual, int64_t nActual,
     size_t srcStride, size_t dstStride)
 {
-    int64_t mRound = ROUND(mActual, NUM_ELE_PERBLOCK);
     for (int i = 0; i < nActual; i++) {
         gm_to_ub_align<ArchType::ASCEND_V220, float>(
             dst[i * dstStride], src[i * srcStride], 0, 1, mActual * sizeof(float), 0, 0, 0, 0);
@@ -365,8 +359,7 @@ struct MirrorKernelCtx {
 };
 
 __force_inline__ __aicore__ MirrorKernelCtx InitMirrorKernelCtx(
-    const __gm__ uint8_t* gmA, __gm__ uint8_t* gmWorkspaceA,
-    uint32_t dimA, uint32_t lda, uint32_t mirrorRowsPerCore)
+    const __gm__ uint8_t* gmA, __gm__ uint8_t* gmWorkspaceA, uint32_t dimA, uint32_t lda, uint32_t mirrorRowsPerCore)
 {
     MirrorKernelCtx ctx;
     ctx.aGm = reinterpret_cast<const __gm__ float*>(gmA);
