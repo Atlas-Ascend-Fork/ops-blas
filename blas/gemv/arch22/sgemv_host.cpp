@@ -25,9 +25,9 @@ constexpr uint32_t SPLIT_N_COL_GRANULARITY = 256U;
 constexpr uint32_t ROW_BLOCK_ALIGN = 8U;
 constexpr uint32_t ROW_ALIGN_THRESHOLD = 64U;
 
-aclblasStatus_t ValidateSgemvInputs(aclblasHandle_t handle, aclblasOperation_t trans, int m, int n,
-                                    const float *alpha, const float *a, int lda, const float *x, int incx,
-                                    const float *beta, const float *y, int incy)
+aclblasStatus_t ValidateSgemvInputs(
+    aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, const float* alpha, const float* a, int lda,
+    const float* x, int incx, const float* beta, const float* y, int incy)
 {
     if (handle == nullptr) {
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
@@ -46,13 +46,8 @@ aclblasStatus_t ValidateSgemvInputs(aclblasHandle_t handle, aclblasOperation_t t
     }
     const int64_t xLen = (trans == ACLBLAS_OP_N) ? static_cast<int64_t>(n) : static_cast<int64_t>(m);
     const int64_t yLen = (trans == ACLBLAS_OP_N) ? static_cast<int64_t>(m) : static_cast<int64_t>(n);
-    const int64_t absIncx = (incx > 0) ? static_cast<int64_t>(incx) : -static_cast<int64_t>(incx);
-    const int64_t absIncy = (incy > 0) ? static_cast<int64_t>(incy) : -static_cast<int64_t>(incy);
-    if ((xLen > 1 && (xLen - 1) * absIncx > INT32_MAX) || (yLen > 1 && (yLen - 1) * absIncy > INT32_MAX)) {
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    const bool missingPtr = (m > 0 && n > 0 && a == nullptr) || (xLen > 0 && x == nullptr) ||
-                            (yLen > 0 && y == nullptr);
+    const bool missingPtr =
+        (m > 0 && n > 0 && a == nullptr) || (xLen > 0 && x == nullptr) || (yLen > 0 && y == nullptr);
     if (missingPtr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
@@ -67,8 +62,9 @@ uint32_t DivCeilU32(uint32_t num, uint32_t den)
     return (num + den - 1U) / den;
 }
 
-void ConfigureSgemvTiling(aclblasOperation_t trans, int m, int n, int lda, int incx, int incy,
-                          float alphaVal, float betaVal, uint32_t maxCores, SgemvTilingData &tiling)
+void ConfigureSgemvTiling(
+    aclblasOperation_t trans, int m, int n, int lda, int incx, int incy, float alphaVal, float betaVal,
+    uint32_t maxCores, SgemvTilingData& tiling)
 {
     tiling.m = m;
     tiling.n = n;
@@ -78,8 +74,8 @@ void ConfigureSgemvTiling(aclblasOperation_t trans, int m, int n, int lda, int i
     tiling.alpha = alphaVal;
     tiling.beta = betaVal;
 
-    const bool useSplitN = (trans == ACLBLAS_OP_N) && (m <= SPLIT_N_MAX_M) && (n >= SPLIT_N_MIN_N) &&
-                           (incx == 1) && (incy == 1) && (alphaVal == 1.0f) && (betaVal == 0.0f);
+    const bool useSplitN = (trans == ACLBLAS_OP_N) && (m <= SPLIT_N_MAX_M) && (n >= SPLIT_N_MIN_N) && (incx == 1) &&
+                           (incy == 1) && (alphaVal == 1.0f) && (betaVal == 0.0f);
     if (useSplitN) {
         const uint32_t colGroups = DivCeilU32(static_cast<uint32_t>(n), SPLIT_N_COL_GRANULARITY);
         const uint32_t activeCores = std::min(colGroups, maxCores);
@@ -117,9 +113,9 @@ void ConfigureSgemvTiling(aclblasOperation_t trans, int m, int n, int lda, int i
 }
 } // namespace
 
-aclblasStatus_t aclblasSgemv(aclblasHandle_t handle, aclblasOperation_t trans, int m, int n,
-                             const float *alpha, const float *a, int lda, const float *x, int incx,
-                             const float *beta, float *y, int incy)
+aclblasStatus_t aclblasSgemv(
+    aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, const float* alpha, const float* a, int lda,
+    const float* x, int incx, const float* beta, float* y, int incy)
 {
     aclblasStatus_t checkStatus = ValidateSgemvInputs(handle, trans, m, n, alpha, a, lda, x, incx, beta, y, incy);
     if (checkStatus != ACLBLAS_STATUS_SUCCESS) {
@@ -145,10 +141,9 @@ aclblasStatus_t aclblasSgemv(aclblasHandle_t handle, aclblasOperation_t trans, i
         }
     }
 
-    aclblasSgemv_do(tiling.usedCoreNum, handle->stream,
-                    reinterpret_cast<uint8_t *>(const_cast<float *>(a)),
-                    reinterpret_cast<uint8_t *>(const_cast<float *>(x)),
-                    reinterpret_cast<uint8_t *>(y), &tiling);
+    aclblasSgemv_do(
+        tiling.usedCoreNum, handle->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
+        reinterpret_cast<uint8_t*>(const_cast<float*>(x)), reinterpret_cast<uint8_t*>(y), &tiling);
 
     return ACLBLAS_STATUS_SUCCESS;
 }

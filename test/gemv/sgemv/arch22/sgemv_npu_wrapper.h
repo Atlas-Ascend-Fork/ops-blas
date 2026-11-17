@@ -22,7 +22,7 @@
 
 namespace sgemv_arch22_detail {
 
-inline std::unique_ptr<DeviceBuffer> AllocSgemvDevBuf(const void *hostData, size_t byteCount)
+inline std::unique_ptr<DeviceBuffer> AllocSgemvDevBuf(const void* hostData, size_t byteCount)
 {
     if (hostData == nullptr || byteCount == 0U) {
         return nullptr;
@@ -32,8 +32,9 @@ inline std::unique_ptr<DeviceBuffer> AllocSgemvDevBuf(const void *hostData, size
     return devBuf;
 }
 
-inline bool IsSgemvValidPositiveCall(aclblasOperation_t trans, int m, int n, const float *alpha, const float *a,
-                                     int lda, const float *x, int incx, const float *beta, const float *y, int incy)
+inline bool IsSgemvValidPositiveCall(
+    aclblasOperation_t trans, int m, int n, const float* alpha, const float* a, int lda, const float* x, int incx,
+    const float* beta, const float* y, int incy)
 {
     const bool validTrans = (trans == ACLBLAS_OP_N) || (trans == ACLBLAS_OP_T) || (trans == ACLBLAS_OP_C);
     if (!validTrans || m <= 0 || n <= 0 || lda < m) {
@@ -45,14 +46,10 @@ inline bool IsSgemvValidPositiveCall(aclblasOperation_t trans, int m, int n, con
     if (alpha == nullptr || beta == nullptr || a == nullptr || x == nullptr || y == nullptr) {
         return false;
     }
-    const int64_t xLen = (trans == ACLBLAS_OP_N) ? static_cast<int64_t>(n) : static_cast<int64_t>(m);
-    const int64_t yLen = (trans == ACLBLAS_OP_N) ? static_cast<int64_t>(m) : static_cast<int64_t>(n);
-    const int64_t absIncx = (incx > 0) ? static_cast<int64_t>(incx) : -static_cast<int64_t>(incx);
-    const int64_t absIncy = (incy > 0) ? static_cast<int64_t>(incy) : -static_cast<int64_t>(incy);
-    return ((xLen - 1) * absIncx <= INT32_MAX) && ((yLen - 1) * absIncy <= INT32_MAX);
+    return true;
 }
 
-inline aclError CreateSgemvTimelineEvent(aclrtEvent *ev)
+inline aclError CreateSgemvTimelineEvent(aclrtEvent* ev)
 {
     aclError ret = aclrtCreateEventExWithFlag(ev, ACL_EVENT_TIME_LINE);
     if (ret != ACL_SUCCESS) {
@@ -61,10 +58,9 @@ inline aclError CreateSgemvTimelineEvent(aclrtEvent *ev)
     return ret;
 }
 
-inline aclblasStatus_t RunSgemvTimedLoop(aclblasHandle_t handle, aclrtStream stream, aclblasOperation_t trans,
-                                         int m, int n, const float *alpha, const float *dA, int lda,
-                                         const float *dX, int incx, const float *beta, float *dY, int incy,
-                                         double *avgUsOut)
+inline aclblasStatus_t RunSgemvTimedLoop(
+    aclblasHandle_t handle, aclrtStream stream, aclblasOperation_t trans, int m, int n, const float* alpha,
+    const float* dA, int lda, const float* dX, int incx, const float* beta, float* dY, int incy, double* avgUsOut)
 {
     constexpr int warmupCount = 5;
     const int timedCount = (static_cast<int64_t>(m) * static_cast<int64_t>(n) >= 4194304LL) ? 20 : 50;
@@ -109,10 +105,9 @@ inline aclblasStatus_t RunSgemvTimedLoop(aclblasHandle_t handle, aclrtStream str
 
 } // namespace sgemv_arch22_detail
 
-inline aclblasStatus_t aclblasSgemv_npu_perf(aclblasHandle_t handle, aclrtStream stream, aclblasOperation_t trans,
-                                             int m, int n, const float *alpha, const float *a, int lda,
-                                             const float *x, int incx, const float *beta, float *y, int incy,
-                                             double *avgUsOut)
+inline aclblasStatus_t aclblasSgemv_npu_perf(
+    aclblasHandle_t handle, aclrtStream stream, aclblasOperation_t trans, int m, int n, const float* alpha,
+    const float* a, int lda, const float* x, int incx, const float* beta, float* y, int incy, double* avgUsOut)
 {
     if (handle == nullptr) {
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
@@ -121,10 +116,10 @@ inline aclblasStatus_t aclblasSgemv_npu_perf(aclblasHandle_t handle, aclrtStream
         auto dDummyA = sgemv_arch22_detail::AllocSgemvDevBuf(a, sizeof(float));
         auto dDummyX = sgemv_arch22_detail::AllocSgemvDevBuf(x, sizeof(float));
         auto dDummyY = sgemv_arch22_detail::AllocSgemvDevBuf(y, sizeof(float));
-        return aclblasSgemv(handle, trans, m, n, alpha,
-                            dDummyA ? static_cast<const float *>(dDummyA->ptr()) : nullptr, lda,
-                            dDummyX ? static_cast<const float *>(dDummyX->ptr()) : nullptr, incx, beta,
-                            dDummyY ? static_cast<float *>(dDummyY->ptr()) : nullptr, incy);
+        return aclblasSgemv(
+            handle, trans, m, n, alpha, dDummyA ? static_cast<const float*>(dDummyA->ptr()) : nullptr, lda,
+            dDummyX ? static_cast<const float*>(dDummyX->ptr()) : nullptr, incx, beta,
+            dDummyY ? static_cast<float*>(dDummyY->ptr()) : nullptr, incy);
     }
 
     const int64_t xLen = (trans == ACLBLAS_OP_N) ? static_cast<int64_t>(n) : static_cast<int64_t>(m);
@@ -136,9 +131,9 @@ inline aclblasStatus_t aclblasSgemv_npu_perf(aclblasHandle_t handle, aclrtStream
     auto devA = sgemv_arch22_detail::AllocSgemvDevBuf(a, aBytes);
     auto devX = sgemv_arch22_detail::AllocSgemvDevBuf(x, xBytes);
     auto devY = sgemv_arch22_detail::AllocSgemvDevBuf(y, yBytes);
-    const float *ptrA = devA ? static_cast<const float *>(devA->ptr()) : nullptr;
-    const float *ptrX = devX ? static_cast<const float *>(devX->ptr()) : nullptr;
-    float *ptrY = devY ? static_cast<float *>(devY->ptr()) : nullptr;
+    const float* ptrA = devA ? static_cast<const float*>(devA->ptr()) : nullptr;
+    const float* ptrX = devX ? static_cast<const float*>(devX->ptr()) : nullptr;
+    float* ptrY = devY ? static_cast<float*>(devY->ptr()) : nullptr;
 
     aclblasStatus_t status = aclblasSgemv(handle, trans, m, n, alpha, ptrA, lda, ptrX, incx, beta, ptrY, incy);
     if (aclrtSynchronizeDevice() != ACL_SUCCESS) {
@@ -148,15 +143,15 @@ inline aclblasStatus_t aclblasSgemv_npu_perf(aclblasHandle_t handle, aclrtStream
         devY->copyToHost(y, yBytes);
     }
     if (status == ACLBLAS_STATUS_SUCCESS && avgUsOut != nullptr && stream != nullptr) {
-        return sgemv_arch22_detail::RunSgemvTimedLoop(handle, stream, trans, m, n, alpha, ptrA, lda,
-                                                      ptrX, incx, beta, ptrY, incy, avgUsOut);
+        return sgemv_arch22_detail::RunSgemvTimedLoop(
+            handle, stream, trans, m, n, alpha, ptrA, lda, ptrX, incx, beta, ptrY, incy, avgUsOut);
     }
     return status;
 }
 
-inline aclblasStatus_t aclblasSgemv_npu(aclblasHandle_t handle, aclblasOperation_t trans, int m, int n,
-                                        const float *alpha, const float *a, int lda, const float *x, int incx,
-                                        const float *beta, float *y, int incy)
+inline aclblasStatus_t aclblasSgemv_npu(
+    aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, const float* alpha, const float* a, int lda,
+    const float* x, int incx, const float* beta, float* y, int incy)
 {
     return aclblasSgemv_npu_perf(handle, nullptr, trans, m, n, alpha, a, lda, x, incx, beta, y, incy, nullptr);
 }
