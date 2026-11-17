@@ -160,4 +160,4 @@ void scopy_kernel_do(GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, GM_ADDR tilingGm, 
 {
     scopy_kernel<<<numBlocks, nullptr, stream>>>(x, y, nullptr, tilingGm);
 }
-#endif // COPY_AIV_H
+#endif // SCOPY_KERNEL_H
