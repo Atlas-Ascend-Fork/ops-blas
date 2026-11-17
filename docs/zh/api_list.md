@@ -913,6 +913,7 @@ Level 1 接口在向量之间进行运算，典型操作包括向量缩放（sca
 | [aclblasSnrm2Ex](../../blas/nrm2/README.md) | 扩展精度欧几里得范数（支持 FP16/FP32 输入） |
 | [aclblasCsrot](../../blas/rot/README.md) | 复数向量平面旋转 |
 | [aclblasSrot](../../blas/rot/README.md) | 单精度实数向量平面旋转 |
+| [aclblasCrot](../../blas/rot/README.md) | 复数向量平面旋转（旋转正弦为复数，y 的更新使用其共轭） |
 | [aclblasRotEx](../../blas/rotex/README.md) | 混合精度 Givens 向量旋转 |
 | [aclblasSrotm](../../blas/rotm/README.md) | 实数向量 Modified Givens 旋转 |
 | [aclblasSrotmg](../../blas/rotmg/README.md) | 构造修正 Givens 旋转参数 |
@@ -1001,6 +1002,7 @@ Level 3 接口在矩阵之间进行运算，典型操作包括对称矩阵乘法
 | [aclblasHgemmStridedBatched](../../blas/gemm/README.md) | 半精度固定步长批量矩阵乘法（FP32 累加） |
 | [aclblasSgemmStridedBatched](../../blas/gemm_strided_batched/README.md) | 单精度浮点批量矩阵跨步乘法 |
 | [aclblasCgemmStridedBatched](../../blas/gemm_strided_batched/README.md) | 单精度复数批量矩阵跨步乘法 |
+| [aclblasCgemm3mStridedBatched](../../blas/gemm/README.md) | 复数 3M 方法固定步长批量矩阵乘法 |
 | [aclblasSgemm3m](../../blas/gemm3m/README.md) | 单精度 3M 方法矩阵乘法 |
 | [aclblasSgemmGroupedBatched](../../blas/gemm_grouped_batched/README.md) | 单精度浮点分组批量矩阵乘法 |
 | [aclblasSsyrk](../../blas/syrk/README.md) | 单精度对称秩-k 更新 |
