@@ -42,7 +42,7 @@ private:
     TBuf<QuePosition::VECCALC> tmpBuf_; // Gather temp buffers (gatherDst + srcOffset_)
     LocalTensor<uint32_t> srcOffset_;   // Offset table filled in Init via vector instruction
     bool needReorder_;                  // Cached flag: incx<0 XOR incy<0
-    ScopyTilingData tiling_;
+    ScopyTilingData tiling_{};
     uint32_t blockIdx_;
     uint32_t myOffset_;
     uint32_t myCount_;

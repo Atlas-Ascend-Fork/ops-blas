@@ -36,7 +36,7 @@ constexpr uint64_t GEMM_BUFFER_MASK = GEMM_BUFFER_COUNT - 1;
 // GemmCubeState
 // ============================================================================
 struct GemmCubeState {
-    GemmTilingData tiling;
+    GemmTilingData tiling{};
     uint32_t mBlockIdx;
     uint32_t nBlockIdx;
     uint64_t mOffset;

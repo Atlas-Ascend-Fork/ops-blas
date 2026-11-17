@@ -38,7 +38,7 @@ static aclblasStatus_t ValidateScopyParams(const float* x, const float* y, int i
 
 static ScopyTilingData CalScopyTilingData(uint32_t n, uint32_t coreNum, int incx, int incy)
 {
-    ScopyTilingData tiling;
+    ScopyTilingData tiling{};
     tiling.totalN = n;
     tiling.incx = incx;
     tiling.incy = incy;
