@@ -26,17 +26,15 @@
 #include "quant_matmul_tiling_data.h"
 
 void matmul_mxfp4_get_tiling(
-    uint64_t m, uint64_t n, uint64_t k, bool transA, bool transB, uint32_t numBlocks,
-    QuantMatmulTilingData& tilingData)
+    uint64_t m, uint64_t n, uint64_t k, bool transA, bool transB, uint32_t numBlocks, QuantMatmulTilingData& tilingData)
 {
-    const uint64_t aicNum = numBlocks > 0U ? static_cast<uint64_t>(numBlocks) :
-                                             quant_matmul_mx_tiling::DEFAULT_AIC_NUM;
+    const uint64_t aicNum = numBlocks > 0U ? static_cast<uint64_t>(numBlocks) : quant_matmul_mx_tiling::DEFAULT_AIC_NUM;
     quant_matmul_mx_tiling::quant_matmul_mxfp4_swat_get_tiling(m, n, k, transA, transB, aicNum, tilingData);
 }
 
 void matmul_mxfp4_do(
     uint8_t* dA, uint8_t* dB, uint8_t* dScaleA, uint8_t* dScaleB, uint8_t* dC, const QuantMatmulTilingData& tiling,
-    aclDataType dtypeA, aclDataType dtypeB, aclDataType dtypeD, bool transA, bool transB, void* stream)
+    aclDataType dtypeD, bool transA, bool transB, void* stream)
 {
     if (dtypeD == ACL_BF16) {
         matmul_mxfp4_kernel_do_e2m1_e2m1_bf16(dA, dB, dScaleA, dScaleB, dC, tiling, transA, transB, stream);

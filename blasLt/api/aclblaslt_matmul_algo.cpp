@@ -346,7 +346,7 @@ std::vector<RankedCandidate> BuildRankedCandidates(
         cand.l1TileM = cm;
         cand.l1TileN = cn;
         cand.l1TileK = ck;
-        SelectL0TileShape(cm, cn, ck, 0, 0, A->type, B->type, &cand.l0TileM, &cand.l0TileN, &cand.l0TileK);
+        SelectL0TileShape(cm, cn, ck, &cand.l0TileM, &cand.l0TileN, &cand.l0TileK);
         cand.policy = DISPATCH_POLICY_MMAD_SYNC;
         cand.numBuffers = 1;
         // splitK stays 1: the current kernel set has no split-K reduction stage, so a real split

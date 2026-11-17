@@ -26,6 +26,5 @@ void matmul_mxfp4_get_tiling(
 
 // MXFP4 launch entry: routes to the FP32 or BF16 output kernel based on dtypeD.
 void matmul_mxfp4_do(
-    uint8_t* dA, uint8_t* dB, uint8_t* dScaleA, uint8_t* dScaleB, uint8_t* dC,
-    const QuantMatmulTilingData& tiling, aclDataType dtypeA, aclDataType dtypeB, aclDataType dtypeD, bool transA,
-    bool transB, void* stream);
+    uint8_t* dA, uint8_t* dB, uint8_t* dScaleA, uint8_t* dScaleB, uint8_t* dC, const QuantMatmulTilingData& tiling,
+    aclDataType dtypeD, bool transA, bool transB, void* stream);

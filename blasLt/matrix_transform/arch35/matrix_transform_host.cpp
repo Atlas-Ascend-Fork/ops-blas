@@ -496,7 +496,7 @@ inline void* MatAllocNdWorkspace(uint64_t physRows, uint64_t physCols, size_t dt
 // the requested launch. On any failure the caller frees whatever was already allocated.
 inline aclblasStatus_t MatAllocTransformWorkspaces(
     aclblasLtOrder_t complexOrder, const MatTransformLayout* aLayout, const MatTransformLayout* bLayout, bool delayoutA,
-    bool delayoutB, uint8_t codeA, uint8_t codeB, MatTransformWorkspaces& ws)
+    bool delayoutB, MatTransformWorkspaces& ws)
 {
     if (MatIsComplexOrder(complexOrder)) {
         ws.idxTable = MatCreateIndexTable(complexOrder);
@@ -518,8 +518,6 @@ inline aclblasStatus_t MatAllocTransformWorkspaces(
             return ACLBLAS_STATUS_INTERNAL_ERROR;
         }
     }
-    (void)codeA;
-    (void)codeB;
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -552,8 +550,7 @@ inline aclblasStatus_t MatLaunch(
 
     const aclblasLtOrder_t complexOrder = MatPickComplexOrder(aLayout->order, orderB, cLayout->order, sc.hasB);
     MatTransformWorkspaces ws;
-    aclblasStatus_t wsStatus =
-        MatAllocTransformWorkspaces(complexOrder, aLayout, bLayout, delayoutA, delayoutB, codeA, codeB, ws);
+    aclblasStatus_t wsStatus = MatAllocTransformWorkspaces(complexOrder, aLayout, bLayout, delayoutA, delayoutB, ws);
     if (wsStatus != ACLBLAS_STATUS_SUCCESS) {
         MatFreeTransformWorkspaces(ws);
         return wsStatus;

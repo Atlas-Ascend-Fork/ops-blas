@@ -103,8 +103,8 @@ aclblasStatus_t LaunchMmadKernel(
         matmul_mxfp4_get_tiling(m, n, k, transA, transB, numBlocks, mxfp4Tiling);
         matmul_mxfp4_do(
             AsBytes(problem.A), AsBytes(problem.B), static_cast<uint8_t*>(problem.scaleA),
-            static_cast<uint8_t*>(problem.scaleB), static_cast<uint8_t*>(dRawAddr), mxfp4Tiling, dtypeA, dtypeB, dtypeD,
-            transA, transB, stream);
+            static_cast<uint8_t*>(problem.scaleB), static_cast<uint8_t*>(dRawAddr), mxfp4Tiling, dtypeD, transA, transB,
+            stream);
         return ACLBLAS_STATUS_SUCCESS;
     }
 #endif // ENABLE_BLASLT_MXFP8

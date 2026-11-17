@@ -126,7 +126,5 @@ size_t ResolveAlgoCapValue(aclblasLtMatmulAlgoCapAttributes_t cap, uint32_t* out
 
 // ---- heuristic scoring helpers ----
 void GetAscendHardwareCaps(int32_t deviceId, AscendHardwareCaps* caps);
-void SelectL0TileShape(
-    uint32_t l1M, uint32_t l1N, uint32_t l1K, size_t, size_t, aclDataType, aclDataType, uint32_t* l0M, uint32_t* l0N,
-    uint32_t* l0K);
+void SelectL0TileShape(uint32_t l1M, uint32_t l1N, uint32_t l1K, uint32_t* l0M, uint32_t* l0N, uint32_t* l0K);
 size_t CalculateWorkspaceForAscend(uint64_t m, uint64_t n, uint32_t splitKFactor, aclblasLtEpilogue_t epilogue);

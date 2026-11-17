@@ -366,9 +366,7 @@ void GetAscendHardwareCaps(int32_t, AscendHardwareCaps* caps)
     caps->bandwidthBoundThreshold = 32.0;
 }
 
-void SelectL0TileShape(
-    uint32_t l1M, uint32_t l1N, uint32_t l1K, size_t, size_t, aclDataType, aclDataType, uint32_t* l0M, uint32_t* l0N,
-    uint32_t* l0K)
+void SelectL0TileShape(uint32_t l1M, uint32_t l1N, uint32_t l1K, uint32_t* l0M, uint32_t* l0N, uint32_t* l0K)
 {
     *l0K = std::min(64u, l1K);
     *l0M = std::min(128u, l1M);
