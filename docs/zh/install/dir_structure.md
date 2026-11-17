@@ -40,6 +40,10 @@
 │   ├── internal                                        # 内部实现（include 头文件与 src 实现源文件，如 heuristic、capsule 等）
 │   ├── matmul                                          # matmul 能力实现（engine、epilogue 及 fp32/mxfp4/mxfp8 等精度路径）
 │   └── matrix_transform                                # 矩阵布局变换实现（arch35、engine）
+├── extensions                                          # 基础 BLAS 之外的扩展算子（独立于 blas/blasLt 的算子族）
+│   └── ${op}                                           # 扩展算子目录（如 complexmatdot），含 README 与 archXX 实现
+├── experimental                                        # 试验性算子目录（未纳入主库发布流程，详见各子目录 README）
+│   └── ${op}                                           # 试验算子目录（如 aclblasTrsmBatched、aclblasCtrsmBatched2）
 ├── include                                             # 对外头文件
 │   ├── cann_ops_blas.h                                 # aclBLAS API 声明
 │   ├── cann_ops_blasLt.h                               # aclBLASLt API 声明
@@ -61,6 +65,11 @@
 │   ├── format_cpp.sh                                   # clang-format 格式化辅助
 │   ├── oat_check.sh                                    # OAT 合规检查
 │   └── select_device.py                                # 测试设备选择（--device/--devices）
+├── agent                                               # Agent 工作流配置（技能定义与初始化脚本）
+│   ├── init.sh                                         # Agent 环境初始化脚本
+│   └── skills                                          # Agent 技能定义（repo-build-guide、repo-coding-rules 等）
+├── tests                                               # Host 侧脚本自测（区别于 test/ 的算子级 C++ 测试）
+│   └── host                                            # 脚本自测用例（安装、依赖探测、设备选择等）
 ├── test                                                # 算子级测试（BUILD_TEST=ON 且配置 TEST_NAMES 时参与构建）
 │   ├── CMakeLists.txt                                  # 按 TEST_NAMES 批量 add_subdirectory
 │   └── ${op}                                           # 算子目录（如 gbmv、dot、scal）
