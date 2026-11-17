@@ -455,8 +455,8 @@ int main()
 
 - Ascend 950PR：支持
 - Ascend 950DT：不支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
 #### 函数原型
 
@@ -509,9 +509,14 @@ aclblasStatus_t aclblasCrot(
 - 精度标准：COMPLEX64（实部/虚部分别按 FP32 判定，`atol = rtol = 2^-13`，`required_matched_ratio = 0.99`）
 - 性能标准（Ascend 950PR，kernel 平均单次耗时）：n=1048576 ≤ 21.96us，n=2097152 ≤ 43.70us，n=4194304 ≤ 119.52us
 
-**Atlas A2 / Atlas A3 系列产品：**
+**Atlas A2 / Atlas A3 系列产品（arch22）：**
 
-- 不支持
+- 支持（随本任务新增实现）：n == 0 快速返回 `ACLBLAS_STATUS_SUCCESS`；n < 0 返回 `ACLBLAS_STATUS_INVALID_VALUE`；n > 0 时 x、y、c、s 不能为 nullptr，否则返回 `ACLBLAS_STATUS_INVALID_VALUE`
+- 步长语义：非零正/负步长生效（负步长自向量尾端起算，见 stride 回归用例）；incx/incy 为 0 或 INT32_MIN 时返回 `ACLBLAS_STATUS_INVALID_VALUE`（与 arch35 的放行口径不同，属已声明的 per-arch 差异，issue #827）
+- 当 (n-1)*|stride| 的乘积超出 int32 表示范围时返回 `ACLBLAS_STATUS_INVALID_VALUE`（host 侧 int64 计算守卫，issue #866）
+- 语义与 aclblasCsrot 的差异同 arch35：s 为复数且 y 的更新使用 s 的共轭 `conj(s)`
+- 精度标准：COMPLEX64（实部/虚部分别按 FP32 判定，`atol = rtol = 2^-13`，`required_matched_ratio = 0.99`）
+- 性能标准（A2/A3，kernel 平均单次耗时，对标 A100 基线 / 0.8 倍率）：n=1048576 ≤ 24us，n=2097152 ≤ 57us，n=4194304 ≤ 109us
 
 #### 调用示例
 

@@ -1,7 +1,24 @@
-# aclblasCrot 测试工程（arch35）
+# aclblasCrot 测试工程（arch35 / arch22）
 
 CSV 驱动的 GTest 测试工程，用于验证 `aclblasCrot`（complex64 向量 Givens 平面旋转）的
 功能、边界、精度与性能。用例与算子实现分离，新增用例只需改 CSV。
+
+## arch22（Atlas A2/A3）与 arch35（950PR）差异速览
+
+| 项 | arch22（`arch22/`） | arch35（`arch35/`） |
+|---|---|---|
+| 编译 | `bash build.sh --soc=ascend910b --ops=crot` | `bash build.sh --soc=ascend950 --ops=crot` |
+| CSV 条数 | **1200**（精度 1000 + 性能 200） | 1206（精度 1006 + 性能 200） |
+| n < 0 | `INVALID_VALUE`（负向） | no-op（SUCCESS） |
+| incx/incy == 0 | `INVALID_VALUE`（负向） | 放行（同一元素反复旋转） |
+| INT32_MIN / 跨度溢出 | `INVALID_VALUE` | `INVALID_VALUE`（INT32_MIN 在 arch35 放行） |
+| 固定用例 | 5 个（无别名输入用例） | 7 个（含别名输入、性能门禁） |
+| 性能计时 | TC_PF 用例逐条打印 `[PERF] case=... avg_us=...`，由 `verify_performance.py` 与 `gpu_baseline.csv` 比对 | `PerformanceGate` 固定用例，比对 950PR 阈值 |
+| 正态分布 | TC_EX 50% 均匀 + 50% 正态（`GAUSS_NORM_5_2`） | 仅均匀 |
+
+arch22 的负向用例（n<0、零步长、INT32_MIN、跨度溢出）按任务书 §3.5 用**单元素 dummy 缓冲区**占位，
+由接口在读取数据前返回预期错误码判定通过；INT32_MIN / 跨度溢出用例不预分配全 span（否则会先分配失败）。
+详见 `arch22/crot_test.cpp` 的 `CheckInvalidStrideCase` 与 `CrotStrideInvalid`。
 
 ## 目录结构
 
@@ -12,8 +29,12 @@ test/rot/crot/
 ├── crot_golden.h               # CPU golden（按任务书 §2.1.1 公式实现）
 ├── run_self_test.py            # 自检门禁：CSV 构成校验 + 全量执行 + 汇总 JSON
 ├── run_memcheck.py             # 内存安全：mssanitizer / valgrind / 降级运行
+├── arch22/
+│   ├── crot_test.cpp           # GTest 用例主体（arch22 契约 + 5 个固定用例 + [PERF]）
+│   ├── crot_npu_wrapper.h      # H2D/D2H 与 c/s 标量指针位置控制
+│   └── crot_test.csv           # 用例数据（1200 条：精度 1000 + 性能 200）
 └── arch35/
-    ├── crot_test.cpp           # GTest 用例主体（CSV 驱动 + 7 个固定用例）
+    ├── crot_test.cpp           # GTest 用例主体（arch35 契约 + 7 个固定用例）
     ├── crot_npu_wrapper.h      # H2D/D2H 与 c/s 标量指针位置控制
     └── crot_test.csv           # 用例数据（1206 条：精度 1006 + 性能 200）
 ```
@@ -46,10 +67,10 @@ bash build.sh --soc=ascend950 --ops=crot
 ASCEND_DEVICE_ID=1 ./build/test/rot/crot/crot_test --gtest_filter='-*TC_PF*'
 ```
 
-或用自检门禁脚本（会自行编译并解析结果，详见下文「自检门禁」）：
+或用随任务提供的脚本（会自行编译并解析结果）：
 
 ```bash
-python3 test/rot/crot/run_self_test.py --repo <repo-root> --device 0
+python3 verify_accuracy.py --repo <repo-root> --soc ascend950 --csv ./crot_test.csv
 ```
 
 ## CSV 列说明
@@ -64,21 +85,17 @@ python3 test/rot/crot/run_self_test.py --repo <repo-root> --device 0
 | `c` | 旋转余弦（实数） |
 | `s_real` / `s_imag` | 旋转正弦（复数）的实部/虚部 |
 | `expect_result` | 期望返回码（`ACLBLAS_STATUS_SUCCESS` / `ACLBLAS_STATUS_INVALID_VALUE`） |
-| `mere_threshold` / `mare_multiplier` | 模板保留列（与同族工程 CSV 格式对齐），当前判定实现未消费该列（见下文「判定逻辑」） |
+| `mere_threshold` / `mare_multiplier` | 精度阈值参数（实部/虚部分别应用） |
 | `random_seed` | 填充用随机种子（虚部使用 `seed + 1000`） |
 | `cs_ptr_mode` | c/s 标量指针位置：`host` / `device` / `mixed` |
 
 ## 判定逻辑
 
 - **返回码**：与 `expect_result` 严格相等；非 SUCCESS 的用例只比对返回码。
-- **精度**：golden 由 `crot_golden.h` 在 CPU 上按任务书 §2.1.1 公式重算，实部/虚部分别经
-  `applyMixedTolerance(ACL_FLOAT)` 取容差（`atol = rtol = 2^-13`，即
-  `test/frame/mixed_tolerance.h` 的 ACL_FLOAT 默认值），经 `Verifier::verifyVector` 按
-  `|actual - golden| <= atol + rtol*|golden|` 判定，要求 `matched_ratio >= 0.99` 且
-  `max_abs_error <= max(1e-2, 32*ULP)`。CSV 的 `mere_threshold` / `mare_multiplier`
-  列为模板保留字段，当前不参与判定。
-- **特殊值**：输入含 NaN 时要求输出实部/虚部全为 NaN；单位旋转（c=1,s=0）与普通用例
-  一致走混合容差判定，无逐位相等/EXACT 比对分支。
+- **精度**：golden 由 `crot_golden.h` 在 CPU 上按任务书 §2.1.1 公式重算，实部/虚部分别按
+  `|actual - golden| <= atol + rtol*|golden|` 判定，`atol = rtol = 2^-13`，
+  要求 `matched_ratio >= 0.99` 且 `max_abs_error <= max(1e-2, 32*ULP)`。
+- **特殊值**：输入含 NaN 时要求输出实部/虚部全为 NaN；单位旋转（c=1,s=0）按逐位相等判定。
 - **n <= 0**：只比对返回码（应为 SUCCESS），并确认 x/y 未被修改。
 
 ## 用例构成

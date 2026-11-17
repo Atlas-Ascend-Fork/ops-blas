@@ -498,8 +498,10 @@ inline constexpr std::pair<const char*, T_DtypeLocal> kDtypeTokenTable[] = {
     {"MXFP4_E2M1", static_cast<T_DtypeLocal>(ACL_FLOAT4_E2M1)},
     {"ACL_FLOAT4_E1M2", static_cast<T_DtypeLocal>(ACL_FLOAT4_E1M2)},
     {"FP4_E1M2", static_cast<T_DtypeLocal>(ACL_FLOAT4_E1M2)},
+#ifdef ACL_HIFLOAT4
     {"ACL_HIFLOAT4", static_cast<T_DtypeLocal>(ACL_HIFLOAT4)},
     {"HIFLOAT4", static_cast<T_DtypeLocal>(ACL_HIFLOAT4)},
+#endif
 };
 
 inline T_DtypeLocal parseDataType(const std::string& s)
