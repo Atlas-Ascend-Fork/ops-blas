@@ -23,9 +23,15 @@ side = RIGHT：C := alpha * B * A + beta * C
 
 #### 产品支持情况
 
-- Ascend 950PR / Ascend 950DT：不支持
+- Ascend 950PR / Ascend 950DT：支持
 - Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
 - Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
+
+> 本算子同时维护 arch35 与 arch22 两套实现：
+> - arch35（Ascend 950PR / Ascend 950DT）：[`blas/hemm/arch35/chemm_host.cpp`](arch35/chemm_host.cpp)
+> - arch22（Atlas A2 / A3）：[`blas/hemm/arch22/chemm_host.cpp`](arch22/chemm_host.cpp)
+>
+> arch35 实现的算子说明亦见 [`blas/symm/README.md`](../symm/README.md#aclblaschemm)，两处共用 `include/cann_ops_blas.h` 中的同一份接口声明与同一套自测工程（[`test/symm/chemm`](../../test/symm/chemm/README.md)）。
 
 #### 函数原型
 
