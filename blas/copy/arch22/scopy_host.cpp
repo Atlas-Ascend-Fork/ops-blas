@@ -39,7 +39,7 @@ struct CopyTilingData {
 
 CopyTilingData CalTilingData(uint32_t totalEleNum, uint32_t vecCoreNum)
 {
-    CopyTilingData tilingData;
+    CopyTilingData tilingData{};
     tilingData.n = totalEleNum;
     tilingData.useCoreNum = 0;
 

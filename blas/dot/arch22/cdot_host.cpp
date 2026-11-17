@@ -44,7 +44,7 @@ struct CdotTilingData {
 
 CdotTilingData CalCdotTilingData(uint32_t n, uint32_t vecCoreNum, uint32_t isConj)
 {
-    CdotTilingData tilingData;
+    CdotTilingData tilingData{};
     tilingData.n = n;
     tilingData.isConj = isConj;
     tilingData.coreNum = 0;

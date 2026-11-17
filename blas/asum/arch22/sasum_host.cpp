@@ -45,7 +45,7 @@ struct AsumTilingData {
 
 AsumTilingData CalAsumTilingData(uint32_t totalEleNum, int32_t incx, uint32_t vecCoreNum)
 {
-    AsumTilingData tilingData;
+    AsumTilingData tilingData{};
     tilingData.n = totalEleNum;
     tilingData.incx = incx;
     tilingData.useCoreNum = 0;
