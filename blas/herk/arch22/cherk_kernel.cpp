@@ -14,6 +14,7 @@
 #include "common/compute/simd.h"
 #define CHERK_ARCH22_DEVICE_IMPL
 #include "cherk_kernel.h"
+#include "common/helper/scaled_scalar_arch22.h"
 
 namespace {
 __aicore__ inline void CopyGmToUb(AscendC::LocalTensor<float> dst, AscendC::GlobalTensor<float> src, uint32_t count)
@@ -53,8 +54,10 @@ __aicore__ inline void LoadCherkOldColumn(
     AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(mte2ToV);
     AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(mte2ToV);
     uint64_t reserved = 0ULL;
-    AscendC::GatherMask(oldReal, aos, 1U, false, 0U, {1U, 1U, 8U, 8U}, reserved);
-    AscendC::GatherMask(oldImag, aos, 2U, false, 0U, {1U, 1U, 8U, 8U}, reserved);
+    AscendC::GatherMask(
+        oldReal, aos, 1U, false, 0U, {1U, static_cast<uint16_t>((planeSize + 31U) / 32U), 8U, 8U}, reserved);
+    AscendC::GatherMask(
+        oldImag, aos, 2U, false, 0U, {1U, static_cast<uint16_t>((planeSize + 31U) / 32U), 8U, 8U}, reserved);
     AscendC::PipeBarrier<PIPE_V>();
     AscendC::Muls(oldReal, oldReal, beta, planeSize);
     AscendC::Muls(oldImag, oldImag, beta, planeSize);
@@ -76,43 +79,42 @@ __aicore__ inline void CherkScaleUpperTriangle(
     }
 }
 
+__aicore__ inline scaled_scalar::Complex CherkWideAccumulate(
+    __gm__ const float* a, uint32_t row, uint32_t col, const CherkArch22TilingData& tiling, float alpha,
+    scaled_scalar::Complex sum)
+{
+    for (uint32_t layer = 0U; layer < tiling.k && alpha != 0.0F; ++layer) {
+        const uint64_t r = (static_cast<uint64_t>(layer) * tiling.lda + row) * 2ULL;
+        const uint64_t c = (static_cast<uint64_t>(layer) * tiling.lda + col) * 2ULL;
+        const scaled_scalar::Complex column{scaled_scalar::FromFloat(a[c]), scaled_scalar::FromFloat(-a[c + 1U])};
+        const auto coefficient = scaled_scalar::ScaleComplex(column, alpha, 0.0F);
+        const auto term = scaled_scalar::ScaleComplex(coefficient, a[r], a[r + 1U]);
+        sum = scaled_scalar::AddComplex(sum, term);
+    }
+    return sum;
+}
+
 template <uint32_t N>
 __aicore__ inline void CherkTinyReferenceFallback(
     float alpha, float beta, GM_ADDR aGm, GM_ADDR cGm, const CherkArch22TilingData& tiling)
 {
-    __gm__ float* cPtr = reinterpret_cast<__gm__ float*>(cGm);
-    __gm__ const float* aPtr = reinterpret_cast<__gm__ const float*>(aGm);
-    uint32_t blocks = static_cast<uint32_t>(AscendC::GetBlockNum());
-    if (blocks == 0U) {
-        blocks = 1U;
-    }
-    for (uint32_t col = static_cast<uint32_t>(AscendC::GetBlockIdx()); col < N; col += blocks) {
+    __gm__ float* c = reinterpret_cast<__gm__ float*>(cGm);
+    __gm__ const float* a = reinterpret_cast<__gm__ const float*>(aGm);
+    const uint32_t blockCount = static_cast<uint32_t>(AscendC::GetBlockNum());
+    const uint32_t blocks = blockCount == 0U ? 1U : blockCount;
+    for (uint32_t col = static_cast<uint32_t>(AscendC::GetBlockIdx()); col < tiling.n; col += blocks) {
         for (uint32_t row = 0U; row <= col; ++row) {
-            volatile float sumReal = 0.0f;
-            volatile float sumImag = 0.0f;
-            for (uint32_t l = 0U; l < N; ++l) {
-                const uint64_t rowIndex = (static_cast<uint64_t>(l) * tiling.lda + row) * 2ULL;
-                const uint64_t colIndex = (static_cast<uint64_t>(l) * tiling.lda + col) * 2ULL;
-                const float ar = aPtr[rowIndex];
-                const float ai = aPtr[rowIndex + 1ULL];
-                const float br = aPtr[colIndex];
-                const float bi = aPtr[colIndex + 1ULL];
-                const volatile float rr = ar * br;
-                const volatile float ii = ai * bi;
-                const volatile float ri = ai * br;
-                const volatile float ir = ar * bi;
-                sumReal = sumReal + (rr + ii);
-                sumImag = sumImag + (ri - ir);
-            }
-            // HERK alpha is real. Do not mix the components: zero times
-            // a nonfinite imaginary sum would contaminate the real result.
-            const float scaledReal = alpha * sumReal;
-            const float scaledImag = alpha * sumImag;
+            scaled_scalar::Complex sum;
             const uint64_t index = (static_cast<uint64_t>(col) * tiling.ldc + row) * 2ULL;
-            const float oldReal = cPtr[index];
-            const float oldImag = cPtr[index + 1ULL];
-            cPtr[index] = beta == 0.0f ? scaledReal : scaledReal + beta * oldReal;
-            cPtr[index + 1ULL] = row == col ? 0.0f : (beta == 0.0f ? scaledImag : scaledImag + beta * oldImag);
+            if (beta != 0.0F) {
+                sum.real = scaled_scalar::Add(sum.real, scaled_scalar::Product(beta, c[index]));
+                if (row != col) {
+                    sum.imag = scaled_scalar::Add(sum.imag, scaled_scalar::Product(beta, c[index + 1U]));
+                }
+            }
+            sum = CherkWideAccumulate(a, row, col, tiling, alpha, sum);
+            c[index] = scaled_scalar::ToFloat(sum.real);
+            c[index + 1U] = row == col ? 0.0F : scaled_scalar::ToFloat(sum.imag);
         }
     }
 }
@@ -271,6 +273,8 @@ __aicore__ inline bool CherkArch22TinyVectorPlaneIsExtreme(
     AscendC::PipeBarrier<PIPE_V>();
     AscendC::Compare(mask, scratch, threshold, AscendC::CMPMODE::GE, ELEMENTS);
     AscendC::PipeBarrier<PIPE_V>();
+    AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
     for (uint32_t word = 0U; word < ELEMENTS / 64U; ++word) {
         if (words.GetValue(word) != 0ULL) {
             return true;
@@ -278,6 +282,8 @@ __aicore__ inline bool CherkArch22TinyVectorPlaneIsExtreme(
     }
     AscendC::Compare(mask, src, src, AscendC::CMPMODE::NE, ELEMENTS);
     AscendC::PipeBarrier<PIPE_V>();
+    AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
     for (uint32_t word = 0U; word < ELEMENTS / 64U; ++word) {
         if (words.GetValue(word) != 0ULL) {
             return true;
@@ -343,10 +349,14 @@ template <uint32_t N>
 __aicore__ inline bool LoadTinyVectorInput(TinyVectorContext<N>& ctx, const CherkArch22TilingData& tiling)
 {
     constexpr uint32_t matrix = N * N;
-    const uint32_t bytes = N * 2U * sizeof(float);
+    AscendC::Duplicate(ctx.aos, 0.0f, matrix * 2U);
+    AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(ctx.events.vToMte2);
+    AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(ctx.events.vToMte2);
+    const uint32_t bytes = tiling.n * 2U * sizeof(float);
     const uint32_t aligned = (bytes + 31U) & ~31U;
     const AscendC::DataCopyExtParams copy{
-        static_cast<uint16_t>(N), bytes, static_cast<uint32_t>((tiling.lda - N) * 2U * sizeof(float)), 0U, 0U};
+        static_cast<uint16_t>(tiling.k), bytes, static_cast<uint32_t>((tiling.lda - tiling.n) * 2U * sizeof(float)),
+        static_cast<uint32_t>((N * 2U * sizeof(float) - aligned) / 32U), 0U};
     const AscendC::DataCopyPadExtParams<float> pad{
         aligned != bytes, 0U, static_cast<uint8_t>((aligned - bytes) / sizeof(float)), 0.0f};
     AscendC::DataCopyPad(ctx.aos, ctx.a, copy, pad);
@@ -360,9 +370,6 @@ __aicore__ inline bool LoadTinyVectorInput(TinyVectorContext<N>& ctx, const Cher
     AscendC::GatherMask<float>(ctx.realA, ctx.aos, 1U, false, 0U, {1U, repeats, 8U, 8U}, reserved);
     AscendC::GatherMask<float>(ctx.imagA, ctx.aos, 2U, false, 0U, {1U, repeats, 8U, 8U}, reserved);
     AscendC::PipeBarrier<PIPE_V>();
-    if constexpr (N != 32U) {
-        return false;
-    }
     const bool realExtreme = CherkArch22TinyVectorPlaneIsExtreme<matrix>(
         ctx.realA, ctx.extremeScratch, ctx.extremeThreshold, ctx.extremeMask);
     return realExtreme || CherkArch22TinyVectorPlaneIsExtreme<matrix>(
@@ -393,7 +400,7 @@ __aicore__ inline void AccumulateTinyVectorLayer(
 }
 
 template <uint32_t N>
-__aicore__ inline void ComputeTinyVectorBatch(TinyVectorContext<N>& ctx, uint32_t colBase, float alpha)
+__aicore__ inline void ComputeTinyVectorBatch(TinyVectorContext<N>& ctx, uint32_t colBase, float alpha, uint32_t k)
 {
     AscendC::Duplicate(ctx.realOut, 0.0f, TINY_VECTOR_BATCH_ELEMENTS);
     AscendC::Duplicate(ctx.imagOut, 0.0f, TINY_VECTOR_BATCH_ELEMENTS);
@@ -406,7 +413,7 @@ __aicore__ inline void ComputeTinyVectorBatch(TinyVectorContext<N>& ctx, uint32_
     const uint8_t rowBlocks = static_cast<uint8_t>(rowCount / 8U);
     const AscendC::BinaryRepeatParams mul{1U, 1U, 0U, stride, 0U, rowBlocks};
     const AscendC::BinaryRepeatParams add{1U, 1U, 1U, stride, stride, stride};
-    for (uint32_t layer = 0U; layer < N; ++layer) {
+    for (uint32_t layer = 0U; layer < k; ++layer) {
         AccumulateTinyVectorLayer(ctx, layer * N, colBase, rowCount, rowBlocks, mul, add);
     }
     if (alpha != 1.0f) {
@@ -421,7 +428,7 @@ __aicore__ inline void StoreTinyVectorColumn(
     TinyVectorContext<N>& ctx, const CherkArch22TilingData& tiling, uint32_t colBase, uint32_t column, float beta)
 {
     const uint32_t col = colBase + column;
-    if (col >= N) {
+    if (col >= tiling.n) {
         return;
     }
     const uint32_t count = col + 1U;
@@ -435,8 +442,11 @@ __aicore__ inline void StoreTinyVectorColumn(
         AscendC::Add(imag, imag, ctx.oldImag, count);
         AscendC::PipeBarrier<PIPE_V>();
     }
-    uint64_t diagonalMask[2] = {1ULL << col, 0ULL};
-    AscendC::Duplicate(imag, 0.0f, diagonalMask, 1U, 1U, 8U);
+    AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+    imag.SetValue(col, 0.0f);
+    AscendC::SetFlag<AscendC::HardEvent::S_V>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::S_V>(EVENT_ID0);
     AscendC::Adds(ctx.oldReal, real, 0.0f, N);
     AscendC::Adds(ctx.oldImag, imag, 0.0f, N);
     AscendC::PipeBarrier<PIPE_V>();
@@ -462,25 +472,28 @@ __aicore__ inline void RunTinyVector(
     if (colBase >= TINY_N) {
         return;
     }
-    ComputeTinyVectorBatch(ctx, colBase, alpha);
+    ComputeTinyVectorBatch(ctx, colBase, alpha, tiling.k);
     for (uint32_t column = 0U; column < TINY_VECTOR_BATCH_COLS; ++column) {
         StoreTinyVectorColumn(ctx, tiling, colBase, column, beta);
     }
 }
 
 template <uint32_t TINY_N>
-__aicore__ inline void CherkArch22TinyVectorImpl(
-    GM_ADDR alphaGm, GM_ADDR aGm, GM_ADDR betaGm, GM_ADDR cGm, GM_ADDR metadataGm, const CherkArch22TilingData& tiling)
+__aicore__ inline void CherkArch22RunTinyVector(
+    GM_ADDR aGm, GM_ADDR cGm, GM_ADDR metadataGm, const CherkArch22TilingData& tiling, float alpha, float beta)
 {
     constexpr uint32_t matrix = TINY_N * TINY_N;
-    const float alpha = *reinterpret_cast<__gm__ const float*>(alphaGm);
-    const float beta = *reinterpret_cast<__gm__ const float*>(betaGm);
-    if (alpha == 0.0f && beta == 1.0f) {
-        return;
-    }
     AscendC::TPipe pipe;
-    AscendC::TBuf<AscendC::TPosition::VECCALC> aosBuf, planarBuf, accumBuf, oldBuf, coefficientBuf, offsetBuf,
-        outputBuf, scratchBuf, thresholdBuf, maskBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> aosBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> planarBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> accumBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> oldBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> coefficientBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> offsetBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> outputBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> scratchBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> thresholdBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> maskBuf;
     InitTinyVectorStorage<TINY_N>(
         pipe, aosBuf, planarBuf, accumBuf, oldBuf, coefficientBuf, offsetBuf, outputBuf, scratchBuf, thresholdBuf,
         maskBuf);
@@ -511,6 +524,18 @@ __aicore__ inline void CherkArch22TinyVectorImpl(
         GetCherkCopyEvents()};
     InitCherkTinyGlobals(ctx.a, ctx.c, ctx.metadata, aGm, cGm, metadataGm, tiling, TINY_N);
     RunTinyVector(ctx, aGm, cGm, tiling, alpha, beta);
+}
+
+template <uint32_t TINY_N>
+__aicore__ inline void CherkArch22TinyVectorImpl(
+    GM_ADDR alphaGm, GM_ADDR aGm, GM_ADDR betaGm, GM_ADDR cGm, GM_ADDR metadataGm, const CherkArch22TilingData& tiling)
+{
+    const float alpha = *reinterpret_cast<__gm__ const float*>(alphaGm);
+    const float beta = *reinterpret_cast<__gm__ const float*>(betaGm);
+    if (alpha == 0.0f && beta == 1.0f) {
+        return;
+    }
+    CherkArch22RunTinyVector<TINY_N>(aGm, cGm, metadataGm, tiling, alpha, beta);
 }
 
 #define CHERK_TINY_VECTOR_KERNEL(N)                                                     \
@@ -571,11 +596,11 @@ __aicore__ inline void InitTinyTransposeStorage(
     pipe.InitBuffer(transpose, matrix * 2U * sizeof(float));
     pipe.InitBuffer(product, matrix * 4U * sizeof(float));
     pipe.InitBuffer(accum, outputPlane * 2U * sizeof(float));
-    pipe.InitBuffer(old, N * 2U * sizeof(float));
-    pipe.InitBuffer(output, matrix * 2U * sizeof(float));
+    pipe.InitBuffer(old, outputPlane * 2U * sizeof(float));
+    pipe.InitBuffer(output, N > 32U ? 32U : matrix * 2U * sizeof(float));
     pipe.InitBuffer(metadata, (TRANSPOSE_COUNT + INTERLEAVE_COUNT) * sizeof(uint32_t));
-    pipe.InitBuffer(scratch, matrix * sizeof(float));
-    pipe.InitBuffer(threshold, matrix * sizeof(float));
+    pipe.InitBuffer(scratch, N > 32U ? 32U : matrix * sizeof(float));
+    pipe.InitBuffer(threshold, N > 32U ? 32U : matrix * sizeof(float));
     pipe.InitBuffer(mask, matrix / 8U < 32U ? 32U : matrix / 8U);
 }
 
@@ -585,10 +610,15 @@ template <
 __aicore__ inline bool LoadTinyTransposeInput(TinyTransposeContext<N>& ctx, const CherkArch22TilingData& tiling)
 {
     constexpr uint32_t matrix = N * N;
+    const uint32_t bytes = tiling.n * 8U;
+    const uint32_t aligned = (bytes + 31U) & ~31U;
+    AscendC::Duplicate(ctx.aos, 0.0f, matrix * 2U);
+    AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(ctx.events.vToMte2);
+    AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(ctx.events.vToMte2);
     const AscendC::DataCopyExtParams copy{
-        static_cast<uint16_t>(N), N * 2U * sizeof(float), static_cast<uint32_t>((tiling.lda - N) * 2U * sizeof(float)),
-        0U, 0U};
-    AscendC::DataCopyPad(ctx.aos, ctx.a, copy, {false, 0U, 0U, 0.0f});
+        static_cast<uint16_t>(tiling.k), bytes, (tiling.lda - tiling.n) * 8U, (N * 8U - aligned) / 32U, 0U};
+    AscendC::DataCopyPad(
+        ctx.aos, ctx.a, copy, {aligned != bytes, 0U, static_cast<uint8_t>((aligned - bytes) / 4U), 0.0f});
     AscendC::DataCopy(ctx.transposeOffsets, ctx.metadata[TRANSPOSE_OFFSET], TRANSPOSE_COUNT);
     AscendC::DataCopy(ctx.interleaveOffsets, ctx.metadata[INTERLEAVE_OFFSET], INTERLEAVE_COUNT);
     AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(ctx.events.mte2ToV);
@@ -651,8 +681,11 @@ __aicore__ inline void StoreTinyTransposeColumn(
         AscendC::Add(ctx.imagOut, ctx.imagOut, ctx.oldImag, count);
         AscendC::PipeBarrier<PIPE_V>();
     }
-    uint64_t diagonalMask[2] = {1ULL << col, 0ULL};
-    AscendC::Duplicate(ctx.imagOut, 0.0f, diagonalMask, 1U, 1U, 8U);
+    AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+    ctx.imagOut.SetValue(col, 0.0f);
+    AscendC::SetFlag<AscendC::HardEvent::S_V>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::S_V>(EVENT_ID0);
     AscendC::LocalTensor<float> output = ctx.output[col * N * 2U];
     AscendC::Gather(output, ctx.realOut, ctx.interleaveOffsets, 0U, count * 2U);
     AscendC::PipeBarrier<PIPE_V>();
@@ -669,7 +702,7 @@ __aicore__ inline void RunTinyTransposeColumns(
     AscendC::Gather(ctx.imagT, ctx.imagA, ctx.transposeOffsets, 0U, N * N);
     AscendC::PipeBarrier<PIPE_V>();
     const uint32_t blocks = CherkNormalizeBlockCount(static_cast<uint32_t>(AscendC::GetBlockNum()));
-    for (uint32_t col = static_cast<uint32_t>(AscendC::GetBlockIdx()); col < N; col += blocks) {
+    for (uint32_t col = static_cast<uint32_t>(AscendC::GetBlockIdx()); col < tiling.n; col += blocks) {
         ComputeTinyTransposeColumn(ctx, col, alpha);
         StoreTinyTransposeColumn(ctx, tiling, col, beta);
     }
@@ -707,54 +740,74 @@ __aicore__ inline void RunTinyTranspose(
     RunTinyTransposeColumns(ctx, tiling, alpha, beta);
 }
 
+template <uint32_t TINY_N, uint32_t TRANSPOSE_COUNT, uint32_t INTERLEAVE_COUNT>
+struct TinyTransposeStorage {
+    AscendC::TBuf<AscendC::TPosition::VECCALC> aosBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> planarBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> transposeBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> productBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> accumBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> oldBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> outputBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> metadataBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> scratchBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> thresholdBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> maskBuf;
+    TinyTransposeContext<TINY_N> ctx;
+    __aicore__ inline void Init(AscendC::TPipe& pipe)
+    {
+        constexpr uint32_t matrix = TINY_N * TINY_N;
+        InitTinyTransposeStorage<TINY_N, TRANSPOSE_COUNT, INTERLEAVE_COUNT>(
+            pipe, aosBuf, planarBuf, transposeBuf, productBuf, accumBuf, oldBuf, outputBuf, metadataBuf, scratchBuf,
+            thresholdBuf, maskBuf);
+        AscendC::LocalTensor<float> planar = planarBuf.Get<float>();
+        AscendC::LocalTensor<float> transposed = transposeBuf.Get<float>();
+        AscendC::LocalTensor<float> product = productBuf.Get<float>();
+        AscendC::LocalTensor<float> accum = accumBuf.Get<float>();
+        AscendC::LocalTensor<float> old = oldBuf.Get<float>();
+        AscendC::LocalTensor<uint32_t> offsets = metadataBuf.Get<uint32_t>();
+        ctx = TinyTransposeContext<TINY_N>{
+            aosBuf.Get<float>(),
+            planar,
+            planar[matrix],
+            transposed,
+            transposed[matrix],
+            product,
+            product[matrix],
+            product[2U * matrix],
+            product[3U * matrix],
+            accum,
+            accum[TINY_N <= 32U ? 32U : TINY_N],
+            old,
+            old[TINY_N <= 32U ? 32U : TINY_N],
+            TINY_N > 32U ? planar : outputBuf.Get<float>(),
+            offsets,
+            offsets[TRANSPOSE_COUNT],
+            TINY_N > 32U ? product : scratchBuf.Get<float>(),
+            TINY_N > 32U ? product[matrix] : thresholdBuf.Get<float>(),
+            maskBuf.Get<uint8_t>(),
+            {},
+            {},
+            {},
+            GetCherkCopyEvents()};
+    }
+};
+
 template <
     uint32_t TINY_N, uint32_t TRANSPOSE_OFFSET, uint32_t TRANSPOSE_COUNT, uint32_t INTERLEAVE_OFFSET,
     uint32_t INTERLEAVE_COUNT>
 __aicore__ inline void CherkArch22TinyTransposeImpl(
     GM_ADDR alphaGm, GM_ADDR aGm, GM_ADDR betaGm, GM_ADDR cGm, GM_ADDR metadataGm, const CherkArch22TilingData tiling)
 {
-    constexpr uint32_t matrix = TINY_N * TINY_N;
     const float alpha = *reinterpret_cast<__gm__ const float*>(alphaGm);
     const float beta = *reinterpret_cast<__gm__ const float*>(betaGm);
     if (TryHandleTinyTransposeScale<TINY_N>(alpha, beta, betaGm, cGm, tiling)) {
         return;
     }
     AscendC::TPipe pipe;
-    AscendC::TBuf<AscendC::TPosition::VECCALC> aosBuf, planarBuf, transposeBuf, productBuf, accumBuf, oldBuf, outputBuf,
-        metadataBuf, scratchBuf, thresholdBuf, maskBuf;
-    InitTinyTransposeStorage<TINY_N, TRANSPOSE_COUNT, INTERLEAVE_COUNT>(
-        pipe, aosBuf, planarBuf, transposeBuf, productBuf, accumBuf, oldBuf, outputBuf, metadataBuf, scratchBuf,
-        thresholdBuf, maskBuf);
-    AscendC::LocalTensor<float> planar = planarBuf.Get<float>();
-    AscendC::LocalTensor<float> transposed = transposeBuf.Get<float>();
-    AscendC::LocalTensor<float> product = productBuf.Get<float>();
-    AscendC::LocalTensor<float> accum = accumBuf.Get<float>();
-    AscendC::LocalTensor<float> old = oldBuf.Get<float>();
-    AscendC::LocalTensor<uint32_t> offsets = metadataBuf.Get<uint32_t>();
-    TinyTransposeContext<TINY_N> ctx{
-        aosBuf.Get<float>(),
-        planar,
-        planar[matrix],
-        transposed,
-        transposed[matrix],
-        product,
-        product[matrix],
-        product[2U * matrix],
-        product[3U * matrix],
-        accum,
-        accum[TINY_N <= 32U ? 32U : TINY_N],
-        old,
-        old[TINY_N],
-        outputBuf.Get<float>(),
-        offsets,
-        offsets[TRANSPOSE_COUNT],
-        scratchBuf.Get<float>(),
-        thresholdBuf.Get<float>(),
-        maskBuf.Get<uint8_t>(),
-        {},
-        {},
-        {},
-        GetCherkCopyEvents()};
+    TinyTransposeStorage<TINY_N, TRANSPOSE_COUNT, INTERLEAVE_COUNT> storage;
+    storage.Init(pipe);
+    auto& ctx = storage.ctx;
     InitCherkTinyGlobals(ctx.a, ctx.c, ctx.metadata, aGm, cGm, metadataGm, tiling, TINY_N);
     RunTinyTranspose<TINY_N, TRANSPOSE_OFFSET, TRANSPOSE_COUNT, INTERLEAVE_OFFSET, INTERLEAVE_COUNT>(
         ctx, aGm, cGm, tiling, alpha, beta);
@@ -825,7 +878,8 @@ struct OuterK2Context {
     CherkCopyEvents events;
 };
 
-__aicore__ inline void LoadOuterK2Inputs(OuterK2Context& ctx, const CherkArch22TilingData& tiling, uint32_t firstCol)
+__aicore__ inline void LoadOuterK2Inputs(
+    OuterK2Context& ctx, const CherkArch22TilingData& tiling, uint32_t firstCol, float beta)
 {
     const uint32_t inputBytes = tiling.n * 2U * sizeof(float);
     AscendC::Duplicate(ctx.input, 0.0f, OUTER_K2_RANK * OUTER_K2_ROWS * 2U);
@@ -843,11 +897,13 @@ __aicore__ inline void LoadOuterK2Inputs(OuterK2Context& ctx, const CherkArch22T
     AscendC::DataCopy(ctx.offsets, ctx.metadata[CHERK_ARCH22_META_OUTER_K2_INTERLEAVE_OFFSET], OUTER_K2_OFFSET_COUNT);
     AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(ctx.events.vToMte2);
     AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(ctx.events.vToMte2);
-    const uint64_t cOffset = static_cast<uint64_t>(firstCol) * tiling.ldc * 2ULL;
-    const AscendC::DataCopyExtParams cCopy{
-        OUTER_K2_PANEL_COLS, inputBytes, static_cast<uint32_t>((tiling.ldc - tiling.n) * 2U * sizeof(float)),
-        static_cast<uint32_t>((OUTER_K2_ROWS * 2U * sizeof(float) - inputBytes) / 32U), 0U};
-    AscendC::DataCopyPad(ctx.input, ctx.c[cOffset], cCopy, {false, 0U, 0U, 0.0f});
+    if (beta != 0.0f) {
+        const uint64_t cOffset = static_cast<uint64_t>(firstCol) * tiling.ldc * 2ULL;
+        const AscendC::DataCopyExtParams cCopy{
+            OUTER_K2_PANEL_COLS, inputBytes, static_cast<uint32_t>((tiling.ldc - tiling.n) * 2U * sizeof(float)),
+            static_cast<uint32_t>((OUTER_K2_ROWS * 2U * sizeof(float) - inputBytes) / 32U), 0U};
+        AscendC::DataCopyPad(ctx.input, ctx.c[cOffset], cCopy, {false, 0U, 0U, 0.0f});
+    }
     AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(ctx.events.mte2ToV);
 }
 
@@ -914,19 +970,14 @@ __aicore__ inline void StoreOuterK2(OuterK2Context& ctx, const CherkArch22Tiling
     AscendC::PipeBarrier<PIPE_V>();
     AscendC::Gather(ctx.output, ctx.outReal, ctx.offsets, 0U, OUTER_K2_OFFSET_COUNT);
     AscendC::PipeBarrier<PIPE_V>();
-    for (uint32_t col = 0U; col < OUTER_K2_PANEL_COLS; ++col) {
-        const uint32_t selectedFloats = (firstCol + col + 1U) * 2U;
-        AscendC::Adds(ctx.input[col * OUTER_K2_ROWS * 2U], ctx.output[col * OUTER_K2_ROWS * 2U], 0.0f, selectedFloats);
-    }
-    AscendC::PipeBarrier<PIPE_V>();
     AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(ctx.events.vToMte3);
     AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(ctx.events.vToMte3);
-    const uint32_t rowBytes = tiling.n * 2U * sizeof(float);
-    const uint64_t outputOffset = static_cast<uint64_t>(firstCol) * tiling.ldc * 2ULL;
-    const AscendC::DataCopyExtParams outputCopy{
-        OUTER_K2_PANEL_COLS, rowBytes, static_cast<uint32_t>((OUTER_K2_ROWS * 2U * sizeof(float) - rowBytes) / 32U),
-        static_cast<uint32_t>((tiling.ldc - tiling.n) * 2U * sizeof(float)), 0U};
-    AscendC::DataCopyPad(ctx.c[outputOffset], ctx.input, outputCopy);
+    for (uint32_t col = 0U; col < OUTER_K2_PANEL_COLS; ++col) {
+        const uint32_t absoluteCol = firstCol + col;
+        const uint64_t outputOffset = static_cast<uint64_t>(absoluteCol) * tiling.ldc * 2ULL;
+        const AscendC::DataCopyExtParams outputCopy{1U, (absoluteCol + 1U) * 8U, 0U, 0U, 0U};
+        AscendC::DataCopyPad(ctx.c[outputOffset], ctx.output[col * OUTER_K2_ROWS * 2U], outputCopy);
+    }
 }
 } // namespace
 
@@ -938,7 +989,7 @@ __aicore__ inline void RunOuterK2(
         reinterpret_cast<__gm__ float*>(aGm), static_cast<uint64_t>(tiling.lda) * OUTER_K2_RANK * 2ULL);
     ctx.c.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(cGm), static_cast<uint64_t>(tiling.ldc) * tiling.n * 2ULL);
     ctx.metadata.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t*>(metadataGm), CHERK_ARCH22_META_WORDS);
-    LoadOuterK2Inputs(ctx, tiling, firstCol);
+    LoadOuterK2Inputs(ctx, tiling, firstCol, beta);
     ComputeOuterK2(ctx, firstCol);
     ApplyOuterK2Scalars(ctx, alpha, beta);
     StoreOuterK2(ctx, tiling, firstCol);
@@ -962,7 +1013,10 @@ extern "C" __global__ __aicore__ void cherk_arch22_outer_k2_kernel(
         return;
     }
     AscendC::TPipe pipe;
-    AscendC::TBuf<AscendC::TPosition::VECCALC> inputBuf, planarBuf, accumBuf, ioBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> inputBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> planarBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> accumBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> ioBuf;
     pipe.InitBuffer(inputBuf, 2U * OUTER_K2_PLANE * sizeof(float));
     pipe.InitBuffer(planarBuf, OUTER_K2_RANK * OUTER_K2_ROWS * 2U * sizeof(float));
     pipe.InitBuffer(accumBuf, 6U * OUTER_K2_PLANE * sizeof(float));
@@ -996,10 +1050,10 @@ void cherk_arch22_small_vector_do(
     if (tiling.smallPath == 1U) {
         cherk_arch22_small_kernel<<<tiling.aivCoreNum, nullptr, stream>>>(alpha, a, beta, c, tiling);
     } else if (tiling.smallPath == 2U) {
-        if (tiling.n == 8U) {
+        if (tiling.n <= 8U && tiling.k <= 8U) {
             cherk_arch22_tiny_vector_8_kernel<<<tiling.aivCoreNum, nullptr, stream>>>(
                 alpha, a, beta, c, metadata, tiling);
-        } else if (tiling.n == 16U) {
+        } else if (tiling.n <= 16U && tiling.k <= 16U) {
             cherk_arch22_tiny_vector_16_kernel<<<tiling.aivCoreNum, nullptr, stream>>>(
                 alpha, a, beta, c, metadata, tiling);
         } else {
@@ -1012,7 +1066,7 @@ void cherk_arch22_small_vector_do(
     } else if (tiling.smallPath == 6U) {
         cherk_arch22_tiny1_direct_kernel<<<1U, nullptr, stream>>>(alpha, a, beta, c, tiling);
     } else if (tiling.smallPath == 7U) {
-        if (tiling.n == 16U) {
+        if (tiling.n <= 16U && tiling.k <= 16U) {
             cherk_arch22_tiny16_transpose_kernel<<<tiling.aivCoreNum, nullptr, stream>>>(
                 alpha, a, beta, c, metadata, tiling);
         } else {
@@ -1030,42 +1084,14 @@ void cherk_arch22_outer_do(
 }
 
 namespace {
-void LaunchSmallPath(
-    GM_ADDR alpha, GM_ADDR a, GM_ADDR beta, GM_ADDR c, GM_ADDR workspace, GM_ADDR metadata,
-    const CherkArch22TilingData& tiling, void* stream)
-{
-    if (tiling.smallPath == 3U) {
-        cherk_arch22_square64_do(alpha, a, beta, c, workspace, metadata, tiling, stream);
-    } else if (tiling.smallPath == 5U) {
-        cherk_arch22_square128_do(alpha, a, beta, c, workspace, metadata, tiling, stream);
-    } else {
-        cherk_arch22_small_vector_do(alpha, a, beta, c, workspace, metadata, tiling, stream);
-    }
-}
-
 void LaunchGeneralPath(
     GM_ADDR alpha, GM_ADDR a, GM_ADDR beta, GM_ADDR c, GM_ADDR workspace, GM_ADDR metadata,
     const CherkArch22TilingData& tiling, void* stream)
 {
     if (tiling.skipProduct == 0U) {
-        cherk_arch22_pack_do(a, workspace, tiling, stream);
+        cherk_arch22_pack_do(a, workspace, metadata, tiling, stream);
     }
     cherk_arch22_compute_do(alpha, beta, c, workspace, metadata, tiling, stream);
-}
-inline void LaunchDirectPath(
-    GM_ADDR alpha, GM_ADDR a, GM_ADDR beta, GM_ADDR c, GM_ADDR workspace, GM_ADDR metadata,
-    const CherkArch22TilingData& tiling, void* stream)
-{
-    if (tiling.directMixMode == 1U || tiling.directMixMode == 2U) {
-        cherk_arch22_direct_mix_do(alpha, a, beta, c, workspace, metadata, tiling, stream);
-        return;
-    }
-    cherk_arch22_direct_pack_do(a, workspace, metadata, tiling, stream);
-    if (tiling.directMixMode == 3U) {
-        cherk_arch22_direct_mix_do(alpha, a, beta, c, workspace, metadata, tiling, stream);
-        return;
-    }
-    cherk_arch22_direct_compute_do(alpha, beta, c, workspace, metadata, tiling, stream);
 }
 } // namespace
 
@@ -1079,11 +1105,7 @@ void cherk_arch22_kernel_do(
         return;
     }
     if (tiling.smallPath != 0U) {
-        LaunchSmallPath(alpha, a, beta, c, workspace, metadata, tiling, stream);
-        return;
-    }
-    if (tiling.directPath != 0U) {
-        LaunchDirectPath(alpha, a, beta, c, workspace, metadata, tiling, stream);
+        cherk_arch22_small_vector_do(alpha, a, beta, c, workspace, metadata, tiling, stream);
         return;
     }
     LaunchGeneralPath(alpha, a, beta, c, workspace, metadata, tiling, stream);

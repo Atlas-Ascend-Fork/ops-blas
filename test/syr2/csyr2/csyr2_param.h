@@ -18,10 +18,7 @@
 #include "csv_loader.h"
 #include "fill.h"
 
-inline bool parseCsyr2Bool(const std::string& value)
-{
-    return value == "1" || value == "true" || value == "TRUE";
-}
+inline bool parseCsyr2Bool(const std::string& value) { return value == "1" || value == "true" || value == "TRUE"; }
 
 inline aclblasComplex parseCsyr2Complex(const csv_map& map, const std::string& realKey, const std::string& imagKey)
 {
@@ -47,11 +44,31 @@ struct Csyr2Param : public BlasTestParamBase {
     float distributionMean = 0.0f;
     float distributionStddev = 1.0f;
 
+    float ar = 1.0f;
+    float ai = 0.0f;
+    bool nullAlpha = false;
+    bool poisonInactive = false;
+    std::string xFill;
+    std::string yFill;
+    std::string aFill;
+    unsigned seed = 1U;
+
     explicit Csyr2Param(const csv_map& map) : BlasTestParamBase(map)
     {
         uplo = parseFillMode(ReadMap(map, "uplo", "UPPER"));
         n = parseInt(ReadMap(map, "n", "0"));
-        alpha = parseCsyr2Complex(map, "alpha_real", "alpha_imag");
+        const std::string alphaReal = ReadMap(map, "alpha_real", "1.0");
+        nullAlpha = alphaReal == "null" || parseCsyr2Bool(ReadMap(map, "alpha_null", "0"));
+        if (!nullAlpha) {
+            alpha = parseCsyr2Complex(map, "alpha_real", "alpha_imag");
+        }
+        ar = nullAlpha ? 0.0f : alpha.real;
+        ai = alpha.imag;
+        poisonInactive = parseCsyr2Bool(ReadMap(map, "poison_inactive", "0"));
+        xFill = ReadMap(map, "x_fill", "");
+        yFill = ReadMap(map, "y_fill", "");
+        aFill = ReadMap(map, "a_fill", "");
+        seed = parseInt(ReadMap(map, "random_seed", "1"));
         handleNull = parseCsyr2Bool(ReadMap(map, "handle_null", "0"));
         alphaNull = parseCsyr2Bool(ReadMap(map, "alpha_null", "0"));
 
@@ -69,50 +86,3 @@ struct Csyr2Param : public BlasTestParamBase {
         distributionStddev = parseFloat(ReadMap(map, "distribution_stddev", "1.0"));
     }
 };
-
-namespace csyr2_arch22_test {
-
-inline bool Csyr2CsvIsNullToken(const std::string& s)
-{
-    std::string t = s;
-    for (char& c : t) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    return t == "null" || t == "nullptr" || t == "none";
-}
-
-struct Csyr2Param : public BlasTestParamBase {
-    aclblasFillMode_t uplo = ACLBLAS_UPPER;
-    int n = 0;
-    aclblasComplex alpha{1.0f, 0.0f};
-    bool nullAlpha = false;
-    BlasFillMode x = parseFill("RANDOM");
-    int incx = 1;
-    BlasFillMode y = parseFill("RANDOM");
-    int incy = 1;
-    BlasFillMode a = parseFill("RANDOM");
-    int lda = 0;
-
-    explicit Csyr2Param(const csv_map& map) : BlasTestParamBase(map)
-    {
-        uplo = parseFillMode(ReadMap(map, "uplo", "UPPER"));
-        n = parseInt(ReadMap(map, "n", "0"));
-        const std::string ar = ReadMap(map, "alpha_real", ReadMap(map, "alpha", "1.0"));
-        const std::string ai = ReadMap(map, "alpha_imag", "0.0");
-        nullAlpha = Csyr2CsvIsNullToken(ar) || Csyr2CsvIsNullToken(ai);
-        if (!nullAlpha) {
-            alpha.real = parseFloat(ar, 1.0f);
-            alpha.imag = parseFloat(ai, 0.0f);
-        }
-        x = parseFill(ReadMap(map, "x_fill", ReadMap(map, "x", "RANDOM")));
-        incx = parseInt(ReadMap(map, "incx", "1"));
-        y = parseFill(ReadMap(map, "y_fill", ReadMap(map, "y", "RANDOM")));
-        incy = parseInt(ReadMap(map, "incy", "1"));
-        a = parseFill(ReadMap(map, "a_fill", ReadMap(map, "a", "RANDOM")));
-        lda = parseInt(ReadMap(map, "lda", std::to_string(std::max(1, n))));
-    }
-
-    aclblasStatus_t ExpectedStatus() const { return expectResult; }
-};
-
-}  // namespace csyr2_arch22_test

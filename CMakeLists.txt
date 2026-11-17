@@ -323,6 +323,17 @@ target_compile_options(${OPS_BLAS} PRIVATE
 )
 target_compile_definitions(${OPS_BLAS} PRIVATE ${_ASC_TENSOR_API_COMPAT_DEFS})
 
+# The repaired arch22 kernels explicitly synchronize all pipeline transfers.
+file(GLOB _triangle_csyr2_kernels CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_LIST_DIR}/blas/syr2/arch22/csyr2_*kernel.cpp")
+set_property(SOURCE
+    ${_triangle_csyr2_kernels}
+    "${CMAKE_CURRENT_LIST_DIR}/blas/her2k/arch22/cher2k_kernel.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/blas/herk/arch22/cherk_kernel.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/blas/herk/arch22/cherk_compute_kernel.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/blas/herk/arch22/cherk_pack_kernel.cpp"
+    APPEND PROPERTY COMPILE_OPTIONS "$<$<COMPILE_LANGUAGE:ASC>:--cce-auto-sync=off>")
+
 # ========= 安装规则（CPack 打包时放入 lib64 和 include） =========
 install(TARGETS ${OPS_BLASLT} ${OPS_BLAS}
     LIBRARY DESTINATION lib64

@@ -23,7 +23,6 @@ namespace {
 constexpr const char* OP_TAG = "aclblasCherk";
 constexpr uint32_t CUBE_M = CHERK_ARCH22_CUBE_M_ALIGN;
 constexpr uint32_t CUBE_N = 128U;
-constexpr uint32_t DIRECT_TILE = 128U;
 constexpr uint32_t COMPACT_TILE = 128U;
 
 void FillInterleaveMetadata(std::vector<uint32_t>& metadata, uint32_t offset, uint32_t count, uint32_t planeElements)
@@ -109,6 +108,13 @@ GM_ADDR GetCherkArch22Metadata(_aclblas_handle* handle)
         metadata, CHERK_ARCH22_META_TINY64_INTERLEAVE_OFFSET, CHERK_ARCH22_META_TINY64_INTERLEAVE_COUNT, 64U);
     FillInterleaveMetadata(
         metadata, CHERK_ARCH22_META_OUTER_K2_INTERLEAVE_OFFSET, CHERK_ARCH22_META_OUTER_K2_INTERLEAVE_COUNT, 128U * 8U);
+    for (uint32_t i = 0U; i < 4096U; ++i) {
+        metadata[CHERK_ARCH22_META_RECT_OFFSET + i] = ((i % 128U) * 32U + i / 128U) * sizeof(float);
+        metadata[CHERK_ARCH22_META_WIDE_OFFSET + i] = ((i % 256U) * 16U + i / 256U) * sizeof(float);
+    }
+    for (uint32_t i = 0U; i < 2048U; ++i) {
+        metadata[CHERK_ARCH22_META_GENERAL_PACK_C_OFFSET + i] = ((i % 32U) * 64U + i / 32U) * sizeof(float);
+    }
     FillTriangleMetadata(metadata);
     return UploadCherkMetadata(handle, metadata);
 }
@@ -163,27 +169,24 @@ aclblasStatus_t ValidateValues(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-bool WorkspaceSizeIsSafe(uint32_t n, uint32_t k, bool directPath, bool compactPath)
+bool WorkspaceSizeIsSafe(uint32_t n, uint32_t k, bool compactPath)
 {
-    const uint64_t nAlign = directPath || compactPath ? DIRECT_TILE : CHERK_ARCH22_CUBE_M_ALIGN;
+    const uint64_t nAlign = compactPath ? COMPACT_TILE : CHERK_ARCH22_CUBE_M_ALIGN;
     const uint64_t cubeN = (static_cast<uint64_t>(n) + nAlign - 1U) / nAlign * nAlign;
     const uint64_t cubeK = (static_cast<uint64_t>(k) + CHERK_ARCH22_CUBE_K_ALIGN - 1U) / CHERK_ARCH22_CUBE_K_ALIGN *
                            CHERK_ARCH22_CUBE_K_ALIGN;
     const uint64_t nk = cubeN * cubeK;
     const uint64_t nn = cubeN * cubeN;
     constexpr uint64_t maxFloats = static_cast<uint64_t>(std::numeric_limits<size_t>::max()) / sizeof(float);
-    const uint64_t inputPlanes = directPath ? 3U : 2U;
+    const uint64_t inputPlanes = cubeK == 64U ? 3U : 2U;
     return nk <= maxFloats / inputPlanes && nn <= (maxFloats - inputPlanes * nk) / 2U;
 }
 
 struct CherkPathSelection {
-    bool directPath;
     bool compactPath;
     bool tinyVector;
     bool tinyTranspose;
     bool tiny1Direct;
-    bool square64Mix;
-    bool square128Mix;
     bool outerK2;
 };
 
@@ -193,28 +196,19 @@ void ConfigureCherkCoreCounts(CherkArch22TilingData& tiling, uint32_t n, uint32_
     if (tiling.smallPath == 2U || tiling.outerPath != 0U) {
         tiling.aivCoreNum = std::max<uint32_t>(1U, std::min<uint32_t>(aivCores, (n + 7U) / 8U));
     }
-    const bool fusedLowKMix = tiling.directPath != 0U && tiling.cubeK == 64U && (n < 512U || n >= 2048U);
-    const bool stridedLowKPostPackMix = tiling.directPath != 0U && tiling.cubeK == 64U && n > 1024U && n < 2048U;
-    const bool stridedPostPackMix =
-        stridedLowKPostPackMix || (tiling.directPath != 0U && tiling.cubeK > 64U && tiling.cubeK <= 192U && n >= 2048U);
-    tiling.directMixMode = fusedLowKMix ? 1U : (stridedPostPackMix ? 3U : 0U);
-    const uint64_t tileAxis = static_cast<uint64_t>(tiling.cubeN) / DIRECT_TILE;
     const uint64_t tileCount =
-        tiling.directPath != 0U ?
-            tileAxis * (tileAxis + 1ULL) / 2ULL :
-            static_cast<uint64_t>(tiling.cubeN / (tiling.compactPath != 0U ? COMPACT_TILE : CUBE_M)) *
-                (tiling.cubeN / CUBE_N);
+        static_cast<uint64_t>(tiling.cubeN / (tiling.compactPath != 0U ? COMPACT_TILE : CUBE_M)) *
+        (tiling.cubeN / CUBE_N);
     const uint64_t compactAxis = tiling.compactPath != 0U ? static_cast<uint64_t>(tiling.cubeN / COMPACT_TILE) : 0ULL;
     const uint64_t compactRealJobs = compactAxis * (compactAxis + 1ULL) / 2ULL;
-    const uint64_t schedulerJobs = tiling.compactPath != 0U ? tileCount + compactRealJobs : tileCount;
+    uint64_t schedulerJobs = tiling.compactPath != 0U ? tileCount + compactRealJobs : tileCount;
+    if (CherkArch22DirectImaginary(tiling)) {
+        // Each selected 128x128 tile has independent real and imaginary jobs.
+        const uint64_t axis = (static_cast<uint64_t>(n) + 127U) / 128U;
+        schedulerJobs = axis * (axis + 1U);
+    }
     tiling.aicCoreNum = std::max<uint32_t>(
         1U, static_cast<uint32_t>(std::min<uint64_t>(aicCores, std::max<uint64_t>(schedulerJobs, 1U))));
-    if (tiling.directMixMode == 1U) {
-        const uint64_t workUnits = 2ULL * tileCount;
-        while (tiling.aicCoreNum > 1U && workUnits % (2ULL * tiling.aicCoreNum) != 0ULL) {
-            --tiling.aicCoreNum;
-        }
-    }
 }
 
 uint8_t SelectCherkSmallPath(const CherkPathSelection& paths, uint32_t n, uint32_t k)
@@ -229,12 +223,9 @@ uint8_t SelectCherkSmallPath(const CherkPathSelection& paths, uint32_t n, uint32
         return 2U;
     }
     if (paths.tinyTranspose) {
-        return 7U;
+        return n <= 32U && k <= 32U ? 7U : 4U;
     }
-    if (paths.square64Mix) {
-        return 3U;
-    }
-    return paths.square128Mix ? 5U : 0U;
+    return 0U;
 }
 
 bool CherkNeedsNoWorkspace(const CherkArch22TilingData& tiling)
@@ -252,10 +243,8 @@ aclblasStatus_t InitializeCherkTiling(
     tiling.k = k;
     tiling.lda = lda;
     tiling.ldc = ldc;
-    tiling.directPath = static_cast<uint8_t>(paths.directPath);
     tiling.compactPath = static_cast<uint8_t>(paths.compactPath);
-    const uint32_t nAlign =
-        tiling.directPath != 0U || tiling.compactPath != 0U ? COMPACT_TILE : CHERK_ARCH22_CUBE_M_ALIGN;
+    const uint32_t nAlign = tiling.compactPath != 0U ? COMPACT_TILE : CHERK_ARCH22_CUBE_M_ALIGN;
     tiling.cubeN = (n + nAlign - 1U) / nAlign * nAlign;
     tiling.cubeK = (k + CHERK_ARCH22_CUBE_K_ALIGN - 1U) / CHERK_ARCH22_CUBE_K_ALIGN * CHERK_ARCH22_CUBE_K_ALIGN;
     tiling.trans = static_cast<uint32_t>(trans);
@@ -266,55 +255,30 @@ aclblasStatus_t InitializeCherkTiling(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-void ConfigureCherkPackRows(CherkArch22TilingData& tiling)
-{
-    uint64_t ubBytes = 192ULL * 1024ULL;
-    auto* platform = platform_ascendc::PlatformAscendCManager::GetInstance();
-    if (platform != nullptr) {
-        platform->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubBytes);
-    }
-    constexpr uint64_t packUbSafetyBytes = 256ULL;
-    const uint64_t packBytesPerRow = static_cast<uint64_t>(tiling.cubeN) * 5ULL * sizeof(float);
-    const uint64_t packRowsByUb =
-        ubBytes > packUbSafetyBytes && packBytesPerRow != 0ULL ? (ubBytes - packUbSafetyBytes) / packBytesPerRow : 1ULL;
-    tiling.directPackBatchRows = static_cast<uint8_t>(
-        packRowsByUb >= 8ULL ? 8U : (packRowsByUb >= 4ULL ? 4U : (packRowsByUb >= 2ULL ? 2U : 1U)));
-}
-
 aclblasStatus_t FinalizeCherkTiling(
     _aclblas_handle* handle, uint32_t n, uint32_t k, CherkArch22TilingData& tiling, uint32_t aivCores,
     uint32_t aicCores)
 {
-    ConfigureCherkPackRows(tiling);
     ConfigureCherkCoreCounts(tiling, n, aivCores, aicCores);
     if (CherkNeedsNoWorkspace(tiling)) {
         return ACLBLAS_STATUS_SUCCESS;
     }
-    if (!WorkspaceSizeIsSafe(n, k, tiling.directPath != 0U, tiling.compactPath != 0U)) {
+    if (!WorkspaceSizeIsSafe(n, k, tiling.compactPath != 0U)) {
         OP_LOGE(OP_TAG, "FinalizeCherkTiling: workspace size overflow for n=%u, k=%u", n, k);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    const size_t workspaceBytes = tiling.directPath != 0U ?
-                                      CherkArch22DirectWorkspaceBytes(tiling.cubeN, tiling.cubeK) :
-                                      CherkArch22WorkspaceBytes(tiling.cubeN, tiling.cubeK);
+    const size_t workspaceBytes = CherkArch22WorkspaceBytes(tiling.cubeN, tiling.cubeK);
     return EnsureDefaultWorkspace(handle, workspaceBytes);
 }
 
 CherkPathSelection SelectCherkPaths(aclblasFillMode_t uplo, aclblasOperation_t trans, uint32_t n, uint32_t k)
 {
     const bool compactFamily = n >= 128U && n < 768U && k > 64U;
-    const bool directFamily = !compactFamily && n >= 64U && (n <= 512U || k <= 300U);
-    const bool directN = trans == ACLBLAS_OP_N && k != 0U && directFamily;
-    const bool directC = trans == ACLBLAS_OP_C && k != 0U && directFamily && !(n < 300U && k > 3500U);
     return {
-        directN || directC,
-        compactFamily && !(directN || directC),
-        // Fixed-size-only kernels do not define a general tail contract.
-        // Use the generic small/direct/compact paths for these inputs.
-        false,
-        false,
-        false,
-        false,
+        compactFamily,
+        // Vector capacity is rounded up; loads and stores use logical n/k.
+        uplo == ACLBLAS_UPPER && trans == ACLBLAS_OP_N && n <= 16U && k <= 16U && k != 0U,
+        uplo == ACLBLAS_UPPER && trans == ACLBLAS_OP_N && n <= 64U && k <= 64U && k != 0U,
         false,
         uplo == ACLBLAS_UPPER && trans == ACLBLAS_OP_N && CherkArch22OuterGeometry(n, k),
     };

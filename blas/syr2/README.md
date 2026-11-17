@@ -242,14 +242,14 @@ aclblasStatus_t aclblasCsyr2(
 | handle | 有效库句柄，使用 `aclblasSetStream` 绑定执行 stream。 |
 | uplo | `ACLBLAS_UPPER` 或 `ACLBLAS_LOWER`，仅更新对应三角区域。 |
 | n | 矩阵阶数，`n >= 0`。 |
-| alpha | Host 侧 complex64 标量指针。 |
+| alpha | complex64 标量指针；Atlas A2/A3 支持 Host/Device，Ascend 950PR 使用 Host。 |
 | x / incx | Device 只读向量，`incx != 0`。 |
 | y / incy | Device 只读向量，`incy != 0`。 |
 | A / lda | 列主序 Device 输入输出矩阵，`lda >= max(1, n)`。 |
 
 计算公式为 `A += alpha*x*y^T + alpha*y*x^T`。本接口为普通转置，不对 x 或 y 做共轭；只读写 `uplo` 指定的三角区域，另一三角及 `lda` padding 保持不变。`n=0` 或 `alpha=(0,0)` 时返回成功且不访问 x、y、A。
 
-Host 侧不对 stream 同步。Ascend 950PR 上，连续布局 `incx=incy=1` 且 `1 <= n <= 4096` 使用 AIV 优化路径，其他合法布局使用通用 SIMT 路径。
+Atlas A2/A3 上，Host alpha 路径不增加 stream 同步；Device alpha 在 Handle 绑定的 stream 上读回并同步，再下发计算。矩阵列距超出 32 位 DMA 字节步长时，使用 64 位寻址通用核，继续支持合法的大 `lda`。Ascend 950PR 上，Host 侧不对 stream 同步，连续布局 `incx=incy=1` 且 `1 <= n <= 4096` 使用 AIV 优化路径，其他合法布局使用通用 SIMT 路径。
 
 #### 调用示例
 

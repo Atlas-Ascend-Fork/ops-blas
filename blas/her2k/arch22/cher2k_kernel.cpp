@@ -19,9 +19,12 @@
  * translation unit; the included
  * implementation fragments contain neither.
  */
+#include "common/helper/cube_load_params_arch22.h"
 #include <cstdint>
 
 #include "kernel_operator.h"
+#include "common/helper/scaled_scalar_arch22.h"
+#include "common/helper/triangle_store_arch22.h"
 #include "cann_ops_blas_common.h"
 #include "lib/matmul_intf.h"
 #include "cher2k_kernel.h"
@@ -58,7 +61,7 @@ using AscendC::TPosition;
 using AscendC::TQue;
 using AscendC::WaitFlag;
 
-#include "cher2k_kernel_layout.cc"
-#include "cher2k_kernel_cube.cc"
-#include "cher2k_kernel_postprocess.cc"
-#include "cher2k_kernel_entry.cc"
+#include "cher2k_kernel_layout.cpp"
+#include "cher2k_kernel_cube.cpp"
+#include "cher2k_kernel_postprocess.cpp"
+#include "cher2k_kernel_entry.cpp"

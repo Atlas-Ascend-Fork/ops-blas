@@ -9,20 +9,18 @@
  */
 
 #pragma once
+#include "kernel_operator.h"
 
-#include <vector>
-
-#include "blas_test.h"
-#include "csyr2_param.h"
-
-using Csyr2Arch22Param = csyr2_arch22_test::Csyr2Param;
-
-class Csyr2Arch22Test : public BlasTest<Csyr2Arch22Param> {
-protected:
-    void RunPerformance(
-        const Csyr2Arch22Param& p, const aclblasComplex* xPtr, const aclblasComplex* yPtr, aclblasComplex* aPtr);
-
-    void CheckResult(
-        const Csyr2Arch22Param& p, const std::vector<aclblasComplex>& aHost, const std::vector<aclblasComplex>& aOrig,
-        const std::vector<aclblasComplex>& xHost, const std::vector<aclblasComplex>& yHost);
-};
+namespace cube_load {
+__aicore__ inline void InitUnitFilter(AscendC::LoadData3DParamsV2<float>& params)
+{
+    params.strideW = 1U;
+    params.strideH = 1U;
+    params.filterW = 1U;
+    params.filterH = 1U;
+    params.dilationFilterW = 1U;
+    params.dilationFilterH = 1U;
+    params.filterSizeW = false;
+    params.filterSizeH = false;
+}
+} // namespace cube_load

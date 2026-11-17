@@ -93,19 +93,20 @@ private:
         ASSERT_EQ(
             aclrtMemcpy(actual.data(), Bytes(actual), buffers_.c, Bytes(actual), ACL_MEMCPY_DEVICE_TO_HOST),
             ACL_SUCCESS);
-        auto expected = initial_;
+        Cher2kGoldenDbl expected;
         ASSERT_EQ(
-            aclblasCher2k_cpu(
-                handle_, uplo_, trans_, n_, k_, &alpha, a_.data(), ld_, b_.data(), ld_, &beta, expected.data() + GUARD,
-                ldc_),
+            Cher2kRunGoldenDbl(
+                handle_, uplo_, trans_, n_, k_, &alpha, a_.data(), ld_, b_.data(), ld_, &beta, initial_.data() + GUARD,
+                ldc_, expected),
             ACLBLAS_STATUS_SUCCESS);
         const bool noOp = beta == 1.0f && (k_ == 0 || (alpha.real == 0.0f && alpha.imag == 0.0f));
-        ASSERT_NO_FATAL_FAILURE(CheckOutput(actual, expected, noOp));
+        ASSERT_NO_FATAL_FAILURE(CheckOutput(actual, expected.c, noOp));
         ASSERT_NO_FATAL_FAILURE(CheckInput(buffers_.a, a_));
         ASSERT_NO_FATAL_FAILURE(CheckInput(buffers_.b, b_));
     }
 
-    void CheckOutput(const std::vector<aclblasComplex>& actual, const std::vector<aclblasComplex>& expected, bool noOp)
+    void CheckOutput(
+        const std::vector<aclblasComplex>& actual, const std::vector<aclblasDoubleComplex>& expected, bool noOp)
     {
         for (size_t i = 0; i < actual.size(); ++i) {
             const bool matrix = i >= GUARD && i < actual.size() - GUARD;
@@ -114,8 +115,8 @@ private:
             const bool selected =
                 matrix && row < static_cast<size_t>(n_) && (uplo_ == ACLBLAS_UPPER ? row <= col : row >= col);
             if (selected && !noOp) {
-                ASSERT_NEAR(actual[i].real, expected[i].real, 1.0e-3f) << "index=" << i;
-                ASSERT_NEAR(actual[i].imag, expected[i].imag, 1.0e-3f) << "index=" << i;
+                ASSERT_NEAR(actual[i].real, expected[i - GUARD].real, 1.0e-3) << "index=" << i;
+                ASSERT_NEAR(actual[i].imag, expected[i - GUARD].imag, 1.0e-3) << "index=" << i;
                 if (row == col) {
                     ASSERT_EQ(actual[i].imag, 0.0f) << "diagonal=" << row;
                 }

@@ -28,27 +28,11 @@ void cherk_arch22_small_vector_do(
 void cherk_arch22_outer_do(
     GM_ADDR alpha, GM_ADDR a, GM_ADDR beta, GM_ADDR c, GM_ADDR metadata, const CherkArch22TilingData& tiling,
     void* stream);
-void cherk_arch22_pack_do(GM_ADDR a, GM_ADDR workspace, const CherkArch22TilingData& tiling, void* stream);
-void cherk_arch22_direct_pack_do(
+void cherk_arch22_pack_do(
     GM_ADDR a, GM_ADDR workspace, GM_ADDR metadata, const CherkArch22TilingData& tiling, void* stream);
 void cherk_arch22_compute_do(
     GM_ADDR alpha, GM_ADDR beta, GM_ADDR c, GM_ADDR workspace, GM_ADDR metadata, const CherkArch22TilingData& tiling,
     void* stream);
-void cherk_arch22_direct_compute_do(
-    GM_ADDR alpha, GM_ADDR beta, GM_ADDR c, GM_ADDR workspace, GM_ADDR metadata, const CherkArch22TilingData& tiling,
-    void* stream);
-
-void cherk_arch22_square64_do(
-    GM_ADDR alpha, GM_ADDR a, GM_ADDR beta, GM_ADDR c, GM_ADDR workspace, GM_ADDR metadata,
-    const CherkArch22TilingData& tiling, void* stream);
-
-void cherk_arch22_square128_do(
-    GM_ADDR alpha, GM_ADDR a, GM_ADDR beta, GM_ADDR c, GM_ADDR workspace, GM_ADDR metadata,
-    const CherkArch22TilingData& tiling, void* stream);
-
-void cherk_arch22_direct_mix_do(
-    GM_ADDR alpha, GM_ADDR a, GM_ADDR beta, GM_ADDR c, GM_ADDR workspace, GM_ADDR metadata,
-    const CherkArch22TilingData& tiling, void* stream);
 
 #ifdef CHERK_ARCH22_DEVICE_IMPL
 struct CherkCopyEvents {

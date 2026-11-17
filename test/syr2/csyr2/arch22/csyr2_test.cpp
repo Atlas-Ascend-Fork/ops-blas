@@ -8,295 +8,297 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-/*!
- * \file csyr2_test.cpp
- * \brief 板测 CSV ST：INSTANTIATE_TEST_SUITE_P 读 csyr2_test.csv。
- *        不 include aclblas_handle_internal.h / log.h，避免 TEST 宏被吃掉。
- *        Host/Kernel 源不改。
- */
-
-#include <chrono>
-#include <cstdlib>
+#include <algorithm>
 #include <cmath>
-#include <cstdio>
-#include <exception>
-#include <fstream>
-#include <string>
-#include <unistd.h>
+#include <cstdint>
+#include <cstring>
+#include <cstdlib>
+#include <gtest/gtest.h>
+#include <gtest/gtest-param-test.h>
+#include <limits>
+#include <random>
+#ifndef INSTANTIATE_TEST_SUITE_P
+#define INSTANTIATE_TEST_SUITE_P INSTANTIATE_TEST_CASE_P
+#endif
 #include <vector>
-
-#include "verify.h"
+#include "acl/acl.h"
 #include "blas_test.h"
 #include "csv_loader.h"
-#include "fill.h"
-#include "csyr2_arch22_test.h"
-#include "csyr2_golden.h"
+#include "csv_case_contract.h"
+#include "../csyr2_param.h"
+#include "../csyr2_golden.h"
 #include "csyr2_npu_wrapper.h"
+#include "csyr2_test_resources.h"
+#include "triangle_preservation.h"
+#include "triangle_fp64_reference.h"
 
-namespace {
+class Csyr2Test : public BlasTest<Csyr2Param> {};
 
-std::string Csyr2Dirname(const std::string& p)
+TEST(Csyr2NullHandleTest, NullHandle)
 {
-    const size_t slash = p.find_last_of("/\\");
-    if (slash == std::string::npos) {
-        return std::string();
-    }
-    return p.substr(0, slash);
+    aclblasComplex value{1.0F, 0.0F};
+    EXPECT_EQ(
+        Csyr2Npu(nullptr, ACLBLAS_UPPER, 1, &value, &value, 1, &value, 1, &value, 1), ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 }
 
-std::string Csyr2ExeDir()
+static std::vector<Csyr2Param> AccuracyCases()
 {
-    char buf[4096];
-    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (n <= 0) {
-        return std::string();
-    }
-    buf[n] = '\0';
-    return Csyr2Dirname(std::string(buf, static_cast<size_t>(n)));
+    auto cases = GetCasesFromCsv<Csyr2Param>(ReplaceFileExtension2Csv(__FILE__));
+    std::set<std::string> names;
+    VerifyCsvComposition(cases, 1222U, 200U, "csyr2_test.csv", names);
+    std::string regressionPath = ReplaceFileExtension2Csv(__FILE__);
+    regressionPath.insert(regressionPath.size() - 4U, "_numerics");
+    auto regression = GetCasesFromCsv<Csyr2Param>(regressionPath);
+    VerifyCsvComposition(regression, 18U, 0U, regressionPath, names);
+    cases.insert(cases.end(), regression.begin(), regression.end());
+    cases.erase(
+        std::remove_if(cases.begin(), cases.end(), [](const Csyr2Param& p) { return p.caseName.find("TC_PF_") == 0; }),
+        cases.end());
+    VerifyCsvComposition(cases, 1040U, 0U, "CSYR2 accuracy selection");
+    return cases;
 }
 
-bool Csyr2FileExists(const std::string& p)
+INSTANTIATE_TEST_SUITE_P(Csyr2, Csyr2Test, ::testing::ValuesIn(AccuracyCases()), PrintCaseInfoString<Csyr2Param>);
+
+TEST(CsvCaseContractTest, RejectsCoverageLoss)
 {
-    if (p.empty()) {
-        return false;
-    }
-    std::ifstream ifs(p);
-    return ifs.good();
+    struct Case {
+        std::string caseName;
+    };
+    const std::vector<Case> cases{{"TC_EX_001"}, {"TC_PF_001"}};
+    EXPECT_NO_THROW(VerifyCsvComposition(cases, 2U, 1U, "valid"));
+    EXPECT_THROW(VerifyCsvComposition(cases, 3U, 1U, "truncated"), std::runtime_error);
+    EXPECT_THROW(VerifyCsvComposition(cases, 2U, 0U, "PF loss"), std::runtime_error);
+    EXPECT_THROW(VerifyCsvComposition(std::vector<Case>{}, 0U, 0U, "empty"), std::runtime_error);
+    EXPECT_THROW(VerifyCsvComposition(std::vector<Case>{{" "}}, 1U, 0U, "blank"), std::runtime_error);
+    EXPECT_THROW((VerifyCsvComposition(std::vector<Case>{{"a"}, {"a"}}, 2U, 0U, "duplicate")), std::runtime_error);
+    std::set<std::string> names;
+    VerifyCsvComposition(cases, 2U, 1U, "main", names);
+    EXPECT_THROW(VerifyCsvComposition(cases, 2U, 1U, "companion", names), std::runtime_error);
 }
 
-std::string Csyr2Join(const std::string& dir, const char* name)
+TEST(TriangleFp64ReferenceTest, KeepsLowOrderTerms)
 {
-    if (dir.empty()) {
-        return name;
-    }
-    if (dir.back() == '/' || dir.back() == '\\') {
-        return dir + name;
-    }
-    return dir + "/" + name;
+    const aclblasComplex x[] = {{100000000.0F, 0.0F}, {1.0F, 0.0F}};
+    const aclblasComplex y[] = {{1.0F, 0.0F}, {1.0F, 0.0F}};
+    const aclblasComplex original[4] = {};
+    const auto golden = Csyr2GoldenFp64(ACLBLAS_UPPER, 2, {1.0F, 0.0F}, x, 1, y, 1, original, 2);
+    EXPECT_DOUBLE_EQ(golden[2].real, 100000001.0);
+    EXPECT_NE(golden[2].real, static_cast<double>(static_cast<float>(golden[2].real)));
+    TrianglePrecisionStats stats;
+    stats.Add(100000000.0F, golden[2].real);
+    EXPECT_DOUBLE_EQ(stats.maxerr, 1.0);
 }
 
-/* CMake copies the case CSV beside the test executable. */
-std::string Csyr2CsvPath()
+TEST(TriangleFp64ReferenceTest, TaskBookTolerance)
 {
-    std::vector<std::string> dirs;
-    dirs.push_back(Csyr2Dirname(__FILE__));
-    dirs.push_back(std::string("."));
-    dirs.push_back(Csyr2ExeDir());
-    const char* names[] = {"csyr2_test.csv"};
-    for (const auto& d : dirs) {
-        for (const char* n : names) {
-            const std::string cand = Csyr2Join(d, n);
-            if (Csyr2FileExists(cand)) {
-                std::printf("csyr2 CSV: %s\n", cand.c_str());
-                return cand;
-            }
+    TrianglePrecisionStats relative;
+    relative.Add(1.00005F, 1.0, 0x1p-13, 0x1p-13);
+    EXPECT_EQ(relative.bad, 0U);
+    TrianglePrecisionStats nearZero;
+    nearZero.Add(0.0003F, 0.0, 0x1p-13, 0x1p-13);
+    EXPECT_EQ(nearZero.bad, 1U);
+}
+
+TEST(TriangleFp64ReferenceTest, HardLimitUsesMaximumErrorPoint)
+{
+    for (const bool reverse : {false, true}) {
+        TrianglePrecisionStats stats;
+        if (reverse) {
+            stats.Add(131072.03125F, 131072.0);
         }
-    }
-    std::printf("csyr2 CSV: NOT FOUND (__FILE__=%s exe=%s)\n", __FILE__, Csyr2ExeDir().c_str());
-    return std::string();
-}
-
-std::vector<Csyr2Arch22Param> Csyr2CsvHardFail(const char* why)
-{
-    std::printf("csyr2 CSV: HARD FAIL %s\n", why);
-    csv_map row;
-    row["case_name"] = "TC_CSV_MISSING";
-    row["n"] = "0";
-    row["expect_result"] = "ACLBLAS_STATUS_INTERNAL_ERROR";
-    return {Csyr2Arch22Param(row)};
-}
-
-std::vector<Csyr2Arch22Param> LoadCsyr2Cases()
-{
-    const std::string path = Csyr2CsvPath();
-    if (path.empty()) {
-        return Csyr2CsvHardFail("not found next to source/cwd/binary (csyr2_test.csv)");
-    }
-    try {
-        auto cases = GetCasesFromCsv<Csyr2Arch22Param>(path);
-        if (cases.empty()) {
-            return Csyr2CsvHardFail("opened but 0 cases");
+        stats.Add(3943.54248046875F, 3943.5314331054688);
+        if (!reverse) {
+            stats.Add(131072.03125F, 131072.0);
         }
-        std::printf("csyr2 CSV: loaded %zu cases\n", cases.size());
-        return cases;
-    } catch (const std::exception& e) {
-        std::printf("csyr2 CSV: load failed: %s\n", e.what());
-        return Csyr2CsvHardFail(e.what());
+        EXPECT_DOUBLE_EQ(stats.maxerr, 0.03125);
+        EXPECT_DOUBLE_EQ(stats.maxerrLimit, 0.5);
+        EXPECT_TRUE(stats.Passed());
     }
+    TrianglePrecisionStats invalid;
+    invalid.Add(3943.75F, 3943.5);
+    EXPECT_FALSE(invalid.Passed());
 }
 
-std::vector<aclblasComplex> MakeComplexStrided(int n, int inc, const BlasFillMode& fill, uint32_t seed)
+TEST(TriangleFp64ReferenceTest, Fp32OverflowClassification)
 {
-    if (fill.method == BlasFillMode::M_NULLPTR) {
-        return {};
+    const float infinity = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    TrianglePrecisionStats valid;
+    valid.Add(infinity, 1.0e78);
+    valid.Add(-infinity, -1.0e78);
+    valid.Add(nan, std::numeric_limits<double>::quiet_NaN());
+    EXPECT_TRUE(valid.Passed());
+    for (const auto actual : {nan, -infinity, std::numeric_limits<float>::max()}) {
+        TrianglePrecisionStats invalid;
+        invalid.Add(actual, 1.0e78);
+        EXPECT_FALSE(invalid.Passed());
     }
-    const std::vector<float> re = makeBlasStrided(n, inc, fill, seed);
-    const std::vector<float> im = makeBlasStrided(n, inc, fill, seed + 1000U);
-    std::vector<aclblasComplex> out(re.size());
-    for (size_t i = 0; i < re.size(); ++i) {
-        out[i].real = re[i];
-        out[i].imag = im[i];
-    }
-    return out;
+    TrianglePrecisionStats boundary;
+    const float maximum = std::numeric_limits<float>::max();
+    boundary.Add(maximum, static_cast<double>(maximum) + std::ldexp(1.0, 103));
+    EXPECT_TRUE(boundary.Passed());
+    TrianglePrecisionStats premature;
+    premature.Add(infinity, static_cast<double>(std::numeric_limits<float>::max()));
+    EXPECT_FALSE(premature.Passed());
 }
 
-bool IsPerfCase(const std::string& name) { return name.size() >= 6 && name.compare(0, 6, "TC_PF_") == 0; }
-
-bool SameFloat(float a, float b)
+TEST(TriangleFp64ReferenceTest, CherkCancellation)
 {
-    if (std::isnan(a) && std::isnan(b)) {
-        return true;
-    }
-    return a == b;
+    const aclblasComplex a[] = {{100000000.0F, 0.0F}, {1.0F, 0.0F},          {1.0F, 0.0F},
+                                {1.0F, 0.0F},         {-100000000.0F, 0.0F}, {1.0F, 0.0F}};
+    const aclblasComplex original[4] = {};
+    const auto golden = CherkGoldenFp64(ACLBLAS_UPPER, ACLBLAS_OP_N, 2, 3, 1.0F, a, 2, 0.0F, original, 2);
+    EXPECT_DOUBLE_EQ(golden[2].real, 1.0);
+    EXPECT_DOUBLE_EQ(golden[2].imag, 0.0);
 }
 
-bool SameComplex(const aclblasComplex& a, const aclblasComplex& b)
+static size_t VectorSpan(int n, int increment)
 {
-    return SameFloat(a.real, b.real) && SameFloat(a.imag, b.imag);
+    return n <= 0 ? 0 :
+                    static_cast<size_t>(n - 1) *
+                            static_cast<size_t>(increment < 0 ? -static_cast<int64_t>(increment) : increment) +
+                        1;
 }
 
-bool InUploTriangle(aclblasFillMode_t uplo, int n, int i, int j)
+struct Csyr2AccuracyData {
+    std::vector<aclblasComplex> x;
+    std::vector<aclblasComplex> y;
+    std::vector<aclblasComplex> original;
+    std::vector<aclblasDoubleComplex> golden;
+    std::vector<aclblasComplex> actual;
+};
+static float AccuracyValue(
+    const std::string& mode, size_t i, std::mt19937& rng, std::uniform_real_distribution<float>& uniform)
 {
-    if (i < 0 || j < 0 || i >= n || j >= n) {
-        return false;
+    if (mode == "VALUE_NORM_0") {
+        return 0.0F;
     }
-    return (uplo == ACLBLAS_UPPER) ? (i <= j) : (i >= j);
+    if (mode == "VALUE_NORM_INF") {
+        return std::numeric_limits<float>::infinity();
+    }
+    if (mode == "VALUE_NORM_NAN") {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+    if (mode == "RANDOM_ALTER") {
+        return i % 2 ? -1.0F : 1.0F;
+    }
+    if (mode == "RANDOM_EXTREME" || mode == "SPARSE_INF_EXTREME") {
+        return i % 2 ? -1.0e10F : 1.0e-10F;
+    }
+    return uniform(rng);
 }
-
-} // namespace
-
-void Csyr2Arch22Test::RunPerformance(
-    const Csyr2Arch22Param& p, const aclblasComplex* xPtr, const aclblasComplex* yPtr, aclblasComplex* aPtr)
+static void FillAccuracyVector(std::vector<aclblasComplex>& values, const std::string& mode, std::mt19937& rng)
 {
-    Csyr2DeviceBuf dev;
-    ASSERT_EQ(Csyr2Upload(dev, p.n, xPtr, p.incx, yPtr, p.incy, aPtr, p.lda), ACLBLAS_STATUS_SUCCESS);
-    constexpr int kWarmup = 10;
-    /* 任务书 §3.3 要求有效采样 >50 次，默认 51。
-       CSYR2_PERF_ITERS 只用于 A/B 对比时降低方差；连发次数越多，
-       每次调用的下发开销摊得越薄，与默认口径测的不是同一个量，
-       不可用于对照任务书的标杆耗时。 */
-    const int kIters = []() {
-        const char* e = std::getenv("CSYR2_PERF_ITERS");
-        if (e == nullptr) {
-            return 51;
-        }
-        const int v = std::atoi(e);
-        return (v > 50) ? v : 51;
-    }();
-    for (int i = 0; i < kWarmup; ++i) {
-        ASSERT_EQ(Csyr2Launch(Csyr2Arch22Test::handle_, p.uplo, p.n, &p.alpha, dev, p.lda), ACLBLAS_STATUS_SUCCESS);
-        ASSERT_EQ(aclrtSynchronizeStream(Csyr2Arch22Test::stream_), ACL_SUCCESS);
-    }
-    const auto b0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < kIters; ++i) {
-        ASSERT_EQ(Csyr2Launch(Csyr2Arch22Test::handle_, p.uplo, p.n, &p.alpha, dev, p.lda), ACLBLAS_STATUS_SUCCESS);
-    }
-    ASSERT_EQ(aclrtSynchronizeStream(Csyr2Arch22Test::stream_), ACL_SUCCESS);
-    const auto b1 = std::chrono::steady_clock::now();
-    const double avgBatched = std::chrono::duration<double, std::micro>(b1 - b0).count() / static_cast<double>(kIters);
+    std::uniform_real_distribution<float> uniform(-5.0F, 5.0F);
 
-    const auto t0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < kIters; ++i) {
-        ASSERT_EQ(Csyr2Launch(Csyr2Arch22Test::handle_, p.uplo, p.n, &p.alpha, dev, p.lda), ACLBLAS_STATUS_SUCCESS);
-        ASSERT_EQ(aclrtSynchronizeStream(Csyr2Arch22Test::stream_), ACL_SUCCESS);
+    const float meanReal = uniform(rng);
+    const float meanImag = uniform(rng);
+    std::uniform_real_distribution<float> sigma(0.1F, 2.0F);
+    std::normal_distribution<float> normalReal(meanReal, sigma(rng));
+    std::normal_distribution<float> normalImag(meanImag, sigma(rng));
+    if (mode == "RANDOM_NORMAL") {
+        for (auto& value : values)
+            value = {normalReal(rng), normalImag(rng)};
+        return;
     }
-    const auto t1 = std::chrono::steady_clock::now();
-    const double avgSync = std::chrono::duration<double, std::micro>(t1 - t0).count() / static_cast<double>(kIters);
-    std::printf("avg_us=%.4f avg_us_persync=%.4f\n", avgBatched, avgSync);
+    for (size_t i = 0; i < values.size(); ++i) {
+        values[i] = {AccuracyValue(mode, i, rng, uniform), AccuracyValue(mode, i, rng, uniform)};
+    }
+    if (mode == "SPARSE_INF" || mode == "SPARSE_INF_EXTREME") {
+        values[values.size() / 3].real = std::numeric_limits<float>::infinity();
+        values.back().imag = -std::numeric_limits<float>::infinity();
+    }
+    if (mode == "SPARSE_NAN") {
+        values[values.size() / 2].imag = std::numeric_limits<float>::quiet_NaN();
+    }
 }
-
-void Csyr2Arch22Test::CheckResult(
-    const Csyr2Arch22Param& p, const std::vector<aclblasComplex>& aHost, const std::vector<aclblasComplex>& aOrig,
-    const std::vector<aclblasComplex>& xHost, const std::vector<aclblasComplex>& yHost)
+static void PrepareAccuracy(const Csyr2Param& p, const aclblasComplex& alpha, Csyr2AccuracyData& d)
 {
-    std::vector<aclblasComplex> golden = aOrig;
-    csyr2_arch22_test::Csyr2Golden(
-        p.uplo, p.n, p.alpha, xHost.data(), p.incx, yHost.data(), p.incy, golden.data(), p.lda);
-
-    std::vector<float> triOut;
-    std::vector<float> triGold;
-    for (int j = 0; j < p.n; ++j) {
-        const int iStart = (p.uplo == ACLBLAS_UPPER) ? 0 : j;
-        const int iEnd = (p.uplo == ACLBLAS_UPPER) ? j : (p.n - 1);
-        for (int i = iStart; i <= iEnd; ++i) {
-            const int64_t idx = static_cast<int64_t>(j) * p.lda + i;
-            triOut.push_back(aHost[static_cast<size_t>(idx)].real);
-            triOut.push_back(aHost[static_cast<size_t>(idx)].imag);
-            triGold.push_back(golden[static_cast<size_t>(idx)].real);
-            triGold.push_back(golden[static_cast<size_t>(idx)].imag);
-        }
+    d.x.resize(VectorSpan(p.n, p.incx));
+    auto& x = d.x;
+    d.y.resize(VectorSpan(p.n, p.incy));
+    auto& y = d.y;
+    d.original.resize(static_cast<size_t>(p.lda) * p.n);
+    auto& original = d.original;
+    for (size_t i = 0; i < x.size(); ++i) {
+        x[i] = {(static_cast<int>(i * 17U % 101U) - 50) / 37.0F, (static_cast<int>(i * 29U % 97U) - 48) / 41.0F};
     }
-    VerifyConfig cfg;
-    applyMixedTolerance(cfg, ACL_FLOAT, triGold.data(), triGold.size());
-    EXPECT_TRUE(Verifier::verifyVector(triOut.data(), triGold.data(), triOut.size(), 1, cfg, p.caseName));
-
-    uint32_t unchErr = 0;
-    for (int j = 0; j < p.n; ++j) {
-        for (int i = 0; i < p.lda; ++i) {
-            if (InUploTriangle(p.uplo, p.n, i, j)) {
-                continue;
-            }
-            const int64_t idx = static_cast<int64_t>(j) * p.lda + i;
-            if (!SameComplex(aHost[static_cast<size_t>(idx)], aOrig[static_cast<size_t>(idx)])) {
-                ++unchErr;
-            }
-        }
+    for (size_t i = 0; i < y.size(); ++i) {
+        y[i] = {(static_cast<int>(i * 23U % 103U) - 51) / 43.0F, (static_cast<int>(i * 31U % 107U) - 53) / 47.0F};
     }
-    EXPECT_EQ(unchErr, 0u) << "[" << p.caseName << "] Unchanged region: " << unchErr << " errors";
+    for (size_t i = 0; i < original.size(); ++i) {
+        original[i] = {(static_cast<int>(i * 13U % 89U) - 44) / 53.0F, (static_cast<int>(i * 19U % 83U) - 41) / 59.0F};
+    }
+    if (!p.xFill.empty()) {
+        std::mt19937 rng(p.seed);
+        FillAccuracyVector(x, p.xFill, rng);
+        FillAccuracyVector(y, p.yFill, rng);
+        FillAccuracyVector(original, p.aFill, rng);
+    }
+    PoisonUntouched(original.data(), p.n, p.lda, p.uplo == ACLBLAS_UPPER);
+    d.golden = Csyr2GoldenFp64(p.uplo, p.n, alpha, x.data(), p.incx, y.data(), p.incy, original.data(), p.lda);
 }
-
-TEST_F(Csyr2Arch22Test, NullHandle)
+static void RunAccuracy(
+    aclblasHandle_t handle, aclrtStream stream, const Csyr2Param& p, const aclblasComplex& alpha, Csyr2AccuracyData& d)
 {
-    aclblasComplex alpha{1.0f, 0.0f};
-    aclblasComplex dummy{0.0f, 0.0f};
-    const aclblasStatus_t ret = aclblasCsyr2(nullptr, ACLBLAS_UPPER, 4, &alpha, &dummy, 1, &dummy, 1, &dummy, 4);
-    EXPECT_NE(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_SUCCESS));
+    const auto& x = d.x;
+    const auto& y = d.y;
+    const auto& original = d.original;
+    ASSERT_EQ(aclrtSetDevice(blas_test_detail::RuntimeDeviceId()), ACL_SUCCESS);
+    Csyr2ReviewBuffers buffers;
+    buffers.stream = stream;
+    void*& dx = buffers.x;
+    void*& dy = buffers.y;
+    void*& dA = buffers.a;
+    const size_t xb = x.size() * sizeof(aclblasComplex);
+    const size_t yb = y.size() * sizeof(aclblasComplex);
+    const size_t ab = original.size() * sizeof(aclblasComplex);
+    const size_t dxBytes = std::max<size_t>(32, xb);
+    const size_t dyBytes = std::max<size_t>(32, yb);
+    const size_t dABytes = std::max<size_t>(32, ab);
+    ASSERT_EQ(aclrtMalloc(&dx, dxBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dy, dyBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dA, dABytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMemcpy(dx, xb, x.data(), xb, ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMemcpy(dy, yb, y.data(), yb, ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMemcpy(dA, ab, original.data(), ab, ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+
+    EXPECT_EQ(
+        Csyr2Npu(
+            handle, p.uplo, p.n, &alpha, p.xFill == "NULLPTR" ? nullptr : static_cast<const aclblasComplex*>(dx),
+            p.incx, p.yFill == "NULLPTR" ? nullptr : static_cast<const aclblasComplex*>(dy), p.incy,
+            p.aFill == "NULLPTR" ? nullptr : static_cast<aclblasComplex*>(dA), p.lda),
+        ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclrtSynchronizeStream(stream), ACL_SUCCESS);
+    d.actual.resize(original.size());
+    auto& actual = d.actual;
+    ASSERT_EQ(aclrtMemcpy(actual.data(), ab, dA, ab, ACL_MEMCPY_DEVICE_TO_HOST), ACL_SUCCESS);
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    Csyr2, Csyr2Arch22Test, ::testing::ValuesIn(LoadCsyr2Cases()), PrintCaseInfoString<Csyr2Arch22Param>);
-
-TEST_P(Csyr2Arch22Test, CsvDriven)
+TEST_P(Csyr2Test, CpuGolden)
 {
     const auto& p = GetParam();
-    if (p.caseName == "TC_CSV_MISSING") {
-        FAIL() << "csyr2 CSV not found; will not swallow as 0 tests. "
-                  "Looked for csyr2_test.csv next to source, cwd, and binary.";
-    }
-
-    const size_t aSize = (p.n > 0 && p.lda > 0) ? static_cast<size_t>(p.lda) * static_cast<size_t>(p.n) : 0;
-    std::vector<aclblasComplex> xHost = MakeComplexStrided(p.n, p.incx, p.x, p.randomSeed);
-    std::vector<aclblasComplex> yHost = MakeComplexStrided(p.n, p.incy, p.y, p.randomSeed + 1U);
-    std::vector<aclblasComplex> aHost = (p.a.method == BlasFillMode::M_NULLPTR || aSize == 0) ?
-                                            std::vector<aclblasComplex>{} :
-                                            makeBlasComplexMatrix(p.n, p.n, p.lda, p.a, p.randomSeed);
-    if (!aHost.empty() && aHost.size() < aSize) {
-        aHost.resize(aSize);
-    }
-    const std::vector<aclblasComplex> aOrig = aHost;
-
-    const aclblasComplex* xPtr = xHost.empty() ? nullptr : xHost.data();
-    const aclblasComplex* yPtr = yHost.empty() ? nullptr : yHost.data();
-    aclblasComplex* aPtr = aHost.empty() ? nullptr : aHost.data();
-
-    if (IsPerfCase(p.caseName) && p.expectResult == ACLBLAS_STATUS_SUCCESS && p.n > 0 && aPtr != nullptr) {
-        RunPerformance(p, xPtr, yPtr, aPtr);
+    aclblasComplex alpha{p.ar, p.ai};
+    if (p.expectResult != ACLBLAS_STATUS_SUCCESS || p.n == 0) {
+        // Invalid inputs must return before touching device operands.
+        aclblasComplex sentinel{3.0F, -2.0F};
+        EXPECT_EQ(
+            Csyr2Npu(
+                handle_, p.uplo, p.n, p.nullAlpha ? nullptr : &alpha, p.xFill == "NULLPTR" ? nullptr : &sentinel,
+                p.incx, p.yFill == "NULLPTR" ? nullptr : &sentinel, p.incy, p.aFill == "NULLPTR" ? nullptr : &sentinel,
+                p.lda),
+            p.expectResult);
+        EXPECT_EQ(sentinel.real, 3.0F);
+        EXPECT_EQ(sentinel.imag, -2.0F);
         return;
     }
 
-    const aclblasComplex* alphaPtr = p.nullAlpha ? nullptr : &p.alpha;
-    const aclblasStatus_t expect = p.ExpectedStatus();
-    const aclblasStatus_t ret =
-        aclblasCsyr2_npu(Csyr2Arch22Test::handle_, p.uplo, p.n, alphaPtr, xPtr, p.incx, yPtr, p.incy, aPtr, p.lda);
-    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(expect));
-    if (expect != ACLBLAS_STATUS_SUCCESS) {
-        return;
-    }
-    if (p.n == 0 || aPtr == nullptr) {
-        return;
-    }
-
-    CheckResult(p, aHost, aOrig, xHost, yHost);
+    Csyr2AccuracyData d;
+    ASSERT_NO_FATAL_FAILURE(PrepareAccuracy(p, alpha, d));
+    ASSERT_NO_FATAL_FAILURE(RunAccuracy(handle_, stream_, p, alpha, d));
+    VerifyTriangleFp64(
+        p.caseName.c_str(), d.actual.data(), d.original.data(), d.golden.data(), p.n, p.lda, p.uplo == ACLBLAS_UPPER,
+        alpha.real == 0 && alpha.imag == 0);
 }
 
 #include "csyr2_review_test.h"

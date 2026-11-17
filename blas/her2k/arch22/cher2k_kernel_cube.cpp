@@ -9,7 +9,7 @@
  */
 
 /**
- * Direct-H cube producer.  Included inside Cher2kPhysicalMmad so it can
+ * Direct-H cube producer.  Included inside Cher2kKernelLayout so it can
  * access the configured planar tensors and event ring without wrappers.
  */
 __aicore__ inline void ProcessDirectHermitian(uint32_t taskIndex, uint32_t taskStride)
@@ -30,6 +30,7 @@ __aicore__ inline void ProcessDirectHermitian(uint32_t taskIndex, uint32_t taskS
     SetFlag<HardEvent::FIX_M>(EVENT_ID0);
     SetFlag<HardEvent::FIX_M>(EVENT_ID1);
     SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
+    SetFlag<HardEvent::M_MTE1>(EVENT_ID0);
     SetHF32Mode(HF32Mode::DISABLE);
 
     uint32_t mTile = 0U;
@@ -40,8 +41,9 @@ __aicore__ inline void ProcessDirectHermitian(uint32_t taskIndex, uint32_t taskS
         const uint32_t nBegin = upper ? 0U : mTile;
         const uint32_t nEnd = upper ? mTile + 1U : nTiles;
         const uint32_t rowTasks = nEnd - nBegin;
-        if (taskBegin < rowTaskBase + rowTasks)
+        if (taskBegin < rowTaskBase + rowTasks) {
             break;
+        }
         rowTaskBase += rowTasks;
         ++mTile;
     }
@@ -54,12 +56,12 @@ __aicore__ inline void ProcessDirectHermitian(uint32_t taskIndex, uint32_t taskS
         ProcessDirectHermitianTile(state, mBase, nBase, sameMRow, slot0Slice);
         cachedMBase = mBase;
     }
+    WaitFlag<HardEvent::M_MTE1>(EVENT_ID0);
     WaitFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
     WaitFlag<HardEvent::FIX_M>(EVENT_ID0);
     WaitFlag<HardEvent::FIX_M>(EVENT_ID1);
 }
 
-public:
 /**
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
@@ -219,8 +221,9 @@ __aicore__ inline void ProcessDirectOpcSlices(
     WaitFlag<HardEvent::MTE1_M>(EVENT_ID0);
     Mmad(c1, a2, b2, firstMmadParams_);
     for (uint32_t kBase = CHER2K_CUBE_K; kBase < k_; kBase += CHER2K_CUBE_K) {
-        if (!CHER2K_SKIP_K_PIPE_BARRIER_EXPERIMENT)
+        if (!CHER2K_SKIP_K_PIPE_BARRIER_EXPERIMENT) {
             PipeBarrier<PIPE_M>();
+        }
         CopySingleToL1(a1, b1, left, right, mBase, nBase, kBase);
         LoadSingleToL0(a1, b1, a2, b2);
         WaitFlag<HardEvent::MTE1_M>(EVENT_ID0);
@@ -268,10 +271,10 @@ __aicore__ inline void ProcessProductSlicePrefetch(
 {
     constexpr uint32_t aSize = CHER2K_CUBE_M * CHER2K_CUBE_K;
     constexpr uint32_t bSize = CHER2K_CUBE_K * CHER2K_CUBE_N;
-    LocalTensor<float> aSlot0(TPosition::A1, 0U, aSize);
-    LocalTensor<float> aSlot1(TPosition::A1, static_cast<uint64_t>(aSize) * sizeof(float), aSize);
-    LocalTensor<float> bSlot0(TPosition::B1, static_cast<uint64_t>(2U * aSize) * sizeof(float), bSize);
-    LocalTensor<float> bSlot1(TPosition::B1, static_cast<uint64_t>(2U * aSize + bSize) * sizeof(float), bSize);
+    LocalTensor<float> aSlot0{TPosition::A1, 0U, aSize};
+    LocalTensor<float> aSlot1{TPosition::A1, static_cast<uint64_t>(aSize) * sizeof(float), aSize};
+    LocalTensor<float> bSlot0{TPosition::B1, static_cast<uint64_t>(2U * aSize) * sizeof(float), bSize};
+    LocalTensor<float> bSlot1{TPosition::B1, static_cast<uint64_t>(2U * aSize + bSize) * sizeof(float), bSize};
     LocalTensor<float>* aSlots[2] = {&aSlot0, &aSlot1};
     LocalTensor<float>* bSlots[2] = {&bSlot0, &bSlot1};
 
@@ -332,8 +335,9 @@ __aicore__ inline void ComputeProductPanelSlot(
         bPanelLoadParams_.kStartPt = transB_ ? panelK : 0U;
         LoadData(b2, bSlot, bPanelLoadParams_);
         LoadData(a2, aSlot, aPanelLoadParams_);
-        if (slice + 1U == slices)
+        if (slice + 1U == slices) {
             SetFlag<HardEvent::MTE1_MTE2>(slot);
+        }
         SetFlag<HardEvent::MTE1_M>(EVENT_ID0);
         WaitFlag<HardEvent::MTE1_M>(EVENT_ID0);
         Mmad(c1, a2, b2, panel == 0U && slice == 0U ? firstMmadParams_ : accumulateMmadParams_);
@@ -355,10 +359,10 @@ __aicore__ inline void ProcessProductPanelPingPong(
     const uint32_t bL1Size = CHER2K_L1_PANEL_K * CHER2K_CUBE_N;
     const uint32_t panelSlots = 2U;
     (void)panelSlots;
-    LocalTensor<float> a1Slot0(TPosition::A1, 0U, aL1Size);
-    LocalTensor<float> a1Slot1(TPosition::A1, static_cast<uint64_t>(aL1Size) * sizeof(float), aL1Size);
-    LocalTensor<float> b1Slot0(TPosition::B1, static_cast<uint64_t>(2U * aL1Size) * sizeof(float), bL1Size);
-    LocalTensor<float> b1Slot1(TPosition::B1, static_cast<uint64_t>(2U * aL1Size + bL1Size) * sizeof(float), bL1Size);
+    LocalTensor<float> a1Slot0{TPosition::A1, 0U, aL1Size};
+    LocalTensor<float> a1Slot1{TPosition::A1, static_cast<uint64_t>(aL1Size) * sizeof(float), aL1Size};
+    LocalTensor<float> b1Slot0{TPosition::B1, static_cast<uint64_t>(2U * aL1Size) * sizeof(float), bL1Size};
+    LocalTensor<float> b1Slot1{TPosition::B1, static_cast<uint64_t>(2U * aL1Size + bL1Size) * sizeof(float), bL1Size};
     LocalTensor<float>* aSlots[2] = {&a1Slot0, &a1Slot1};
     LocalTensor<float>* bSlots[2] = {&b1Slot0, &b1Slot1};
 
@@ -388,7 +392,6 @@ __aicore__ inline void ProcessProductPanel(
     ProcessProductPanel(a1, b1, a2, b2, c1, left, right, output, mBase, nBase, false, false, left, right, mBase, nBase);
 }
 
-public:
 __aicore__ inline void CopyPanelToL1(
     LocalTensor<float>& a1, LocalTensor<float>& b1, GlobalTensor<float>& left, GlobalTensor<float>& right,
     uint32_t mBase, uint32_t nBase, uint32_t panelBase)
@@ -465,8 +468,9 @@ __aicore__ inline void ProcessProductPanelSlices(
             }
             const bool lastSlice =
                 CHER2K_REVERSE_PANEL_K_EXPERIMENT ? (slice == 0U) : (slice + 1U == CHER2K_L1_PANEL_K / CHER2K_CUBE_K);
-            if (lastSlice)
+            if (lastSlice) {
                 SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
+            }
             SetFlag<HardEvent::MTE1_M>(EVENT_ID0);
             WaitFlag<HardEvent::MTE1_M>(EVENT_ID0);
             Mmad(c1, a2, b2, panelBase == 0U && iter == 0U ? firstMmadParams_ : accumulateMmadParams_);
@@ -586,14 +590,14 @@ __aicore__ inline void ProcessProductSinglePingPong(
 {
     constexpr uint32_t aSize = CHER2K_CUBE_M * CHER2K_CUBE_K;
     constexpr uint32_t bSize = CHER2K_CUBE_K * CHER2K_CUBE_N;
-    LocalTensor<float> a1Alt(TPosition::A1, aSize * sizeof(float), aSize);
+    LocalTensor<float> a1Alt{TPosition::A1, aSize * sizeof(float), aSize};
     // A1 and B1 are independent local address spaces; each gets two
     // buffers starting at offset zero in its own space.
-    LocalTensor<float> b1Base(TPosition::B1, 0U, bSize);
-    LocalTensor<float> b1Alt(TPosition::B1, bSize * sizeof(float), bSize);
-    LocalTensor<float> a2Alt(TPosition::A2, aSize * sizeof(float), aSize);
-    LocalTensor<float> b2Base(TPosition::B2, 0U, bSize);
-    LocalTensor<float> b2Alt(TPosition::B2, bSize * sizeof(float), bSize);
+    LocalTensor<float> b1Base{TPosition::B1, 0U, bSize};
+    LocalTensor<float> b1Alt{TPosition::B1, bSize * sizeof(float), bSize};
+    LocalTensor<float> a2Alt{TPosition::A2, aSize * sizeof(float), aSize};
+    LocalTensor<float> b2Base{TPosition::B2, 0U, bSize};
+    LocalTensor<float> b2Alt{TPosition::B2, bSize * sizeof(float), bSize};
     for (uint32_t kBase = 0U; kBase < k_; kBase += CHER2K_CUBE_K) {
         const uint32_t slot = (kBase / CHER2K_CUBE_K) & 1U;
         LocalTensor<float>& a1Slot = slot == 0U ? a1 : a1Alt;
@@ -728,8 +732,9 @@ __aicore__ inline void ProcessProductPair(
     WaitFlag<HardEvent::FIX_M>(EVENT_ID0);
     WaitFlag<HardEvent::FIX_M>(EVENT_ID1);
     for (uint32_t kBase = 0U; kBase < k_; kBase += CHER2K_CUBE_K) {
-        if (kBase != 0U && !CHER2K_SKIP_K_PIPE_BARRIER_EXPERIMENT)
+        if (kBase != 0U && !CHER2K_SKIP_K_PIPE_BARRIER_EXPERIMENT) {
             PipeBarrier<PIPE_M>();
+        }
         WaitFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
         CopyPairToL1(a10, a11, b1, left, right, mBase0, mBase1, nBase, kBase);
         LoadPairToL0(a10, a11, b1, a20, a21, b2);
@@ -773,6 +778,269 @@ LoadData3DParamsV2<float> aPanelLoadParamsSlices_[CHER2K_L1_PANEL_K / CHER2K_CUB
 LoadData3DParamsV2<float> bPanelLoadParamsSlices_[CHER2K_L1_PANEL_K / CHER2K_CUBE_K];
 MmadParams firstMmadParams_;
 MmadParams accumulateMmadParams_;
+
+private:
+__aicore__ inline void InitCopyParams()
+{
+    aCopyParams_ = {};
+    aCopyParams_.ndNum = 1;
+    aCopyParams_.nValue = transA_ ? CHER2K_CUBE_K : CHER2K_CUBE_M;
+    aCopyParams_.dValue = transA_ ? CHER2K_CUBE_M : CHER2K_CUBE_K;
+    aCopyParams_.srcNdMatrixStride = 0;
+    aCopyParams_.srcDValue = transA_ ? n_ : k_;
+    aCopyParams_.dstNzC0Stride = transA_ ? CHER2K_CUBE_K : CHER2K_CUBE_M;
+    aCopyParams_.dstNzNStride = 1;
+    aCopyParams_.dstNzMatrixStride = 0;
+    bNzParams_ = {};
+    bNzParams_.ndNum = 1;
+    bNzParams_.nValue = transB_ ? CHER2K_CUBE_N : CHER2K_CUBE_K;
+    bNzParams_.dValue = transB_ ? CHER2K_CUBE_K : CHER2K_CUBE_N;
+    bNzParams_.srcNdMatrixStride = 0;
+    bNzParams_.srcDValue = transB_ ? k_ : n_;
+    bNzParams_.dstNzC0Stride = transB_ ? CHER2K_CUBE_N : CHER2K_CUBE_K;
+    bNzParams_.dstNzNStride = 1;
+    bNzParams_.dstNzMatrixStride = 0;
+}
+
+__aicore__ inline void InitLoadParams()
+{
+    aLoadParams_ = {};
+    aLoadParams_.l1H = 1U;
+    aLoadParams_.l1W = transA_ ? CHER2K_CUBE_K : CHER2K_CUBE_M;
+    aLoadParams_.channelSize = transA_ ? CHER2K_CUBE_M : CHER2K_CUBE_K;
+    aLoadParams_.kExtension = transA_ ? CHER2K_CUBE_M : CHER2K_CUBE_K;
+    aLoadParams_.mExtension = transA_ ? CHER2K_CUBE_K : CHER2K_CUBE_M;
+    cube_load::InitUnitFilter(aLoadParams_);
+    aLoadParams_.enTranspose = transA_;
+    aLoadParams_.fMatrixCtrl = false;
+    bLoadParams_ = aLoadParams_;
+    bLoadParams_.l1W = transB_ ? CHER2K_CUBE_N : CHER2K_CUBE_K;
+    bLoadParams_.channelSize = transB_ ? CHER2K_CUBE_K : CHER2K_CUBE_N;
+    bLoadParams_.kExtension = transB_ ? CHER2K_CUBE_K : CHER2K_CUBE_N;
+    bLoadParams_.mExtension = transB_ ? CHER2K_CUBE_N : CHER2K_CUBE_K;
+    bLoadParams_.enTranspose = true;
+}
+
+__aicore__ inline void InitPanelParams()
+{
+    aPanelCopyParams_ = aCopyParams_;
+    aPanelCopyParams_.nValue = transA_ ? CHER2K_L1_PANEL_K : CHER2K_CUBE_M;
+    aPanelCopyParams_.dValue = transA_ ? CHER2K_CUBE_M : CHER2K_L1_PANEL_K;
+    aPanelCopyParams_.dstNzC0Stride = transA_ ? CHER2K_L1_PANEL_K : CHER2K_CUBE_M;
+    bPanelCopyParams_ = bNzParams_;
+    bPanelCopyParams_.nValue = transB_ ? CHER2K_CUBE_N : CHER2K_L1_PANEL_K;
+    bPanelCopyParams_.dValue = transB_ ? CHER2K_L1_PANEL_K : CHER2K_CUBE_N;
+    bPanelCopyParams_.dstNzC0Stride = transB_ ? CHER2K_CUBE_N : CHER2K_L1_PANEL_K;
+    aPanelLoadParams_ = aLoadParams_;
+    aPanelLoadParams_.l1W = transA_ ? CHER2K_L1_PANEL_K : CHER2K_CUBE_M;
+    aPanelLoadParams_.channelSize = transA_ ? CHER2K_CUBE_M : CHER2K_L1_PANEL_K;
+    bPanelLoadParams_ = bLoadParams_;
+    bPanelLoadParams_.l1W = transB_ ? CHER2K_CUBE_N : CHER2K_L1_PANEL_K;
+    for (uint32_t slice = 0U; slice < CHER2K_L1_PANEL_K / CHER2K_CUBE_K; ++slice) {
+        const uint32_t panelK = slice * CHER2K_CUBE_K;
+        aPanelLoadParamsSlices_[slice] = aPanelLoadParams_;
+        aPanelLoadParamsSlices_[slice].mStartPt = transA_ ? panelK : 0U;
+        aPanelLoadParamsSlices_[slice].kStartPt = transA_ ? 0U : panelK;
+        bPanelLoadParamsSlices_[slice] = bPanelLoadParams_;
+        bPanelLoadParamsSlices_[slice].mStartPt = transB_ ? 0U : panelK;
+        bPanelLoadParamsSlices_[slice].kStartPt = transB_ ? panelK : 0U;
+    }
+}
+
+__aicore__ inline void InitMmadParams()
+{
+    firstMmadParams_ = {};
+    firstMmadParams_.m = CHER2K_CUBE_M;
+    firstMmadParams_.n = CHER2K_CUBE_N;
+    firstMmadParams_.k = CHER2K_CUBE_K;
+    firstMmadParams_.cmatrixInitVal = true;
+    firstMmadParams_.cmatrixSource = false;
+    firstMmadParams_.kDirectionAlign = false;
+    accumulateMmadParams_ = firstMmadParams_;
+    accumulateMmadParams_.cmatrixInitVal = false;
+}
+
+// Keep the product stream selection in one place.  ProcessImpl used to
+// duplicate the 3M/4M dispatch (and the optional L0 ping-pong branch) in
+// its hot loop, which made the scheduler difficult to audit.  The helper
+// only selects the operand planes; all copies, barriers and MMAD ordering
+// remain in ProcessProductSingle/ProcessProductSinglePingPong.
+__aicore__ inline void ProcessSelectedProduct(
+    LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
+    LocalTensor<float>& c1, GlobalTensor<float>& left, GlobalTensor<float>& right, GlobalTensor<float>& output,
+    uint32_t mBase, uint32_t nBase)
+{
+    if constexpr (CHER2K_ENABLE_L0_PINGPONG_EXPERIMENT) {
+        ProcessProductSinglePingPong(a1, b1, a2, b2, c1, left, right, output, mBase, nBase);
+    } else {
+        ProcessProductSingle(a1, b1, a2, b2, c1, left, right, output, mBase, nBase);
+    }
+}
+
+template <bool USE_THREE_M>
+__aicore__ inline void ProcessProductByIndex(
+    LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
+    LocalTensor<float>& c1, uint32_t product, uint32_t mBase, uint32_t nBase)
+{
+    if constexpr (USE_THREE_M) {
+        if (product == 0U) {
+            ProcessSelectedProduct(a1, b1, a2, b2, c1, sumA_, sumB_, rr_, mBase, nBase);
+        } else if (product == 1U) {
+            ProcessSelectedProduct(a1, b1, a2, b2, c1, ar_, br_, ri_, mBase, nBase);
+        } else {
+            ProcessSelectedProduct(a1, b1, a2, b2, c1, ai_, bi_, ir_, mBase, nBase);
+        }
+    } else {
+        if (product == 0U) {
+            ProcessSelectedProduct(a1, b1, a2, b2, c1, ar_, br_, rr_, mBase, nBase);
+        } else if (product == 1U) {
+            ProcessSelectedProduct(a1, b1, a2, b2, c1, ai_, bi_, ii_, mBase, nBase);
+        } else if (product == 2U) {
+            ProcessSelectedProduct(a1, b1, a2, b2, c1, ar_, bi_, ri_, mBase, nBase);
+        } else {
+            ProcessSelectedProduct(a1, b1, a2, b2, c1, ai_, br_, ir_, mBase, nBase);
+        }
+    }
+}
+
+__aicore__ inline bool IsCubeTriangleTile(uint32_t tileRow, uint32_t tileCol)
+{
+    // Cube tiles are 256x128 while postprocess tiles are 64x64.  A cube
+    // tile is retained when any contained 64x64 tile belongs to uplo.
+    constexpr uint32_t cubeRowTiles = CHER2K_CUBE_M / 64U;
+    constexpr uint32_t cubeColTiles = CHER2K_CUBE_N / 64U;
+    const uint32_t rowFirst = tileRow * cubeRowTiles;
+    const uint32_t rowLast = rowFirst + cubeRowTiles - 1U;
+    const uint32_t colFirst = tileCol * cubeColTiles;
+    const uint32_t colLast = colFirst + cubeColTiles - 1U;
+    return tilingUplo_ == ACLBLAS_UPPER ? rowFirst <= colLast : rowLast >= colFirst;
+}
+
+__aicore__ inline void AdvanceProductTile(
+    uint32_t& product, uint32_t& tileRow, uint32_t& tileCol, uint32_t nTiles, uint32_t productCount, uint32_t taskStep)
+{
+    const uint32_t advancedProduct = product + taskStep;
+    const uint32_t tileAdvance = advancedProduct / (productCount == 0U ? 1U : productCount);
+    product = advancedProduct - tileAdvance * productCount;
+    for (uint32_t advance = 0U; advance < tileAdvance; ++advance) {
+        ++tileCol;
+        if (tileCol == nTiles) {
+            tileCol = 0U;
+            ++tileRow;
+        }
+    }
+}
+
+template <bool USE_THREE_M>
+__aicore__ inline void ProcessTileStream(
+    LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
+    LocalTensor<float>& c1, uint64_t taskBegin, uint64_t taskEnd, uint64_t taskStep, uint32_t nTiles,
+    uint32_t productCount)
+{
+    uint64_t task = taskBegin;
+    const uint32_t safeProductCount = productCount == 0U ? 1U : productCount;
+    const uint32_t safeNTiles = nTiles == 0U ? 1U : nTiles;
+    uint64_t tile = task / safeProductCount;
+    uint32_t product = static_cast<uint32_t>(task - tile * safeProductCount);
+    uint32_t tileRow = static_cast<uint32_t>(tile / safeNTiles);
+    uint32_t tileCol = static_cast<uint32_t>(tile - static_cast<uint64_t>(tileRow) * safeNTiles);
+    for (; task < taskEnd; task += taskStep) {
+        const uint32_t mBase = tileRow * CHER2K_CUBE_M;
+        const uint32_t nBase = tileCol * CHER2K_CUBE_N;
+        if constexpr (CHER2K_TRIANGLE_CUBE_EXPERIMENT) {
+            if (!IsCubeTriangleTile(tileRow, tileCol)) {
+                AdvanceProductTile(product, tileRow, tileCol, nTiles, productCount, static_cast<uint32_t>(taskStep));
+                continue;
+            }
+        }
+        ProcessProductByIndex<USE_THREE_M>(a1, b1, a2, b2, c1, product, mBase, nBase);
+        AdvanceProductTile(product, tileRow, tileCol, nTiles, productCount, static_cast<uint32_t>(taskStep));
+    }
+}
+
+template <bool USE_THREE_M>
+__aicore__ inline void ProcessTileMajor(
+    LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
+    LocalTensor<float>& c1, uint64_t tileCount, uint32_t nTiles, uint32_t taskIndex, uint32_t taskStride)
+{
+    for (uint64_t tile = taskIndex; tile < tileCount; tile += taskStride) {
+        const uint32_t safeNTiles = nTiles == 0U ? 1U : nTiles;
+        const uint32_t mBase = static_cast<uint32_t>((tile / safeNTiles) * CHER2K_CUBE_M);
+        const uint32_t nBase = static_cast<uint32_t>((tile % safeNTiles) * CHER2K_CUBE_N);
+        if constexpr (USE_THREE_M) {
+            ProcessProductByIndex<true>(a1, b1, a2, b2, c1, 0U, mBase, nBase);
+            ProcessProductByIndex<true>(a1, b1, a2, b2, c1, 1U, mBase, nBase);
+            ProcessProductByIndex<true>(a1, b1, a2, b2, c1, 2U, mBase, nBase);
+        } else {
+            ProcessProductByIndex<false>(a1, b1, a2, b2, c1, 0U, mBase, nBase);
+            ProcessProductByIndex<false>(a1, b1, a2, b2, c1, 1U, mBase, nBase);
+            ProcessProductByIndex<false>(a1, b1, a2, b2, c1, 2U, mBase, nBase);
+            ProcessProductByIndex<false>(a1, b1, a2, b2, c1, 3U, mBase, nBase);
+        }
+    }
+}
+
+__aicore__ inline void ProcessGroupedThreeM(
+    LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
+    LocalTensor<float>& c1, uint64_t tileCount, uint32_t nTiles, uint32_t taskIndex, uint32_t taskStride)
+{
+    const uint64_t groupCount = (tileCount + CHER2K_TILE_GROUP_SIZE - 1U) / CHER2K_TILE_GROUP_SIZE;
+    for (uint64_t group = taskIndex; group < groupCount; group += taskStride) {
+        const uint64_t firstTile = group * CHER2K_TILE_GROUP_SIZE;
+        const uint64_t lastTile = min(tileCount, firstTile + CHER2K_TILE_GROUP_SIZE);
+        for (uint64_t tile = firstTile; tile < lastTile; ++tile) {
+            const uint32_t mBase = static_cast<uint32_t>((tile / (nTiles == 0U ? 1U : nTiles)) * CHER2K_CUBE_M);
+            const uint32_t nBase = static_cast<uint32_t>((tile % (nTiles == 0U ? 1U : nTiles)) * CHER2K_CUBE_N);
+            ProcessProductByIndex<true>(a1, b1, a2, b2, c1, 0U, mBase, nBase);
+            ProcessProductByIndex<true>(a1, b1, a2, b2, c1, 1U, mBase, nBase);
+            ProcessProductByIndex<true>(a1, b1, a2, b2, c1, 2U, mBase, nBase);
+        }
+    }
+}
+
+__aicore__ inline void BeginProductStreamEvents()
+{
+    SetFlag<HardEvent::FIX_M>(EVENT_ID0);
+    if constexpr (CHER2K_L1_PINGPONG_EXPERIMENT) {
+        SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
+        SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID1);
+        SetFlag<HardEvent::M_MTE1>(EVENT_ID2);
+    } else if constexpr (CHER2K_ENABLE_L0_PINGPONG_EXPERIMENT) {
+        SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
+        SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID1);
+        SetFlag<HardEvent::M_MTE1>(EVENT_ID0);
+        SetFlag<HardEvent::M_MTE1>(EVENT_ID1);
+    } else if constexpr (!CHER2K_L1_SLICE_PREFETCH_EXPERIMENT) {
+        SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
+    }
+    SetHF32Mode(HF32Mode::DISABLE);
+}
+
+__aicore__ inline void EndProductStreamEvents()
+{
+    if constexpr (!CHER2K_L1_SLICE_PREFETCH_EXPERIMENT) {
+        WaitFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
+    }
+    WaitFlag<HardEvent::FIX_M>(EVENT_ID0);
+}
+
+template <bool USE_THREE_M>
+__aicore__ inline bool ProcessSpecialProductSchedule(
+    LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
+    LocalTensor<float>& c1, uint64_t tileCount, uint32_t nTiles, uint32_t taskIndex, uint32_t taskStride)
+{
+    if constexpr (CHER2K_TILE_GROUP_EXPERIMENT && USE_THREE_M) {
+        ProcessGroupedThreeM(a1, b1, a2, b2, c1, tileCount, nTiles, taskIndex, taskStride);
+        EndProductStreamEvents();
+        return true;
+    }
+    if constexpr (CHER2K_TILE_MAJOR_EXPERIMENT) {
+        ProcessTileMajor<USE_THREE_M>(a1, b1, a2, b2, c1, tileCount, nTiles, taskIndex, taskStride);
+        EndProductStreamEvents();
+        return true;
+    }
+    return false;
+}
 }
 ;
 struct Cher2kPreprocessContext {
@@ -836,8 +1104,9 @@ __aicore__ inline void Cher2kPreprocessImpl(
 
     Cher2kPreprocessContext context;
     context.Init(a, b, workspace, tiling);
-    if (blockNum == 0U)
+    if (blockNum == 0U) {
         blockNum = 1U;
+    }
 
     // Event IDs preserve the GM -> UB -> vector -> GM buffer lifetime.
     const event_t eventMte2ToV = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
@@ -866,8 +1135,9 @@ extern "C" __global__ __aicore__ void cher2k_preprocess_kernel(
     Cher2kVectorMaskGuard maskGuard;
     // Value-agnostic when dispatched with ALL; the MIX fallback queues it with
     // NON_UNIT so the unit-scalar producer keeps exclusive ownership.
-    if (Cher2kSkipScalarGraph(alpha, beta, scalarDispatch))
+    if (Cher2kSkipScalarGraph(alpha, beta, scalarDispatch)) {
         return;
+    }
     TPipe pipe;
     Cher2kPreprocessImpl(
         a, b, workspace, sharedOffsets, tiling, static_cast<uint32_t>(GetBlockIdx()),
@@ -893,6 +1163,16 @@ using Cher2kNMatmul = MatmulImpl<
 using Cher2kCMatmul = MatmulImpl<
     Cher2kNormalMatmulType, Cher2kTransMatmulType, Cher2kNormalMatmulType, Cher2kNormalMatmulType, kCher2kCStatic>;
 template <typename MatmulT>
+__aicore__ inline void Cher2kInitBandMatmul(MatmulT& mm, TPipe& pipe, const Cher2kTilingData& tiling, uint32_t rows)
+{
+    mm.SetSubBlockIdx(0);
+    mm.Init(static_cast<const TCubeTiling*>(nullptr), &pipe);
+    mm.DisableBias();
+    mm.SetOrgShape(rows, tiling.nAligned, tiling.kAligned);
+    mm.SetSingleShape(rows, CHER2K_CUBE_N, tiling.kAligned);
+}
+
+template <typename MatmulT>
 __aicore__ inline void Cher2kRunCube(__gm__ float* base, const Cher2kTilingData& tiling, TPipe& pipe)
 {
     constexpr uint32_t bandRows = 256U;
@@ -901,13 +1181,15 @@ __aicore__ inline void Cher2kRunCube(__gm__ float* base, const Cher2kTilingData&
     const uint32_t productCount = tiling.useThreeM != 0U ? 3U : 4U;
     const uint64_t tasksPerProduct = static_cast<uint64_t>(bandCount) * nTileCount;
     // nAligned below one output tile leaves no band/N tile to divide over.
-    if (tasksPerProduct == 0U)
+    if (tasksPerProduct == 0U) {
         return;
+    }
     const uint64_t taskCount = tasksPerProduct * productCount;
     // One logical task owns one MatmulImpl lifecycle.
     const uint64_t task = static_cast<uint32_t>(GetBlockIdx());
-    if (task >= taskCount)
+    if (task >= taskCount) {
         return;
+    }
 
     GlobalTensor<float> left;
     GlobalTensor<float> right;
@@ -932,11 +1214,7 @@ __aicore__ inline void Cher2kRunCube(__gm__ float* base, const Cher2kTilingData&
     const uint64_t outputTileOffset = static_cast<uint64_t>(mBase) * tiling.nAligned;
     const uint32_t nBase = nTile * CHER2K_CUBE_N;
     MatmulT mm;
-    mm.SetSubBlockIdx(0);
-    mm.Init(static_cast<const TCubeTiling*>(nullptr), &pipe);
-    mm.DisableBias();
-    mm.SetOrgShape(bandRows, tiling.nAligned, tiling.kAligned);
-    mm.SetSingleShape(bandRows, CHER2K_CUBE_N, tiling.kAligned);
+    Cher2kInitBandMatmul(mm, pipe, tiling, bandRows);
     left.SetGlobalBuffer(base + leftOffsets[product] + leftTileOffset, nk - leftTileOffset);
     right.SetGlobalBuffer(base + rightOffsets[product] + nBase, nk - nBase);
     output.SetGlobalBuffer(base + outputOffsets[product] + outputTileOffset + nBase, nn - outputTileOffset - nBase);
@@ -949,7 +1227,7 @@ __aicore__ inline void Cher2kRunCube(__gm__ float* base, const Cher2kTilingData&
 // OP_C low-K direct producer.  Unlike the retired NxK-transposed-B probe, this
 // class uses the exact operand contracts already proven by Cherk and the packed
 // SG3 path: N x K for A-side tiles and K x N for B-side tiles.
-class Cher2kDirectOpcMmad {
+class Cher2kKernelCube {
 public:
     __aicore__ inline void Init(
         __gm__ float* base, uint32_t n, uint32_t validN, uint32_t k, uint32_t validK, uint32_t uplo)
@@ -995,11 +1273,30 @@ private:
         static constexpr uint32_t cSize = M * N;
         uint32_t panelCapacity = 0U;
         uint32_t bCacheSlots = 0U;
-        LocalTensor<float> aAr1, aAi1, aBr1, aBi1, aNegAr1, aNegBr1;
-        LocalTensor<float> bAr10, bAi10, bBr10, bBi10;
-        LocalTensor<float> bAr11, bAi11, bBr11, bBi11;
-        LocalTensor<float> bAr12, bAi12, bBr12, bBi12;
-        LocalTensor<float> a2, a2Alt, b2, b2Alt, realC1, imagC1;
+        LocalTensor<float> aAr1;
+        LocalTensor<float> aAi1;
+        LocalTensor<float> aBr1;
+        LocalTensor<float> aBi1;
+        LocalTensor<float> aNegAr1;
+        LocalTensor<float> aNegBr1;
+        LocalTensor<float> bAr10;
+        LocalTensor<float> bAi10;
+        LocalTensor<float> bBr10;
+        LocalTensor<float> bBi10;
+        LocalTensor<float> bAr11;
+        LocalTensor<float> bAi11;
+        LocalTensor<float> bBr11;
+        LocalTensor<float> bBi11;
+        LocalTensor<float> bAr12;
+        LocalTensor<float> bAi12;
+        LocalTensor<float> bBr12;
+        LocalTensor<float> bBi12;
+        LocalTensor<float> a2;
+        LocalTensor<float> a2Alt;
+        LocalTensor<float> b2;
+        LocalTensor<float> b2Alt;
+        LocalTensor<float> realC1;
+        LocalTensor<float> imagC1;
         Nd2NzParams aCopy{};
         Nd2NzParams bCopyParams{};
         LoadData3DParamsV2<float> aLoad{};
@@ -1164,8 +1461,9 @@ private:
 
     __aicore__ inline void LoadDirectOpcA(DirectOpcState& state, DirectOpcCache& cache, uint32_t mBase, uint32_t kBase)
     {
-        if (mBase == cache.mBase && kBase == cache.aKBase)
+        if (mBase == cache.mBase && kBase == cache.aKBase) {
             return;
+        }
         const uint64_t rowOffset = static_cast<uint64_t>(kBase) * n_ + mBase;
         DataCopy(state.aAr1, leftAr_[rowOffset], state.aCopy);
         DataCopy(state.aAi1, leftAi_[rowOffset], state.aCopy);
@@ -1230,8 +1528,9 @@ private:
         LocalTensor<float>& bAi1 = slot == 0U ? state.bAi10 : (slot == 1U ? state.bAi11 : state.bAi12);
         LocalTensor<float>& bBr1 = slot == 0U ? state.bBr10 : (slot == 1U ? state.bBr11 : state.bBr12);
         LocalTensor<float>& bBi1 = slot == 0U ? state.bBi10 : (slot == 1U ? state.bBi11 : state.bBi12);
-        if (!resident)
+        if (!resident) {
             LoadDirectOpcB(state, cache, slot, nBase, tileWidth, kBase, bAr1, bAi1, bBr1, bBi1);
+        }
         SetFlag<HardEvent::MTE2_MTE1>(EVENT_ID0);
         WaitFlag<HardEvent::MTE2_MTE1>(EVENT_ID0);
         ComputeDirectOpcTerms(state, bAr1, bAi1, bBr1, bBi1, kBase, termIndex);
@@ -1255,8 +1554,9 @@ private:
             const uint32_t nBegin = schedule.upper ? 0U : schedule.mTile;
             const uint32_t nEnd = schedule.upper ? schedule.mTile + 1U : schedule.nTiles;
             const uint32_t rowTasks = nEnd - nBegin;
-            if (firstTask < schedule.rowTaskBase + rowTasks)
+            if (firstTask < schedule.rowTaskBase + rowTasks) {
                 break;
+            }
             schedule.rowTaskBase += rowTasks;
             ++schedule.mTile;
         }
@@ -1320,8 +1620,9 @@ private:
         const DirectOpcWork work = ResolveDirectOpcWork<MIX_CONSUMER>(schedule, workUnit);
         WaitDirectOpcSlot<MIX_CONSUMER>(schedule, work.slot);
         ConfigureDirectOpcTile(state, work.tileHeight, work.tileWidth);
-        if (work.tileWidth != 0U)
+        if (work.tileWidth != 0U) {
             ComputeDirectOpcTile(state, cache, work);
+        }
         if constexpr (MIX_CONSUMER) {
             CrossCoreSetFlag<2, PIPE_FIX>(work.slot);
         }
@@ -1384,17 +1685,15 @@ private:
 // Unit-alpha/zero-beta 3M epilogue used by the mixed-kernel probe.  It keeps
 // the same workspace algebra as the production postprocess but omits scalar
 // alpha/beta handling and C reads.
-// The direct Q^T route can write an arbitrary triangular range directly: its
-// source buffer is already in column-major C order, so no 32-byte read/
-// modify/write alignment repair is required.  Keep this contract separate
-// from the legacy planar route below, where a lower-triangle store may begin
-// in the middle of a DMA block and must preserve the preceding elements.
+// Entire off-diagonal tiles are selected. Diagonal tiles use the exact
+// prefix/suffix helper below, with aligned UB scratch for LOWER suffixes.
 __aicore__ inline bool Cher2kStoreOffDiagonalUnitTile(
     GlobalTensor<float>& cG, const Cher2kTilingData& tiling, LocalTensor<float>& cAos, uint32_t rowBase,
     uint32_t colBase, uint32_t validRows, uint32_t validCols)
 {
-    if (rowBase == colBase)
+    if (rowBase == colBase) {
         return false;
+    }
     constexpr uint32_t tileSize = 64U;
     const uint32_t blockLen = validRows * 2U * sizeof(float);
     const uint32_t alignedBlockLen = (blockLen + 31U) & ~31U;
@@ -1407,62 +1706,18 @@ __aicore__ inline bool Cher2kStoreOffDiagonalUnitTile(
     return true;
 }
 
-__aicore__ inline void Cher2kStoreDirectUnitTile(
-    GlobalTensor<float>& cG, const Cher2kTilingData& tiling, LocalTensor<float>& cAos, uint32_t rowBase,
-    uint32_t colBase, uint32_t validRows, uint32_t validCols)
-{
-    constexpr uint32_t tileSize = 64U;
-    if (Cher2kStoreOffDiagonalUnitTile(cG, tiling, cAos, rowBase, colBase, validRows, validCols))
-        return;
-    const bool upper = tiling.uplo == ACLBLAS_UPPER;
-    for (uint32_t col = 0U; col < validCols; ++col) {
-        const uint32_t selectedRows = upper ? min(validRows, col + 1U) : (validRows > col ? validRows - col : 0U);
-        if (selectedRows == 0U)
-            continue;
-        const uint32_t firstRow = upper ? 0U : col;
-        const uint64_t columnOffset = (static_cast<uint64_t>(colBase + col) * tiling.ldc + rowBase + firstRow) * 2ULL;
-        const uint32_t columnUbOffset = (col * tileSize + firstRow) * 2U;
-        DataCopyExtParams outputCopy{1U, static_cast<uint32_t>(selectedRows * 2U * sizeof(float)), 0U, 0U, 0U};
-        DataCopyPad(cG[columnOffset], cAos[columnUbOffset], outputCopy);
-    }
-}
-
-// Legacy planar output uses an aligned lower-triangle RMW store.  The
-// preceding values in the first DMA block belong to the opposite triangle
-// and must not be overwritten.
+// The caller provides dead planar/index buffers and fences their reuse after
+// this store. No DMA destination includes the unselected triangle.
 __aicore__ inline void Cher2kStorePlanarUnitTile(
-    GlobalTensor<float>& cG, const Cher2kTilingData& tiling, LocalTensor<float>& cAos, uint32_t rowBase,
-    uint32_t colBase, uint32_t validRows, uint32_t validCols)
+    GlobalTensor<float>& cG, const Cher2kTilingData& tiling, LocalTensor<float>& cAos, LocalTensor<float>& scratch,
+    LocalTensor<float>& indexBuffer, uint32_t rowBase, uint32_t colBase, uint32_t validRows, uint32_t validCols)
 {
-    constexpr uint32_t tileSize = 64U;
-    if (Cher2kStoreOffDiagonalUnitTile(cG, tiling, cAos, rowBase, colBase, validRows, validCols))
+    if (Cher2kStoreOffDiagonalUnitTile(cG, tiling, cAos, rowBase, colBase, validRows, validCols)) {
         return;
-    const bool upper = tiling.uplo == ACLBLAS_UPPER;
-    for (uint32_t col = 0U; col < validCols; ++col) {
-        const uint32_t selectedRows = min(validRows, col + 1U);
-        if (selectedRows == 0U)
-            continue;
-        if (upper) {
-            const uint64_t columnOffset = (static_cast<uint64_t>(colBase + col) * tiling.ldc + rowBase) * 2ULL;
-            const uint32_t columnUbOffset = col * tileSize * 2U;
-            DataCopyExtParams outputCopy{1U, static_cast<uint32_t>(selectedRows * 2U * sizeof(float)), 0U, 0U, 0U};
-            DataCopyPad(cG[columnOffset], cAos[columnUbOffset], outputCopy);
-            continue;
-        }
-        const uint32_t alignedFirstRow = col & ~3U;
-        for (uint32_t row = alignedFirstRow; row < col; ++row) {
-            const uint64_t preserveOffset = (static_cast<uint64_t>(colBase + col) * tiling.ldc + rowBase + row) * 2ULL;
-            const uint32_t preserveUbOffset = (col * tileSize + row) * 2U;
-            cAos.SetValue(preserveUbOffset, cG.GetValue(preserveOffset));
-            cAos.SetValue(preserveUbOffset + 1U, cG.GetValue(preserveOffset + 1ULL));
-        }
-        const uint64_t columnOffset =
-            (static_cast<uint64_t>(colBase + col) * tiling.ldc + rowBase + alignedFirstRow) * 2ULL;
-        const uint32_t columnUbOffset = (col * tileSize + alignedFirstRow) * 2U;
-        DataCopyExtParams outputCopy{
-            1U, static_cast<uint32_t>((validRows - alignedFirstRow) * 2U * sizeof(float)), 0U, 0U, 0U};
-        DataCopyPad(cG[columnOffset], cAos[columnUbOffset], outputCopy);
     }
+    triangle_store::StoreComplexDiagonal<64U, true>(
+        cG, cAos, scratch, indexBuffer.ReinterpretCast<int32_t>(), tiling.ldc, rowBase, colBase, validRows, validCols,
+        tiling.uplo == ACLBLAS_UPPER, static_cast<event_t>(0));
 }
 
 __aicore__ inline void Cher2kPostprocessApplyBeta(
@@ -1470,8 +1725,9 @@ __aicore__ inline void Cher2kPostprocessApplyBeta(
     LocalTensor<float>& imagIj, LocalTensor<float>& realJi, LocalTensor<float>& imagJi, uint32_t tileSize,
     uint32_t tileElements, uint32_t rowBase, uint32_t colBase, uint32_t validRows, uint32_t validCols, float betaValue)
 {
-    if (betaValue == 0.0f)
+    if (betaValue == 0.0f) {
         return;
+    }
     const uint32_t blockLen = validRows * 2U * sizeof(float);
     const uint32_t alignedLen = (blockLen + 31U) & ~31U;
     const DataCopyExtParams copy{
@@ -1481,7 +1737,13 @@ __aicore__ inline void Cher2kPostprocessApplyBeta(
     const DataCopyPadExtParams<float> pad{
         alignedLen != blockLen, 0U, static_cast<uint8_t>((alignedLen - blockLen) / sizeof(float)), 0.0f};
     const uint64_t offset = (static_cast<uint64_t>(colBase) * tiling.ldc + rowBase) * 2ULL;
-    DataCopyPad(cAos, cG[offset], copy, pad);
+    if (rowBase == colBase) {
+        triangle_store::LoadComplexTile(
+            cAos, cG, tileSize, tiling.ldc, rowBase, colBase, validRows, validCols, tiling.uplo == ACLBLAS_UPPER,
+            static_cast<event_t>(0));
+    } else {
+        DataCopyPad(cAos, cG[offset], copy, pad);
+    }
     PipeBarrier<PIPE_ALL>();
     uint64_t reserved = 0ULL;
     GatherMask<float>(
@@ -1496,23 +1758,35 @@ __aicore__ inline void Cher2kPostprocessApplyBeta(
     Add(imagJi, imagJi, imagIj, tileElements);
 }
 
-__aicore__ inline void Cher2kPostprocessStore(
+__aicore__ inline void Cher2kPublishPlanarTile(
     GlobalTensor<float>& cG, const Cher2kTilingData& tiling, LocalTensor<float>& imagJi, LocalTensor<float>& planar,
     LocalTensor<float>& cAos, LocalTensor<uint32_t>& interleaveOffset, uint32_t tileSize, uint32_t tileElements,
-    uint32_t rowTile, uint32_t colTile, uint32_t rowBase, uint32_t colBase, uint32_t validRows, uint32_t validCols)
+    uint32_t rowBase, uint32_t colBase, uint32_t validRows, uint32_t validCols, bool diagonal, bool waitBeforeDiagonal)
 {
-    if (rowTile == colTile) {
-        PipeBarrier<PIPE_ALL>();
-        for (uint32_t diagonal = 0U; diagonal < min(validRows, validCols); ++diagonal)
-            imagJi.SetValue(diagonal * tileSize + diagonal, 0.0f);
+    if (diagonal) {
+        if (waitBeforeDiagonal) {
+            PipeBarrier<PIPE_ALL>();
+        }
+        for (uint32_t index = 0U; index < min(validRows, validCols); ++index)
+            imagJi.SetValue(index * tileSize + index, 0.0f);
     }
     PipeBarrier<PIPE_ALL>();
     Adds(planar[tileElements], imagJi, 0.0f, tileElements);
     PipeBarrier<PIPE_ALL>();
     Gather(cAos, planar, interleaveOffset, 0U, tileElements * 2U);
     PipeBarrier<PIPE_ALL>();
-    Cher2kStorePlanarUnitTile(cG, tiling, cAos, rowBase, colBase, validRows, validCols);
+    Cher2kStorePlanarUnitTile(cG, tiling, cAos, planar, imagJi, rowBase, colBase, validRows, validCols);
     PipeBarrier<PIPE_ALL>();
+}
+
+__aicore__ inline void Cher2kPostprocessStore(
+    GlobalTensor<float>& cG, const Cher2kTilingData& tiling, LocalTensor<float>& imagJi, LocalTensor<float>& planar,
+    LocalTensor<float>& cAos, LocalTensor<uint32_t>& interleaveOffset, uint32_t tileSize, uint32_t tileElements,
+    uint32_t rowTile, uint32_t colTile, uint32_t rowBase, uint32_t colBase, uint32_t validRows, uint32_t validCols)
+{
+    Cher2kPublishPlanarTile(
+        cG, tiling, imagJi, planar, cAos, interleaveOffset, tileSize, tileElements, rowBase, colBase, validRows,
+        validCols, rowTile == colTile, true);
 }
 
 __aicore__ inline void Cher2kPostprocessTransposeTile(
@@ -1523,7 +1797,8 @@ __aicore__ inline void Cher2kPostprocessTransposeTile(
     uint64_t irBase, uint64_t ijOffset, uint64_t jiOffset, uint32_t rowTile, uint32_t colTile, uint32_t rowBase,
     uint32_t colBase, uint32_t validRows, uint32_t validCols)
 {
-    constexpr uint32_t tileSize = 64U, tileElements = tileSize * tileSize;
+    constexpr uint32_t tileSize = 64U;
+    constexpr uint32_t tileElements = tileSize * tileSize;
     const DataCopyExtParams copy{
         static_cast<uint16_t>(tileSize), static_cast<uint32_t>(tileSize * sizeof(float)),
         static_cast<uint32_t>((tiling.nAligned - tileSize) * sizeof(float)), 0U, 0U};
@@ -1547,17 +1822,9 @@ __aicore__ inline void Cher2kPostprocessTransposeTile(
     Sub(imagJi, raw, temp, tileElements);
     Add(realIj, realIj, realJi, tileElements);
     Sub(imagJi, imagIj, imagJi, tileElements);
-    if (rowTile == colTile) {
-        for (uint32_t diagonal = 0U; diagonal < min(validRows, validCols); ++diagonal)
-            imagJi.SetValue(diagonal * tileSize + diagonal, 0.0f);
-    }
-    PipeBarrier<PIPE_ALL>();
-    Adds(planar[tileElements], imagJi, 0.0f, tileElements);
-    PipeBarrier<PIPE_ALL>();
-    Gather(cAos, planar, interleaveOffset, 0U, tileElements * 2U);
-    PipeBarrier<PIPE_ALL>();
-    Cher2kStoreDirectUnitTile(cG, tiling, cAos, rowBase, colBase, validRows, validCols);
-    PipeBarrier<PIPE_ALL>();
+    Cher2kPublishPlanarTile(
+        cG, tiling, imagJi, planar, cAos, interleaveOffset, tileSize, tileElements, rowBase, colBase, validRows,
+        validCols, rowTile == colTile, false);
     (void)transposeOffset;
 }
 
@@ -1627,23 +1894,26 @@ __aicore__ inline void Cher2kPostprocessUnitTile(
     LocalTensor<float>& temp, LocalTensor<float>& planar, LocalTensor<float>& cAos, uint32_t rowTile, uint32_t colTile,
     float alphaReal = 1.0f, float alphaImag = 0.0f, float betaValue = 0.0f)
 {
-    constexpr uint32_t tileSize = 64U, tileElements = tileSize * tileSize;
-    const uint64_t nk = static_cast<uint64_t>(tiling.nAligned) * tiling.kAligned,
-                   nn = static_cast<uint64_t>(tiling.nAligned) * tiling.nAligned;
+    constexpr uint32_t tileSize = 64U;
+    constexpr uint32_t tileElements = tileSize * tileSize;
+    const uint64_t nk = static_cast<uint64_t>(tiling.nAligned) * tiling.kAligned;
+    const uint64_t nn = static_cast<uint64_t>(tiling.nAligned) * tiling.nAligned;
     const bool sgemm3Batch =
         tiling.sg3MmadPath != 0U || (tiling.directHermitianPath != 0U && tiling.trans == ACLBLAS_OP_C);
     const uint64_t sgemm3OutputBase = 6ULL * nk;
     const uint64_t rrBase = sgemm3Batch ? sgemm3OutputBase + 2ULL * nn : OffsetRr(tiling.nAligned, tiling.kAligned);
     const uint64_t riBase = sgemm3Batch ? sgemm3OutputBase : OffsetRi(tiling.nAligned, tiling.kAligned);
     const uint64_t irBase = sgemm3Batch ? sgemm3OutputBase + nn : OffsetIr(tiling.nAligned, tiling.kAligned);
-    const uint32_t rowBase = rowTile * tileSize, colBase = colTile * tileSize;
+    const uint32_t rowBase = rowTile * tileSize;
+    const uint32_t colBase = colTile * tileSize;
     if ((tiling.uplo == ACLBLAS_UPPER && rowTile > colTile) || (tiling.uplo == ACLBLAS_LOWER && rowTile < colTile)) {
         return;
     }
     if (rowBase >= tiling.n || colBase >= tiling.n) {
         return;
     }
-    const uint32_t validRows = min(tileSize, tiling.n - rowBase), validCols = min(tileSize, tiling.n - colBase);
+    const uint32_t validRows = min(tileSize, tiling.n - rowBase);
+    const uint32_t validCols = min(tileSize, tiling.n - colBase);
     const uint64_t ijOffset = static_cast<uint64_t>(rowBase) * tiling.nAligned + colBase;
     const uint64_t jiOffset = static_cast<uint64_t>(colBase) * tiling.nAligned + rowBase;
     const DataCopyExtParams copyParams{
@@ -1668,30 +1938,32 @@ __aicore__ inline void Cher2kPostprocessUnitTile(
 }
 __aicore__ inline void Cher2kRunDirectOpcCube(__gm__ float* base, const Cher2kTilingData& tiling)
 {
-    Cher2kDirectOpcMmad direct;
+    Cher2kKernelCube direct;
     direct.Init(base, tiling.nAligned, tiling.n, tiling.kAligned, tiling.k, tiling.uplo);
     uint32_t blockNum = static_cast<uint32_t>(GetBlockNum());
-    if (blockNum == 0U)
+    if (blockNum == 0U) {
         blockNum = 1U;
+    }
     direct.Process(static_cast<uint32_t>(GetBlockIdx()), blockNum);
 }
 
 __aicore__ inline void Cher2kDispatchConfiguredCube(
-    Cher2kPhysicalMmad& mm, const Cher2kTilingData& tiling, bool directOpc, bool directOutput, uint32_t blockNum)
+    Cher2kKernelLayout& mm, const Cher2kTilingData& tiling, bool directOpc, bool directOutput, uint32_t blockNum)
 {
     const uint32_t block = static_cast<uint32_t>(GetBlockIdx());
-    if (directOpc && !directOutput)
+    if (directOpc && !directOutput) {
         mm.Process(block, blockNum, true);
-    else if (tiling.directHermitianPath != 0U)
+    } else if (tiling.directHermitianPath != 0U) {
         mm.ProcessDirectHermitian(block, blockNum);
-    else
+    } else {
         mm.Process(block, blockNum, tiling.useThreeM != 0U);
+    }
 }
 
 __aicore__ inline void Cher2kRunConfiguredCube(
     __gm__ float* base, const Cher2kTilingData& tiling, bool directOpc, uint64_t nk, uint64_t nn, bool directOutput)
 {
-    Cher2kPhysicalMmad mm;
+    Cher2kKernelLayout mm;
     mm.Init(
         base + (directOpc ? 0ULL : OffsetAr(tiling.nAligned, tiling.kAligned)),
         base + (directOpc ? nk : OffsetAi(tiling.nAligned, tiling.kAligned)),
@@ -1706,8 +1978,9 @@ __aicore__ inline void Cher2kRunConfiguredCube(
         tiling.kAligned, directOpc ? false : true, directOpc && directOutput, tiling.useThreeM != 0U, tiling.uplo,
         tiling.outputTransposePath != 0U);
     uint32_t blockNum = static_cast<uint32_t>(GetBlockNum());
-    if (blockNum == 0U)
+    if (blockNum == 0U) {
         blockNum = 1U;
+    }
     Cher2kDispatchConfiguredCube(mm, tiling, directOpc, directOutput, blockNum);
 
     GlobalTensor<float> ws;
@@ -1745,8 +2018,9 @@ extern "C" __global__ __aicore__ void cher2k_cube_kernel(
     GM_ADDR workspace, GM_ADDR alpha, GM_ADDR beta, uint32_t scalarDispatch, const Cher2kTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIC_ONLY);
-    if (Cher2kSkipScalarGraph(alpha, beta, scalarDispatch))
+    if (Cher2kSkipScalarGraph(alpha, beta, scalarDispatch)) {
         return;
+    }
     AscendC::InitSocState();
 
     __gm__ float* base = reinterpret_cast<__gm__ float*>(workspace);

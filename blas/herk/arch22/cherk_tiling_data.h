@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "cann_ops_blas_common.h"
 
 struct CherkArch22TilingData {
     uint32_t n;
@@ -26,15 +27,8 @@ struct CherkArch22TilingData {
     uint32_t aicCoreNum;
     uint8_t skipProduct;
     uint8_t smallPath;
-    uint8_t directPath;
     uint8_t outerPath;
     uint8_t compactPath;
-    // 0: standalone, 1: fused contiguous MIX, 2: fused strided MIX,
-    // 3: standalone pack followed by strided producer-consumer MIX.
-    uint8_t directMixMode;
-    // Compile-time OP_N pack specialization selected from the runtime UB
-    // budget. Valid values are 1, 2, 4 and 8 rows.
-    uint8_t directPackBatchRows;
 };
 
 constexpr uint32_t CHERK_ARCH22_CUBE_M_ALIGN = 256U;
@@ -87,7 +81,10 @@ constexpr uint32_t CHERK_ARCH22_META_TRIANGLE_WORDS = (64U * 64U / 8U) / sizeof(
 constexpr uint32_t CHERK_ARCH22_META_UPPER_OFFSET =
     CHERK_ARCH22_META_DIAGONAL_OFFSET + CHERK_ARCH22_META_DIAGONAL_WORDS;
 constexpr uint32_t CHERK_ARCH22_META_LOWER_OFFSET = CHERK_ARCH22_META_UPPER_OFFSET + CHERK_ARCH22_META_TRIANGLE_WORDS;
-constexpr uint32_t CHERK_ARCH22_META_WORDS = CHERK_ARCH22_META_LOWER_OFFSET + CHERK_ARCH22_META_TRIANGLE_WORDS;
+constexpr uint32_t CHERK_ARCH22_META_RECT_OFFSET = CHERK_ARCH22_META_LOWER_OFFSET + CHERK_ARCH22_META_TRIANGLE_WORDS;
+constexpr uint32_t CHERK_ARCH22_META_WIDE_OFFSET = CHERK_ARCH22_META_RECT_OFFSET + 4096U;
+constexpr uint32_t CHERK_ARCH22_META_GENERAL_PACK_C_OFFSET = CHERK_ARCH22_META_WIDE_OFFSET + 4096U;
+constexpr uint32_t CHERK_ARCH22_META_WORDS = CHERK_ARCH22_META_GENERAL_PACK_C_OFFSET + 2048U;
 
 // Workspace is row-major SoA. Both operations publish Kp x Np planes: OP_N
 // packs source columns directly and OP_C transposes tiled source columns.
@@ -110,46 +107,22 @@ __host__ __aicore__ inline uint64_t CherkArch22OffsetCrossOutput(uint32_t cubeN,
 {
     return CherkArch22OffsetRealOutput(cubeN, cubeK) + static_cast<uint64_t>(cubeN) * cubeN;
 }
-__host__ __aicore__ inline uint64_t CherkArch22WorkspaceFloats(uint32_t cubeN, uint32_t cubeK)
+__host__ __aicore__ inline uint64_t CherkArch22OffsetNegativeImagInput(uint32_t cubeN, uint32_t cubeK)
 {
     return CherkArch22OffsetCrossOutput(cubeN, cubeK) + static_cast<uint64_t>(cubeN) * cubeN;
+}
+__host__ __aicore__ inline uint64_t CherkArch22WorkspaceFloats(uint32_t cubeN, uint32_t cubeK)
+{
+    return CherkArch22OffsetNegativeImagInput(cubeN, cubeK) +
+           (cubeK == 64U ? static_cast<uint64_t>(cubeN) * cubeK : 0U);
+}
+__host__ __aicore__ inline bool CherkArch22DirectImaginary(const CherkArch22TilingData& t)
+{
+    return t.trans == ACLBLAS_OP_C && t.cubeK == 64U && t.n >= 128U;
 }
 static inline size_t CherkArch22WorkspaceBytes(uint32_t cubeN, uint32_t cubeK)
 {
     const uint64_t bytes = CherkArch22WorkspaceFloats(cubeN, cubeK) * sizeof(float);
-    return static_cast<size_t>((bytes + 511U) & ~511ULL);
-}
-
-// Low-rank direct-H workspace: three KxN input planes and two final NxN
-// Hermitian output planes. The producer writes only the physical triangle.
-__host__ __aicore__ inline uint64_t CherkArch22DirectInputElements(uint32_t cubeN, uint32_t cubeK)
-{
-    return static_cast<uint64_t>(cubeN) * cubeK;
-}
-__host__ __aicore__ inline uint64_t CherkArch22DirectOffsetRealInput(uint32_t cubeN, uint32_t cubeK) { return 0ULL; }
-__host__ __aicore__ inline uint64_t CherkArch22DirectOffsetImagInput(uint32_t cubeN, uint32_t cubeK)
-{
-    return CherkArch22DirectInputElements(cubeN, cubeK);
-}
-__host__ __aicore__ inline uint64_t CherkArch22DirectOffsetNegImagInput(uint32_t cubeN, uint32_t cubeK)
-{
-    return 2ULL * CherkArch22DirectInputElements(cubeN, cubeK);
-}
-__host__ __aicore__ inline uint64_t CherkArch22DirectOffsetRealOutput(uint32_t cubeN, uint32_t cubeK)
-{
-    return 3ULL * CherkArch22DirectInputElements(cubeN, cubeK);
-}
-__host__ __aicore__ inline uint64_t CherkArch22DirectOffsetImagOutput(uint32_t cubeN, uint32_t cubeK)
-{
-    return CherkArch22DirectOffsetRealOutput(cubeN, cubeK) + static_cast<uint64_t>(cubeN) * cubeN;
-}
-__host__ __aicore__ inline uint64_t CherkArch22DirectWorkspaceFloats(uint32_t cubeN, uint32_t cubeK)
-{
-    return CherkArch22DirectOffsetImagOutput(cubeN, cubeK) + static_cast<uint64_t>(cubeN) * cubeN;
-}
-static inline size_t CherkArch22DirectWorkspaceBytes(uint32_t cubeN, uint32_t cubeK)
-{
-    const uint64_t bytes = CherkArch22DirectWorkspaceFloats(cubeN, cubeK) * sizeof(float);
     return static_cast<size_t>((bytes + 511U) & ~511ULL);
 }
 

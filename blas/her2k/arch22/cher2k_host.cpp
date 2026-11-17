@@ -102,13 +102,14 @@ bool IsCher2kSmallCubeEligible(bool smallOutputAligned, bool performanceScalar, 
 
 bool IsCher2kDirectHermitianCandidate(bool performanceScalar, aclblasOperation_t trans, int n, int k)
 {
-    // The packed OP_C producer consumes three-product planes. Require the
-    // same full output tile and reduction contract as useThreeM below.
-    // OP_N uses the general Cube producer; its direct contract is unvalidated.
+    // OP_C uses complete padded workspace tiles; raw n need not be aligned.
+    // The producer zero-pads its input tails and the consumer bounds C stores
+    // by n/uplo. Keep the same reduction contract as useThreeM below.
+    // OP_N chooses its single-panel, scalar-guarded graph in the launcher.
     const uint64_t alignedK =
         k > 0 ? (static_cast<uint64_t>(k) + CHER2K_K_ALIGN - 1U) / CHER2K_K_ALIGN * CHER2K_K_ALIGN : 0U;
-    return performanceScalar && trans == ACLBLAS_OP_C && n >= CHER2K_CUBE_M && (n % CHER2K_DIRECT_N_ALIGN) == 0 &&
-           alignedK > 0U && alignedK <= static_cast<uint64_t>(n) && alignedK < CHER2K_THREE_M_K_LIMIT;
+    return performanceScalar && trans == ACLBLAS_OP_C && n >= CHER2K_CUBE_M && alignedK > 0U &&
+           alignedK <= static_cast<uint64_t>(n) && alignedK < CHER2K_THREE_M_K_LIMIT;
 }
 
 bool IsCher2kDirectOutputCandidate(bool directHermitianCandidate, bool deviceScalarFast, aclblasFillMode_t uplo, int k)
@@ -599,8 +600,9 @@ extern "C" aclblasStatus_t aclblasCher2k(
         if (status != ACLBLAS_STATUS_SUCCESS) {
             return status;
         }
-        if (handled)
+        if (handled) {
             return ACLBLAS_STATUS_SUCCESS;
+        }
         OP_LOGE("aclblasCher2k", "C must not be nullptr when output is required");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }

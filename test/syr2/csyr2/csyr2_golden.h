@@ -46,15 +46,9 @@ inline int64_t LogicalOffset(int logicalIndex, int n, int increment)
     return static_cast<int64_t>(n - 1 - logicalIndex) * (-inc);
 }
 
-inline bool IsUpper(aclblasFillMode_t uplo)
-{
-    return uplo == ACLBLAS_UPPER;
-}
+inline bool IsUpper(aclblasFillMode_t uplo) { return uplo == ACLBLAS_UPPER; }
 
-inline bool IsZero(const aclblasComplex& value)
-{
-    return value.real == 0.0f && value.imag == 0.0f;
-}
+inline bool IsZero(const aclblasComplex& value) { return value.real == 0.0f && value.imag == 0.0f; }
 
 inline void Csyr2GoldenColumn(
     aclblasFillMode_t uplo, int n, const aclblasComplex& alpha, const aclblasComplex* x, int incx,
@@ -96,13 +90,12 @@ inline void Csyr2Golden(
         return;
     }
     for (int col = 0; col < n; ++col) {
-        Csyr2GoldenColumn(uplo, n, alpha, x, incx, y, incy, col,
-            A + static_cast<int64_t>(col) * static_cast<int64_t>(lda));
+        Csyr2GoldenColumn(
+            uplo, n, alpha, x, incx, y, incy, col, A + static_cast<int64_t>(col) * static_cast<int64_t>(lda));
     }
 }
 
-inline std::vector<aclblasComplex> MakeLogicalVector(const std::vector<aclblasComplex>& physical,
-                                                     int n, int increment)
+inline std::vector<aclblasComplex> MakeLogicalVector(const std::vector<aclblasComplex>& physical, int n, int increment)
 {
     std::vector<aclblasComplex> logical(static_cast<size_t>(std::max(n, 0)));
     for (int i = 0; i < n; ++i) {
@@ -157,39 +150,27 @@ struct ComponentAccuracy {
     double worstActual = 0.0;
     double worstGolden = 0.0;
 
-    double matchedRatio() const
-    {
-        return total == 0 ? 1.0 : static_cast<double>(matched) / static_cast<double>(total);
-    }
+    double matchedRatio() const { return total == 0 ? 1.0 : static_cast<double>(matched) / static_cast<double>(total); }
 
-    double mere() const
-    {
-        return mereEligible == 0 ? 0.0 : mereSum / static_cast<double>(mereEligible);
-    }
+    double mere() const { return mereEligible == 0 ? 0.0 : mereSum / static_cast<double>(mereEligible); }
 };
 
 struct ComplexAccuracy {
     ComponentAccuracy real;
     ComponentAccuracy imag;
 
-    bool pass() const
-    {
-        return real.total == imag.total;
-    }
+    bool pass() const { return real.total == imag.total; }
 };
 
-inline bool BothNaN(double actual, double golden)
-{
-    return std::isnan(actual) && std::isnan(golden);
-}
+inline bool BothNaN(double actual, double golden) { return std::isnan(actual) && std::isnan(golden); }
 
 inline bool SameInf(double actual, double golden)
 {
     return std::isinf(actual) && std::isinf(golden) && std::signbit(actual) == std::signbit(golden);
 }
 
-inline void AccumulateComponent(ComponentAccuracy& stats, double actual, double golden,
-                                size_t index, const AccuracyConfig& cfg)
+inline void AccumulateComponent(
+    ComponentAccuracy& stats, double actual, double golden, size_t index, const AccuracyConfig& cfg)
 {
     ++stats.total;
 
@@ -241,8 +222,9 @@ inline void AccumulateComponent(ComponentAccuracy& stats, double actual, double 
     }
 }
 
-inline void Accumulate(ComplexAccuracy& stats, const aclblasComplex& actual,
-                       const aclblasComplex& golden, size_t index, const AccuracyConfig& cfg = {})
+inline void Accumulate(
+    ComplexAccuracy& stats, const aclblasComplex& actual, const aclblasComplex& golden, size_t index,
+    const AccuracyConfig& cfg = {})
 {
     AccumulateComponent(stats.real, actual.real, golden.real, index, cfg);
     AccumulateComponent(stats.imag, actual.imag, golden.imag, index, cfg);
@@ -292,20 +274,42 @@ inline bool MereMarePass(const ComponentAccuracy& stats, const AccuracyConfig& c
 
 inline bool CasePass(const ComplexAccuracy& stats, const AccuracyConfig& cfg = {})
 {
-    return ComponentPass(stats.real, cfg) && ComponentPass(stats.imag, cfg) &&
-           MereMarePass(stats.real, cfg) && MereMarePass(stats.imag, cfg);
+    return ComponentPass(stats.real, cfg) && ComponentPass(stats.imag, cfg) && MereMarePass(stats.real, cfg) &&
+           MereMarePass(stats.imag, cfg);
 }
 
 } // namespace csyr2_test
 
-namespace csyr2_arch22_test {
-
-void Csyr2Golden(
-    aclblasFillMode_t uplo,
-    int n,
-    aclblasComplex alpha,
-    const aclblasComplex* x, int incx,
-    const aclblasComplex* y, int incy,
-    aclblasComplex* A, int lda);
-
-}  // namespace csyr2_arch22_test
+inline int64_t Csyr2Index(int64_t i, int64_t n, int64_t inc) { return inc > 0 ? i * inc : (n - 1 - i) * (-inc); }
+// Reference: evaluate the complex expression in float64 and round
+// once when storing A. This is independent of float32 contraction choices;
+// it is not an arbitrary-input exact-arithmetic oracle.
+inline void aclblasCsyr2_cpu(
+    aclblasFillMode_t u, int n, aclblasComplex al, const aclblasComplex* x, int ix, const aclblasComplex* y, int iy,
+    aclblasComplex* A, int ld)
+{
+    if (n == 0 || (al.real == 0.0F && al.imag == 0.0F)) {
+        return;
+    }
+    struct Wide {
+        double real;
+        double imag;
+    };
+    auto widen = [](aclblasComplex z) { return Wide{z.real, z.imag}; };
+    auto mul = [](Wide p, Wide q) {
+        return Wide{p.real * q.real - p.imag * q.imag, p.real * q.imag + p.imag * q.real};
+    };
+    for (int c = 0; c < n; ++c) {
+        const auto z = mul(widen(al), widen(x[Csyr2Index(c, n, ix)]));
+        const auto w = mul(widen(al), widen(y[Csyr2Index(c, n, iy)]));
+        const int begin = u == ACLBLAS_UPPER ? 0 : c;
+        const int end = u == ACLBLAS_UPPER ? c + 1 : n;
+        for (int r = begin; r < end; ++r) {
+            const auto v = mul(z, widen(y[Csyr2Index(r, n, iy)]));
+            const auto q = mul(w, widen(x[Csyr2Index(r, n, ix)]));
+            auto& a = A[static_cast<int64_t>(c) * ld + r];
+            a.real = static_cast<float>(static_cast<double>(a.real) + (v.real + q.real));
+            a.imag = static_cast<float>(static_cast<double>(a.imag) + (v.imag + q.imag));
+        }
+    }
+}

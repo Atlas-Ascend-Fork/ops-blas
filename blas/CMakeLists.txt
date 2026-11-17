@@ -66,6 +66,9 @@ list(FILTER ARCH_SRC_FILES EXCLUDE REGEX "/lt_matmul/")
 # 不作为独立编译单元收集。
 list(FILTER ARCH_SRC_FILES EXCLUDE REGEX "sgbmv_kernel_(l1|vec)\\.cpp$")
 
+# Cher2k implementation fragments are included by cher2k_kernel.cpp as one device TU.
+list(FILTER ARCH_SRC_FILES EXCLUDE REGEX "/her2k/arch22/cher2k_kernel_(layout|cube|postprocess|entry)\\.cpp$")
+
 if(DEFINED TEST_NAMES AND NOT "${TEST_NAMES}" STREQUAL "")
     set(_FILTERED_OP_SRC_FILES "")
     set(_FILTERED_ARCH_SRC_FILES "")

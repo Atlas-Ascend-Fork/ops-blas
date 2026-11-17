@@ -9,18 +9,13 @@
  */
 
 #pragma once
-
-#ifndef CSYR2_DEVICE_H
-#define CSYR2_DEVICE_H
-
-#include "csyr2_ascend_kernel.h"
-#include "csyr2_device_init.h"
-#include "csyr2_device_columns.h"
-#include "csyr2_device_upper.h"
-#include "csyr2_device_xy.h"
-#include "csyr2_device_coefficients.h"
-#include "csyr2_device_lower_window.h"
-#include "csyr2_device_lower_packed.h"
-#include "csyr2_device_chunks.h"
-
-#endif
+#include <cstdint>
+struct Csyr2TilingData {
+    uint32_t n;
+    uint32_t uplo;
+    uint32_t lda;
+    float ar;
+    float ai;
+    int64_t incx;
+    int64_t incy;
+};

@@ -8,7 +8,7 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-class Cher2kPackedOpcMmad {
+class Cher2kKernelPostprocess {
 public:
     __aicore__ inline void Init(__gm__ float* base, const Cher2kTilingData& tiling)
     {
@@ -36,11 +36,11 @@ public:
         constexpr uint32_t aCount = M * K;
         constexpr uint32_t bCount = K * N;
         constexpr uint32_t cCount = M * N;
-        LocalTensor<float> a1(TPosition::A1, 0U, aCount);
-        LocalTensor<float> b1(TPosition::B1, aCount * sizeof(float), bCount);
-        LocalTensor<float> a2(TPosition::A2, 0U, aCount);
-        LocalTensor<float> b2(TPosition::B2, 0U, bCount);
-        LocalTensor<float> c1(TPosition::CO1, 0U, cCount);
+        LocalTensor<float> a1{TPosition::A1, 0U, aCount};
+        LocalTensor<float> b1{TPosition::B1, aCount * sizeof(float), bCount};
+        LocalTensor<float> a2{TPosition::A2, 0U, aCount};
+        LocalTensor<float> b2{TPosition::B2, 0U, bCount};
+        LocalTensor<float> c1{TPosition::CO1, 0U, cCount};
         const uint32_t tilesPerDim = n_ / M;
         const uint64_t tileCount = static_cast<uint64_t>(tilesPerDim) * tilesPerDim;
 
@@ -112,14 +112,7 @@ private:
         aParams.channelSize = opC_ ? K : M;
         aParams.kExtension = opC_ ? K : M;
         aParams.mExtension = opC_ ? M : K;
-        aParams.strideW = 1U;
-        aParams.strideH = 1U;
-        aParams.filterW = 1U;
-        aParams.filterH = 1U;
-        aParams.dilationFilterW = 1U;
-        aParams.dilationFilterH = 1U;
-        aParams.filterSizeW = false;
-        aParams.filterSizeH = false;
+        cube_load::InitUnitFilter(aParams);
         aParams.enTranspose = !opC_;
         aParams.fMatrixCtrl = false;
         LoadData(a2, a1, aParams);
@@ -132,14 +125,7 @@ private:
         bParams.channelSize = N;
         bParams.kExtension = N;
         bParams.mExtension = K;
-        bParams.strideW = 1U;
-        bParams.strideH = 1U;
-        bParams.filterW = 1U;
-        bParams.filterH = 1U;
-        bParams.dilationFilterW = 1U;
-        bParams.dilationFilterH = 1U;
-        bParams.filterSizeW = false;
-        bParams.filterSizeH = false;
+        cube_load::InitUnitFilter(bParams);
         bParams.enTranspose = true;
         bParams.fMatrixCtrl = false;
         LoadData(b2, b1, bParams);
@@ -192,8 +178,15 @@ private:
         Store(c1, output, mBase, nBase);
     }
 
-    GlobalTensor<float> sumA_, sumB_, ar_, br_, ai_, bi_;
-    GlobalTensor<float> sum_, rr_, ii_;
+    GlobalTensor<float> sumA_;
+    GlobalTensor<float> sumB_;
+    GlobalTensor<float> ar_;
+    GlobalTensor<float> br_;
+    GlobalTensor<float> ai_;
+    GlobalTensor<float> bi_;
+    GlobalTensor<float> sum_;
+    GlobalTensor<float> rr_;
+    GlobalTensor<float> ii_;
     uint32_t n_ = 0U;
     uint32_t k_ = 0U;
     bool opC_ = true;
@@ -203,15 +196,17 @@ extern "C" __global__ __aicore__ void cher2k_packed_opc_cube_kernel(
     GM_ADDR workspace, GM_ADDR alpha, GM_ADDR beta, uint32_t scalarDispatch, const Cher2kTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIC_ONLY);
-    if (Cher2kSkipScalarGraph(alpha, beta, scalarDispatch))
+    if (Cher2kSkipScalarGraph(alpha, beta, scalarDispatch)) {
         return;
+    }
     AscendC::InitSocState();
     __gm__ float* base = reinterpret_cast<__gm__ float*>(workspace);
-    Cher2kPackedOpcMmad mm;
+    Cher2kKernelPostprocess mm;
     mm.Init(base, tiling);
     uint32_t blockNum = static_cast<uint32_t>(GetBlockNum());
-    if (blockNum == 0U)
+    if (blockNum == 0U) {
         blockNum = 1U;
+    }
     mm.Process(static_cast<uint32_t>(GetBlockIdx()), blockNum);
 
     GlobalTensor<float> workspaceG;
@@ -274,6 +269,33 @@ __aicore__ inline void Cher2kSg3LoadChunk(
         mte2ToV, vToMte2);
 }
 
+__aicore__ inline void Cher2kAddSelectedOldC(
+    GlobalTensor<float>& cG, const Cher2kTilingData& tiling, LocalTensor<float>& real, LocalTensor<float>& imag,
+    uint32_t blockRows, uint32_t rowBase, uint32_t colBase, uint32_t validRows, uint32_t validCols, float betaValue,
+    event_t vToScalar, event_t scalarToV)
+{
+    if (betaValue == 0.0f) {
+        return;
+    }
+    SetFlag<HardEvent::V_S>(vToScalar);
+    WaitFlag<HardEvent::V_S>(vToScalar);
+    for (uint32_t col = 0U; col < validCols; ++col) {
+        for (uint32_t row = 0U; row < validRows; ++row) {
+            const bool selected =
+                tiling.uplo == ACLBLAS_UPPER ? rowBase + row <= colBase + col : rowBase + row >= colBase + col;
+            if (!selected) {
+                continue;
+            }
+            const uint32_t local = col * blockRows + row;
+            const uint64_t cOffset = (static_cast<uint64_t>(colBase + col) * tiling.ldc + rowBase + row) * 2ULL;
+            real.SetValue(local, real.GetValue(local) + betaValue * cG.GetValue(cOffset));
+            imag.SetValue(local, imag.GetValue(local) + betaValue * cG.GetValue(cOffset + 1ULL));
+        }
+    }
+    SetFlag<HardEvent::S_V>(scalarToV);
+    WaitFlag<HardEvent::S_V>(scalarToV);
+}
+
 __aicore__ inline void Cher2kSg3CombineChunk(
     GlobalTensor<float>& cG, const Cher2kTilingData& tiling, LocalTensor<float>& realIj, LocalTensor<float>& imagOut,
     LocalTensor<float>& realJi, LocalTensor<float>& imagJi, LocalTensor<float>& temp, LocalTensor<float>& raw,
@@ -301,62 +323,16 @@ __aicore__ inline void Cher2kSg3CombineChunk(
     Sub(realIj, realIj, raw, elements);
     Add(imagOut, imagOut, temp, elements);
     PipeBarrier<PIPE_V>();
-    if (betaValue == 0.0f)
-        return;
-    SetFlag<HardEvent::V_S>(vToScalar);
-    WaitFlag<HardEvent::V_S>(vToScalar);
-    for (uint32_t col = 0U; col < validCols; ++col) {
-        for (uint32_t row = 0U; row < validRows; ++row) {
-            const uint32_t local = col * blockRows + row;
-            const uint64_t cOffset = (static_cast<uint64_t>(colBase + col) * tiling.ldc + rowBase + row) * 2ULL;
-            realIj.SetValue(local, realIj.GetValue(local) + betaValue * cG.GetValue(cOffset));
-            imagOut.SetValue(local, imagOut.GetValue(local) + betaValue * cG.GetValue(cOffset + 1ULL));
-        }
-    }
-    SetFlag<HardEvent::S_V>(scalarToV);
-    WaitFlag<HardEvent::S_V>(scalarToV);
-}
-
-__aicore__ inline void Cher2kSg3StorePartial(
-    GlobalTensor<float>& cG, LocalTensor<float>& cAos, const Cher2kTilingData& tiling, uint32_t rowBase,
-    uint32_t colBase, uint32_t validRows, uint32_t validCols, bool upper)
-{
-    constexpr uint32_t blockRows = 64U;
-    for (uint32_t col = 0U; col < validCols; ++col) {
-        const uint32_t absoluteCol = colBase + col;
-        if (upper) {
-            const uint32_t selectedRows = min(validRows, absoluteCol - rowBase + 1U);
-            if (selectedRows == 0U)
-                continue;
-            const uint64_t cOffset = (static_cast<uint64_t>(absoluteCol) * tiling.ldc + rowBase) * 2ULL;
-            const DataCopyExtParams outputCopy{
-                1U, static_cast<uint32_t>(selectedRows * 2U * sizeof(float)), 0U, 0U, 0U};
-            DataCopyPad(cG[cOffset], cAos[col * blockRows * 2U], outputCopy);
-            continue;
-        }
-        const uint32_t firstRow = absoluteCol - rowBase;
-        const uint32_t alignedFirstRow = firstRow & ~3U;
-        for (uint32_t row = alignedFirstRow; row < firstRow; ++row) {
-            const uint64_t preserveOffset = (static_cast<uint64_t>(absoluteCol) * tiling.ldc + rowBase + row) * 2ULL;
-            const uint32_t preserveUbOffset = (col * blockRows + row) * 2U;
-            cAos.SetValue(preserveUbOffset, cG.GetValue(preserveOffset));
-            cAos.SetValue(preserveUbOffset + 1U, cG.GetValue(preserveOffset + 1ULL));
-        }
-        const uint32_t selectedRows = validRows - alignedFirstRow;
-        if (selectedRows == 0U)
-            continue;
-        const uint64_t cOffset = (static_cast<uint64_t>(absoluteCol) * tiling.ldc + rowBase + alignedFirstRow) * 2ULL;
-        const uint32_t ubOffset = (col * blockRows + alignedFirstRow) * 2U;
-        const DataCopyExtParams outputCopy{1U, static_cast<uint32_t>(selectedRows * 2U * sizeof(float)), 0U, 0U, 0U};
-        DataCopyPad(cG[cOffset], cAos[ubOffset], outputCopy);
-    }
+    Cher2kAddSelectedOldC(
+        cG, tiling, realIj, imagOut, blockRows, rowBase, colBase, validRows, validCols, betaValue, vToScalar,
+        scalarToV);
 }
 
 __aicore__ inline void Cher2kSg3StoreChunk(
     GlobalTensor<float>& cG, const Cher2kTilingData& tiling, LocalTensor<float>& cAos, LocalTensor<float>& imagOut,
-    LocalTensor<float>& planar, LocalTensor<uint32_t>& interleaveOffset, uint32_t rowBase, uint32_t colBase,
-    uint32_t validRows, uint32_t validCols, bool upper, event_t vToMte2, event_t vToMte3, event_t vToScalar,
-    event_t scalarToV)
+    LocalTensor<float>& planar, LocalTensor<float>& indexBuffer, LocalTensor<uint32_t>& interleaveOffset,
+    uint32_t rowBase, uint32_t colBase, uint32_t validRows, uint32_t validCols, bool upper, event_t vToMte2,
+    event_t vToMte3, event_t vToScalar, event_t scalarToV)
 {
     constexpr uint32_t blockRows = 64U;
     constexpr uint32_t elements = blockRows * 32U;
@@ -373,8 +349,6 @@ __aicore__ inline void Cher2kSg3StoreChunk(
         WaitFlag<HardEvent::S_V>(scalarToV);
     }
     Gather(cAos, planar, interleaveOffset, 0U, elements * 2U);
-    SetFlag<HardEvent::V_MTE2>(vToMte2);
-    WaitFlag<HardEvent::V_MTE2>(vToMte2);
     SetFlag<HardEvent::V_MTE3>(vToMte3);
     WaitFlag<HardEvent::V_MTE3>(vToMte3);
     const bool fullySelected = upper ? colBase >= rowBase + validRows : colBase + validCols <= rowBase;
@@ -388,8 +362,14 @@ __aicore__ inline void Cher2kSg3StoreChunk(
         const uint64_t cOffset = (static_cast<uint64_t>(colBase) * tiling.ldc + rowBase) * 2ULL;
         DataCopyPad(cG[cOffset], cAos, outputCopy);
     } else {
-        Cher2kSg3StorePartial(cG, cAos, tiling, rowBase, colBase, validRows, validCols, upper);
+        triangle_store::StoreComplexDiagonal<64U>(
+            cG, cAos, planar, indexBuffer.ReinterpretCast<int32_t>(), tiling.ldc, rowBase, colBase, validRows,
+            validCols, upper, vToMte3);
     }
+    // Index construction uses a dead computation buffer; release it only
+    // after the vector gather has finished.
+    SetFlag<HardEvent::V_MTE2>(vToMte2);
+    WaitFlag<HardEvent::V_MTE2>(vToMte2);
 }
 
 /** Process one SG3 64x32 output chunk. */
@@ -403,7 +383,6 @@ __aicore__ inline void Cher2kSg3ProcessChunk(
     event_t mte2ToV, event_t vToMte2, event_t vToMte3, event_t mte3ToV, event_t vToScalar, event_t scalarToV,
     event_t mte3ToMte2)
 {
-    (void)mte3ToMte2;
     Cher2kSg3LoadChunk(
         ws, tiling, transposeOffset, realIj, imagOut, imagIj, realJi, imagJi, raw, temp, p1Base, p2Base, p3Base,
         rowBase, colBase, mte2ToV, vToMte2);
@@ -413,42 +392,73 @@ __aicore__ inline void Cher2kSg3ProcessChunk(
         alphaReal, alphaImag, betaValue, vToScalar, scalarToV);
 
     Cher2kSg3StoreChunk(
-        cG, tiling, cAos, imagOut, planar, interleaveOffset, rowBase, colBase, validRows, validCols, upper, vToMte2,
-        vToMte3, vToScalar, scalarToV);
+        cG, tiling, cAos, imagOut, planar, temp, interleaveOffset, rowBase, colBase, validRows, validCols, upper,
+        vToMte2, vToMte3, vToScalar, scalarToV);
+    // Both cAos (also the next raw input) and planar can be MTE3 sources.
+    SetFlag<HardEvent::MTE3_MTE2>(mte3ToMte2);
+    WaitFlag<HardEvent::MTE3_MTE2>(mte3ToMte2);
 }
-struct Cher2kSg3ConsumerContext {
-    TBuf<TPosition::VECCALC> transposeOffsetBuf, interleaveOffsetBuf, realIjBuf, imagIjBuf, realJiBuf, imagJiBuf,
-        tempBuf, cAosBuf;
-    LocalTensor<uint32_t> transposeOffset, interleaveOffset;
-    LocalTensor<int32_t> transposeOffsetI32, interleaveOffsetI32;
-    LocalTensor<float> planar, realIj, imagOut, imagIj, realJi, imagJi, temp, cAos, raw;
+struct Cher2kOutputStorage {
+    TBuf<TPosition::VECCALC> transposeOffsetBuf;
+    TBuf<TPosition::VECCALC> interleaveOffsetBuf;
+    TBuf<TPosition::VECCALC> realIjBuf;
+    TBuf<TPosition::VECCALC> imagIjBuf;
+    TBuf<TPosition::VECCALC> realJiBuf;
+    TBuf<TPosition::VECCALC> imagJiBuf;
+    TBuf<TPosition::VECCALC> tempBuf;
+    TBuf<TPosition::VECCALC> cAosBuf;
 
-    __aicore__ inline void Init(TPipe& pipe, uint32_t blockElements, uint32_t blockRows, uint32_t blockCols)
+    LocalTensor<uint32_t> transposeOffset;
+    LocalTensor<uint32_t> interleaveOffset;
+    LocalTensor<float> realIj;
+    LocalTensor<float> imagIj;
+    LocalTensor<float> realJi;
+    LocalTensor<float> imagJi;
+    LocalTensor<float> temp;
+    LocalTensor<float> cAos;
+
+    __aicore__ inline void InitStorage(TPipe& pipe, uint32_t elements)
     {
-        const uint32_t aosElements = blockElements * 2U;
-        pipe.InitBuffer(transposeOffsetBuf, blockElements * sizeof(uint32_t));
+        const uint32_t aosElements = elements * 2U;
+        pipe.InitBuffer(transposeOffsetBuf, elements * sizeof(uint32_t));
         pipe.InitBuffer(interleaveOffsetBuf, aosElements * sizeof(uint32_t));
         pipe.InitBuffer(realIjBuf, aosElements * sizeof(float));
-        pipe.InitBuffer(imagIjBuf, blockElements * sizeof(float));
-        pipe.InitBuffer(realJiBuf, blockElements * sizeof(float));
-        pipe.InitBuffer(imagJiBuf, blockElements * sizeof(float));
-        pipe.InitBuffer(tempBuf, blockElements * sizeof(float));
+        pipe.InitBuffer(imagIjBuf, elements * sizeof(float));
+        pipe.InitBuffer(realJiBuf, elements * sizeof(float));
+        pipe.InitBuffer(imagJiBuf, elements * sizeof(float));
+        pipe.InitBuffer(tempBuf, elements * sizeof(float));
         pipe.InitBuffer(cAosBuf, aosElements * sizeof(float));
         transposeOffset = transposeOffsetBuf.Get<uint32_t>();
-        transposeOffsetI32 = transposeOffsetBuf.Get<int32_t>();
         interleaveOffset = interleaveOffsetBuf.Get<uint32_t>();
-        interleaveOffsetI32 = interleaveOffsetBuf.Get<int32_t>();
-        planar = realIjBuf.Get<float>();
-        realIj = planar;
-        imagOut = planar[blockElements];
+        realIj = realIjBuf.Get<float>();
         imagIj = imagIjBuf.Get<float>();
         realJi = realJiBuf.Get<float>();
         imagJi = imagJiBuf.Get<float>();
         temp = tempBuf.Get<float>();
         cAos = cAosBuf.Get<float>();
+    }
+};
+
+struct Cher2kSg3ConsumerContext : Cher2kOutputStorage {
+    LocalTensor<int32_t> transposeOffsetI32;
+    LocalTensor<int32_t> interleaveOffsetI32;
+    LocalTensor<float> planar;
+    LocalTensor<float> imagOut;
+    LocalTensor<float> raw;
+
+    __aicore__ inline void Init(TPipe& pipe, uint32_t blockElements, uint32_t blockRows, uint32_t blockCols)
+    {
+        const uint32_t aosElements = blockElements * 2U;
+        InitStorage(pipe, blockElements);
+        transposeOffsetI32 = transposeOffsetBuf.Get<int32_t>();
+        interleaveOffsetI32 = interleaveOffsetBuf.Get<int32_t>();
+        planar = realIj;
+        imagOut = planar[blockElements];
         raw = cAos;
         CreateVecIndex(transposeOffsetI32, 0, blockRows);
+        PipeBarrier<PIPE_V>();
         Muls(transposeOffsetI32, transposeOffsetI32, static_cast<int32_t>(blockCols * sizeof(float)), blockRows);
+        PipeBarrier<PIPE_V>();
         for (uint32_t col = 1U; col < blockCols; ++col) {
             Adds(
                 transposeOffsetI32[col * blockRows], transposeOffsetI32, static_cast<int32_t>(col * sizeof(float)),
@@ -458,6 +468,9 @@ struct Cher2kSg3ConsumerContext {
             const uint32_t source = (index & 1U) == 0U ? index / 2U : blockElements + index / 2U;
             interleaveOffset.SetValue(index, source * sizeof(float));
         }
+        const auto seedToVector = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::S_V));
+        SetFlag<HardEvent::S_V>(seedToVector);
+        WaitFlag<HardEvent::S_V>(seedToVector);
         PipeBarrier<PIPE_ALL>();
         for (uint32_t group = 1U; group < blockCols; ++group) {
             Adds(
@@ -469,11 +482,22 @@ struct Cher2kSg3ConsumerContext {
 };
 
 struct Cher2kSg3ConsumerState {
-    GlobalTensor<float> cG, ws;
-    uint64_t p1Base = 0ULL, p2Base = 0ULL, p3Base = 0ULL;
-    float alphaReal = 0.0f, alphaImag = 0.0f, betaValue = 0.0f;
+    GlobalTensor<float> cG;
+    GlobalTensor<float> ws;
+    uint64_t p1Base = 0ULL;
+    uint64_t p2Base = 0ULL;
+    uint64_t p3Base = 0ULL;
+    float alphaReal = 0.0f;
+    float alphaImag = 0.0f;
+    float betaValue = 0.0f;
     bool unitAlphaNoBeta = false;
-    event_t mte2ToV, vToMte2, vToMte3, mte3ToV, mte3ToMte2, vToScalar, scalarToV;
+    event_t mte2ToV;
+    event_t vToMte2;
+    event_t vToMte3;
+    event_t mte3ToV;
+    event_t mte3ToMte2;
+    event_t vToScalar;
+    event_t scalarToV;
 
     __aicore__ inline void Init(
         GM_ADDR c, GM_ADDR workspace, GM_ADDR alpha, GM_ADDR beta, const Cher2kTilingData& tiling)
@@ -504,6 +528,38 @@ struct Cher2kSg3ConsumerState {
     }
 };
 
+struct Cher2kOutputTile {
+    uint32_t rowBase = 0U;
+    uint32_t colBase = 0U;
+    uint32_t validRows = 0U;
+    uint32_t validCols = 0U;
+};
+struct Cher2kAssignedTriangle {
+    uint64_t begin;
+    uint64_t end;
+    Cher2kTriangleCursor cursor;
+
+    __aicore__ inline void Init(
+        const Cher2kTilingData& tiling, uint32_t blockIdx, uint32_t blockNum, uint32_t rowTileCount, uint32_t rows,
+        uint32_t cols, bool upper)
+    {
+        const uint64_t totalTasks = Cher2kTriangleTaskCount(tiling, rowTileCount, rows, cols, upper);
+        const uint32_t safeBlockNum = blockNum == 0U ? 1U : blockNum;
+        begin = (static_cast<uint64_t>(blockIdx) * totalTasks) / safeBlockNum;
+        end = (static_cast<uint64_t>(blockIdx + 1U) * totalTasks) / safeBlockNum;
+        Cher2kSeekTriangleTask(begin, tiling, rowTileCount, rows, cols, upper, cursor);
+    }
+    __aicore__ inline Cher2kOutputTile Resolve(
+        uint64_t task, const Cher2kTilingData& tiling, uint32_t rowTileCount, uint32_t rows, uint32_t cols, bool upper)
+    {
+        Cher2kOutputTile tile;
+        Cher2kResolveTriangleTask(
+            task, tiling, rowTileCount, rows, cols, upper, cursor, tile.rowBase, tile.colBase, tile.validRows,
+            tile.validCols);
+        return tile;
+    }
+};
+
 __aicore__ inline void Cher2kSg3ConsumerRun(
     GlobalTensor<float>& cG, GlobalTensor<float>& ws, const Cher2kTilingData& tiling,
     LocalTensor<uint32_t>& transposeOffset, LocalTensor<uint32_t>& interleaveOffset, LocalTensor<float>& planar,
@@ -514,26 +570,23 @@ __aicore__ inline void Cher2kSg3ConsumerRun(
     event_t scalarToV, event_t mte3ToMte2)
 {
     uint32_t blockNum = static_cast<uint32_t>(GetBlockNum());
-    if (blockNum == 0U)
+    if (blockNum == 0U) {
         blockNum = 1U;
+    }
     const uint32_t blockIdx = static_cast<uint32_t>(GetBlockIdx());
-    constexpr uint32_t blockRows = 64U, blockCols = 32U;
+    constexpr uint32_t blockRows = 64U;
+    constexpr uint32_t blockCols = 32U;
     const uint32_t rowTileCount = (tiling.n + blockRows - 1U) / blockRows;
     const bool upper = tiling.uplo == ACLBLAS_UPPER;
-    const uint64_t totalTasks = Cher2kTriangleTaskCount(tiling, rowTileCount, blockRows, blockCols, upper);
-    const uint32_t safeBlockNum = blockNum == 0U ? 1U : blockNum;
-    const uint64_t taskBegin = (static_cast<uint64_t>(blockIdx) * totalTasks) / safeBlockNum;
-    const uint64_t taskEnd = (static_cast<uint64_t>(blockIdx + 1U) * totalTasks) / safeBlockNum;
-    Cher2kTriangleCursor cursor;
-    Cher2kSeekTriangleTask(taskBegin, tiling, rowTileCount, blockRows, blockCols, upper, cursor);
-    for (uint64_t task = taskBegin; task < taskEnd; ++task) {
-        uint32_t rowBase = 0U, colBase = 0U, validRows = 0U, validCols = 0U;
-        Cher2kResolveTriangleTask(
-            task, tiling, rowTileCount, blockRows, blockCols, upper, cursor, rowBase, colBase, validRows, validCols);
+    Cher2kAssignedTriangle range;
+    range.Init(tiling, blockIdx, blockNum, rowTileCount, blockRows, blockCols, upper);
+    for (uint64_t task = range.begin; task < range.end; ++task) {
+        const Cher2kOutputTile tile = range.Resolve(task, tiling, rowTileCount, blockRows, blockCols, upper);
         Cher2kSg3ProcessChunk(
             cG, ws, tiling, transposeOffset, interleaveOffset, planar, realIj, imagOut, imagIj, realJi, imagJi, temp,
-            cAos, raw, p1Base, p2Base, p3Base, rowBase, colBase, validRows, validCols, upper, unitAlphaNoBeta,
-            alphaReal, alphaImag, betaValue, mte2ToV, vToMte2, vToMte3, mte3ToV, vToScalar, scalarToV, mte3ToMte2);
+            cAos, raw, p1Base, p2Base, p3Base, tile.rowBase, tile.colBase, tile.validRows, tile.validCols, upper,
+            unitAlphaNoBeta, alphaReal, alphaImag, betaValue, mte2ToV, vToMte2, vToMte3, mte3ToV, vToScalar, scalarToV,
+            mte3ToMte2);
         SetFlag<HardEvent::MTE3_V>(mte3ToV);
         WaitFlag<HardEvent::MTE3_V>(mte3ToV);
         SetFlag<HardEvent::MTE3_MTE2>(mte3ToMte2);
@@ -550,8 +603,9 @@ extern "C" __global__ __aicore__ void cher2k_sg3_chunk_postprocess_kernel(
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     Cher2kVectorMaskGuard maskGuard;
-    if (Cher2kIsNoOp(tiling, alpha, beta) || Cher2kSkipScalarGraph(alpha, beta, scalarDispatch))
+    if (Cher2kIsNoOp(tiling, alpha, beta) || Cher2kSkipScalarGraph(alpha, beta, scalarDispatch)) {
         return;
+    }
 
     constexpr uint32_t blockRows = 64U;
     // A 64x32 micro-tile keeps the eight-buffer consumer below 96 KiB UB and
@@ -597,8 +651,9 @@ __aicore__ inline void Cher2kLoadPostprocessScalars(
     alphaReal = tiling.alphaReal;
     alphaImag = tiling.alphaImag;
     betaValue = tiling.beta;
-    if (alpha == nullptr || beta == nullptr)
+    if (alpha == nullptr || beta == nullptr) {
         return;
+    }
     __gm__ const float* alphaPtr = reinterpret_cast<__gm__ const float*>(alpha);
     __gm__ const float* betaPtr = reinterpret_cast<__gm__ const float*>(beta);
     alphaReal = alphaPtr[0];
@@ -619,25 +674,34 @@ __aicore__ inline void Cher2kZeroDiagonal(
     WaitFlag<HardEvent::S_V>(eventScalarToV);
 }
 
-__aicore__ inline void Cher2kPostprocessApplyBetaGeneric(
-    GlobalTensor<float>& cG, const Cher2kTilingData& tiling, LocalTensor<float>& cAosLocal,
-    LocalTensor<float>& cRealLocal, LocalTensor<float>& cImagLocal, LocalTensor<float>& realIjLocal,
-    LocalTensor<float>& imagJiLocal, uint32_t rowBase, uint32_t colBase, uint32_t validRows, uint32_t validCols,
-    uint32_t tileSize, uint32_t tileElements, float betaValue)
+__aicore__ inline void Cher2kLoadOldSelected(
+    GlobalTensor<float>& cG, const Cher2kTilingData& tiling, LocalTensor<float>& cAosLocal, uint32_t rowBase,
+    uint32_t colBase, uint32_t validRows, uint32_t validCols, uint32_t tileSize, uint32_t tileElements, event_t vToMte2,
+    event_t vToScalar, event_t scalarToV)
 {
-    if (betaValue == 0.0f)
-        return;
     Duplicate(cAosLocal, 0.0f, tileElements * 2U);
     if constexpr (CHER2K_SCALAR_C_LOAD_EXPERIMENT) {
+        SetFlag<HardEvent::V_S>(vToScalar);
+        WaitFlag<HardEvent::V_S>(vToScalar);
         for (uint32_t col = 0U; col < validCols; ++col) {
             for (uint32_t row = 0U; row < validRows; ++row) {
+                const bool selected =
+                    tiling.uplo == ACLBLAS_UPPER ? rowBase + row <= colBase + col : rowBase + row >= colBase + col;
+                if (!selected) {
+                    continue;
+                }
                 const uint64_t cIndex = (static_cast<uint64_t>(colBase + col) * tiling.ldc + rowBase + row) * 2ULL;
                 const uint32_t ubIndex = (col * tileSize + row) * 2U;
                 cAosLocal.SetValue(ubIndex, cG.GetValue(cIndex));
                 cAosLocal.SetValue(ubIndex + 1U, cG.GetValue(cIndex + 1ULL));
             }
         }
+        SetFlag<HardEvent::S_V>(scalarToV);
+        WaitFlag<HardEvent::S_V>(scalarToV);
     } else {
+        // Finish the zero fill before MTE2 overwrites the valid C lanes.
+        SetFlag<HardEvent::V_MTE2>(vToMte2);
+        WaitFlag<HardEvent::V_MTE2>(vToMte2);
         const uint32_t cBlockLen = validRows * 2U * sizeof(float);
         const uint32_t cAlignedBlockLen = (cBlockLen + 31U) & ~31U;
         const uint32_t cRightPadding = (cAlignedBlockLen - cBlockLen) / sizeof(float);
@@ -647,8 +711,28 @@ __aicore__ inline void Cher2kPostprocessApplyBetaGeneric(
             static_cast<uint32_t>((tileSize * 2U * sizeof(float) - cAlignedBlockLen) / 32U), 0U};
         DataCopyPadExtParams<float> cPad{cRightPadding != 0U, 0U, static_cast<uint8_t>(cRightPadding), 0.0f};
         const uint64_t cOffset = (static_cast<uint64_t>(colBase) * tiling.ldc + rowBase) * 2ULL;
-        DataCopyPad(cAosLocal, cG[cOffset], cCopy, cPad);
+        if (rowBase == colBase) {
+            triangle_store::LoadComplexTile(
+                cAosLocal, cG, tileSize, tiling.ldc, rowBase, colBase, validRows, validCols,
+                tiling.uplo == ACLBLAS_UPPER, vToMte2);
+        } else {
+            DataCopyPad(cAosLocal, cG[cOffset], cCopy, cPad);
+        }
     }
+}
+
+__aicore__ inline void Cher2kPostprocessApplyBetaGeneric(
+    GlobalTensor<float>& cG, const Cher2kTilingData& tiling, LocalTensor<float>& cAosLocal,
+    LocalTensor<float>& cRealLocal, LocalTensor<float>& cImagLocal, LocalTensor<float>& realIjLocal,
+    LocalTensor<float>& imagJiLocal, uint32_t rowBase, uint32_t colBase, uint32_t validRows, uint32_t validCols,
+    uint32_t tileSize, uint32_t tileElements, float betaValue, event_t vToMte2, event_t vToScalar, event_t scalarToV)
+{
+    if (betaValue == 0.0f) {
+        return;
+    }
+    Cher2kLoadOldSelected(
+        cG, tiling, cAosLocal, rowBase, colBase, validRows, validCols, tileSize, tileElements, vToMte2, vToScalar,
+        scalarToV);
     PipeBarrier<PIPE_ALL>();
     uint64_t reservedCount = 0ULL;
     GatherMask<float>(
@@ -831,7 +915,8 @@ __aicore__ inline void Cher2kPostprocessStoreTile(
     PipeBarrier<PIPE_ALL>();
     Gather(cAosLocal, planarOutputLocal, interleaveOffsetLocal, 0U, tileElements * 2U);
     PipeBarrier<PIPE_ALL>();
-    Cher2kStorePlanarUnitTile(cG, tiling, cAosLocal, rowBase, colBase, validRows, validCols);
+    Cher2kStorePlanarUnitTile(
+        cG, tiling, cAosLocal, planarOutputLocal, imagJiLocal, rowBase, colBase, validRows, validCols);
     PipeBarrier<PIPE_ALL>();
 }
 
@@ -875,8 +960,9 @@ __aicore__ inline bool Cher2kResolvePostprocessTile(
             rowTile = static_cast<uint32_t>(tile / (tileAxis == 0U ? 1U : tileAxis));
             colTile = static_cast<uint32_t>(tile - static_cast<uint64_t>(rowTile) * tileAxis);
         }
-        if ((upper && rowTile > colTile) || (!upper && rowTile < colTile))
+        if ((upper && rowTile > colTile) || (!upper && rowTile < colTile)) {
             return false;
+        }
     }
     Cher2kAdvanceCompactPostprocessTile(tileAxis, upper, compactRow, compactCol);
     return true;
@@ -916,7 +1002,7 @@ __aicore__ inline void Cher2kPostprocessExecuteTile(
     }
     Cher2kPostprocessApplyBetaGeneric(
         cG, tiling, cAosLocal, cRealLocal, cImagLocal, realIjLocal, imagJiLocal, rowTile * tileSize, colTile * tileSize,
-        validRows, validCols, tileSize, tileElements, betaValue);
+        validRows, validCols, tileSize, tileElements, betaValue, eventVToMte2, eventVToScalar, eventScalarToV);
     Cher2kPostprocessStoreTile(
         cG, tiling, planarOutputLocal, imagJiLocal, interleaveOffsetLocal, cAosLocal, rowTile, colTile,
         rowTile * tileSize, colTile * tileSize, validRows, validCols, tileSize, tileElements, eventVToScalar,
@@ -1003,51 +1089,22 @@ __aicore__ inline Cher2kPostprocessSchedule Cher2kInitPostprocessSchedule(
     return schedule;
 }
 
-struct Cher2kPostprocessBuffers {
-    TBuf<TPosition::VECCALC> transposeOffsetBuf;
-    TBuf<TPosition::VECCALC> interleaveOffsetBuf;
-    TBuf<TPosition::VECCALC> realIjBuf;
-    TBuf<TPosition::VECCALC> imagIjBuf;
-    TBuf<TPosition::VECCALC> realJiBuf;
-    TBuf<TPosition::VECCALC> imagJiBuf;
-    TBuf<TPosition::VECCALC> tempBuf;
-    TBuf<TPosition::VECCALC> cAosBuf;
-    LocalTensor<uint32_t> transposeOffset;
-    LocalTensor<uint32_t> interleaveOffset;
+struct Cher2kPostprocessBuffers : Cher2kOutputStorage {
     LocalTensor<float> planarOutput;
-    LocalTensor<float> realIj;
-    LocalTensor<float> imagIj;
-    LocalTensor<float> realJi;
-    LocalTensor<float> imagJi;
-    LocalTensor<float> temp;
-    LocalTensor<float> cAos;
     event_t vToMte2;
     event_t vToScalar;
     event_t scalarToV;
 
     __aicore__ inline void Init(TPipe& pipe, uint32_t tileSize, uint32_t tileElements)
     {
-        pipe.InitBuffer(transposeOffsetBuf, tileElements * sizeof(uint32_t));
-        pipe.InitBuffer(interleaveOffsetBuf, tileElements * 2U * sizeof(uint32_t));
-        pipe.InitBuffer(realIjBuf, tileElements * 2U * sizeof(float));
-        pipe.InitBuffer(imagIjBuf, tileElements * sizeof(float));
-        pipe.InitBuffer(realJiBuf, tileElements * sizeof(float));
-        pipe.InitBuffer(imagJiBuf, tileElements * sizeof(float));
-        pipe.InitBuffer(tempBuf, tileElements * sizeof(float));
-        pipe.InitBuffer(cAosBuf, tileElements * 2U * sizeof(float));
-        transposeOffset = transposeOffsetBuf.Get<uint32_t>();
-        interleaveOffset = interleaveOffsetBuf.Get<uint32_t>();
-        planarOutput = realIjBuf.Get<float>();
-        realIj = planarOutput;
-        imagIj = imagIjBuf.Get<float>();
-        realJi = realJiBuf.Get<float>();
-        imagJi = imagJiBuf.Get<float>();
-        temp = tempBuf.Get<float>();
-        cAos = cAosBuf.Get<float>();
+        InitStorage(pipe, tileElements);
+        planarOutput = realIj;
         LocalTensor<int32_t> transposeI32 = transposeOffsetBuf.Get<int32_t>();
         LocalTensor<int32_t> interleaveI32 = interleaveOffsetBuf.Get<int32_t>();
         CreateVecIndex(transposeI32, 0, tileSize);
+        PipeBarrier<PIPE_V>();
         Muls(transposeI32, transposeI32, static_cast<int32_t>(tileSize * sizeof(float)), tileSize);
+        PipeBarrier<PIPE_V>();
         for (uint32_t group = 1U; group < tileSize; ++group) {
             Adds(transposeI32[group * tileSize], transposeI32, static_cast<int32_t>(group * sizeof(float)), tileSize);
         }
@@ -1078,10 +1135,12 @@ __aicore__ inline void Cher2kPostprocessRunGeneric(
     for (uint64_t tile = schedule.begin; tile < schedule.end; tile += schedule.step) {
         uint32_t rowTile = 0U;
         uint32_t colTile = 0U;
-        if (!Cher2kResolvePostprocessTile(
-                tile, tileAxis, tiling.uplo == ACLBLAS_UPPER, blockNum, schedule.compactRow, schedule.compactCol,
-                schedule.incrementalRow, schedule.incrementalCol, rowTile, colTile))
+        const bool resolved = Cher2kResolvePostprocessTile(
+            tile, tileAxis, tiling.uplo == ACLBLAS_UPPER, blockNum, schedule.compactRow, schedule.compactCol,
+            schedule.incrementalRow, schedule.incrementalCol, rowTile, colTile);
+        if (!resolved) {
             continue;
+        }
         const uint32_t rowBase = rowTile * tileSize;
         const uint32_t colBase = colTile * tileSize;
         const uint32_t validRows = min(tileSize, tiling.n - rowBase);
@@ -1095,6 +1154,17 @@ __aicore__ inline void Cher2kPostprocessRunGeneric(
             iiBase, riBase, irBase, workspaceCopy, buffers.vToMte2, buffers.vToScalar, buffers.scalarToV, alphaReal,
             alphaImag, betaValue, unitAlphaNoBeta);
     }
+}
+
+__aicore__ inline void Cher2kFinishPostprocessOutput(
+    GlobalTensor<float>& cG, const Cher2kTilingData& tiling, bool unitAlphaNoBeta)
+{
+    if constexpr (!CHER2K_SKIP_C_OUTPUT_CACHE_CLEAN_EXPERIMENT) {
+        DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(cG);
+    } else if (!(unitAlphaNoBeta && tiling.uplo == ACLBLAS_UPPER)) {
+        DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(cG);
+    }
+    PipeBarrier<PIPE_ALL>();
 }
 
 __aicore__ inline void Cher2kRunPostprocessKernel(
@@ -1111,8 +1181,9 @@ __aicore__ inline void Cher2kRunPostprocessKernel(
             reinterpret_cast<__gm__ float*>(workspace),
             sgemm3Batch ? Sgemm3WorkspaceFloatCount(tiling.nAligned, tiling.kAligned) :
                           WorkspaceFloatCount(tiling.nAligned, tiling.kAligned, tiling.useThreeM != 0U));
-        if constexpr (!CHER2K_SKIP_WORKSPACE_CACHE_CLEAN_EXPERIMENT)
+        if constexpr (!CHER2K_SKIP_WORKSPACE_CACHE_CLEAN_EXPERIMENT) {
             DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(ws);
+        }
     }
     const uint64_t nk = static_cast<uint64_t>(tiling.nAligned) * tiling.kAligned;
     const uint64_t nn = static_cast<uint64_t>(tiling.nAligned) * tiling.nAligned;
@@ -1122,8 +1193,9 @@ __aicore__ inline void Cher2kRunPostprocessKernel(
     const uint64_t irBase = sgemm3Batch ? 6ULL * nk + nn : OffsetIr(tiling.nAligned, tiling.kAligned);
     const uint32_t blockIdx = static_cast<uint32_t>(GetBlockIdx());
     uint32_t blockNum = static_cast<uint32_t>(GetBlockNum());
-    if (blockNum == 0U)
+    if (blockNum == 0U) {
         blockNum = 1U;
+    }
     float alphaReal = 0.0f;
     float alphaImag = 0.0f;
     float betaValue = 0.0f;
@@ -1140,12 +1212,7 @@ __aicore__ inline void Cher2kRunPostprocessKernel(
     Cher2kPostprocessRunGeneric(
         cG, ws, tiling, buffers, rrBase, iiBase, riBase, irBase, blockIdx, blockNum, alphaReal, alphaImag, betaValue,
         unitAlphaNoBeta);
-    if constexpr (!CHER2K_SKIP_C_OUTPUT_CACHE_CLEAN_EXPERIMENT) {
-        DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(cG);
-    } else if (!(unitAlphaNoBeta && tiling.uplo == ACLBLAS_UPPER)) {
-        DataCacheCleanAndInvalid<float, CacheLine::ENTIRE_DATA_CACHE>(cG);
-    }
-    PipeBarrier<PIPE_ALL>();
+    Cher2kFinishPostprocessOutput(cG, tiling, unitAlphaNoBeta);
 }
 
 extern "C" __global__ __aicore__ void cher2k_postprocess_kernel(
@@ -1153,8 +1220,9 @@ extern "C" __global__ __aicore__ void cher2k_postprocess_kernel(
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     Cher2kVectorMaskGuard maskGuard;
-    if (Cher2kIsNoOp(tiling, alpha, beta) || Cher2kSkipScalarGraph(alpha, beta, scalarDispatch))
+    if (Cher2kIsNoOp(tiling, alpha, beta) || Cher2kSkipScalarGraph(alpha, beta, scalarDispatch)) {
         return;
+    }
     constexpr uint32_t tileSize = 64U;
     constexpr uint32_t tileElements = tileSize * tileSize;
     TPipe pipe;
@@ -1186,18 +1254,20 @@ struct Cher2kDirectEvents {
     }
 };
 
+template <uint32_t ROWS = 64U>
 __aicore__ inline void Cher2kDirectZeroDiagonal(
     LocalTensor<float>& imagLocal, uint32_t rowBase, uint32_t colBase, uint32_t validRows, uint32_t validCols,
     event_t vToScalar, event_t scalarToV)
 {
-    if (colBase >= rowBase + validRows || colBase + validCols <= rowBase)
+    if (colBase >= rowBase + validRows || colBase + validCols <= rowBase) {
         return;
+    }
     SetFlag<HardEvent::V_S>(vToScalar);
     WaitFlag<HardEvent::V_S>(vToScalar);
     for (uint32_t col = 0U; col < validCols; ++col) {
         const uint32_t absoluteCol = colBase + col;
         if (absoluteCol >= rowBase && absoluteCol < rowBase + validRows) {
-            imagLocal.SetValue(col * 64U + absoluteCol - rowBase, 0.0f);
+            imagLocal.SetValue(col * ROWS + absoluteCol - rowBase, 0.0f);
         }
     }
     SetFlag<HardEvent::S_V>(scalarToV);
@@ -1247,11 +1317,13 @@ __aicore__ inline void Cher2kDirectMixStore(
         PipeBarrier<PIPE_ALL>();
         for (uint32_t col = 0U; col < validCols; ++col) {
             const uint32_t absoluteCol = colBase + col;
-            if (absoluteCol < rowBase)
+            if (absoluteCol < rowBase) {
                 continue;
+            }
             const uint32_t selectedRows = min(validRows, absoluteCol - rowBase + 1U);
-            if (selectedRows == 0U)
+            if (selectedRows == 0U) {
                 continue;
+            }
             const uint64_t cOffset = (static_cast<uint64_t>(absoluteCol) * tiling.ldc + rowBase) * 2ULL;
             const DataCopyExtParams outputCopy{
                 1U, static_cast<uint32_t>(selectedRows * 2U * sizeof(float)), 0U, 0U, 0U};
@@ -1272,8 +1344,9 @@ __aicore__ inline void Cher2kDirectMixUpperTile(
     constexpr uint32_t rows = 64U;
     constexpr uint32_t cols = 64U;
     constexpr uint32_t elements = rows * cols;
-    if (rowBase >= tiling.n || colBase >= tiling.n || rowBase > colBase + cols - 1U)
+    if (rowBase >= tiling.n || colBase >= tiling.n || rowBase > colBase + cols - 1U) {
         return;
+    }
 
     LocalTensor<float> realLocal = planar;
     LocalTensor<float> imagLocal = planar[elements];
@@ -1321,7 +1394,9 @@ __aicore__ inline void Cher2kDirectMixRunTasks(
     uint32_t groupCount, uint32_t subBlock, event_t mte2ToV, event_t vToMte2, event_t vToMte3, event_t mte3ToV,
     event_t vToScalar, event_t scalarToV)
 {
-    constexpr uint32_t rows = 64U, cols = 64U, cubeTile = 128U;
+    constexpr uint32_t rows = 64U;
+    constexpr uint32_t cols = 64U;
+    constexpr uint32_t cubeTile = 128U;
     const uint32_t tileAxis = (tiling.n + cubeTile - 1U) / cubeTile;
     const uint64_t totalTasks = (static_cast<uint64_t>(tileAxis) * (tileAxis + 1U)) / 2ULL;
     const uint64_t totalWorkUnits = 2ULL * totalTasks;
@@ -1400,12 +1475,14 @@ extern "C" __global__ __aicore__ __schedmode__(1) void cher2k_direct_opc_mix_ker
     const bool unitAlphaNoBeta = alpha != nullptr && beta != nullptr ?
                                      Cher2kIsDeviceUnitScalar(alpha, beta) :
                                      (tiling.alphaReal == 1.0f && tiling.alphaImag == 0.0f && tiling.beta == 0.0f);
-    if (!unitAlphaNoBeta)
+    if (!unitAlphaNoBeta) {
         return;
+    }
     const uint32_t blockIndex = static_cast<uint32_t>(GetBlockIdx());
     uint32_t groupCount = tiling.aicCoreNum;
-    if (groupCount == 0U)
+    if (groupCount == 0U) {
         groupCount = 1U;
+    }
 
     // Phase 0: both AIV sub-blocks publish the direct-H operand planes.  Its
     // 152 KiB UB layout is dead before the consumer's 96 KiB layout is built.
@@ -1421,7 +1498,7 @@ extern "C" __global__ __aicore__ __schedmode__(1) void cher2k_direct_opc_mix_ker
 
     if ASCEND_IS_AIC {
         AscendC::InitSocState();
-        Cher2kDirectOpcMmad producer;
+        Cher2kKernelCube producer;
         producer.Init(
             reinterpret_cast<__gm__ float*>(workspace), tiling.nAligned, tiling.n, tiling.kAligned, tiling.k,
             tiling.uplo);
@@ -1437,15 +1514,17 @@ extern "C" __global__ __aicore__ __schedmode__(1) void cher2k_direct_opc_mix_ker
 // costs more than the arithmetic itself.  One AIV block stream computes each
 // selected C element directly from the original AoS BLAS operands, avoiding
 // workspace allocation, preprocess, Cube launch, and postprocess launch.
+template <uint32_t ROWS, uint32_t COLS>
 __aicore__ inline void Cher2kDirectApplyScaleAndBeta(
     GlobalTensor<float>& cG, LocalTensor<float>& realLocal, LocalTensor<float>& imagLocal,
     LocalTensor<float>& alphaImagScratch, LocalTensor<float>& alphaRealScratch, const Cher2kTilingData& tiling,
     uint32_t validRows, uint32_t validCols, uint32_t rowBase, uint32_t colBase, bool unitAlphaNoBeta, float alphaReal,
     float alphaImag, float betaValue, event_t vToScalar, event_t scalarToV)
 {
-    if (unitAlphaNoBeta)
+    if (unitAlphaNoBeta) {
         return;
-    constexpr uint32_t blockElements = 64U * 64U;
+    }
+    constexpr uint32_t blockElements = ROWS * COLS;
     Muls(realLocal, realLocal, alphaReal, blockElements);
     Muls(imagLocal, imagLocal, alphaReal, blockElements);
     Muls(alphaImagScratch, imagLocal, alphaImag, blockElements);
@@ -1453,46 +1532,18 @@ __aicore__ inline void Cher2kDirectApplyScaleAndBeta(
     PipeBarrier<PIPE_ALL>();
     Sub(realLocal, realLocal, alphaImagScratch, blockElements);
     Add(imagLocal, imagLocal, alphaRealScratch, blockElements);
-    if (betaValue == 0.0f)
-        return;
-    SetFlag<HardEvent::V_S>(vToScalar);
-    WaitFlag<HardEvent::V_S>(vToScalar);
-    for (uint32_t col = 0U; col < validCols; ++col) {
-        for (uint32_t row = 0U; row < validRows; ++row) {
-            const uint32_t local = col * 64U + row;
-            const uint64_t cOffset = (static_cast<uint64_t>(colBase + col) * tiling.ldc + rowBase + row) * 2ULL;
-            realLocal.SetValue(local, realLocal.GetValue(local) + betaValue * cG.GetValue(cOffset));
-            imagLocal.SetValue(local, imagLocal.GetValue(local) + betaValue * cG.GetValue(cOffset + 1ULL));
-        }
-    }
-    SetFlag<HardEvent::S_V>(scalarToV);
-    WaitFlag<HardEvent::S_V>(scalarToV);
+    Cher2kAddSelectedOldC(
+        cG, tiling, realLocal, imagLocal, ROWS, rowBase, colBase, validRows, validCols, betaValue, vToScalar,
+        scalarToV);
 }
 
-__aicore__ inline void Cher2kDirectMergeTriangle(
-    LocalTensor<float>& cAos, LocalTensor<float>& oldCAos, uint32_t rowBase, uint32_t colBase, uint32_t validRows,
-    uint32_t validCols, bool upper)
-{
-    constexpr uint32_t blockRows = 64U;
-    for (uint32_t col = 0U; col < validCols; ++col) {
-        const uint32_t absoluteCol = colBase + col;
-        const uint32_t columnOffset = col * blockRows * 2U;
-        if (upper) {
-            const uint32_t selectedRows = min(validRows, absoluteCol - rowBase + 1U);
-            Adds(oldCAos[columnOffset], cAos[columnOffset], 0.0f, selectedRows * 2U);
-        } else {
-            const uint32_t preservedRows = absoluteCol - rowBase;
-            Adds(cAos[columnOffset], oldCAos[columnOffset], 0.0f, preservedRows * 2U);
-        }
-    }
-}
-
+template <uint32_t ROWS, uint32_t COLS>
 __aicore__ inline void Cher2kDirectStoreTile(
     GlobalTensor<float>& cG, LocalTensor<float>& cAos, LocalTensor<float>& oldCAos, const Cher2kTilingData& tiling,
     uint32_t rowBase, uint32_t colBase, uint32_t validRows, uint32_t validCols, bool upper, bool fullySelected,
-    event_t mte2ToV, event_t vToMte3)
+    event_t mte2ToV, event_t vToMte3, LocalTensor<float> indexScratch)
 {
-    constexpr uint32_t blockRows = 64U;
+    constexpr uint32_t blockRows = ROWS;
     if (fullySelected) {
         const uint32_t blockLen = validRows * 2U * sizeof(float);
         const uint32_t alignedBlockLen = (blockLen + 31U) & ~31U;
@@ -1504,28 +1555,14 @@ __aicore__ inline void Cher2kDirectStoreTile(
         DataCopyPad(cG[cOffset], cAos, outputCopy);
         return;
     }
-    const uint32_t oldBlockLen = validRows * 2U * sizeof(float);
-    const uint32_t oldAlignedBlockLen = (oldBlockLen + 31U) & ~31U;
-    const uint32_t oldRightPadding = (oldAlignedBlockLen - oldBlockLen) / sizeof(float);
-    const DataCopyExtParams oldCopy{
-        static_cast<uint16_t>(validCols), oldBlockLen,
-        static_cast<uint32_t>((tiling.ldc - validRows) * 2U * sizeof(float)),
-        static_cast<uint32_t>((blockRows * 2U * sizeof(float) - oldAlignedBlockLen) / 32U), 0U};
-    const DataCopyExtParams mergedOutputCopy{
-        static_cast<uint16_t>(validCols), oldBlockLen,
-        static_cast<uint32_t>((blockRows * 2U * sizeof(float) - oldAlignedBlockLen) / 32U),
-        static_cast<uint32_t>((tiling.ldc - validRows) * 2U * sizeof(float)), 0U};
-    const DataCopyPadExtParams<float> oldPad{oldRightPadding != 0U, 0U, static_cast<uint8_t>(oldRightPadding), 0.0f};
-    const uint64_t tileCOffset = (static_cast<uint64_t>(colBase) * tiling.ldc + rowBase) * 2ULL;
-    DataCopyPad(oldCAos, cG[tileCOffset], oldCopy, oldPad);
-    SetFlag<HardEvent::MTE2_V>(mte2ToV);
-    WaitFlag<HardEvent::MTE2_V>(mte2ToV);
-    Cher2kDirectMergeTriangle(cAos, oldCAos, rowBase, colBase, validRows, validCols, upper);
-    PipeBarrier<PIPE_V>();
-    SetFlag<HardEvent::V_MTE3>(vToMte3);
-    WaitFlag<HardEvent::V_MTE3>(vToMte3);
-    DataCopyPad(cG[tileCOffset], upper ? oldCAos : cAos, mergedOutputCopy);
+    // The product planes are dead after the AoS Gather. Reuse the real
+    // plane for integer byte-offset tables and oldCAos for aligned output.
+    // No old C is loaded or written solely to preserve the other triangle.
+    triangle_store::StoreComplexDiagonal<blockRows>(
+        cG, cAos, oldCAos, indexScratch.ReinterpretCast<int32_t>(), tiling.ldc, rowBase, colBase, validRows, validCols,
+        upper, vToMte3);
 }
+template <uint32_t ROWS, uint32_t COLS>
 __aicore__ inline void Cher2kDirectPostprocessOneTask(
     GlobalTensor<float>& cG, GlobalTensor<float>& ws, const Cher2kTilingData& tiling, LocalTensor<float>& realLocal,
     LocalTensor<float>& imagLocal, LocalTensor<float>& cAos, LocalTensor<float>& oldCAos,
@@ -1535,8 +1572,8 @@ __aicore__ inline void Cher2kDirectPostprocessOneTask(
     uint32_t validCols, event_t mte2ToV, event_t vToMte2, event_t vToMte3, event_t mte3ToV, event_t vToScalar,
     event_t scalarToV)
 {
-    constexpr uint32_t blockRows = 64U;
-    constexpr uint32_t blockCols = 64U;
+    constexpr uint32_t blockRows = ROWS;
+    constexpr uint32_t blockCols = COLS;
     constexpr uint32_t aosElements = blockRows * blockCols * 2U;
     const uint64_t sourceOffset = static_cast<uint64_t>(colBase) * tiling.nAligned + rowBase;
     const uint32_t inputBlockLen = validRows * sizeof(float);
@@ -1552,23 +1589,27 @@ __aicore__ inline void Cher2kDirectPostprocessOneTask(
     DataCopyPad(imagLocal, ws[imagBase + sourceOffset], inputCopy, inputPad);
     SetFlag<HardEvent::MTE2_V>(mte2ToV);
     WaitFlag<HardEvent::MTE2_V>(mte2ToV);
-    Cher2kDirectApplyScaleAndBeta(
+    Cher2kDirectApplyScaleAndBeta<ROWS, COLS>(
         cG, realLocal, imagLocal, alphaImagScratch, alphaRealScratch, tiling, validRows, validCols, rowBase, colBase,
         unitAlphaNoBeta, alphaReal, alphaImag, betaValue, vToScalar, scalarToV);
-    Cher2kDirectZeroDiagonal(imagLocal, rowBase, colBase, validRows, validCols, vToScalar, scalarToV);
+    Cher2kDirectZeroDiagonal<ROWS>(imagLocal, rowBase, colBase, validRows, validCols, vToScalar, scalarToV);
     Gather(cAos, planar, interleaveOffset, 0U, aosElements);
-    SetFlag<HardEvent::V_MTE2>(vToMte2);
-    WaitFlag<HardEvent::V_MTE2>(vToMte2);
     SetFlag<HardEvent::V_MTE3>(vToMte3);
     WaitFlag<HardEvent::V_MTE3>(vToMte3);
     const bool fullySelected = upper ? colBase >= rowBase + validRows : colBase + validCols <= rowBase;
-    Cher2kDirectStoreTile(
-        cG, cAos, oldCAos, tiling, rowBase, colBase, validRows, validCols, upper, fullySelected, mte2ToV, vToMte3);
+    Cher2kDirectStoreTile<ROWS, COLS>(
+        cG, cAos, oldCAos, tiling, rowBase, colBase, validRows, validCols, upper, fullySelected, mte2ToV, vToMte3,
+        realLocal);
+    // realLocal holds the packing index tables until the suffix Gathers
+    // finish. Only now may the next product load reuse it on MTE2.
+    SetFlag<HardEvent::V_MTE2>(vToMte2);
+    WaitFlag<HardEvent::V_MTE2>(vToMte2);
     SetFlag<HardEvent::MTE3_V>(mte3ToV);
     WaitFlag<HardEvent::MTE3_V>(mte3ToV);
 }
 
 /** Execute the assigned direct-H triangular tile range. */
+template <uint32_t ROWS, uint32_t COLS>
 __aicore__ inline void Cher2kDirectPostprocessTasks(
     GlobalTensor<float>& cG, GlobalTensor<float>& ws, const Cher2kTilingData& tiling, LocalTensor<float>& realLocal,
     LocalTensor<float>& imagLocal, LocalTensor<float>& cAos, LocalTensor<float>& oldCAos,
@@ -1577,27 +1618,19 @@ __aicore__ inline void Cher2kDirectPostprocessTasks(
     float alphaReal, float alphaImag, float betaValue, uint32_t blockIdx, uint32_t blockNum, uint32_t rowTileCount,
     event_t mte2ToV, event_t vToMte2, event_t vToMte3, event_t mte3ToV, event_t vToScalar, event_t scalarToV)
 {
-    constexpr uint32_t blockRows = 64U;
-    constexpr uint32_t blockCols = 64U;
-    const uint64_t totalTasks = Cher2kTriangleTaskCount(tiling, rowTileCount, blockRows, blockCols, upper);
-    const uint32_t safeBlockNum = blockNum == 0U ? 1U : blockNum;
-    const uint64_t taskBegin = (static_cast<uint64_t>(blockIdx) * totalTasks) / safeBlockNum;
-    const uint64_t taskEnd = (static_cast<uint64_t>(blockIdx + 1U) * totalTasks) / safeBlockNum;
-    Cher2kTriangleCursor cursor;
-    Cher2kSeekTriangleTask(taskBegin, tiling, rowTileCount, blockRows, blockCols, upper, cursor);
-    for (uint64_t task = taskBegin; task < taskEnd; ++task) {
-        uint32_t rowBase = 0U;
-        uint32_t colBase = 0U;
-        uint32_t validRows = 0U;
-        uint32_t validCols = 0U;
-        Cher2kResolveTriangleTask(
-            task, tiling, rowTileCount, blockRows, blockCols, upper, cursor, rowBase, colBase, validRows, validCols);
-        Cher2kDirectPostprocessOneTask(
+    constexpr uint32_t blockRows = ROWS;
+    constexpr uint32_t blockCols = COLS;
+    Cher2kAssignedTriangle range;
+    range.Init(tiling, blockIdx, blockNum, rowTileCount, blockRows, blockCols, upper);
+    for (uint64_t task = range.begin; task < range.end; ++task) {
+        const Cher2kOutputTile tile = range.Resolve(task, tiling, rowTileCount, blockRows, blockCols, upper);
+        Cher2kDirectPostprocessOneTask<ROWS, COLS>(
             cG, ws, tiling, realLocal, imagLocal, cAos, oldCAos, alphaImagScratch, alphaRealScratch, planar,
-            interleaveOffset, realBase, imagBase, upper, unitAlphaNoBeta, alphaReal, alphaImag, betaValue, rowBase,
-            colBase, validRows, validCols, mte2ToV, vToMte2, vToMte3, mte3ToV, vToScalar, scalarToV);
+            interleaveOffset, realBase, imagBase, upper, unitAlphaNoBeta, alphaReal, alphaImag, betaValue, tile.rowBase,
+            tile.colBase, tile.validRows, tile.validCols, mte2ToV, vToMte2, vToMte3, mte3ToV, vToScalar, scalarToV);
     }
 }
+template <uint32_t ROWS, uint32_t COLS>
 struct Cher2kDirectPostprocessBuffers {
     TBuf<TPosition::VECCALC> interleaveOffsetBuf;
     TBuf<TPosition::VECCALC> planarBuf;
@@ -1615,7 +1648,7 @@ struct Cher2kDirectPostprocessBuffers {
 
     __aicore__ inline void Init(TPipe& pipe)
     {
-        constexpr uint32_t elements = 64U * 64U;
+        constexpr uint32_t elements = ROWS * COLS;
         pipe.InitBuffer(interleaveOffsetBuf, elements * 2U * sizeof(uint32_t));
         pipe.InitBuffer(planarBuf, elements * 2U * sizeof(float));
         pipe.InitBuffer(cAosBuf, elements * 2U * sizeof(float));
@@ -1632,9 +1665,10 @@ struct Cher2kDirectPostprocessBuffers {
     }
 };
 
+template <uint32_t ROWS, uint32_t COLS>
 __aicore__ inline void Cher2kRunDirectPostprocess(
     GM_ADDR c, GM_ADDR workspace, const Cher2kTilingData& tiling, GM_ADDR alpha, GM_ADDR beta,
-    Cher2kDirectPostprocessBuffers& buffers)
+    Cher2kDirectPostprocessBuffers<ROWS, COLS>& buffers)
 {
     GlobalTensor<float> cG;
     GlobalTensor<float> ws;
@@ -1651,17 +1685,18 @@ __aicore__ inline void Cher2kRunDirectPostprocess(
     Cher2kDirectEvents events;
     events.Init();
     uint32_t blockNum = static_cast<uint32_t>(GetBlockNum());
-    if (blockNum == 0U)
+    if (blockNum == 0U) {
         blockNum = 1U;
+    }
     float alphaReal = 0.0f;
     float alphaImag = 0.0f;
     float betaValue = 0.0f;
     Cher2kResolveScalars(tiling, alpha, beta, alphaReal, alphaImag, betaValue);
-    Cher2kDirectPostprocessTasks(
+    Cher2kDirectPostprocessTasks<ROWS, COLS>(
         cG, ws, tiling, buffers.realLocal, buffers.imagLocal, buffers.cAos, buffers.oldCAos, buffers.alphaImagScratch,
         buffers.alphaRealScratch, buffers.planar, buffers.interleaveOffset, realBase, imagBase,
         tiling.uplo == ACLBLAS_UPPER, alphaReal == 1.0f && alphaImag == 0.0f && betaValue == 0.0f, alphaReal, alphaImag,
-        betaValue, static_cast<uint32_t>(GetBlockIdx()), blockNum, (tiling.n + 63U) / 64U, events.mte2ToV,
+        betaValue, static_cast<uint32_t>(GetBlockIdx()), blockNum, (tiling.n + ROWS - 1U) / ROWS, events.mte2ToV,
         events.vToMte2, events.vToMte3, events.mte3ToV, events.vToScalar, events.scalarToV);
 }
 
@@ -1670,11 +1705,22 @@ extern "C" __global__ __aicore__ void cher2k_direct_hermitian_postprocess_kernel
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     Cher2kVectorMaskGuard maskGuard;
-    if (Cher2kIsNoOp(tiling, alpha, beta) || Cher2kSkipScalarGraph(alpha, beta, scalarDispatch))
+    if (Cher2kIsNoOp(tiling, alpha, beta) || Cher2kSkipScalarGraph(alpha, beta, scalarDispatch)) {
         return;
+    }
     TPipe pipe;
-    Cher2kDirectPostprocessBuffers buffers;
-    buffers.Init(pipe);
-    Cher2kBuildInterleaveOffsets(buffers.interleaveOffset, buffers.interleaveOffsetI32, 64U, 64U, 64U * 64U);
-    Cher2kRunDirectPostprocess(c, workspace, tiling, alpha, beta, buffers);
+    if (tiling.trans == ACLBLAS_OP_N) {
+        // Keep 4096 elements in UB, but make each column DMA four times
+        // longer than the narrow chunk consumer. Leading-dimension gaps
+        // then amortize over 2 KiB output bursts instead of short bursts.
+        Cher2kDirectPostprocessBuffers<256U, 16U> buffers;
+        buffers.Init(pipe);
+        Cher2kBuildInterleaveOffsets(buffers.interleaveOffset, buffers.interleaveOffsetI32, 256U, 16U, 4096U);
+        Cher2kRunDirectPostprocess(c, workspace, tiling, alpha, beta, buffers);
+    } else {
+        Cher2kDirectPostprocessBuffers<64U, 64U> buffers;
+        buffers.Init(pipe);
+        Cher2kBuildInterleaveOffsets(buffers.interleaveOffset, buffers.interleaveOffsetI32, 64U, 64U, 4096U);
+        Cher2kRunDirectPostprocess(c, workspace, tiling, alpha, beta, buffers);
+    }
 }

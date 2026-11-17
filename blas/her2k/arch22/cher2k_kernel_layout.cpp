@@ -150,9 +150,6 @@ constexpr bool CHER2K_TILE_MAJOR_EXPERIMENT = false;
 // at least one selected 64x64 sub-tile; the consumer applies the exact
 // element-level uplo mask for diagonal tiles.
 constexpr bool CHER2K_TRIANGLE_CUBE_EXPERIMENT = false;
-// Direct low-rank producer uses an explicit M -> MTE1 token when reusing the
-// single A2/B2 pair, avoiding a whole-pipeline barrier after every MMAD.
-constexpr bool CHER2K_DIRECT_EVENT_REUSE_EXPERIMENT = false;
 // Assign small consecutive tile groups to each core.  This preserves the
 // single-C accumulation path but changes only task locality; disabled until
 // measured because larger tile-major groups previously hurt overlap.
@@ -256,8 +253,9 @@ __aicore__ inline uint64_t Sgemm3WorkspaceFloatCount(uint32_t n, uint32_t k)
 
 __aicore__ inline bool Cher2kIsDeviceUnitScalar(GM_ADDR alpha, GM_ADDR beta)
 {
-    if (alpha == nullptr || beta == nullptr)
+    if (alpha == nullptr || beta == nullptr) {
         return false;
+    }
     __gm__ const float* alphaPtr = reinterpret_cast<__gm__ const float*>(alpha);
     __gm__ const float* betaPtr = reinterpret_cast<__gm__ const float*>(beta);
     return alphaPtr[0] == 1.0f && alphaPtr[1] == 0.0f && betaPtr[0] == 0.0f;
@@ -290,7 +288,9 @@ __aicore__ inline void Cher2kResolveScalars(
 // Resolve device values on every invocation before initializing kernel state.
 __aicore__ inline bool Cher2kIsNoOp(const Cher2kTilingData& tiling, GM_ADDR alpha, GM_ADDR beta)
 {
-    float alphaReal, alphaImag, betaValue;
+    float alphaReal;
+    float alphaImag;
+    float betaValue;
     Cher2kResolveScalars(tiling, alpha, beta, alphaReal, alphaImag, betaValue);
     return betaValue == 1.0f && (tiling.k == 0U || (alphaReal == 0.0f && alphaImag == 0.0f));
 }
@@ -305,14 +305,7 @@ __aicore__ inline void Cher2kInitLoadData3D(
     params.channelSize = channel;
     params.kExtension = extension;
     params.mExtension = width;
-    params.strideW = 1U;
-    params.strideH = 1U;
-    params.filterW = 1U;
-    params.filterH = 1U;
-    params.dilationFilterW = 1U;
-    params.dilationFilterH = 1U;
-    params.filterSizeW = false;
-    params.filterSizeH = false;
+    cube_load::InitUnitFilter(params);
     params.enTranspose = transpose;
     params.fMatrixCtrl = false;
 }
@@ -348,8 +341,9 @@ __aicore__ inline void Cher2kSeekTriangleTask(
 {
     while (cursor.rowTile < rowTileCount) {
         const uint32_t rowTasks = Cher2kTriangleRowTasks(tiling, cursor.rowTile, blockRows, blockCols, upper);
-        if (task < cursor.rowTaskBase + rowTasks)
+        if (task < cursor.rowTaskBase + rowTasks) {
             return;
+        }
         cursor.rowTaskBase += rowTasks;
         ++cursor.rowTile;
     }
@@ -377,6 +371,9 @@ __aicore__ inline void Cher2kBuildInterleaveOffsets(
         const uint32_t sourceIndex = (index & 1U) == 0U ? index / 2U : planeElements + index / 2U;
         offsets.SetValue(index, sourceIndex * sizeof(float));
     }
+    const auto seedToVector = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::S_V));
+    SetFlag<HardEvent::S_V>(seedToVector);
+    WaitFlag<HardEvent::S_V>(seedToVector);
     PipeBarrier<PIPE_ALL>();
     for (uint32_t col = 1U; col < cols; ++col) {
         Adds(offsetsI32[col * rows * 2U], offsetsI32, static_cast<int32_t>(col * rows * sizeof(float)), rows * 2U);
@@ -386,8 +383,9 @@ __aicore__ inline void Cher2kBuildInterleaveOffsets(
 
 __aicore__ inline bool Cher2kSkipScalarGraph(GM_ADDR alpha, GM_ADDR beta, uint32_t scalarDispatch)
 {
-    if (scalarDispatch == CHER2K_SCALAR_DISPATCH_ALL)
+    if (scalarDispatch == CHER2K_SCALAR_DISPATCH_ALL) {
         return false;
+    }
     const bool unitScalar = Cher2kIsDeviceUnitScalar(alpha, beta);
     return scalarDispatch == CHER2K_SCALAR_DISPATCH_UNIT ? !unitScalar : unitScalar;
 }
@@ -420,8 +418,9 @@ __aicore__ inline uint64_t WorkspaceFloatCount(uint32_t n, uint32_t k, bool useT
 {
     const uint64_t baseCount = OffsetIr(n, k) + static_cast<uint64_t>(n) * n;
     const uint64_t legacy = baseCount + (useThreeM ? static_cast<uint64_t>(n) * k : 0ULL);
-    if (panelCount == 0U)
+    if (panelCount == 0U) {
         return legacy;
+    }
     return legacy + 3ULL * static_cast<uint64_t>(panelCount) * n * n;
 }
 
@@ -501,8 +500,9 @@ __aicore__ inline void Cher2kPreprocessNormalCopy(
     const event_t event = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE2));
     SetFlag<HardEvent::V_MTE2>(event);
     WaitFlag<HardEvent::V_MTE2>(event);
-    if (validRows == 0U || validElements == 0U)
+    if (validRows == 0U || validElements == 0U) {
         return;
+    }
     const uint32_t blockLen = validElements * 2U * sizeof(float);
     const uint32_t alignedBlockLen = (blockLen + 31U) & ~31U;
     const DataCopyExtParams params{
@@ -535,10 +535,11 @@ __aicore__ inline void Cher2kPreprocessNormalConvertStore(
         PipeBarrier<PIPE_V>();
     }
     if (storeSum) {
-        if (directHermitian)
+        if (directHermitian) {
             Muls(sum, imag, -1.0f, batchElements);
-        else
+        } else {
             Add(sum, real, imag, batchElements);
+        }
     }
     outputQueue.EnQue(packed);
     inputQueue.FreeTensor(source);
@@ -615,8 +616,9 @@ extern "C" __global__ __aicore__ void cher2k_preprocess_normal_kernel(
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     Cher2kVectorMaskGuard maskGuard;
-    if (Cher2kSkipScalarGraph(alpha, beta, scalarDispatch))
+    if (Cher2kSkipScalarGraph(alpha, beta, scalarDispatch)) {
         return;
+    }
 
     TPipe pipe;
     TQue<TPosition::VECIN, 1> inputQueue;
@@ -649,8 +651,9 @@ extern "C" __global__ __aicore__ void cher2k_preprocess_normal_kernel(
         packedStride <= CHER2K_ROW_BATCH_ELEMENTS ? CHER2K_ROW_BATCH_ELEMENTS / safePackedStride : 1U;
     const uint32_t rowBatchCount = (packedRows + rowsPerBatch - 1U) / rowsPerBatch;
     uint32_t blockNum = static_cast<uint32_t>(GetBlockNum());
-    if (blockNum == 0U)
+    if (blockNum == 0U) {
         blockNum = 1U;
+    }
     Cher2kPreprocessNormalRun(
         inputQueue, outputQueue, aG, bG, ws, tiling, planeBase, packedStride, packedRows, rowBatchCount, blockNum);
 }
@@ -685,8 +688,9 @@ __aicore__ inline void Cher2kStoreNormalChunk(
     Cher2kStoreNormalPlane(ws, imagLocal, imagBase, outputOffset, batchRows, rowElements, packedStride, batchElements);
     SetFlag<HardEvent::MTE3_V>(eventMte3ToV);
     WaitFlag<HardEvent::MTE3_V>(eventMte3ToV);
-    if (tiling.useThreeM == 0U)
+    if (tiling.useThreeM == 0U) {
         return;
+    }
     if (tiling.directHermitianPath != 0U) {
         Muls(realLocal, imagLocal, -1.0f, batchElements);
     } else {
@@ -731,8 +735,9 @@ __aicore__ inline void Cher2kPreprocessNormalChunk(
     uint64_t reservedCount = 0ULL;
     GatherMask<float>(realLocal, aosLocal, 1U, false, 0U, {1U, repeats, 8U, 8U}, reservedCount);
     GatherMask<float>(imagLocal, aosLocal, 2U, false, 0U, {1U, repeats, 8U, 8U}, reservedCount);
-    if (conjugate)
+    if (conjugate) {
         Muls(imagLocal, imagLocal, -1.0f, batchElements);
+    }
     SetFlag<HardEvent::V_MTE3>(eventVToMte3);
     WaitFlag<HardEvent::V_MTE3>(eventVToMte3);
     const uint64_t outputOffset = static_cast<uint64_t>(firstRow) * packedStride + offset;
@@ -803,9 +808,11 @@ __aicore__ inline void Cher2kInitTransposeOffsets(
         }
     } else {
         CreateVecIndex(transOffsetI32, 0, CHER2K_TRANSPOSE_COLS);
+        PipeBarrier<PIPE_V>();
         Muls(
             transOffsetI32, transOffsetI32, static_cast<int32_t>(CHER2K_TRANSPOSE_ROWS * sizeof(float)),
             CHER2K_TRANSPOSE_COLS);
+        PipeBarrier<PIPE_V>();
         for (uint32_t row = 1U; row < CHER2K_TRANSPOSE_ROWS; ++row) {
             Adds(
                 transOffsetI32[row * CHER2K_TRANSPOSE_COLS], transOffsetI32, static_cast<int32_t>(row * sizeof(float)),
@@ -865,8 +872,9 @@ __aicore__ inline void Cher2kStorePackedOpcLeft(
     DataCopyPad(ws[arBase + outputOffset], realLocal, outputParams);
     DataCopyPad(ws[aiBase + outputOffset], imagLocal, outputParams);
     PipeBarrier<PIPE_ALL>();
-    if (tiling.useThreeM == 0U)
+    if (tiling.useThreeM == 0U) {
         return;
+    }
     Add(realLocal, realLocal, imagLocal, CHER2K_TRANSPOSE_ELEMENTS);
     PipeBarrier<PIPE_ALL>();
     SetFlag<HardEvent::V_MTE3>(eventVToMte3);
@@ -897,8 +905,9 @@ __aicore__ inline void Cher2kStoreTransposePlanes(
     DataCopyPad(ws[realBase + outputOffset], transRealLocal, outputParams);
     DataCopyPad(ws[imagBase + outputOffset], transImagLocal, outputParams);
     PipeBarrier<PIPE_ALL>();
-    if (tiling.useThreeM == 0U)
+    if (tiling.useThreeM == 0U) {
         return;
+    }
     if (directOpc || !CHER2K_DIRECT_AOS_GATHER_EXPERIMENT) {
         Add(realLocal, realLocal, imagLocal, CHER2K_TRANSPOSE_ELEMENTS);
     } else {
@@ -935,8 +944,9 @@ __aicore__ inline void Cher2kCopyTransposeAosTile(
         Duplicate(destination, 0.0f, CHER2K_TRANSPOSE_ELEMENTS * 2U);
         PipeBarrier<PIPE_ALL>();
     }
-    if (validRows == 0U || validCols == 0U)
+    if (validRows == 0U || validCols == 0U) {
         return;
+    }
     const uint32_t blockLen = validRows * 2U * sizeof(float);
     const uint32_t alignedBlockLen = (blockLen + 31U) & ~31U;
     const uint32_t rightPadding = (alignedBlockLen - blockLen) / sizeof(float);
@@ -962,16 +972,18 @@ __aicore__ inline void Cher2kLoadTransposeTile(
     } else if constexpr (CHER2K_DIRECT_AOS_GATHER_EXPERIMENT) {
         Gather<float>(transRealLocal, aosLocal, transOffsetLocal, 0U, CHER2K_TRANSPOSE_ELEMENTS);
         Gather<float>(transImagLocal, aosLocal, transOffsetImagLocal, 0U, CHER2K_TRANSPOSE_ELEMENTS);
-        if (matrix == 0U)
+        if (matrix == 0U) {
             Muls(transImagLocal, transImagLocal, -1.0f, CHER2K_TRANSPOSE_ELEMENTS);
+        }
     } else {
         uint64_t reservedCount = 0ULL;
         GatherMask<float>(
             realLocal, aosLocal, 1U, false, 0U, {1U, CHER2K_TRANSPOSE_ELEMENTS * 2U / 64U, 8U, 8U}, reservedCount);
         GatherMask<float>(
             imagLocal, aosLocal, 2U, false, 0U, {1U, CHER2K_TRANSPOSE_ELEMENTS * 2U / 64U, 8U, 8U}, reservedCount);
-        if (matrix == 0U && !directOutputOpc)
+        if (matrix == 0U && !directOutputOpc) {
             Muls(imagLocal, imagLocal, -1.0f, CHER2K_TRANSPOSE_ELEMENTS);
+        }
     }
     Cher2kPreprocessVectorBarrier();
 }
@@ -1053,6 +1065,29 @@ __aicore__ inline void Cher2kCopyFusedAos(
     PipeBarrier<PIPE_ALL>();
 }
 
+__aicore__ inline void Cher2kGatherFusedPlanes(
+    LocalTensor<float>& matrixAos, LocalTensor<float>& realLocal, LocalTensor<float>& imagLocal,
+    LocalTensor<float>& transRealLocal, LocalTensor<float>& transImagLocal, LocalTensor<uint32_t>& transOffsetLocal,
+    LocalTensor<uint32_t>& transOffsetImagLocal, uint32_t matrix)
+{
+    if constexpr (CHER2K_DIRECT_AOS_GATHER_EXPERIMENT) {
+        Gather<float>(transRealLocal, matrixAos, transOffsetLocal, 0U, CHER2K_TRANSPOSE_ELEMENTS);
+        Gather<float>(transImagLocal, matrixAos, transOffsetImagLocal, 0U, CHER2K_TRANSPOSE_ELEMENTS);
+        if (matrix == 0U) {
+            Muls(transImagLocal, transImagLocal, -1.0f, CHER2K_TRANSPOSE_ELEMENTS);
+        }
+    } else {
+        uint64_t reservedCount = 0ULL;
+        GatherMask<float>(
+            realLocal, matrixAos, 1U, false, 0U, {1U, CHER2K_TRANSPOSE_ELEMENTS * 2U / 64U, 8U, 8U}, reservedCount);
+        GatherMask<float>(
+            imagLocal, matrixAos, 2U, false, 0U, {1U, CHER2K_TRANSPOSE_ELEMENTS * 2U / 64U, 8U, 8U}, reservedCount);
+        if (matrix == 0U) {
+            Muls(imagLocal, imagLocal, -1.0f, CHER2K_TRANSPOSE_ELEMENTS);
+        }
+    }
+}
+
 __aicore__ inline void Cher2kProcessFusedOutput(
     GlobalTensor<float>& ws, LocalTensor<float>& matrixAos, LocalTensor<float>& realLocal,
     LocalTensor<float>& imagLocal, LocalTensor<float>& transRealLocal, LocalTensor<float>& transImagLocal,
@@ -1060,20 +1095,9 @@ __aicore__ inline void Cher2kProcessFusedOutput(
     const Cher2kTilingData& tiling, const DataCopyExtParams& outputParams, uint64_t outputOffset, uint64_t realBase,
     uint64_t imagBase, uint64_t sumBase, uint32_t matrix)
 {
-    if constexpr (CHER2K_DIRECT_AOS_GATHER_EXPERIMENT) {
-        Gather<float>(transRealLocal, matrixAos, transOffsetLocal, 0U, CHER2K_TRANSPOSE_ELEMENTS);
-        Gather<float>(transImagLocal, matrixAos, transOffsetImagLocal, 0U, CHER2K_TRANSPOSE_ELEMENTS);
-        if (matrix == 0U)
-            Muls(transImagLocal, transImagLocal, -1.0f, CHER2K_TRANSPOSE_ELEMENTS);
-    } else {
-        uint64_t reservedCount = 0ULL;
-        GatherMask<float>(
-            realLocal, matrixAos, 1U, false, 0U, {1U, CHER2K_TRANSPOSE_ELEMENTS * 2U / 64U, 8U, 8U}, reservedCount);
-        GatherMask<float>(
-            imagLocal, matrixAos, 2U, false, 0U, {1U, CHER2K_TRANSPOSE_ELEMENTS * 2U / 64U, 8U, 8U}, reservedCount);
-        if (matrix == 0U)
-            Muls(imagLocal, imagLocal, -1.0f, CHER2K_TRANSPOSE_ELEMENTS);
-    }
+    Cher2kGatherFusedPlanes(
+        matrixAos, realLocal, imagLocal, transRealLocal, transImagLocal, transOffsetLocal, transOffsetImagLocal,
+        matrix);
     Cher2kPreprocessVectorBarrier();
     if constexpr (!CHER2K_DIRECT_AOS_GATHER_EXPERIMENT) {
         TransposePreprocessTile<CHER2K_VECTOR_TRANSPOSE_EXPERIMENT>(
@@ -1085,8 +1109,9 @@ __aicore__ inline void Cher2kProcessFusedOutput(
     DataCopyPad(ws[realBase + outputOffset], transRealLocal, outputParams);
     DataCopyPad(ws[imagBase + outputOffset], transImagLocal, outputParams);
     PipeBarrier<PIPE_ALL>();
-    if (tiling.useThreeM == 0U)
+    if (tiling.useThreeM == 0U) {
         return;
+    }
     if (tiling.directHermitianPath != 0U) {
         Muls(transRealLocal, transImagLocal, -1.0f, CHER2K_TRANSPOSE_ELEMENTS);
     } else if constexpr (CHER2K_DIRECT_AOS_GATHER_EXPERIMENT) {
@@ -1181,7 +1206,7 @@ __aicore__ inline void Cher2kPreprocessTransposePath(
     PipeBarrier<PIPE_ALL>();
 }
 /** Common physical MMAD implementation for the regular Cube path. */
-class Cher2kPhysicalMmad {
+class Cher2kKernelLayout {
 public:
     __aicore__ inline void Init(
         __gm__ float* ar, __gm__ float* ai, __gm__ float* br, __gm__ float* bi, __gm__ float* sumA, __gm__ float* sumB,
@@ -1229,279 +1254,6 @@ public:
         InitMmadParams();
     }
 
-private:
-    __aicore__ inline void InitCopyParams()
-    {
-        aCopyParams_ = {};
-        aCopyParams_.ndNum = 1;
-        aCopyParams_.nValue = transA_ ? CHER2K_CUBE_K : CHER2K_CUBE_M;
-        aCopyParams_.dValue = transA_ ? CHER2K_CUBE_M : CHER2K_CUBE_K;
-        aCopyParams_.srcNdMatrixStride = 0;
-        aCopyParams_.srcDValue = transA_ ? n_ : k_;
-        aCopyParams_.dstNzC0Stride = transA_ ? CHER2K_CUBE_K : CHER2K_CUBE_M;
-        aCopyParams_.dstNzNStride = 1;
-        aCopyParams_.dstNzMatrixStride = 0;
-        bNzParams_ = {};
-        bNzParams_.ndNum = 1;
-        bNzParams_.nValue = transB_ ? CHER2K_CUBE_N : CHER2K_CUBE_K;
-        bNzParams_.dValue = transB_ ? CHER2K_CUBE_K : CHER2K_CUBE_N;
-        bNzParams_.srcNdMatrixStride = 0;
-        bNzParams_.srcDValue = transB_ ? k_ : n_;
-        bNzParams_.dstNzC0Stride = transB_ ? CHER2K_CUBE_N : CHER2K_CUBE_K;
-        bNzParams_.dstNzNStride = 1;
-        bNzParams_.dstNzMatrixStride = 0;
-    }
-
-    __aicore__ inline void InitLoadParams()
-    {
-        aLoadParams_ = {};
-        aLoadParams_.l1H = 1U;
-        aLoadParams_.l1W = transA_ ? CHER2K_CUBE_K : CHER2K_CUBE_M;
-        aLoadParams_.channelSize = transA_ ? CHER2K_CUBE_M : CHER2K_CUBE_K;
-        aLoadParams_.kExtension = transA_ ? CHER2K_CUBE_M : CHER2K_CUBE_K;
-        aLoadParams_.mExtension = transA_ ? CHER2K_CUBE_K : CHER2K_CUBE_M;
-        aLoadParams_.strideW = 1U;
-        aLoadParams_.strideH = 1U;
-        aLoadParams_.filterW = 1U;
-        aLoadParams_.filterH = 1U;
-        aLoadParams_.dilationFilterW = 1U;
-        aLoadParams_.dilationFilterH = 1U;
-        aLoadParams_.filterSizeW = false;
-        aLoadParams_.filterSizeH = false;
-        aLoadParams_.enTranspose = transA_;
-        aLoadParams_.fMatrixCtrl = false;
-        bLoadParams_ = aLoadParams_;
-        bLoadParams_.l1W = transB_ ? CHER2K_CUBE_N : CHER2K_CUBE_K;
-        bLoadParams_.channelSize = transB_ ? CHER2K_CUBE_K : CHER2K_CUBE_N;
-        bLoadParams_.kExtension = transB_ ? CHER2K_CUBE_K : CHER2K_CUBE_N;
-        bLoadParams_.mExtension = transB_ ? CHER2K_CUBE_N : CHER2K_CUBE_K;
-        bLoadParams_.enTranspose = true;
-    }
-
-    __aicore__ inline void InitPanelParams()
-    {
-        aPanelCopyParams_ = aCopyParams_;
-        aPanelCopyParams_.nValue = transA_ ? CHER2K_L1_PANEL_K : CHER2K_CUBE_M;
-        aPanelCopyParams_.dValue = transA_ ? CHER2K_CUBE_M : CHER2K_L1_PANEL_K;
-        aPanelCopyParams_.dstNzC0Stride = transA_ ? CHER2K_L1_PANEL_K : CHER2K_CUBE_M;
-        bPanelCopyParams_ = bNzParams_;
-        bPanelCopyParams_.nValue = transB_ ? CHER2K_CUBE_N : CHER2K_L1_PANEL_K;
-        bPanelCopyParams_.dValue = transB_ ? CHER2K_L1_PANEL_K : CHER2K_CUBE_N;
-        bPanelCopyParams_.dstNzC0Stride = transB_ ? CHER2K_CUBE_N : CHER2K_L1_PANEL_K;
-        aPanelLoadParams_ = aLoadParams_;
-        aPanelLoadParams_.l1W = transA_ ? CHER2K_L1_PANEL_K : CHER2K_CUBE_M;
-        aPanelLoadParams_.channelSize = transA_ ? CHER2K_CUBE_M : CHER2K_L1_PANEL_K;
-        bPanelLoadParams_ = bLoadParams_;
-        bPanelLoadParams_.l1W = transB_ ? CHER2K_CUBE_N : CHER2K_L1_PANEL_K;
-        for (uint32_t slice = 0U; slice < CHER2K_L1_PANEL_K / CHER2K_CUBE_K; ++slice) {
-            const uint32_t panelK = slice * CHER2K_CUBE_K;
-            aPanelLoadParamsSlices_[slice] = aPanelLoadParams_;
-            aPanelLoadParamsSlices_[slice].mStartPt = transA_ ? panelK : 0U;
-            aPanelLoadParamsSlices_[slice].kStartPt = transA_ ? 0U : panelK;
-            bPanelLoadParamsSlices_[slice] = bPanelLoadParams_;
-            bPanelLoadParamsSlices_[slice].mStartPt = transB_ ? 0U : panelK;
-            bPanelLoadParamsSlices_[slice].kStartPt = transB_ ? panelK : 0U;
-        }
-    }
-
-    __aicore__ inline void InitMmadParams()
-    {
-        firstMmadParams_ = {};
-        firstMmadParams_.m = CHER2K_CUBE_M;
-        firstMmadParams_.n = CHER2K_CUBE_N;
-        firstMmadParams_.k = CHER2K_CUBE_K;
-        firstMmadParams_.cmatrixInitVal = true;
-        firstMmadParams_.cmatrixSource = false;
-        firstMmadParams_.kDirectionAlign = false;
-        accumulateMmadParams_ = firstMmadParams_;
-        accumulateMmadParams_.cmatrixInitVal = false;
-    }
-
-    // Keep the product stream selection in one place.  ProcessImpl used to
-    // duplicate the 3M/4M dispatch (and the optional L0 ping-pong branch) in
-    // its hot loop, which made the scheduler difficult to audit.  The helper
-    // only selects the operand planes; all copies, barriers and MMAD ordering
-    // remain in ProcessProductSingle/ProcessProductSinglePingPong.
-    __aicore__ inline void ProcessSelectedProduct(
-        LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
-        LocalTensor<float>& c1, GlobalTensor<float>& left, GlobalTensor<float>& right, GlobalTensor<float>& output,
-        uint32_t mBase, uint32_t nBase)
-    {
-        if constexpr (CHER2K_ENABLE_L0_PINGPONG_EXPERIMENT) {
-            ProcessProductSinglePingPong(a1, b1, a2, b2, c1, left, right, output, mBase, nBase);
-        } else {
-            ProcessProductSingle(a1, b1, a2, b2, c1, left, right, output, mBase, nBase);
-        }
-    }
-
-    template <bool USE_THREE_M>
-    __aicore__ inline void ProcessProductByIndex(
-        LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
-        LocalTensor<float>& c1, uint32_t product, uint32_t mBase, uint32_t nBase)
-    {
-        if constexpr (USE_THREE_M) {
-            if (product == 0U) {
-                ProcessSelectedProduct(a1, b1, a2, b2, c1, sumA_, sumB_, rr_, mBase, nBase);
-            } else if (product == 1U) {
-                ProcessSelectedProduct(a1, b1, a2, b2, c1, ar_, br_, ri_, mBase, nBase);
-            } else {
-                ProcessSelectedProduct(a1, b1, a2, b2, c1, ai_, bi_, ir_, mBase, nBase);
-            }
-        } else {
-            if (product == 0U) {
-                ProcessSelectedProduct(a1, b1, a2, b2, c1, ar_, br_, rr_, mBase, nBase);
-            } else if (product == 1U) {
-                ProcessSelectedProduct(a1, b1, a2, b2, c1, ai_, bi_, ii_, mBase, nBase);
-            } else if (product == 2U) {
-                ProcessSelectedProduct(a1, b1, a2, b2, c1, ar_, bi_, ri_, mBase, nBase);
-            } else {
-                ProcessSelectedProduct(a1, b1, a2, b2, c1, ai_, br_, ir_, mBase, nBase);
-            }
-        }
-    }
-
-    __aicore__ inline bool IsCubeTriangleTile(uint32_t tileRow, uint32_t tileCol)
-    {
-        // Cube tiles are 256x128 while postprocess tiles are 64x64.  A cube
-        // tile is retained when any contained 64x64 tile belongs to uplo.
-        constexpr uint32_t cubeRowTiles = CHER2K_CUBE_M / 64U;
-        constexpr uint32_t cubeColTiles = CHER2K_CUBE_N / 64U;
-        const uint32_t rowFirst = tileRow * cubeRowTiles;
-        const uint32_t rowLast = rowFirst + cubeRowTiles - 1U;
-        const uint32_t colFirst = tileCol * cubeColTiles;
-        const uint32_t colLast = colFirst + cubeColTiles - 1U;
-        return tilingUplo_ == ACLBLAS_UPPER ? rowFirst <= colLast : rowLast >= colFirst;
-    }
-
-    __aicore__ inline void AdvanceProductTile(
-        uint32_t& product, uint32_t& tileRow, uint32_t& tileCol, uint32_t nTiles, uint32_t productCount,
-        uint32_t taskStep)
-    {
-        const uint32_t advancedProduct = product + taskStep;
-        const uint32_t tileAdvance = advancedProduct / (productCount == 0U ? 1U : productCount);
-        product = advancedProduct - tileAdvance * productCount;
-        for (uint32_t advance = 0U; advance < tileAdvance; ++advance) {
-            ++tileCol;
-            if (tileCol == nTiles) {
-                tileCol = 0U;
-                ++tileRow;
-            }
-        }
-    }
-
-    template <bool USE_THREE_M>
-    __aicore__ inline void ProcessTileStream(
-        LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
-        LocalTensor<float>& c1, uint64_t taskBegin, uint64_t taskEnd, uint64_t taskStep, uint32_t nTiles,
-        uint32_t productCount)
-    {
-        uint64_t task = taskBegin;
-        const uint32_t safeProductCount = productCount == 0U ? 1U : productCount;
-        const uint32_t safeNTiles = nTiles == 0U ? 1U : nTiles;
-        uint64_t tile = task / safeProductCount;
-        uint32_t product = static_cast<uint32_t>(task - tile * safeProductCount);
-        uint32_t tileRow = static_cast<uint32_t>(tile / safeNTiles);
-        uint32_t tileCol = static_cast<uint32_t>(tile - static_cast<uint64_t>(tileRow) * safeNTiles);
-        for (; task < taskEnd; task += taskStep) {
-            const uint32_t mBase = tileRow * CHER2K_CUBE_M;
-            const uint32_t nBase = tileCol * CHER2K_CUBE_N;
-            if constexpr (CHER2K_TRIANGLE_CUBE_EXPERIMENT) {
-                if (!IsCubeTriangleTile(tileRow, tileCol)) {
-                    AdvanceProductTile(
-                        product, tileRow, tileCol, nTiles, productCount, static_cast<uint32_t>(taskStep));
-                    continue;
-                }
-            }
-            ProcessProductByIndex<USE_THREE_M>(a1, b1, a2, b2, c1, product, mBase, nBase);
-            AdvanceProductTile(product, tileRow, tileCol, nTiles, productCount, static_cast<uint32_t>(taskStep));
-        }
-    }
-
-    template <bool USE_THREE_M>
-    __aicore__ inline void ProcessTileMajor(
-        LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
-        LocalTensor<float>& c1, uint64_t tileCount, uint32_t nTiles, uint32_t taskIndex, uint32_t taskStride)
-    {
-        for (uint64_t tile = taskIndex; tile < tileCount; tile += taskStride) {
-            const uint32_t safeNTiles = nTiles == 0U ? 1U : nTiles;
-            const uint32_t mBase = static_cast<uint32_t>((tile / safeNTiles) * CHER2K_CUBE_M);
-            const uint32_t nBase = static_cast<uint32_t>((tile % safeNTiles) * CHER2K_CUBE_N);
-            if constexpr (USE_THREE_M) {
-                ProcessProductByIndex<true>(a1, b1, a2, b2, c1, 0U, mBase, nBase);
-                ProcessProductByIndex<true>(a1, b1, a2, b2, c1, 1U, mBase, nBase);
-                ProcessProductByIndex<true>(a1, b1, a2, b2, c1, 2U, mBase, nBase);
-            } else {
-                ProcessProductByIndex<false>(a1, b1, a2, b2, c1, 0U, mBase, nBase);
-                ProcessProductByIndex<false>(a1, b1, a2, b2, c1, 1U, mBase, nBase);
-                ProcessProductByIndex<false>(a1, b1, a2, b2, c1, 2U, mBase, nBase);
-                ProcessProductByIndex<false>(a1, b1, a2, b2, c1, 3U, mBase, nBase);
-            }
-        }
-    }
-
-    __aicore__ inline void ProcessGroupedThreeM(
-        LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
-        LocalTensor<float>& c1, uint64_t tileCount, uint32_t nTiles, uint32_t taskIndex, uint32_t taskStride)
-    {
-        const uint64_t groupCount = (tileCount + CHER2K_TILE_GROUP_SIZE - 1U) / CHER2K_TILE_GROUP_SIZE;
-        for (uint64_t group = taskIndex; group < groupCount; group += taskStride) {
-            const uint64_t firstTile = group * CHER2K_TILE_GROUP_SIZE;
-            const uint64_t lastTile = min(tileCount, firstTile + CHER2K_TILE_GROUP_SIZE);
-            for (uint64_t tile = firstTile; tile < lastTile; ++tile) {
-                const uint32_t mBase = static_cast<uint32_t>((tile / (nTiles == 0U ? 1U : nTiles)) * CHER2K_CUBE_M);
-                const uint32_t nBase = static_cast<uint32_t>((tile % (nTiles == 0U ? 1U : nTiles)) * CHER2K_CUBE_N);
-                ProcessProductByIndex<true>(a1, b1, a2, b2, c1, 0U, mBase, nBase);
-                ProcessProductByIndex<true>(a1, b1, a2, b2, c1, 1U, mBase, nBase);
-                ProcessProductByIndex<true>(a1, b1, a2, b2, c1, 2U, mBase, nBase);
-            }
-        }
-    }
-
-    __aicore__ inline void BeginProductStreamEvents()
-    {
-        SetFlag<HardEvent::FIX_M>(EVENT_ID0);
-        if constexpr (CHER2K_L1_PINGPONG_EXPERIMENT) {
-            SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
-            SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID1);
-            SetFlag<HardEvent::M_MTE1>(EVENT_ID2);
-        } else if constexpr (CHER2K_ENABLE_L0_PINGPONG_EXPERIMENT) {
-            SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
-            SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID1);
-            SetFlag<HardEvent::M_MTE1>(EVENT_ID0);
-            SetFlag<HardEvent::M_MTE1>(EVENT_ID1);
-        } else if constexpr (!CHER2K_L1_SLICE_PREFETCH_EXPERIMENT) {
-            SetFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
-        }
-        SetHF32Mode(HF32Mode::DISABLE);
-    }
-
-    __aicore__ inline void EndProductStreamEvents()
-    {
-        if constexpr (!CHER2K_L1_SLICE_PREFETCH_EXPERIMENT) {
-            WaitFlag<HardEvent::MTE1_MTE2>(EVENT_ID0);
-        }
-        WaitFlag<HardEvent::FIX_M>(EVENT_ID0);
-    }
-
-    template <bool USE_THREE_M>
-    __aicore__ inline bool ProcessSpecialProductSchedule(
-        LocalTensor<float>& a1, LocalTensor<float>& b1, LocalTensor<float>& a2, LocalTensor<float>& b2,
-        LocalTensor<float>& c1, uint64_t tileCount, uint32_t nTiles, uint32_t taskIndex, uint32_t taskStride)
-    {
-        if constexpr (CHER2K_TILE_GROUP_EXPERIMENT && USE_THREE_M) {
-            ProcessGroupedThreeM(a1, b1, a2, b2, c1, tileCount, nTiles, taskIndex, taskStride);
-            EndProductStreamEvents();
-            return true;
-        }
-        if constexpr (CHER2K_TILE_MAJOR_EXPERIMENT) {
-            ProcessTileMajor<USE_THREE_M>(a1, b1, a2, b2, c1, tileCount, nTiles, taskIndex, taskStride);
-            EndProductStreamEvents();
-            return true;
-        }
-        return false;
-    }
-
-public:
     // Known-correct single-C-tile path. Keep this as the active route while
     // the paired-C diagnostic path below is isolated and investigated.
     // Product count is a compile-time parameter in the hot loop. The host
@@ -1524,15 +1276,16 @@ public:
         constexpr uint32_t productCount = USE_THREE_M ? 3U : 4U;
         const uint64_t taskCount = tileCount * productCount;
         constexpr uint32_t l1BufferCount = CHER2K_L1_PINGPONG_EXPERIMENT ? 2U : 1U;
-        LocalTensor<float> a1(TPosition::A1, 0U, aL1Size * l1BufferCount);
+        LocalTensor<float> a1{TPosition::A1, 0U, aL1Size * l1BufferCount};
         LocalTensor<float> b1(
             TPosition::B1, static_cast<uint64_t>(aL1Size * l1BufferCount) * sizeof(float), bL1Size * l1BufferCount);
-        LocalTensor<float> a2(TPosition::A2, 0U, aSize);
-        LocalTensor<float> b2(TPosition::B2, 0U, bSize);
-        LocalTensor<float> c1(TPosition::CO1, 0U, cSize);
+        LocalTensor<float> a2{TPosition::A2, 0U, aSize};
+        LocalTensor<float> b2{TPosition::B2, 0U, bSize};
+        LocalTensor<float> c1{TPosition::CO1, 0U, cSize};
         BeginProductStreamEvents();
-        if (ProcessSpecialProductSchedule<USE_THREE_M>(a1, b1, a2, b2, c1, tileCount, nTiles, taskIndex, taskStride))
+        if (ProcessSpecialProductSchedule<USE_THREE_M>(a1, b1, a2, b2, c1, tileCount, nTiles, taskIndex, taskStride)) {
             return;
+        }
         uint64_t taskBegin = taskIndex;
         uint64_t taskEnd = taskCount;
         uint64_t taskStep = taskStride;
@@ -1579,9 +1332,21 @@ public:
         static constexpr uint32_t signedPanelCount = 5U;
         static constexpr uint32_t aSliceSlots = 2U;
         static constexpr uint32_t aPlaneCapacity = aSliceSlots * aSize;
-        LocalTensor<float> aAr1, aAi1, aBr1, aBi1, aNegAi1;
-        LocalTensor<float> bBr1, bPosBi1, bAr1, bNegAi1, bAi1, bExtra1;
-        LocalTensor<float> a2, b2, realC1, imagC1;
+        LocalTensor<float> aAr1;
+        LocalTensor<float> aAi1;
+        LocalTensor<float> aBr1;
+        LocalTensor<float> aBi1;
+        LocalTensor<float> aNegAi1;
+        LocalTensor<float> bBr1;
+        LocalTensor<float> bPosBi1;
+        LocalTensor<float> bAr1;
+        LocalTensor<float> bNegAi1;
+        LocalTensor<float> bAi1;
+        LocalTensor<float> bExtra1;
+        LocalTensor<float> a2;
+        LocalTensor<float> b2;
+        LocalTensor<float> realC1;
+        LocalTensor<float> imagC1;
         Nd2NzParams aCopy{};
         Nd2NzParams bNzParams{};
         LoadData3DParamsV2<float> aLoad{};
@@ -1643,7 +1408,11 @@ public:
     };
 
     struct Cher2kDirectHermitianSlice {
-        LocalTensor<float> aAr, aAi, aBr, aBi, aNegAi;
+        LocalTensor<float> aAr;
+        LocalTensor<float> aAi;
+        LocalTensor<float> aBr;
+        LocalTensor<float> aBi;
+        LocalTensor<float> aNegAi;
         Nd2NzParams aCopy{};
         Nd2NzParams bCopyParams{};
         LoadData3DParamsV2<float> aLoad{};
@@ -1694,12 +1463,14 @@ public:
         Cher2kDirectHermitianState& state, Cher2kDirectHermitianSlice& sliceState, LocalTensor<float>& output,
         LocalTensor<float>& left, LocalTensor<float>& right, bool initialize)
     {
+        // The preceding MMAD must release the shared L0A/L0B pair.
+        WaitFlag<HardEvent::M_MTE1>(EVENT_ID0);
         LoadData(state.b2, right, sliceState.bLoad);
         LoadData(state.a2, left, sliceState.aLoad);
         SetFlag<HardEvent::MTE1_M>(EVENT_ID0);
         WaitFlag<HardEvent::MTE1_M>(EVENT_ID0);
         Mmad(output, state.a2, state.b2, initialize ? sliceState.first : sliceState.accum);
-        PipeBarrier<PIPE_ALL>();
+        SetFlag<HardEvent::M_MTE1>(EVENT_ID0);
     }
 
     __aicore__ inline void ComputeDirectHermitianSlice(
@@ -1736,16 +1507,18 @@ public:
             DataCopy(sliceState.aBr, br_[rowOffset], sliceState.aCopy);
             DataCopy(sliceState.aBi, bi_[rowOffset], sliceState.aCopy);
             DataCopy(sliceState.aNegAi, state.directOpc ? ai_[rowOffset] : sumA_[rowOffset], sliceState.aCopy);
-            if (sliceCount == 3U && slice != 1U)
+            if (sliceCount == 3U && slice != 1U) {
                 slot0Slice = slice;
+            }
         }
         DataCopy(state.bBr1, br_[colOffset], sliceState.bCopyParams);
         DataCopy(state.bPosBi1, state.directOpc ? bi_[colOffset] : sumB_[colOffset], sliceState.bCopyParams);
         DataCopy(state.bAr1, ar_[colOffset], sliceState.bCopyParams);
         DataCopy(state.bNegAi1, sumA_[colOffset], sliceState.bCopyParams);
         DataCopy(state.bAi1, state.directOpc ? sumB_[colOffset] : ai_[colOffset], sliceState.bCopyParams);
-        if (state.directOpc)
+        if (state.directOpc) {
             DataCopy(state.bExtra1, ai_[colOffset], sliceState.bCopyParams);
+        }
         SetFlag<HardEvent::MTE2_MTE1>(EVENT_ID0);
         WaitFlag<HardEvent::MTE2_MTE1>(EVENT_ID0);
     }
