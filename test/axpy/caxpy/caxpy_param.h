@@ -20,6 +20,8 @@ struct CaxpyParam : public BlasTestParamBase {
     int incy = 1;
     float alphaReal = 1.0f;
     float alphaImag = 0.0f;
+    BlasFillMode x = BlasFillMode("INDEX");
+    BlasFillMode y = BlasFillMode("INDEX");
     int nullx = 0;
     int nully = 0;
     int measure = 0;
@@ -33,6 +35,8 @@ struct CaxpyParam : public BlasTestParamBase {
         incy = parseInt(ReadMap(csv, "incy", "1"));
         alphaReal = parseFloat(ReadMap(csv, "alpha_real", "1.0"));
         alphaImag = parseFloat(ReadMap(csv, "alpha_imag", "0.0"));
+        x = BlasFillMode(ReadMap(csv, "x_fill", "INDEX"));
+        y = BlasFillMode(ReadMap(csv, "y_fill", "INDEX"));
         nullx = parseInt(ReadMap(csv, "nullx", "0"));
         nully = parseInt(ReadMap(csv, "nully", "0"));
         measure = parseInt(ReadMap(csv, "measure", "0"));

@@ -37,6 +37,62 @@ INSTANTIATE_TEST_SUITE_P(
     Caxpy, CaxpyArch35Test, ::testing::ValuesIn(GetCasesFromCsv<CaxpyParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<CaxpyParam>);
 
+// Verify the logical positions of y against the CPU golden with mixed tolerance.
+static void VerifyLogicalPositions(
+    const CaxpyParam& p, const std::vector<aclblasComplex>& y, const std::vector<aclblasComplex>& goldenY,
+    const std::vector<int64_t>& logicalOffsets)
+{
+    std::vector<float> outputReal(logicalOffsets.size());
+    std::vector<float> outputImag(logicalOffsets.size());
+    std::vector<float> goldenReal(logicalOffsets.size());
+    std::vector<float> goldenImag(logicalOffsets.size());
+    for (size_t i = 0; i < logicalOffsets.size(); ++i) {
+        size_t offset = static_cast<size_t>(logicalOffsets[i]);
+        outputReal[i] = y[offset].real;
+        outputImag[i] = y[offset].imag;
+        goldenReal[i] = goldenY[offset].real;
+        goldenImag[i] = goldenY[offset].imag;
+    }
+    VerifyConfig config;
+    applyMixedTolerance(config, ACL_FLOAT, goldenReal.data(), goldenReal.size());
+    EXPECT_TRUE(Verifier::verifyVector(
+        outputReal.data(), goldenReal.data(), goldenReal.size(), 1, config, p.caseName + "_real"));
+    EXPECT_TRUE(Verifier::verifyVector(
+        outputImag.data(), goldenImag.data(), goldenImag.size(), 1, config, p.caseName + "_imag"));
+}
+
+// Full-span gap guard (mirrors scopy_test.cpp): with incy > 1 the elements between logical
+// positions must keep their pre-call content, so an out-of-footprint write of the kernel is
+// caught by an EXACT comparison instead of being silently skipped by the n-element loop.
+static void VerifyGapUnwritten(
+    const CaxpyParam& p, const std::vector<aclblasComplex>& y, const std::vector<aclblasComplex>& yPreCall,
+    int64_t ySpan, const std::vector<int64_t>& logicalOffsets)
+{
+    std::vector<bool> isLogical(static_cast<size_t>(ySpan), false);
+    for (int64_t offset : logicalOffsets) {
+        isLogical[static_cast<size_t>(offset)] = true;
+    }
+    std::vector<float> gapYReal;
+    std::vector<float> gapYImag;
+    std::vector<float> gapGoldenReal;
+    std::vector<float> gapGoldenImag;
+    for (int64_t offset = 0; offset < ySpan; ++offset) {
+        if (isLogical[static_cast<size_t>(offset)]) {
+            continue;
+        }
+        gapYReal.push_back(y[static_cast<size_t>(offset)].real);
+        gapYImag.push_back(y[static_cast<size_t>(offset)].imag);
+        gapGoldenReal.push_back(yPreCall[static_cast<size_t>(offset)].real);
+        gapGoldenImag.push_back(yPreCall[static_cast<size_t>(offset)].imag);
+    }
+    VerifyConfig gapConfig;
+    gapConfig.mode = PrecisionMode::EXACT;
+    EXPECT_TRUE(Verifier::verifyVector(
+        gapYReal.data(), gapGoldenReal.data(), gapYReal.size(), 1, gapConfig, p.caseName + "_gap_real"));
+    EXPECT_TRUE(Verifier::verifyVector(
+        gapYImag.data(), gapGoldenImag.data(), gapYImag.size(), 1, gapConfig, p.caseName + "_gap_imag"));
+}
+
 TEST_P(CaxpyArch35Test, CsvDriven)
 {
     const auto& p = GetParam();
@@ -50,38 +106,29 @@ TEST_P(CaxpyArch35Test, CsvDriven)
 
     const aclblasComplex* xPointer = x.empty() ? nullptr : x.data();
     aclblasComplex* yPointer = y.empty() ? nullptr : y.data();
-    aclblasStatus_t status = aclblasCaxpy_npu(
-        CaxpyArch35Test::handle_, p.n, &alpha, xPointer, p.incx, yPointer, p.incy);
+    aclblasStatus_t status =
+        aclblasCaxpy_npu(CaxpyArch35Test::handle_, p.n, &alpha, xPointer, p.incx, yPointer, p.incy);
     EXPECT_EQ(status, p.expectResult);
     if (status != ACLBLAS_STATUS_SUCCESS || p.n <= 0) {
         return;
     }
 
-    std::vector<aclblasComplex> goldenX = makeBlasComplexMatrix(
-        static_cast<int>(xSpan), 1, static_cast<int>(xSpan), p.x, p.randomSeed);
-    std::vector<aclblasComplex> goldenY = makeBlasComplexMatrix(
-        static_cast<int>(ySpan), 1, static_cast<int>(ySpan), p.y, p.randomSeed + 1U);
+    std::vector<aclblasComplex> goldenX =
+        makeBlasComplexMatrix(static_cast<int>(xSpan), 1, static_cast<int>(xSpan), p.x, p.randomSeed);
+    std::vector<aclblasComplex> goldenY =
+        makeBlasComplexMatrix(static_cast<int>(ySpan), 1, static_cast<int>(ySpan), p.y, p.randomSeed + 1U);
+    // Pre-call snapshot of y: the CPU golden mutates the logical positions of goldenY, while
+    // the gap check below must compare against the untouched pre-call content.
+    const std::vector<aclblasComplex> yPreCall = goldenY;
     ASSERT_EQ(
         aclblasCaxpy_cpu(CaxpyArch35Test::handle_, p.n, &alpha, goldenX.data(), p.incx, goldenY.data(), p.incy),
         ACLBLAS_STATUS_SUCCESS);
 
-    std::vector<float> outputReal(static_cast<size_t>(p.n));
-    std::vector<float> outputImag(static_cast<size_t>(p.n));
-    std::vector<float> goldenReal(static_cast<size_t>(p.n));
-    std::vector<float> goldenImag(static_cast<size_t>(p.n));
+    std::vector<int64_t> logicalOffsets;
+    logicalOffsets.reserve(static_cast<size_t>(p.n));
     for (int i = 0; i < p.n; ++i) {
-        int64_t offset = caxpyCpuOffset(p.n, p.incy, i);
-        outputReal[static_cast<size_t>(i)] = y[static_cast<size_t>(offset)].real;
-        outputImag[static_cast<size_t>(i)] = y[static_cast<size_t>(offset)].imag;
-        goldenReal[static_cast<size_t>(i)] = goldenY[static_cast<size_t>(offset)].real;
-        goldenImag[static_cast<size_t>(i)] = goldenY[static_cast<size_t>(offset)].imag;
+        logicalOffsets.push_back(CaxpyStorageIndex(i, p.n, p.incy));
     }
-    VerifyConfig config;
-    applyMixedTolerance(config, ACL_FLOAT, goldenReal.data(), goldenReal.size());
-    EXPECT_TRUE(
-        Verifier::verifyVector(
-            outputReal.data(), goldenReal.data(), goldenReal.size(), 1, config, p.caseName + "_real"));
-    EXPECT_TRUE(
-        Verifier::verifyVector(
-            outputImag.data(), goldenImag.data(), goldenImag.size(), 1, config, p.caseName + "_imag"));
+    VerifyLogicalPositions(p, y, goldenY, logicalOffsets);
+    VerifyGapUnwritten(p, y, yPreCall, ySpan, logicalOffsets);
 }
