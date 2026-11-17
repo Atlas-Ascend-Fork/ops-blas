@@ -29,10 +29,30 @@
 #include "tensor_api/tensor.h"
 #include "cann_ops_blas_common.h"
 #include "common/helper/kernel_constant.h"
-#define KERNEL_UTILS_LITE
-#include "common/helper/kernel_utils.h"
+#include "common/helper/kernel_utils_lite.h"
 
-using namespace AscendC::Te;
+// Targeted using-declarations (not a blanket `using namespace`) to avoid leaking
+// the entire AscendC::Te symbol set into every translation unit that includes
+// this shared header (only these symbols are actually used below).
+using AscendC::Te::Copy;
+using AscendC::Te::CopyGM2L1;
+using AscendC::Te::CopyL0C2GM;
+using AscendC::Te::CopyL12L0A;
+using AscendC::Te::CopyL12L0B;
+using AscendC::Te::MakeCoord;
+using AscendC::Te::MakeCopy;
+using AscendC::Te::MakeFrameLayout;
+using AscendC::Te::MakeMemPtr;
+using AscendC::Te::MakeShape;
+using AscendC::Te::MakeTensor;
+using AscendC::Te::Mmad;
+using AscendC::Te::MmadAtom;
+using AscendC::Te::MmadOperation;
+using AscendC::Te::MmadParams;
+using AscendC::Te::MmadTraits;
+using AscendC::Te::NDExtLayoutPtn;
+using AscendC::Te::NZLayoutPtn;
+using AscendC::Te::ZNLayoutPtn;
 
 constexpr uint16_t PIPE_FLAG = 0;
 constexpr int64_t L0A_SIZE = 64 * 1024;
@@ -86,11 +106,11 @@ __aicore__ inline void TrsmGemmLoadL0Chunk(
     uint64_t l0Offset = HALF_L0_SIZE * l0BufId;
     AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0BufId);
     auto layoutAL0 = MakeFrameLayout<NZLayoutPtn, AscendC::Std::Int<FP32_C0>>(curML1, curKL0);
-    auto tensorAL0 = MakeTensor(MakeMemPtr<Location::L0A, T>(l0Offset), layoutAL0);
+    auto tensorAL0 = MakeTensor(MakeMemPtr<AscendC::Te::Location::L0A, T>(l0Offset), layoutAL0);
     auto tensorBlockAL1 = tensorAL1.Slice(MakeCoord(0, kL0Offset), MakeShape(curML1, curKL0));
     Copy(MakeCopy(CopyL12L0A{}), tensorAL0, tensorBlockAL1);
     auto layoutBL0 = MakeFrameLayout<ZNLayoutPtn, AscendC::Std::Int<FP32_C0>>(curKL0, nL0);
-    auto tensorBL0 = MakeTensor(MakeMemPtr<Location::L0B, T>(l0Offset), layoutBL0);
+    auto tensorBL0 = MakeTensor(MakeMemPtr<AscendC::Te::Location::L0B, T>(l0Offset), layoutBL0);
     auto tensorBlockBL1 = tensorBL1.Slice(MakeCoord(kL0Offset, 0), MakeShape(curKL0, nL0));
     Copy(MakeCopy(CopyL12L0B{}), tensorBL0, tensorBlockBL1);
     AscendC::SetFlag<AscendC::HardEvent::MTE1_M>(l0BufId);
@@ -110,7 +130,7 @@ __aicore__ inline void TrsmGemmL0MmadLoop(
     TrsmGemmLoadL0Chunk(tensorAL1, tensorBL1, curML1, curKL1, nL0, 0, l0PingPong);
 
     auto layoutL0C = MakeFrameLayout<NZLayoutPtn, AscendC::Std::Int<L0C_C0>>(curML1, nL0);
-    auto tensorL0C = MakeTensor(MakeMemPtr<Location::L0C, float>(0), layoutL0C);
+    auto tensorL0C = MakeTensor(MakeMemPtr<AscendC::Te::Location::L0C, float>(0), layoutL0C);
 
     for (uint64_t iter1 = 0; iter1 < kL0Iter; ++iter1) {
         uint64_t l0BufIdCur = (l0PingPong - 1) & 0x1;
@@ -129,9 +149,9 @@ __aicore__ inline void TrsmGemmL0MmadLoop(
             static_cast<uint16_t>(curML1), static_cast<uint16_t>(nL0), static_cast<uint16_t>(curKL0), unitFlag,
             (iter0 == 0 && iter1 == 0)};
         auto layoutAL0Cur = MakeFrameLayout<NZLayoutPtn, AscendC::Std::Int<FP32_C0>>(curML1, curKL0);
-        auto tensorAL0Cur = MakeTensor(MakeMemPtr<Location::L0A, T>(l0OffsetCur), layoutAL0Cur);
+        auto tensorAL0Cur = MakeTensor(MakeMemPtr<AscendC::Te::Location::L0A, T>(l0OffsetCur), layoutAL0Cur);
         auto layoutBL0Cur = MakeFrameLayout<ZNLayoutPtn, AscendC::Std::Int<FP32_C0>>(curKL0, nL0);
-        auto tensorBL0Cur = MakeTensor(MakeMemPtr<Location::L0B, T>(l0OffsetCur), layoutBL0Cur);
+        auto tensorBL0Cur = MakeTensor(MakeMemPtr<AscendC::Te::Location::L0B, T>(l0OffsetCur), layoutBL0Cur);
         Mmad(MmadAtom<MmadTraits<MmadOperation>>{}.with(mmadParams), tensorL0C, tensorAL0Cur, tensorBL0Cur);
         AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(l0BufIdCur);
     }
@@ -148,10 +168,10 @@ __aicore__ inline void TrsmGemmLoadL1Chunk(
     uint64_t aSideL1Size = RoundUp<uint64_t>(mL0, FRACTAL) * RoundUp<uint64_t>(curK, FP32_C0);
     uint64_t l1OffsetB = l1OffsetA + aSideL1Size * sizeof(float);
     auto tensorAL1 = MakeTensor(
-        MakeMemPtr<Location::L1, float>(l1OffsetA),
+        MakeMemPtr<AscendC::Te::Location::L1, float>(l1OffsetA),
         MakeFrameLayout<NZLayoutPtn, AscendC::Std::Int<FP32_C0>>(mL0, curK));
     auto tensorBL1 = MakeTensor(
-        MakeMemPtr<Location::L1, float>(l1OffsetB),
+        MakeMemPtr<AscendC::Te::Location::L1, float>(l1OffsetB),
         MakeFrameLayout<ZNLayoutPtn, AscendC::Std::Int<FP32_C0>>(curK, nL0));
     AscendC::WaitFlag<AscendC::HardEvent::MTE1_MTE2>(l1BufId);
     TrsmGemmCopyGM2L1(gmLeftTensor, tensorAL1, mOff, kOff, mL0, curK);
@@ -183,10 +203,10 @@ __aicore__ inline void TrsmGemmProcessTile(
         uint64_t aSideL1Size = RoundUp<uint64_t>(mL0, FRACTAL) * RoundUp<uint64_t>(curKForL1, FP32_C0);
         uint64_t l1OffsetB = l1OffsetA + aSideL1Size * sizeof(float);
         auto tensorAL1Cur = MakeTensor(
-            MakeMemPtr<Location::L1, float>(l1OffsetA),
+            MakeMemPtr<AscendC::Te::Location::L1, float>(l1OffsetA),
             MakeFrameLayout<NZLayoutPtn, AscendC::Std::Int<FP32_C0>>(mL0, curKForL1));
         auto tensorBL1Cur = MakeTensor(
-            MakeMemPtr<Location::L1, float>(l1OffsetB),
+            MakeMemPtr<AscendC::Te::Location::L1, float>(l1OffsetB),
             MakeFrameLayout<ZNLayoutPtn, AscendC::Std::Int<FP32_C0>>(curKForL1, nL0));
 
         TrsmGemmL0MmadLoop(tensorAL1Cur, tensorBL1Cur, mL0, curKForL1, nL0, kL1Iter, kOff / tileKChunk, l0PingPong);
@@ -204,8 +224,9 @@ __aicore__ inline void TrsmGemmProcessTile(
 
     auto gmBlockC = gmTempTensor.Slice(MakeCoord(mOff, nOff), MakeShape(mL0, nL0));
     auto tensorL0C = MakeTensor(
-        MakeMemPtr<Location::L0C, float>(0), MakeFrameLayout<NZLayoutPtn, AscendC::Std::Int<L0C_C0>>(mL0, nL0));
-    MakeCopy(CopyL0C2GM{}).Call(gmBlockC, tensorL0C, te::l0c_to_gm_params{te::unit_flag_mode::enable_update});
+        MakeMemPtr<AscendC::Te::Location::L0C, float>(0),
+        MakeFrameLayout<NZLayoutPtn, AscendC::Std::Int<L0C_C0>>(mL0, nL0));
+    MakeCopy(CopyL0C2GM{}).Call(gmBlockC, tensorL0C, AscendC::Te::FixpipeParams{FINAL_ACC});
 
     AscendC::SetFlag<AscendC::HardEvent::FIX_M>(PIPE_FLAG);
 }
@@ -244,13 +265,13 @@ __aicore__ inline void TrsmGemmKernelImpl(
     }
 
     auto gmLeftTensor = MakeTensor(
-        MakeMemPtr<Location::GM>(reinterpret_cast<__gm__ float*>(a) + tiling.aOffset),
+        MakeMemPtr<AscendC::Te::Location::GM>(reinterpret_cast<__gm__ float*>(a) + tiling.aOffset),
         MakeFrameLayout<NDExtLayoutPtn>(m, lda));
     auto gmRightTensor = MakeTensor(
-        MakeMemPtr<Location::GM>(reinterpret_cast<__gm__ float*>(x) + tiling.bOffset),
+        MakeMemPtr<AscendC::Te::Location::GM>(reinterpret_cast<__gm__ float*>(x) + tiling.bOffset),
         MakeFrameLayout<NDExtLayoutPtn>(k, ldb));
     auto gmTempTensor = MakeTensor(
-        MakeMemPtr<Location::GM>(reinterpret_cast<__gm__ float*>(temp)),
+        MakeMemPtr<AscendC::Te::Location::GM>(reinterpret_cast<__gm__ float*>(temp)),
         MakeFrameLayout<NDExtLayoutPtn>(m, tiling.tempRowStride));
 
     const uint64_t tileM = tiling.tileM;

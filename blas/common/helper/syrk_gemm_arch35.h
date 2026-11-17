@@ -14,8 +14,7 @@
 #include "kernel_operator.h"
 #include "tensor_api/tensor.h"
 #include "cann_ops_blas_common.h"
-#define KERNEL_UTILS_LITE
-#include "common/helper/kernel_utils.h"
+#include "common/helper/kernel_utils_lite.h"
 
 namespace te = AscendC::Te;
 

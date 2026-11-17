@@ -32,10 +32,7 @@
 #include "kernel_operator.h"
 #include "tensor_api/tensor.h"
 #include "cann_ops_blas_common.h"
-#ifndef KERNEL_UTILS_LITE
-#define KERNEL_UTILS_LITE
-#endif
-#include "common/helper/kernel_utils.h"
+#include "common/helper/kernel_utils_lite.h"
 #include "common/arch/hardware.h"
 #include "gemm/arch35/gemm_tiling_struct.h"
 
@@ -121,8 +118,8 @@ __aicore__ inline void Compute2DBlocking(GemmCubeState& st)
     // A tile configuration whose bytes exceed L0C yields MAX_C0_TILES == 0 and the
     // halving loop below can never terminate; reject it at compile time. The check
     // uses 64-bit arithmetic so a wrapping C0_TILE_BYTES cannot sneak through.
-    static_assert(static_cast<uint64_t>(BASE_M) * BASE_N * sizeof(float) <=
-            HardwareInfo<ArchType::ASCEND_V350>::l0CSize,
+    static_assert(
+        static_cast<uint64_t>(BASE_M) * BASE_N * sizeof(float) <= HardwareInfo<ArchType::ASCEND_V350>::l0CSize,
         "Compute2DBlocking: BASE_M*BASE_N tile bytes exceed L0C size, MAX_C0_TILES would be 0");
     st.mBlockSize = st.mLoopCount;
     st.nBlockSize = st.nLoopCount;
