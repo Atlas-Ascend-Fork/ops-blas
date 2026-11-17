@@ -335,13 +335,12 @@ private:
         DataCopyPad(inTile, aGm[primeOff * CGERU_COMPONENTS], primeParams, noPad);
         aInQueue.EnQue<float>(inTile);
 
-        // Serial chunk walk. The first chunk was already issued inside
-        // InitFast, so its copy overlapped the swap/coeff build; every later
-        // chunk is loaded after the previous store was issued, letting the
-        // MTE3 transfer run alongside the next MTE2 load.
+        // Serial chunk walk. The first chunk was issued above (after the
+        // swap/coeff build); every later chunk is loaded after the previous
+        // store was issued, letting the MTE3 transfer run alongside the next
+        // MTE2 load.
         uint64_t off = primeOff;
         uint32_t elems = primeElems;
-        bool primed = true;
         while (off < slabHi) {
             inTile = aInQueue.DeQue<float>();
             const bool hasWork = ChunkHasWork(off, elems);
@@ -367,9 +366,7 @@ private:
             DataCopyPad(inTile, aGm[nextOff * CGERU_COMPONENTS], inParams, noPad);
             aInQueue.EnQue<float>(inTile);
             off = nextOff;
-            primed = false;
         }
-        (void)primed;
     }
 
     // Accumulate every column overlapping the chunk [off, off+elems) into out.
