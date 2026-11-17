@@ -15,9 +15,7 @@
 #include "verify.h"
 #include "blas_test.h"
 #include "csv_loader.h"
-#include "snrm2_param.h"
-#include "snrm2_golden.h"
-#include "snrm2_npu_wrapper.h"
+#include "snrm2_test_common.h"
 
 class Snrm2Arch35Test : public BlasTest<Snrm2Param> {};
 
@@ -33,71 +31,6 @@ INSTANTIATE_TEST_SUITE_P(
     PrintCaseInfoString<Snrm2Param>);
 
 // ---------------------------------------------------------------------------
-// Error path test (expectResult != SUCCESS)
-// ---------------------------------------------------------------------------
-static void TestErrorPath(const Snrm2Param& p, aclblasHandle_t handle)
-{
-    const int64_t xLen = (p.n > 0 && p.x.method != BlasFillMode::M_NULLPTR) ? p.n : 0;
-    std::vector<float> xHost = makeBlasArray(xLen, p.x, p.randomSeed);
-    const float* xPtr = xHost.empty() ? nullptr : xHost.data();
-
-    float result = 0.0f;
-    float* resultPtr = p.resultIsNull ? nullptr : &result;
-
-    aclblasStatus_t ret = aclblasSnrm2_npu(handle, p.n, xPtr, p.incx, resultPtr);
-    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
-}
-
-// ---------------------------------------------------------------------------
-// No-op path test (n<=0 or incx<=0)
-// ---------------------------------------------------------------------------
-static void TestNoOpPath(const Snrm2Param& p, aclblasHandle_t handle)
-{
-    const int64_t xLen = (p.n > 0) ? p.n : 0;
-    std::vector<float> xHost = makeBlasArray(xLen, p.x, p.randomSeed);
-    const float* xPtr = xHost.empty() ? nullptr : xHost.data();
-
-    float result = 123.0f;
-    aclblasStatus_t ret = aclblasSnrm2_npu(handle, p.n, xPtr, p.incx, &result);
-    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
-    if (ret == ACLBLAS_STATUS_SUCCESS) {
-        EXPECT_FLOAT_EQ(result, 0.0f) << "[" << p.caseName << "] early return should produce result=0.0f, got "
-                                      << result;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Precision verification helper
-// ---------------------------------------------------------------------------
-static void VerifyNrm2Result(float result, float golden, const std::string& caseName)
-{
-    VerifyConfig cfg;
-    applyMixedTolerance(cfg, ACL_FLOAT, golden);
-    EXPECT_TRUE(Verifier::verifyScalar(result, golden, cfg, caseName));
-}
-
-// ---------------------------------------------------------------------------
-// Normal path test helper
-// ---------------------------------------------------------------------------
-static void TestNormalPath(const Snrm2Param& p, aclblasHandle_t handle)
-{
-    const int64_t xLen = static_cast<int64_t>(1 + (p.n - 1) * p.incx);
-    std::vector<float> xHost = makeBlasArray(xLen, p.x, p.randomSeed);
-
-    float result = 0.0f;
-    aclblasStatus_t ret = aclblasSnrm2_npu(handle, p.n, xHost.data(), p.incx, &result);
-    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
-    if (ret != ACLBLAS_STATUS_SUCCESS)
-        return;
-
-    float golden = 0.0f;
-    // issue #820: golden 返回码必须断言检查，golden 失败时不得以初始值 0 做参考比对
-    ASSERT_EQ(aclblasSnrm2_cpu(handle, p.n, xHost.data(), p.incx, &golden), ACLBLAS_STATUS_SUCCESS);
-
-    VerifyNrm2Result(result, golden, p.caseName);
-}
-
-// ---------------------------------------------------------------------------
 // Main parameterized test
 // ---------------------------------------------------------------------------
 TEST_P(Snrm2Arch35Test, CsvDriven)
@@ -105,10 +38,10 @@ TEST_P(Snrm2Arch35Test, CsvDriven)
     const auto& p = GetParam();
 
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
-        TestErrorPath(p, Snrm2Arch35Test::handle_);
+        TestSnrm2ErrorPath(p, Snrm2Arch35Test::handle_);
     } else if (p.n <= 0 || p.incx <= 0) {
-        TestNoOpPath(p, Snrm2Arch35Test::handle_);
+        TestSnrm2NoOpPath(p, Snrm2Arch35Test::handle_);
     } else {
-        TestNormalPath(p, Snrm2Arch35Test::handle_);
+        TestSnrm2NormalPath(p, Snrm2Arch35Test::handle_);
     }
 }

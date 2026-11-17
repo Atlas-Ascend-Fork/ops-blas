@@ -20,8 +20,9 @@
 
 inline std::unique_ptr<DeviceBuffer> tryAllocAndCopySnrm2(const void* hostPtr, size_t bytes)
 {
-    if (hostPtr == nullptr)
+    if (hostPtr == nullptr) {
         return nullptr;
+    }
     auto buf = std::make_unique<DeviceBuffer>(bytes);
     buf->copyFromHost(hostPtr, bytes);
     return buf;
@@ -59,8 +60,9 @@ inline aclblasStatus_t aclblasSnrm2_npu(
         static_cast<float*>(dResult->ptr()));
 
     aclError syncRet = aclrtSynchronizeDevice();
-    if (syncRet != ACL_SUCCESS)
+    if (syncRet != ACL_SUCCESS) {
         return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
 
     dResult->copyToHost(result, resultBytes);
 

@@ -19,9 +19,7 @@
 #include "verify.h"
 #include "blas_test.h"
 #include "csv_loader.h"
-#include "scnrm2_param.h"
-#include "scnrm2_golden.h"
-#include "scnrm2_npu_wrapper.h"
+#include "scnrm2_test_common.h"
 
 class Scnrm2Arch35Test : public BlasTest<Scnrm2Param> {};
 
@@ -69,8 +67,7 @@ TEST_F(Scnrm2Arch35Test, LargeUnalignedFallback)
     ASSERT_EQ(aclrtSynchronizeStream(stream_), ACL_SUCCESS);
 
     float result = 0.0f;
-    ASSERT_EQ(aclrtMemcpy(&result, sizeof(float), resultOffset, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST),
-        ACL_SUCCESS);
+    ASSERT_EQ(aclrtMemcpy(&result, sizeof(float), resultOffset, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST), ACL_SUCCESS);
     EXPECT_FLOAT_EQ(result, 5120.0f);
 }
 
@@ -104,7 +101,8 @@ TEST_F(Scnrm2Arch35Test, OffsetInputAndOutput)
             ASSERT_EQ(aclblasScnrm2(handle_, n, xOffset, incx, resultOffset), ACLBLAS_STATUS_SUCCESS);
             ASSERT_EQ(aclrtSynchronizeStream(stream_), ACL_SUCCESS);
             float result = 0.0f;
-            ASSERT_EQ(aclrtMemcpy(&result, sizeof(float), resultOffset, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST),
+            ASSERT_EQ(
+                aclrtMemcpy(&result, sizeof(float), resultOffset, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST),
                 ACL_SUCCESS);
             EXPECT_FLOAT_EQ(result, 5.0f * std::sqrt(static_cast<float>(n)));
         }
@@ -131,8 +129,9 @@ TEST_F(Scnrm2Arch35Test, TaskPerformanceSmoke)
         ASSERT_EQ(aclrtMemset(x.ptr(), x.size(), 0, x.size()), ACL_SUCCESS);
 
         for (int i = 0; i < warmup; ++i) {
-            ASSERT_EQ(aclblasScnrm2(handle_, c.n, static_cast<const aclblasComplex*>(x.ptr()), 1,
-                          static_cast<float*>(result.ptr())),
+            ASSERT_EQ(
+                aclblasScnrm2(
+                    handle_, c.n, static_cast<const aclblasComplex*>(x.ptr()), 1, static_cast<float*>(result.ptr())),
                 ACLBLAS_STATUS_SUCCESS);
         }
         ASSERT_EQ(aclrtSynchronizeStream(stream_), ACL_SUCCESS);
@@ -143,8 +142,9 @@ TEST_F(Scnrm2Arch35Test, TaskPerformanceSmoke)
         ASSERT_EQ(aclrtCreateEvent(&end), ACL_SUCCESS);
         ASSERT_EQ(aclrtRecordEvent(start, stream_), ACL_SUCCESS);
         for (int i = 0; i < iterations; ++i) {
-            ASSERT_EQ(aclblasScnrm2(handle_, c.n, static_cast<const aclblasComplex*>(x.ptr()), 1,
-                          static_cast<float*>(result.ptr())),
+            ASSERT_EQ(
+                aclblasScnrm2(
+                    handle_, c.n, static_cast<const aclblasComplex*>(x.ptr()), 1, static_cast<float*>(result.ptr())),
                 ACLBLAS_STATUS_SUCCESS);
         }
         ASSERT_EQ(aclrtRecordEvent(end, stream_), ACL_SUCCESS);
@@ -166,44 +166,10 @@ INSTANTIATE_TEST_SUITE_P(
     Scnrm2, Scnrm2Arch35Test, ::testing::ValuesIn(GetCasesFromCsv<Scnrm2Param>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<Scnrm2Param>);
 
-static int64_t Scnrm2BufferComplexCount(int64_t n, int64_t incx)
-{
-    if (n <= 0) {
-        return 0;
-    }
-    int64_t absInc = (incx > 0) ? incx : -incx;
-    if (absInc == 0) {
-        absInc = 1;
-    }
-    return 1 + (n - 1) * absInc;
-}
-
-static std::vector<aclblasComplex> MakeComplexInput(const Scnrm2Param& p)
-{
-    int64_t complexCount = Scnrm2BufferComplexCount(p.n, p.incx);
-    if (p.x.method == BlasFillMode::M_NULLPTR || complexCount <= 0) {
-        return {};
-    }
-    std::vector<float> raw = makeBlasArray(complexCount * 2, p.x, p.randomSeed);
-    std::vector<aclblasComplex> data(static_cast<size_t>(complexCount));
-    for (int64_t i = 0; i < complexCount; ++i) {
-        data[static_cast<size_t>(i)] = aclblasComplex{raw[static_cast<size_t>(i * 2)],
-            raw[static_cast<size_t>(i * 2 + 1)]};
-    }
-    return data;
-}
-
-static void VerifyScnrm2Result(float result, float golden, const std::string& caseName)
-{
-    VerifyConfig cfg;
-    applyMixedTolerance(cfg, ACL_FLOAT, golden);
-    EXPECT_TRUE(Verifier::verifyScalar(result, golden, cfg, caseName));
-}
-
 TEST_F(Scnrm2Arch35Test, NumericalBoundaries)
 {
-    const float values[] = {1.0e20f, 1.0e-20f, std::numeric_limits<float>::infinity(),
-        std::numeric_limits<float>::quiet_NaN()};
+    const float values[] = {
+        1.0e20f, 1.0e-20f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()};
     for (int n : {1, 64, 4096}) {
         for (int incx : {1, -2}) {
             for (float value : values) {
@@ -234,9 +200,7 @@ TEST_F(Scnrm2Arch35Test, NormalDistributionPrecision)
 
     auto makeNormalInput = [](int count) {
         std::mt19937 generator(seed);
-        auto uniform = [&generator]() {
-            return (static_cast<double>(generator()) + 0.5) / 4294967296.0;
-        };
+        auto uniform = [&generator]() { return (static_cast<double>(generator()) + 0.5) / 4294967296.0; };
 
         std::vector<aclblasComplex> input(static_cast<size_t>(count));
         for (int i = 0; i < count; ++i) {
@@ -258,12 +222,10 @@ TEST_F(Scnrm2Arch35Test, NormalDistributionPrecision)
             const int physicalCount = 1 + (n - 1) * std::abs(incx);
             const std::vector<aclblasComplex> input = makeNormalInput(physicalCount);
             float result = 0.0f;
-            ASSERT_EQ(aclblasScnrm2_npu(handle_, n, input.data(), incx, &result),
-                ACLBLAS_STATUS_SUCCESS);
+            ASSERT_EQ(aclblasScnrm2_npu(handle_, n, input.data(), incx, &result), ACLBLAS_STATUS_SUCCESS);
 
             float golden = 0.0f;
-            ASSERT_EQ(aclblasScnrm2_cpu(handle_, n, input.data(), incx, &golden),
-                ACLBLAS_STATUS_SUCCESS);
+            ASSERT_EQ(aclblasScnrm2_cpu(handle_, n, input.data(), incx, &golden), ACLBLAS_STATUS_SUCCESS);
             VerifyScnrm2Result(result, golden, "NormalDistributionPrecision");
         }
     }
@@ -318,10 +280,7 @@ std::vector<MixedDistributionCase> MakeMixedCases()
     return cases;
 }
 
-double NextCanonicalUniform(std::mt19937& generator)
-{
-    return (static_cast<double>(generator()) + 0.5) / 4294967296.0;
-}
+double NextCanonicalUniform(std::mt19937& generator) { return (static_cast<double>(generator()) + 0.5) / 4294967296.0; }
 
 double NextStandardNormal(std::mt19937& generator)
 {
@@ -343,10 +302,8 @@ std::vector<aclblasComplex> MakeMixedInput(const MixedDistributionCase& sample)
             real = static_cast<float>(sample.muReal + sample.sigmaReal * NextStandardNormal(realGenerator));
             imag = static_cast<float>(sample.muImag + sample.sigmaImag * NextStandardNormal(imagGenerator));
         } else {
-            real = static_cast<float>(uniformLow +
-                (uniformHigh - uniformLow) * NextCanonicalUniform(realGenerator));
-            imag = static_cast<float>(uniformLow +
-                (uniformHigh - uniformLow) * NextCanonicalUniform(imagGenerator));
+            real = static_cast<float>(uniformLow + (uniformHigh - uniformLow) * NextCanonicalUniform(realGenerator));
+            imag = static_cast<float>(uniformLow + (uniformHigh - uniformLow) * NextCanonicalUniform(imagGenerator));
         }
         input[static_cast<size_t>(i)] = aclblasComplex{real, imag};
     }
@@ -382,8 +339,9 @@ void CheckMixedInput(const MixedDistributionCase& sample, const std::vector<aclb
     }
 }
 
-void RecordMixedCoverage(size_t generatedUniformCases, size_t generatedNormalCases,
-    bool sawPositiveStride, bool sawNegativeStride, bool sawUnitSize, bool sawLargeSize, size_t totalCases)
+void RecordMixedCoverage(
+    size_t generatedUniformCases, size_t generatedNormalCases, bool sawPositiveStride, bool sawNegativeStride,
+    bool sawUnitSize, bool sawLargeSize, size_t totalCases)
 {
     EXPECT_EQ(generatedUniformCases, static_cast<size_t>(uniformCaseCount));
     EXPECT_EQ(generatedNormalCases, static_cast<size_t>(normalCaseCount));
@@ -409,9 +367,10 @@ TEST_F(Scnrm2Arch35Test, MixedDistributionPrecision)
     bool sawLargeSize = false;
 
     for (const MixedDistributionCase& sample : cases) {
-        SCOPED_TRACE(::testing::Message() << "index=" << sample.index
-            << (sample.isNormal ? " distribution=normal" : " distribution=uniform")
-            << " n=" << sample.n << " incx=" << sample.incx);
+        SCOPED_TRACE(
+            ::testing::Message() << "index=" << sample.index
+                                 << (sample.isNormal ? " distribution=normal" : " distribution=uniform")
+                                 << " n=" << sample.n << " incx=" << sample.incx);
         CheckMixedParameters(sample);
         generatedNormalCases += sample.isNormal ? 1 : 0;
         generatedUniformCases += sample.isNormal ? 0 : 1;
@@ -424,18 +383,17 @@ TEST_F(Scnrm2Arch35Test, MixedDistributionPrecision)
         CheckMixedInput(sample, input);
 
         float result = 0.0f;
-        ASSERT_EQ(aclblasScnrm2_npu(handle_, sample.n, input.data(), sample.incx, &result),
-            ACLBLAS_STATUS_SUCCESS);
+        ASSERT_EQ(aclblasScnrm2_npu(handle_, sample.n, input.data(), sample.incx, &result), ACLBLAS_STATUS_SUCCESS);
         float golden = 0.0f;
-        ASSERT_EQ(aclblasScnrm2_cpu(handle_, sample.n, input.data(), sample.incx, &golden),
-            ACLBLAS_STATUS_SUCCESS);
+        ASSERT_EQ(aclblasScnrm2_cpu(handle_, sample.n, input.data(), sample.incx, &golden), ACLBLAS_STATUS_SUCCESS);
         const std::string caseName = std::string("MixedDistributionPrecision.") +
-            (sample.isNormal ? "normal_" : "uniform_") + std::to_string(sample.index);
+                                     (sample.isNormal ? "normal_" : "uniform_") + std::to_string(sample.index);
         VerifyScnrm2Result(result, golden, caseName);
     }
 
-    RecordMixedCoverage(generatedUniformCases, generatedNormalCases, sawPositiveStride,
-        sawNegativeStride, sawUnitSize, sawLargeSize, cases.size());
+    RecordMixedCoverage(
+        generatedUniformCases, generatedNormalCases, sawPositiveStride, sawNegativeStride, sawUnitSize, sawLargeSize,
+        cases.size());
 }
 
 static void TestErrorPath(const Scnrm2Param& p, aclblasHandle_t handle)
@@ -462,29 +420,13 @@ static void TestNoOpPath(const Scnrm2Param& p, aclblasHandle_t handle)
     }
 }
 
-static void TestNormalPath(const Scnrm2Param& p, aclblasHandle_t handle)
-{
-    std::vector<aclblasComplex> xHost = MakeComplexInput(p);
-    float result = 0.0f;
-    aclblasStatus_t ret = aclblasScnrm2_npu(handle, p.n, xHost.data(), p.incx, &result);
-    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
-    if (ret != ACLBLAS_STATUS_SUCCESS) {
-        return;
-    }
-
-    float golden = 0.0f;
-    aclblasScnrm2_cpu(handle, p.n, xHost.data(), p.incx, &golden);
-    VerifyScnrm2Result(result, golden, p.caseName);
-}
-
 static bool StrictPerfMode()
 {
-    const char *v = std::getenv("SCNRM2_STRICT_PERF");
+    const char* v = std::getenv("SCNRM2_STRICT_PERF");
     return v != nullptr && std::string(v) == "1";
 }
 
-static void TestStrictPerformance(const Scnrm2Param& p, aclblasHandle_t handle,
-    aclrtStream stream)
+static void TestStrictPerformance(const Scnrm2Param& p, aclblasHandle_t handle, aclrtStream stream)
 {
     std::vector<aclblasComplex> xHost = MakeComplexInput(p);
     ASSERT_FALSE(xHost.empty());
@@ -494,8 +436,10 @@ static void TestStrictPerformance(const Scnrm2Param& p, aclblasHandle_t handle,
     constexpr int warmup = 20;
     constexpr int iterations = 100;
     for (int i = 0; i < warmup; ++i) {
-        ASSERT_EQ(aclblasScnrm2(handle, p.n, static_cast<const aclblasComplex *>(x.ptr()), p.incx,
-            static_cast<float *>(result.ptr())), ACLBLAS_STATUS_SUCCESS);
+        ASSERT_EQ(
+            aclblasScnrm2(
+                handle, p.n, static_cast<const aclblasComplex*>(x.ptr()), p.incx, static_cast<float*>(result.ptr())),
+            ACLBLAS_STATUS_SUCCESS);
     }
     ASSERT_EQ(aclrtSynchronizeStream(stream), ACL_SUCCESS);
     aclrtEvent start = nullptr, end = nullptr;
@@ -503,8 +447,10 @@ static void TestStrictPerformance(const Scnrm2Param& p, aclblasHandle_t handle,
     ASSERT_EQ(aclrtCreateEvent(&end), ACL_SUCCESS);
     ASSERT_EQ(aclrtRecordEvent(start, stream), ACL_SUCCESS);
     for (int i = 0; i < iterations; ++i) {
-        ASSERT_EQ(aclblasScnrm2(handle, p.n, static_cast<const aclblasComplex *>(x.ptr()), p.incx,
-            static_cast<float *>(result.ptr())), ACLBLAS_STATUS_SUCCESS);
+        ASSERT_EQ(
+            aclblasScnrm2(
+                handle, p.n, static_cast<const aclblasComplex*>(x.ptr()), p.incx, static_cast<float*>(result.ptr())),
+            ACLBLAS_STATUS_SUCCESS);
     }
     ASSERT_EQ(aclrtRecordEvent(end, stream), ACL_SUCCESS);
     ASSERT_EQ(aclrtSynchronizeStream(stream), ACL_SUCCESS);
@@ -512,9 +458,9 @@ static void TestStrictPerformance(const Scnrm2Param& p, aclblasHandle_t handle,
     ASSERT_EQ(aclrtEventElapsedTime(&elapsedMs, start, end), ACL_SUCCESS);
     aclrtDestroyEvent(start);
     aclrtDestroyEvent(end);
-    std::cout << "[STRICT_PERF] case=" << p.caseName << " n=" << p.n << " incx=" << p.incx
-              << " warmup=" << warmup << " samples=" << iterations
-              << " average_us=" << (static_cast<double>(elapsedMs) * 1000.0 / iterations) << std::endl;
+    std::cout << "[STRICT_PERF] case=" << p.caseName << " n=" << p.n << " incx=" << p.incx << " warmup=" << warmup
+              << " samples=" << iterations << " average_us=" << (static_cast<double>(elapsedMs) * 1000.0 / iterations)
+              << std::endl;
 }
 
 TEST_P(Scnrm2Arch35Test, CsvDriven)
@@ -531,6 +477,6 @@ TEST_P(Scnrm2Arch35Test, CsvDriven)
     } else if (p.n <= 0) {
         TestNoOpPath(p, Scnrm2Arch35Test::handle_);
     } else {
-        TestNormalPath(p, Scnrm2Arch35Test::handle_);
+        TestScnrm2NormalPath(p, Scnrm2Arch35Test::handle_);
     }
 }

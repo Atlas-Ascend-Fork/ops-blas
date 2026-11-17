@@ -8,8 +8,5 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
-if(SOC_VERSION STREQUAL "ascend950")
-    ops_blas_add_gtest_tests(${OPS_BLAS} scnrm2_test)
-else()
-    ops_blas_add_tests(${OPS_BLAS})
-endif()
+# Both architectures use CSV-driven GTest cases with the shared test main (issue #920).
+ops_blas_add_gtest_tests(${OPS_BLAS} scnrm2_test)
