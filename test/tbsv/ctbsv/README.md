@@ -59,9 +59,12 @@ CSV 中 `TC_PF_1001`～`TC_PF_1200` 为性能/内存用例。其中前 4 条与�
 
 ### 编译
 
+在 ops-blas 仓库根目录运行。
+
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
-cd /path/to/ops-blas
+# 将 CANN_HOME 改为本机 set_env.sh 所在的目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/set_env.sh"
 bash build.sh --ops=ctbsv --soc=ascend950
 ```
 
@@ -73,7 +76,7 @@ bash build.sh --ops=ctbsv --soc=ascend950
 ### 精度复现
 
 ```bash
-export LD_LIBRARY_PATH=$PWD/build:/usr/local/Ascend/cann-9.1.0/x86_64-linux/lib64:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH="$PWD/build:$ASCEND_HOME_PATH/x86_64-linux/lib64:$LD_LIBRARY_PATH"
 
 # 全量精度 1000 条（排除性能 TC_PF_）
 ./build/test/tbsv/ctbsv/ctbsv_test --gtest_filter='-*TC_PF*'
@@ -196,9 +199,12 @@ test/tbsv/ctbsv/
 
 ### 编译
 
+在 ops-blas 仓库根目录运行。
+
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
-cd /path/to/ops-blas
+# 将 CANN_HOME 改为本机 set_env.sh 所在的目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/set_env.sh"
 
 export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64"
 

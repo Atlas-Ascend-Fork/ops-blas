@@ -29,8 +29,10 @@ OpenBLAS 虽然提供同名 CBLAS 接口，但极值和 Inf / NaN 的结果可�
 - ASC 编译优化：`-O3`
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
-export EAGER_LIBRARY_PATH=/usr/local/Ascend/cann-9.1.0/x86_64-linux/lib64
+# 将 CANN_HOME 改为本机 set_env.sh 所在的目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/set_env.sh"
+export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/x86_64-linux/lib64"
 ```
 
 `EAGER_LIBRARY_PATH` 请根据实际 CANN 安装目录调整。include 路径已由构建系统从
@@ -67,7 +69,7 @@ cmake --build build --target ctrsm_test -j2
 ## 运行
 
 ```bash
-export LD_LIBRARY_PATH="$PWD/build:/usr/lib/x86_64-linux-gnu/blas:/usr/local/Ascend/cann-9.1.0/x86_64-linux/lib64:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="$PWD/build:/usr/lib/x86_64-linux-gnu/blas:$ASCEND_HOME_PATH/x86_64-linux/lib64:$LD_LIBRARY_PATH"
 export ASCEND_RT_VISIBLE_DEVICES=0
 
 # 确认 libblas.so.3 指向 Netlib 目录，libops_blas.so 指向本次 build 目录

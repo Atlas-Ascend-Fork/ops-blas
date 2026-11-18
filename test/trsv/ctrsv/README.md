@@ -41,8 +41,10 @@ The first numerical correctness case prints the resolved library path.
 For the local Release/O2 build on 910B:
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0-beta.3/set_env.sh
-export EAGER_LIBRARY_PATH=/usr/local/Ascend/cann-9.1.0-beta.3/aarch64-linux/lib64
+# Set CANN_HOME to the directory containing set_env.sh.
+CANN_HOME=/usr/local/Ascend/cann-9.1.0-beta.3
+source "$CANN_HOME/set_env.sh"
+export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/aarch64-linux/lib64"
 cmake -S . -B build-o2 -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_ASC_FLAGS_RELEASE='-O2 -DNDEBUG' \
   -DCTRSV_NETLIB_LIBRARY=/lib64/libblas.so.3.12.0
@@ -73,8 +75,10 @@ and retain the existing MERE/MARE thresholds and nonfinite-value checks.
 
 ```bash
 set -e -o pipefail
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
-export EAGER_LIBRARY_PATH=/usr/local/Ascend/cann-9.1.0/x86_64-linux/lib64
+# Set CANN_HOME to the directory containing set_env.sh.
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/set_env.sh"
+export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/x86_64-linux/lib64"
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DREFBLAS_LIB=/usr/lib/x86_64-linux-gnu/blas/libblas.so.3 \
   -DCTRSV_NETLIB_LIBRARY=/usr/lib/x86_64-linux-gnu/blas/libblas.so.3 \
