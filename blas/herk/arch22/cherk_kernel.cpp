@@ -236,30 +236,6 @@ extern "C" __global__ __aicore__ void cherk_arch22_small_kernel(
     }
     AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(mte3ToVector);
 }
-/** Register/GM-only path for the 1x1 Hermitian update. */
-extern "C" __global__ __aicore__ void cherk_arch22_tiny1_direct_kernel(
-    GM_ADDR alphaGm, GM_ADDR aGm, GM_ADDR betaGm, GM_ADDR cGm, const CherkArch22TilingData tiling)
-{
-    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
-    const float alpha = *reinterpret_cast<__gm__ const float*>(alphaGm);
-    const float beta = *reinterpret_cast<__gm__ const float*>(betaGm);
-    __gm__ const float* a = reinterpret_cast<__gm__ const float*>(aGm);
-    __gm__ float* c = reinterpret_cast<__gm__ float*>(cGm);
-    if (alpha == 0.0f && beta == 1.0f) {
-        return;
-    }
-    if (alpha == 0.0f) {
-        c[0] = beta == 0.0f ? 0.0f : beta * c[0];
-        c[1] = 0.0f;
-        return;
-    }
-    float real = alpha * (a[0] * a[0] + a[1] * a[1]);
-    if (beta != 0.0f) {
-        real += beta * c[0];
-    }
-    c[0] = real;
-    c[1] = 0.0f;
-}
 /** Compile-time-sized one-column-per-AIV paths for the 8/16/32 square family. */
 template <uint32_t ELEMENTS>
 __aicore__ inline bool CherkArch22TinyVectorPlaneIsExtreme(
@@ -549,7 +525,6 @@ __aicore__ inline void CherkArch22TinyVectorImpl(
 
 CHERK_TINY_VECTOR_KERNEL(8)
 CHERK_TINY_VECTOR_KERNEL(16)
-CHERK_TINY_VECTOR_KERNEL(32)
 #undef CHERK_TINY_VECTOR_KERNEL
 /** Vector-reduction path for the UPPER/OP_N square tiny family. */
 namespace {
@@ -1053,18 +1028,13 @@ void cherk_arch22_small_vector_do(
         if (tiling.n <= 8U && tiling.k <= 8U) {
             cherk_arch22_tiny_vector_8_kernel<<<tiling.aivCoreNum, nullptr, stream>>>(
                 alpha, a, beta, c, metadata, tiling);
-        } else if (tiling.n <= 16U && tiling.k <= 16U) {
-            cherk_arch22_tiny_vector_16_kernel<<<tiling.aivCoreNum, nullptr, stream>>>(
-                alpha, a, beta, c, metadata, tiling);
         } else {
-            cherk_arch22_tiny_vector_32_kernel<<<tiling.aivCoreNum, nullptr, stream>>>(
+            cherk_arch22_tiny_vector_16_kernel<<<tiling.aivCoreNum, nullptr, stream>>>(
                 alpha, a, beta, c, metadata, tiling);
         }
     } else if (tiling.smallPath == 4U) {
         cherk_arch22_tiny64_transpose_kernel<<<tiling.aivCoreNum, nullptr, stream>>>(
             alpha, a, beta, c, metadata, tiling);
-    } else if (tiling.smallPath == 6U) {
-        cherk_arch22_tiny1_direct_kernel<<<1U, nullptr, stream>>>(alpha, a, beta, c, tiling);
     } else if (tiling.smallPath == 7U) {
         if (tiling.n <= 16U && tiling.k <= 16U) {
             cherk_arch22_tiny16_transpose_kernel<<<tiling.aivCoreNum, nullptr, stream>>>(

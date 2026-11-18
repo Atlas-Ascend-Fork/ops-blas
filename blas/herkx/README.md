@@ -102,7 +102,7 @@ aclblasCherkx(handle, uplo, trans, n, k, &alpha, A, lda, B, ldb, &beta, C, ldc);
 
 - handle 不可为 nullptr，否则返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR
 - uplo 必须为 ACLBLAS_UPPER(121) 或 ACLBLAS_LOWER(122)，非法值返回 ACLBLAS_STATUS_INVALID_ENUM
-- trans 必须为 ACLBLAS_OP_N(111) 或 ACLBLAS_OP_C(113)；不支持 ACLBLAS_OP_T(112)（纯转置不含共轭，破坏 Hermitian 语义，cuBLAS 公式对 OP_T 未定义；CHERK/CHER2K 同样拒绝 OP_T，但"一致"仅指拒绝行为——本算子对非法枚举（含 OP_T）统一返回 ACLBLAS_STATUS_INVALID_ENUM，CHERK/CHER2K 对 OP_T 返回 ACLBLAS_STATUS_INVALID_VALUE，族内返回码差异为各自文档化的有意口径）
+- trans 必须为 ACLBLAS_OP_N(111) 或 ACLBLAS_OP_C(113)；不支持 ACLBLAS_OP_T(112)（纯转置不含共轭，破坏 Hermitian 语义，cuBLAS 公式对 OP_T 未定义；CHERK/CHER2K 同样拒绝 OP_T，但"一致"仅指拒绝行为——本算子对非法枚举（含 OP_T）统一返回 ACLBLAS_STATUS_INVALID_ENUM，CHERK 对 OP_T 返回 ACLBLAS_STATUS_INVALID_ENUM、CHER2K 对 OP_T 返回 ACLBLAS_STATUS_INVALID_VALUE，族内返回码差异为各自文档化的有意口径）
 - n >= 0, k >= 0，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 - n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS，不访问任何指针、不校验 ld 参数（BLAS 标准；与本仓 cherk/cher2k/ssyrk 族「全量校验先于 quick return」的口径不同，n=0 与非法 ld/标量指针组合时本算子返回 SUCCESS，系已文档化的有意差异）
 - trans='N' 时：lda >= max(1, n)，ldb >= max(1, n)；trans='C' 时：lda >= max(1, k)，ldb >= max(1, k)，否则返回 ACLBLAS_STATUS_INVALID_VALUE

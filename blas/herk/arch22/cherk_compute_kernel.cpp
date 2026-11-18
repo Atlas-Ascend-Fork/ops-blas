@@ -1147,7 +1147,8 @@ public:
         AscendC::GlobalTensor<float> c;
         w.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(workspaceGm));
         c.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(cGm));
-        const uint32_t blocks = AscendC::GetBlockNum();
+        uint32_t blocks = AscendC::GetBlockNum();
+        blocks = CherkNormalizeBlockCount(blocks);
         const float magnitude = alpha < 0.0f ? -alpha : alpha;
         if (__builtin_isfinite(alpha) && magnitude > 1.0f && beta == 0.0f && t.trans == ACLBLAS_OP_N &&
             t.k > CUBE_PANEL_K) {

@@ -111,8 +111,8 @@ aclblasStatus_t ValidateEnums(aclblasFillMode_t uplo, aclblasOperation_t trans)
         return ACLBLAS_STATUS_INVALID_ENUM;
     }
     if (trans == ACLBLAS_OP_T) {
-        OP_LOGE(OP_TAG, "ValidateEnums: OP_T is valid but unsupported by CHERK");
-        return ACLBLAS_STATUS_INVALID_VALUE;
+        OP_LOGE(OP_TAG, "ValidateEnums: OP_T is not supported by CHERK");
+        return ACLBLAS_STATUS_INVALID_ENUM;
     }
     if (trans != ACLBLAS_OP_N && trans != ACLBLAS_OP_C) {
         OP_LOGE(OP_TAG, "ValidateEnums: invalid trans enum: %d", static_cast<int>(trans));
@@ -171,7 +171,6 @@ struct CherkPathSelection {
     bool compactPath;
     bool tinyVector;
     bool tinyTranspose;
-    bool tiny1Direct;
     bool outerK2;
 };
 
@@ -198,9 +197,6 @@ void ConfigureCherkCoreCounts(CherkArch22TilingData& tiling, uint32_t n, uint32_
 
 uint8_t SelectCherkSmallPath(const CherkPathSelection& paths, uint32_t n, uint32_t k)
 {
-    if (paths.tiny1Direct) {
-        return 6U;
-    }
     if (n <= 4U && k <= 4U) {
         return 1U;
     }
@@ -216,7 +212,7 @@ uint8_t SelectCherkSmallPath(const CherkPathSelection& paths, uint32_t n, uint32
 bool CherkNeedsNoWorkspace(const CherkArch22TilingData& tiling)
 {
     return tiling.skipProduct != 0U || tiling.smallPath == 1U || tiling.smallPath == 2U || tiling.smallPath == 4U ||
-           tiling.smallPath == 6U || tiling.smallPath == 7U || tiling.outerPath != 0U;
+           tiling.smallPath == 7U || tiling.outerPath != 0U;
 }
 
 aclblasStatus_t InitializeCherkTiling(
@@ -264,7 +260,6 @@ CherkPathSelection SelectCherkPaths(aclblasFillMode_t uplo, aclblasOperation_t t
         // Vector capacity is rounded up; loads and stores use logical n/k.
         uplo == ACLBLAS_UPPER && trans == ACLBLAS_OP_N && n <= 16U && k <= 16U && k != 0U,
         uplo == ACLBLAS_UPPER && trans == ACLBLAS_OP_N && n <= 64U && k <= 64U && k != 0U,
-        false,
         uplo == ACLBLAS_UPPER && trans == ACLBLAS_OP_N && CherkArch22OuterGeometry(n, k),
     };
 }

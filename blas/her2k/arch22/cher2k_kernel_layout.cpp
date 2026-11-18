@@ -228,9 +228,6 @@ constexpr bool CHER2K_MIX_CROSS_PRODUCT_PREFETCH_EXPERIMENT = false;
 // drain overlap the next producer work while retaining explicit hard-event
 // waits as a correctness guard during the experiment.
 constexpr bool CHER2K_MIX_UNIT_FLAG_EXPERIMENT = false;
-constexpr uint32_t CHER2K_MIX_FLAG_COUNT = 8U;
-constexpr uint32_t CHER2K_MIX_ACK_BASE = CHER2K_MIX_FLAG_COUNT;
-// SyncAll owns cross-core flag IDs 11..14.  The fused direct-H lifecycle uses
 // this independent ring in IDs 0..9 after its one global phase boundary.
 constexpr uint32_t CHER2K_DIRECT_MIX_FLAG_COUNT = 5U;
 constexpr uint32_t CHER2K_DIRECT_MIX_ACK_BASE = CHER2K_DIRECT_MIX_FLAG_COUNT;
