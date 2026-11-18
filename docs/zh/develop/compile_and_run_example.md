@@ -239,7 +239,7 @@
         set(ASCEND_PATH "/usr/local/Ascend/cann")
     endif()
 
-    # ops-blas 路径，若与 CANN 安装路径不同请通过环境变量 OPS_BLAS_PATH 指定
+    # ops-blas 安装内容目录（需包含 include/ 和 lib64/），若与 CANN 安装路径不同请通过环境变量 OPS_BLAS_PATH 指定
     if(NOT "$ENV{OPS_BLAS_PATH}" STREQUAL "")
         set(OPS_BLAS_PATH $ENV{OPS_BLAS_PATH})
     else()
@@ -270,7 +270,7 @@
     # source ${install_path}/cann/set_env.sh
 
     # 若 ops-blas 安装路径与 CANN 不同，需额外指定（大多数情况无需设置）
-    # export OPS_BLAS_PATH=/your/ops-blas/install/path
+    # export OPS_BLAS_PATH=/your/ops-blas/install/path/cann
     ```
 
     > **说明**：
