@@ -248,8 +248,8 @@ int main()
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
 #### 函数原型
 
@@ -265,9 +265,9 @@ aclblasStatus_t aclblasSrot(
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
 | n | 输入 | int | 参与旋转的元素个数，Host 内存 |
 | x | 输入/输出 | float*（FP32） | FP32 向量，in-place 修改，按 incx 步长访问，Device 内存 |
-| incx | 输入 | int | 向量 x 中连续元素之间的步长，可为正/负/零，Host 内存 |
+| incx | 输入 | int | 向量 x 中连续元素之间的步长，可为正、负、零，Host 内存 |
 | y | 输入/输出 | float*（FP32） | FP32 向量，in-place 修改，按 incy 步长访问，Device 内存 |
-| incy | 输入 | int | 向量 y 中连续元素之间的步长，可为正/负/零，Host 内存 |
+| incy | 输入 | int | 向量 y 中连续元素之间的步长，可为正、负、零，Host 内存 |
 | c | 输入 | const float* | 指向 Givens 旋转参数 cos(θ) 的标量指针，Host 内存或 Device 内存，不可为 nullptr；算子运行时通过 aclrtPointerGetAttributes 自动判定其内存位置 |
 | s | 输入 | const float* | 指向 Givens 旋转参数 sin(θ) 的标量指针，Host 内存或 Device 内存，不可为 nullptr；算子运行时通过 aclrtPointerGetAttributes 自动判定其内存位置 |
 
@@ -286,9 +286,19 @@ aclblasStatus_t aclblasSrot(
 - c、s 指向的标量值可取任意 FP32 值（包括 c == 1 且 s == 0 的单位旋转，不做短路，正常执行旋转公式）
 - 精度标准：FP32 单标杆（MARE ≤ 10·2⁻¹³，MERE ≤ 2⁻¹³）
 
-**Atlas A2 / Atlas A3 系列产品：**
+**Atlas A2 / Atlas A3 系列产品（arch22）：**
 
-- 不支持
+- 空 handle 返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`，优先于其他参数检查。
+- n < 0 返回 `ACLBLAS_STATUS_INVALID_VALUE`；n == 0 快速成功返回，不访问数据或启动 kernel。
+- n > 0 时 x/y/c/s 不得为空；incx/incy 不得为 INT_MIN；64 位计算的 `(n-1)*abs(inc)` 不得超过 INT32_MAX，非法参数返回 `ACLBLAS_STATUS_INVALID_VALUE`。
+- 正负步长均生效，负步长从物理向量尾端起算，间隔元素保持原值。两个输出都使用本次旋转前的 x/y。
+- 任一步长为 0 时，与 arch35 一致按 Netlib 顺序逐次更新：该向量反复访问首元素，后一次旋转使用前一次写回的结果；两个步长均为 0 时，对同一对元素连续旋转 n 次。
+- c/s 可各自独立为 Host 或 Device 指针。Device 标量直接在 handle stream 上由 kernel 读取，不做 D2H 同步。返回成功表示已提交，读取结果前需要同步 stream。
+- 不对标量值做特殊短路，Inf/NaN 按公式自然传播。精度按任务 mixed tolerance：atol=rtol=2^-13、matched ratio >=0.99，最大绝对误差上限为 `max(1e-2, 32 * ULP(golden_at_max_error))`；非有限值单独判定。
+- 连续路径为多核双缓冲向量流水；非零跨步路径使用精确4字节burst和负步长Gather；零步长路径使用单核顺序计算以保持重复更新依赖。尾部不超读写，无GM workspace。
+- A2/A3 的负n、INT_MIN返回码与arch35已有行为不同，保持各架构已声明契约。
+
+功能测试位于 `test/rot/srot/arch22/`，通过仓库 GTest 入口运行。`TC_PF_*` 提供性能采集的执行入口，GTest 成功只表示调用成功；社区任务的性能门槛由指定设备上的外部 `msprof op` 验收验证，结果见代码 PR 描述。
 
 #### 调用示例
 

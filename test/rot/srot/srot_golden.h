@@ -11,38 +11,79 @@
 #pragma once
 
 #include <cstdint>
+#include <initializer_list>
+#include <limits>
 
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "cblas_compat.h"
 
-// CPU golden for aclblasSrot — signature identical to the API (c / s passed by pointer,
-// aligned with cublasSrot), returns aclblasStatus_t.
-//
-// Parameter validation is aligned with the NPU operator AND netlib srot.f (1.2 requirement):
-//   - handle == nullptr            -> ACLBLAS_STATUS_HANDLE_IS_NULLPTR
-//   - n <= 0                       -> ACLBLAS_STATUS_SUCCESS (no-op, x/y untouched)
-//   - x == nullptr || y == nullptr -> ACLBLAS_STATUS_INVALID_VALUE (n > 0)
-//   - c == nullptr || s == nullptr -> ACLBLAS_STATUS_INVALID_VALUE (n > 0)
-//   - incx == 0 / incy == 0        -> NOT rejected (netlib reuses x[0]/y[0] N times)
-//   - incx < 0 / incy < 0          -> NOT rejected (netlib walks from tail end)
-//   - c == 1 && s == 0             -> NOT short-circuited (netlib runs the rotation)
-//
-// After validation, cblas_srot (column-major, OpenBLAS) is used as the reference. cblas_srot
-// takes c / s by value, so the pointers are dereferenced (*c / *s) at the call site. Its srot
-// implementation matches netlib srot.f boundary behavior including inc==0 / negative stride.
+enum class SrotGolden { Arch35, Arch22 };
+
+namespace srot_golden_detail {
+inline bool InvalidArch22Strides(int n, int incx, int incy)
+{
+    for (int inc : {incx, incy}) {
+        if (inc == std::numeric_limits<int>::min())
+            return true;
+        const int64_t step = inc < 0 ? -static_cast<int64_t>(inc) : inc;
+        if (static_cast<int64_t>(n - 1) * step > std::numeric_limits<int32_t>::max())
+            return true;
+    }
+    return false;
+}
+
+inline void Netlib310ZeroStride(int n, float* x, int incx, float* y, int incy, float c, float s)
+{
+    int64_t ix = incx < 0 ? (1 - static_cast<int64_t>(n)) * incx : 0;
+    int64_t iy = incy < 0 ? (1 - static_cast<int64_t>(n)) * incy : 0;
+    for (int i = 0; i < n; ++i) {
+        const float oldX = x[ix];
+        const float oldY = y[iy];
+        // Match the task's Netlib 3.10 reference built with -ffp-contract=off.
+        // Repeated zero-stride updates amplify FMA differences in other BLAS builds.
+        volatile float cx = c * oldX;
+        volatile float sy = s * oldY;
+        volatile float cy = c * oldY;
+        volatile float sx = s * oldX;
+        const float nextX = cx + sy;
+        const float nextY = cy - sx;
+        y[iy] = nextY;
+        x[ix] = nextX;
+        ix += incx;
+        iy += incy;
+    }
+}
+} // namespace srot_golden_detail
+
+// Arch35 retains its existing validation and delegates all valid inputs to cblas_srot.
+// Arch22 keeps n < 0, INT_MIN and overflowing spans invalid, permits zero strides,
+// and fixes only their serial reference arithmetic to the task's Netlib 3.10 build.
+// Nonzero-stride inputs still use the linked BLAS implementation under either policy.
+template <SrotGolden policy = SrotGolden::Arch35>
 inline aclblasStatus_t aclblasSrot_cpu(
     aclblasHandle_t handle, int n, float* x, int incx, float* y, int incy, const float* c, const float* s)
 {
     if (handle == nullptr)
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    if constexpr (policy == SrotGolden::Arch22) {
+        if (n < 0)
+            return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     if (n <= 0)
         return ACLBLAS_STATUS_SUCCESS;
     if (x == nullptr || y == nullptr)
         return ACLBLAS_STATUS_INVALID_VALUE;
     if (c == nullptr || s == nullptr)
         return ACLBLAS_STATUS_INVALID_VALUE;
-
+    if constexpr (policy == SrotGolden::Arch22) {
+        if (srot_golden_detail::InvalidArch22Strides(n, incx, incy))
+            return ACLBLAS_STATUS_INVALID_VALUE;
+        if (incx == 0 || incy == 0) {
+            srot_golden_detail::Netlib310ZeroStride(n, x, incx, y, incy, *c, *s);
+            return ACLBLAS_STATUS_SUCCESS;
+        }
+    }
     cblas_srot(n, x, incx, y, incy, *c, *s);
     return ACLBLAS_STATUS_SUCCESS;
 }
