@@ -133,7 +133,7 @@ aclblasStatus_t aclblasCgemv(
     // issue #716: 核数不得硬编码；MAX_CORE_CNT 为该算子掩码/工作区的既定上限
     uint32_t numBlocks = std::min(GetAivCoreCount(), MAX_CORE_CNT);
 
-    CgemvTilingData tiling;
+    CgemvTilingData tiling{};
     tiling.transA = (int64_t)trans;
     tiling.m = m;
     tiling.n = n;

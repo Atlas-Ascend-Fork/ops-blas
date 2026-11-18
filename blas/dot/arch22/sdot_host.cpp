@@ -38,7 +38,7 @@ struct SdotTilingData {
 
 SdotTilingData CalSdotTilingData(uint32_t n, uint32_t vecCoreNum)
 {
-    SdotTilingData tilingData;
+    SdotTilingData tilingData{};
     tilingData.n = n;
     tilingData.isconj = 0;
     tilingData.coreNum = 0;
