@@ -79,9 +79,6 @@ This test suite calls the public `aclblasChbmv` API on an A2/A3 device with CANN
 - `arch22/chbmv_supplement_test.csv`: separate generated coverage, automatically appended by `Cases()` in `arch22/chbmv_test.cpp`.
 - `gen_supplement.py`: deterministic generator and static contract checker. It never overwrites either original artifact and checks their SHA256 before and after its work.
 - `arch22/chbmv_gaussian_mirror_test.csv`: optional, separate equal-budget Gaussian partners; never named `TC_PF_` and never assigned a GPU baseline.
-- `gen_gaussian_mirror.py`: deterministic generator/checker, preserving the original 1,200 rows, the existing 131 rows and GPU baseline byte-for-byte.
-- An optional `--mapping-report` export records complete source-to-partner parameters, component budgets and real/imaginary seed mapping as separate validation evidence, outside the product-source diff.
-- `arch22/chbmv_case_registry.json`: expected registry and distribution accounting; generated coverage is not a device pass.
 
 Original SHA256 identities, verified against the downloaded task ZIP:
 
@@ -95,20 +92,7 @@ Generate or check only the supplementary data from the repository root:
 ```bash
 python3 test/sbmv/chbmv/gen_supplement.py
 python3 test/sbmv/chbmv/gen_supplement.py --check
-python3 test/sbmv/chbmv/gen_gaussian_mirror.py
-python3 test/sbmv/chbmv/gen_gaussian_mirror.py --check
 ```
-
-By default the mirror generator writes or checks only the Gaussian CSV and compact registry. To retain the complete per-case mapping as separate validation evidence, pass an explicit output path (relative to the current working directory):
-
-```bash
-python3 test/sbmv/chbmv/gen_gaussian_mirror.py \
-  --mapping-report ../chbmv_validation/chbmv_gaussian_mirror_mapping.json
-python3 test/sbmv/chbmv/gen_gaussian_mirror.py --check \
-  --mapping-report ../chbmv_validation/chbmv_gaussian_mirror_mapping.json
-```
-
-The scoped `.gitignore` excludes the legacy `arch22/chbmv_gaussian_mirror_mapping.json` and local `GAUSSIAN_MIRROR_DELIVERY.json`; existing files are preserved. Neither file is required by the NPU test executable. No mapping report is written or checked unless `--mapping-report` is supplied, and `--check` never writes any output.
 
 The printed qualification `STATIC_CSV_CHECK_ONLY_NOT_NPU_PASS` confirms only CSV structure, original identities, deterministic regeneration, paired coverage and parameter contracts. It is not a device result.
 
@@ -122,11 +106,11 @@ The random stratum contains 48 pairs: 24 `(n, declared k, lda padding, incx, inc
 
 The original 96-case random stratum alone was insufficient to balance the much larger original uniform tensor data set. The optional mirror now adds **1,194 accuracy cases**: partners for 1,176 positive-n SUCCESS rows in the original CSV and 18 unpaired special-value rows in the supplement. The existing 48 uniform/Gaussian pairs are retained without another mirror. Every partner keeps geometry, strides, fixed scalar values and special tensor tokens; only `RANDOM_NORM_5_5` tensor fields become `GAUSS_NORM_5_2`. Its seed is the source seed plus 1,000,000,000, with separate recorded real/imaginary offsets. `TC_GS_FROM_PF_1001` and the other 199 original-PF partners are accuracy-only cases and do not match `TC_PF_` filters.
 
-With all three CSVs, genuinely random tensor components have equal generated budgets per real/imaginary component: A **287,263,711 uniform + 287,263,711 Gaussian**, x **686,350 + 686,350**, and y **686,198 + 686,198**. `MakeVector` draws n logical values per component; strided sentinel gaps are not random samples. The ledger separately reports mathematical references, excluding padding/diagonal-imaginary components and alpha/beta-zero terms. Those budgets also match per distribution. Repeated PF launches reuse an input and do not count as additional random draws.
+With all three CSVs, genuinely random tensor components have equal generated budgets per real/imaginary component: A **287,263,711 uniform + 287,263,711 Gaussian**, x **686,350 + 686,350**, and y **686,198 + 686,198**. `MakeVector` draws n logical values per component; strided sentinel gaps are not random samples. Repeated PF launches reuse an input and do not count as additional random draws.
 
 The official `gen_csv.py` contains no `random.uniform` or Gaussian scalar generation: all original alpha/beta values are fixed `SCALARS`, literals or null markers. Their fixed values therefore remain unchanged. Only the existing 96-case supplementary random stratum supplies random alpha/beta: each parameter has **96 uniform + 96 Gaussian real/imaginary components**, with the required independently sampled normal mean/standard-deviation and clipping policy. There are also **4,776 fixed components per scalar parameter** across numeric CSV cases. These fixed/special values are a separate stratum; this README does **not** claim that all scalar values including constants are 50% Gaussian.
 
-Expected full registry is **2,525 CSV cases + 4 hand-written GTests = 2,529 tests**, including 2,484 positive-n SUCCESS CSV numerical comparisons and exactly 200 original performance cases. Positive alpha=0/beta=1 comparisons may be host quick returns, so numerical comparisons must not be relabelled as kernel launches. Without the optional Gaussian mirror the prior registry remains 1,335. `Cases()` prints the actual loaded CSV registry, and the JSON lists all four hand-written names. Input generation is test data; the operator itself is not random.
+Expected full registry is **2,525 CSV cases + 12 hand-written GTests = 2,537 tests**, including 2,484 positive-n SUCCESS CSV numerical comparisons and exactly 200 original performance cases. Positive alpha=0/beta=1 comparisons may be host quick returns, so numerical comparisons must not be relabelled as kernel launches. Without the optional Gaussian mirror the registry contains 1,343 tests. `Cases()` prints the actual loaded CSV counts; `--gtest_list_tests` lists the registered CSV and hand-written tests. Input generation is test data; the operator itself is not random.
 
 Coverage includes:
 
@@ -151,7 +135,7 @@ BLAS_DEVICE_ID=0 ./build/test/sbmv/chbmv/chbmv_test --gtest_filter='*TC_SU_*' --
 BLAS_DEVICE_ID=0 ./build/test/sbmv/chbmv/chbmv_test --gtest_filter='-*TC_PF_*' --gtest_output=xml:chbmv_accuracy.xml
 ```
 
-For portable packages set `CHBMV_TEST_CASE_DIR=/absolute/case_directory`; this directory contains the original CSV and the optional supplementary/mirror CSVs. If that variable is unset, the binary falls back to its compiled `__FILE__` source directory. Moving a binary therefore does not require retaining its old source path when the environment variable is supplied. For example, use `CHBMV_TEST_CASE_DIR="$PWD/test/sbmv/chbmv/arch22"` before the test command. Capture full stdout/stderr, XML, device model, CANN/driver versions and exact source/library/CSV hashes. Check the printed actual registry and expected JSON; a zero-case run is not a pass. New Gaussian cases have not received a device result merely by generating or listing them.
+For portable packages set `CHBMV_TEST_CASE_DIR=/absolute/case_directory`; this directory contains the original CSV and the optional supplementary/mirror CSVs. If that variable is unset, the binary falls back to its compiled `__FILE__` source directory. Moving a binary therefore does not require retaining its old source path when the environment variable is supplied. For example, use `CHBMV_TEST_CASE_DIR="$PWD/test/sbmv/chbmv/arch22"` before the test command. Capture full stdout/stderr, XML, device model, CANN/driver versions and exact source/library/CSV hashes. Check the printed CSV counts and `--gtest_list_tests` output; a zero-case run is not a pass. New Gaussian cases have not received a device result merely by generating or listing them.
 
 The golden path promotes original complex64 values to double precision, uses `cblas_zhbmv` in column-major Hermitian-band mode, and rounds the final result to complex64. Record the linked CBLAS implementation/version. Logical y elements are checked in full; real/imaginary components have separate statistics. Finite comparisons use `atol=rtol=2^-13`, matched ratio at least 0.99, and maximum absolute error at most `max(1e-2, 32*ULP)` with ULP anchored at the maximum-error golden value. Non-finite comparisons follow taskbook §3.2 and are counted separately.
 
@@ -168,3 +152,28 @@ BLAS_DEVICE_ID=0 msprof op --application='./build/test/sbmv/chbmv/chbmv_test --g
 ```
 
 Use the actual generated profiler table and documented kernel identity to select at least ten valid post-warmup task durations. Check the matched reference and units (`gpu_ms` versus microseconds); the task criterion is mean NPU duration no greater than GPU duration divided by 0.8. Preserve individual samples and raw tables. Missing Task Duration is unmeasured, not a pass. The taskbook says memory validation is not applicable; retain the required template files with that explanation instead of inventing a memory benchmark.
+
+### 补充边界检查
+
+补充检查统一编入 `chbmv_test`，正式 CSV 只注册一次。`arch22/chbmv_test_edge.cpp`
+保留 8 项专项检查：历史运行时错误隔离、随机标量与未使用存储投毒、小尺寸边界、
+宽带尾块、特殊标量及极端步长、非法参数、4 字节偏移视图、有限输入溢出相消。
+句柄与空维度校验顺序并入已有测试；A/x 不变检查合并到 CSV 执行中。
+
+`chbmv_param.h` 统一解析参数，`chbmv_reference.h` 提供 FP64 golden 和分量判据，
+`chbmv_test_data.h` 提供专项数据生成及存储检查，均位于接口目录。
+数据生成、CSV 读取及分量判据参考 PR !800：
+https://gitcode.com/qunzhongjia/ops-blas/commit/4265ffb4c099de2e74cab9464eb25d418abeeda2，
+保留原版权及 CANN Open Software License Agreement 2.0。
+
+```bash
+cmake --build build --target chbmv_test -j8
+BLAS_DEVICE_ID=0 build/test/sbmv/chbmv/chbmv_test \
+  --gtest_filter='ChbmvTest.*:ChbmvEdgeTest.*' --gtest_output=xml:chbmv_directed.xml
+BLAS_DEVICE_ID=0 build/test/sbmv/chbmv/chbmv_test --gtest_filter='*TC_PF_*'
+```
+
+性能用例使用已有 Event 计时入口，先校验数值，再执行 5 次预热和 10 次连续计时调用。
+性能用例的 beta 为零，重复调用保持输入契约；计时窗口内不搬运或生成数据。
+编译使用仓库默认优化级别，Chbmv 源文件通过 `#pragma clang fp contract(off)`
+保留补偿计算所需的 FP32 分步舍入。

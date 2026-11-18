@@ -7,37 +7,19 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
-
 #pragma once
-
 #include <cstdint>
 
-constexpr uint32_t CHBMV_ROWS = 64;
-constexpr uint32_t CHBMV_DIAGONAL_ROWS = 128;
-constexpr uint32_t CHBMV_DIAGONAL_SMALL_ROWS = 32;
-constexpr uint32_t CHBMV_DIAGONAL_MEDIUM_ROWS = 64;
-constexpr uint32_t CHBMV_DIAGONAL_SMALL_N = 256;
-constexpr uint32_t CHBMV_DIAGONAL_MEDIUM_N = 512;
-constexpr uint32_t CHBMV_DIAGONAL_SPAN_BYTES = 144 * 1024;
-constexpr uint32_t CHBMV_REDUCE = 256;
-constexpr uint32_t CHBMV_SMALL_BAND = 64;
-constexpr uint32_t CHBMV_SPAN_BYTES = 128 * 1024;
-constexpr uint32_t CHBMV_PATH_ROW_DOT = 0;
-constexpr uint32_t CHBMV_PATH_DIAGONALS = 1;
-
+// Scalar fallback: FP32 arithmetic on AIV, one owner per output.
+// Only the exact 8 output bytes are transferred; the UB slot is DMA aligned.
+constexpr uint32_t CHBMV_OUTPUT_BYTES = 32;
+constexpr uint32_t CHBMV_VECTOR_ROWS = 64;
+constexpr uint32_t CHBMV_VECTOR_SCRATCH_BYTES = 36864;
+constexpr uint32_t CHBMV_MIRROR_TILE = 64;
+constexpr uint32_t CHBMV_DIRECT_TILE = 32;
 struct ChbmvTilingData {
-    uint32_t n;
-    uint32_t k; // Physical band origin: never replace this with min(k, n-1).
-    uint32_t effectiveK;
-    uint32_t lda;
-    uint32_t upper;
-    uint32_t blockCount;
-    uint32_t path;
-    uint32_t reserved;
-    int64_t incx;
-    int64_t incy;
-    float alphaR;
-    float alphaI;
-    float betaR;
-    float betaI;
+    uint32_t n, k, band, lda, upper, numBlocks, blockRows;
+    uint32_t vectorMode, aCacheBytes, xCacheBytes, vectorRows;
+    int64_t incx, incy, xStart, yStart;
+    float alphaReal, alphaImag, betaReal, betaImag;
 };

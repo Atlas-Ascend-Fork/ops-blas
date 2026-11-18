@@ -7,10 +7,7 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
-
 #pragma once
-
-#include <cstdint>
+#include "acl/acl.h"
 #include "chbmv_tiling_data.h"
-
-void chbmv_kernel_do(uint8_t* a, uint8_t* x, uint8_t* y, uint32_t blocks, const ChbmvTilingData& tiling, void* stream);
+aclError chbmv_kernel_do(uint8_t* a, uint8_t* x, uint8_t* y, ChbmvTilingData t, aclrtStream stream);

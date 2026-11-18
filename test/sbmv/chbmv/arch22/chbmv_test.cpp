@@ -17,7 +17,9 @@
 #include <limits>
 #include "blas_test.h"
 #include "fill.h"
-#include "chbmv_golden.h"
+#include "chbmv_reference.h"
+#include <set>
+#include <stdexcept>
 #include "allocation.h"
 
 namespace {
@@ -57,6 +59,17 @@ std::vector<ChbmvParam> Cases()
                                     ReplaceFileExtension2Csv(__FILE__);
     auto cases = GetCasesFromCsv<ChbmvParam>(mainCsv);
     const size_t mainCount = cases.size();
+    std::set<std::string> names;
+    size_t mainPerformanceCount = 0;
+    for (const auto& p : cases) {
+        if (p.caseName.empty() || !names.insert(p.caseName).second) {
+            throw std::runtime_error("Empty or duplicate Chbmv case: " + p.caseName);
+        }
+        mainPerformanceCount += p.IsPerformanceCase();
+    }
+    if (mainCount != 1200 || mainPerformanceCount != 200) {
+        throw std::runtime_error("Chbmv requires 1200 main CSV cases, including 200 performance cases");
+    }
     const std::string directory = mainCsv.substr(0, mainCsv.find_last_of("/\\") + 1);
     const auto appendOptional = [&](const char* filename) {
         const std::string path = directory + filename;
@@ -188,6 +201,12 @@ TEST_P(ChbmvTest, CsvDriven)
     const auto expected = ChbmvReference::Golden(p, a, x, original);
     Compare(p, actual, expected);
     CheckOutputGuards(p, guarded, original, actual);
+    auto aAfter = a;
+    auto xAfter = x;
+    ASSERT_EQ(da.Download(aAfter), ACL_SUCCESS);
+    ASSERT_EQ(dx.Download(xAfter), ACL_SUCCESS);
+    EXPECT_EQ(std::memcmp(aAfter.data(), a.data(), a.size() * sizeof(aclblasComplex)), 0);
+    EXPECT_EQ(std::memcmp(xAfter.data(), x.data(), x.size() * sizeof(aclblasComplex)), 0);
     if (perf) {
         RecordPerformance(p, stream_, call);
     }
@@ -195,6 +214,12 @@ TEST_P(ChbmvTest, CsvDriven)
 
 TEST_F(ChbmvTest, NullHandlePrecedesQuickReturn)
 {
+    EXPECT_EQ(
+        aclblasChbmv(nullptr, ACLBLAS_UPPER, -1, 0, nullptr, nullptr, 1, nullptr, 1, nullptr, nullptr, 1),
+        ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
+    EXPECT_EQ(
+        aclblasChbmv(handle_, ACLBLAS_UPPER, -1, 0, nullptr, nullptr, 1, nullptr, 1, nullptr, nullptr, 1),
+        ACLBLAS_STATUS_INVALID_VALUE);
     EXPECT_EQ(
         aclblasChbmv(nullptr, ACLBLAS_UPPER, 0, 0, nullptr, nullptr, 1, nullptr, 1, nullptr, nullptr, 1),
         ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
