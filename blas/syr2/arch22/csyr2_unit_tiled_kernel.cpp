@@ -10,6 +10,7 @@
 
 #include "kernel_operator.h"
 #include "common/helper/kernel_utils.h"
+#include "cann_ops_blas_common.h"
 #include "csyr2_kernel.h"
 #include "csyr2_triangle_copy.h"
 #include "csyr2_vector_common.h"
@@ -131,7 +132,7 @@ struct UnitTiles {
     }
     __aicore__ inline void Run(uint32_t first, uint32_t last, const Csyr2TilingData& t)
     {
-        const bool upper = t.uplo == 121U;
+        const bool upper = t.uplo == ACLBLAS_UPPER;
         for (uint32_t col = first; col < last; col += 4U) {
             const uint32_t columns = t.n - col < 4U ? t.n - col : 4U;
             gm_to_ub_align<ArchType::ASCEND_V220, float>(coeff, v.x[2ULL * col], 0, 1, 8U * columns, 0, 0, 0, 0);

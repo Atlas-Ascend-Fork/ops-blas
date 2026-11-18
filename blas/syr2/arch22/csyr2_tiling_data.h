@@ -11,11 +11,11 @@
 #pragma once
 #include <cstdint>
 struct Csyr2TilingData {
-    uint32_t n;
-    uint32_t uplo;
-    uint32_t lda;
-    float ar;
-    float ai;
-    int64_t incx;
-    int64_t incy;
+    uint32_t n;    /**< matrix order (rows/columns of A) */
+    uint32_t uplo; /**< triangle selector: ACLBLAS_UPPER (121) / ACLBLAS_LOWER (122), see aclblasFillMode_t */
+    uint32_t lda;  /**< leading dimension of A, lda >= n */
+    float ar;      /**< scalar alpha, real part */
+    float ai;      /**< scalar alpha, imaginary part */
+    int64_t incx;  /**< x stride (signed; negative uses the Netlib physical-base convention) */
+    int64_t incy;  /**< y stride (signed; negative uses the Netlib physical-base convention) */
 };

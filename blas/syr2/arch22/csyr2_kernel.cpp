@@ -10,12 +10,12 @@
 
 #include <cstdint>
 #include "kernel_operator.h"
+#include "cann_ops_blas_common.h"
 #include "csyr2_kernel.h"
 #include "csyr2_precise_scalar.h"
 using namespace AscendC;
 namespace {
 constexpr uint32_t kRowTile = 1088U;
-constexpr uint32_t kUpper = 121U;
 __aicore__ inline uint64_t PhysicalIndex(uint32_t i, uint32_t n, int64_t inc)
 {
     uint64_t s = inc >= 0 ? static_cast<uint64_t>(inc) : static_cast<uint64_t>(-inc);
@@ -33,9 +33,9 @@ __aicore__ inline uint64_t CeilRunSum(uint64_t m, uint64_t g)
 __aicore__ inline uint64_t WorkPrefix(uint32_t c, uint32_t n, uint32_t u)
 {
     uint64_t cols = c;
-    uint64_t elems = u == kUpper ? cols * (cols + 1ULL) / 2ULL : cols * (2ULL * n - cols + 1ULL) / 2ULL;
+    uint64_t elems = u == ACLBLAS_UPPER ? cols * (cols + 1ULL) / 2ULL : cols * (2ULL * n - cols + 1ULL) / 2ULL;
     uint64_t transfers =
-        u == kUpper ? CeilRunSum(cols, kRowTile) : CeilRunSum(n, kRowTile) - CeilRunSum(n - cols, kRowTile);
+        u == ACLBLAS_UPPER ? CeilRunSum(cols, kRowTile) : CeilRunSum(n, kRowTile) - CeilRunSum(n - cols, kRowTile);
     return 2048ULL * cols + elems + 4096ULL * transfers;
 }
 __aicore__ inline uint32_t Boundary(uint32_t part, uint32_t parts, uint32_t n, uint32_t u)
@@ -91,7 +91,7 @@ extern "C" __global__ __aicore__ __vector__ void csyr2_kernel(GM_ADDR X, GM_ADDR
         float ycR = y.GetValue(2 * ycIdx);
         float ycI = y.GetValue(2 * ycIdx + 1);
         for (uint32_t r = 0; r < t.n; r++) {
-            if ((t.uplo == kUpper && r > c) || (t.uplo != kUpper && r < c)) {
+            if ((t.uplo == ACLBLAS_UPPER && r > c) || (t.uplo != ACLBLAS_UPPER && r < c)) {
                 continue;
             }
             uint64_t xi = PhysicalIndex(r, t.n, t.incx);

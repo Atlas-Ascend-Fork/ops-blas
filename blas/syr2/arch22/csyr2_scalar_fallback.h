@@ -15,6 +15,16 @@
 namespace Csyr2Vector {
 __aicore__ inline bool RequiresPrecise(Vectors& v, uint32_t n, uint32_t rows)
 {
+    // Design note: the scalar precise fallback is deliberately gated to n == 32.
+    // It is calibrated for the unit-stride boundary kernels at that single size
+    // (csyr2_banded_vector upper / csyr2_lower_vector lower); every other size
+    // intentionally keeps the vectorized path. The direct_vector route carries
+    // its own full HasNonfinite scan, which the wide-reference numerics
+    // regression (n = 3073/4097/6144) exercises; widening this gate to further
+    // paths would change behavior without dedicated regression coverage.
+    // `rows` is the per-core loaded span (upper: prefix [0, range.last);
+    // lower: suffix [range.first, n)), so the scan bound tracks the loaded
+    // data instead of n and must not be folded into the gate.
     if (n != 32U) {
         return false;
     }
