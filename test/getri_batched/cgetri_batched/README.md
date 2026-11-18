@@ -28,7 +28,9 @@ PIVOT 输入通过 LAPACK `cgetrf_` 得到 LU 和 1-based pivot，NO_PIVOT 输�
 在 Ascend 950PR 上加载 CANN 环境，使用对应 CANN 支持的 CMake：
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0-beta.3/set_env.sh
+# 将 CANN_HOME 改为本机 set_env.sh 所在的目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0-beta.3
+source "$CANN_HOME/set_env.sh"
 export PATH=/workspace/venvs/pytorch-npu/bin:$PATH
 export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64"
 bash build.sh --soc=ascend950 --ops=cgetri_batched --device=0

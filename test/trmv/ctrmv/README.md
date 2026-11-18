@@ -41,12 +41,14 @@ invalid uplo/trans/diag enums → INVALID_ENUM, lda < max(1,n) / n<0 / incx=0 �
 n=0 quick-return → SUCCESS.
 
 ## Build Instructions
+Run the commands from the repository root. Set `CANN_HOME` to the directory containing `set_env.sh`.
+
 ```bash
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
 # Source CANN environment
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
+source "$CANN_HOME/set_env.sh"
 
 # Build the operator + test
-cd /workspace/ops-blas
 bash build.sh --ops=ctrmv --soc=ascend950
 ```
 
@@ -91,7 +93,7 @@ python3 verify_performance.py --repo /path/to/ops-blas --soc ascend950
   pattern depends on accumulation order and is not comparable across implementations.
 
 ## Test Steps (reproducible)
-1. Source CANN env: `source /usr/local/Ascend/cann-9.1.0/set_env.sh`
-2. Build: `cd /workspace/ops-blas && bash build.sh --ops=ctrmv --soc=ascend950`
+1. From the repository root, set `CANN_HOME` to your CANN installation directory and load the environment: `CANN_HOME=/usr/local/Ascend/cann-9.1.0 && source "$CANN_HOME/set_env.sh"`
+2. Build: `bash build.sh --ops=ctrmv --soc=ascend950`
 3. Accuracy: `./build/test/trmv/ctrmv/ctrmv_test --gtest_filter='*-*TC_PF*'` → expect `[  PASSED  ] 1004 tests.`
 4. Perf: `./build/test/trmv/ctrmv/ctrmv_test --gtest_filter='*TC_PF*'` → expect 200 PASS with avg_single_us ≤ baseline

@@ -48,7 +48,9 @@ apt-get install -y cmake libblas-dev liblapack-dev
 在 ops-blas 仓库根目录执行：
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0/bin/setenv.bash
+# 将 CANN_HOME 改为本机包含 bin/setenv.bash 的 CANN 安装目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/bin/setenv.bash"
 rm -rf build
 bash build.sh --soc=ascend950 --ops=csrot
 ```
