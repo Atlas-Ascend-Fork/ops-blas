@@ -39,7 +39,7 @@ namespace {
 // per-core arrays.
 static ScasumTilingData CalcScasumTilingData(int64_t totalComplexNum, uint32_t vecCoreNum)
 {
-    ScasumTilingData tiling;
+    ScasumTilingData tiling{};
     tiling.n = totalComplexNum;
     tiling.useCoreNum = 0;
 

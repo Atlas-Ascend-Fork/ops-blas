@@ -31,7 +31,7 @@ namespace {
 // SIMT kernel accesses elements individually — no block alignment needed here.
 static SasumTilingData CalcSasumTilingData(int64_t totalEleNum, uint32_t vecCoreNum)
 {
-    SasumTilingData tiling;
+    SasumTilingData tiling{};
     tiling.n = totalEleNum;
     tiling.useCoreNum = 0;
 
