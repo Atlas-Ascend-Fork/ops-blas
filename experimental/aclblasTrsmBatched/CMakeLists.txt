@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.20.0)
 find_package(ASC REQUIRED)
 
 project(trsm_batched LANGUAGES ASC CXX)

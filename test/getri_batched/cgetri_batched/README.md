@@ -47,7 +47,7 @@ CMake 未显式指定构建类型时默认 Release，也可在直接调用 CMake
 
 ## Debug 功能验证
 
-导师在 [验收 Issue](https://gitcode.com/kevin_lee1231/ops-blas/issues/1) 中指定后续验收使用 Release。Debug 使用独立目录和 `-DCMAKE_BUILD_TYPE=Debug` 全量构建，保留 CANN 的 `-O0 -g`，不覆盖设备优化选项。
+导师在验收任务书中指定后续验收使用 Release。Debug 使用独立目录和 `-DCMAKE_BUILD_TYPE=Debug` 全量构建，保留 CANN 的 `-O0 -g`，不覆盖设备优化选项。
 
 Debug 功能验证设置 `CGETRI_TEST_FUNCTIONAL_ONLY=1` 运行全量用例：1052 条 API/精度用例照常验证；200 条性能输入保持相同形状、矩阵类型和 batch，每条执行一次并检查所有输出及 info，不做性能判定。此模式日志输出 `FUNCTIONAL_RESULT ... performance_measured=0`，XML 记录 `performance_measured=0`，不能用作性能达标证据。
 

@@ -346,7 +346,7 @@ int main()
 在已配置 CANN 环境的 ops-blas 根目录编译并运行：
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
+source /usr/local/Ascend/cann/set_env.sh
 cmake -S . -B build-release -DSOC_VERSION=ascend950 \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$ASCEND_HOME_PATH/lib64/cmake"
 cmake --build build-release --target ops_blas -j8

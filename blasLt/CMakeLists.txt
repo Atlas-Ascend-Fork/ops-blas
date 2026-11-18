@@ -8,7 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.20.0)
 
 # Collect every blasLt source, then classify by role so the parent scope can assign compile
 # languages without maintaining a per-file whitelist:

@@ -34,4 +34,4 @@ CSCAL_BIN="$PWD/build/test/scal/cscal/cscal_test"
 
 ## 历史验收记录
 
-原交付分支 `delivery/cscal950-acceptance` 的 2026-09-15 设备复测记录了官方精度 1000/1000、补充精度 181/181、性能 200/200。详细日志、官方脚本输出、构建哈希及复测波动说明保留在[验收附件](https://gitcode.com/zee_920/ops-blas/tree/delivery/cscal950-acceptance/docs/cscal950/acceptance/20260915)。这些记录属于当时的交付基线，不能代替本 PR 基于最新上游 `master` 的新设备复测；HBM/寄存器峰值和专用设备 sanitizer 未运行。
+原交付分支 `delivery/cscal950-acceptance` 的 2026-09-15 设备复测记录了官方精度 1000/1000、补充精度 181/181、性能 200/200。验收修订报告（含结果汇总、构建哈希及复测波动说明）与源码版本清单已迁入官方仓[验收记录目录](./acceptance/20260915)；完整逐例日志与脚本输出受代码仓二进制门禁限制不随仓迁移，保留于原交付归档。这些记录属于当时的交付基线，不能代替本 PR 基于最新上游 `master` 的新设备复测；HBM/寄存器峰值和专用设备 sanitizer 未运行。

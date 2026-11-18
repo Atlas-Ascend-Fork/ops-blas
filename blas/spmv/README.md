@@ -252,7 +252,7 @@ aclblasStatus_t aclblasChpmv(aclblasHandle_t handle, aclblasFillMode_t uplo, int
 在 Ascend 950PR、CANN 9.1.0 环境下，使用 Netlib BLAS/CBLAS 3.10.0 作为数值参考。在仓库根目录执行，参考库路径替换为本机实际路径：
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
+source /usr/local/Ascend/cann/set_env.sh
 export CHPMV_NETLIB_CBLAS=/absolute/path/netlib-build/lib/libcblas.so.3.10.0
 export CHPMV_NETLIB_BLAS=/absolute/path/netlib-build/lib/libblas.so.3.10.0
 export BLAS_DEVICE_ID=0

@@ -314,7 +314,7 @@ g++ -std=c++17 example.cpp -Iinclude -I"$ASCEND_HOME_PATH/include" \
 
 #### 测试与已验证配置
 
-见 [Cscal 测试说明](../../test/scal/cscal/README.md)。原交付分支在 Ascend 950PR、CANN 9.1.0 上记录了原题精度 1000/1000、补充精度 181/181、性能 200/200 通过；计时采用 ACL timeline 单次 stream 区间，10 次预热、64 次有效样本，并在每次计时前恢复输入。同条件复测仍有波动，且当前上游基线未重新做设备复测。完整原始结果和构建哈希保留在[验收交付分支](https://gitcode.com/zee_920/ops-blas/tree/delivery/cscal950-acceptance/docs/cscal950/acceptance/20260915)，不将支持声明扩大到 950DT 或未测工具链。
+见 [Cscal 测试说明](../../test/scal/cscal/README.md)。原交付分支在 Ascend 950PR、CANN 9.1.0 上记录了原题精度 1000/1000、补充精度 181/181、性能 200/200 通过；计时采用 ACL timeline 单次 stream 区间，10 次预热、64 次有效样本，并在每次计时前恢复输入。同条件复测仍有波动，且当前上游基线未重新做设备复测。完整结果汇总和构建哈希保留在官方仓[验收记录目录](../../test/scal/cscal/acceptance/20260915)（验收修订报告与源码版本清单），不将支持声明扩大到 950DT 或未测工具链。
 
 ### aclblasCsscal
 
