@@ -29,21 +29,21 @@ Coverage categories:
   ED edge/negative (10), EX extended (897), PF perf (200)
 
 ## Build Instructions
-```bash
-# Source CANN environment
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
+Run the commands from the repository root. Set `CANN_HOME` to the directory containing `set_env.sh`.
 
-# Build the test
-cd /workspace/ops-blas
-mkdir -p build && cd build
-cmake -S .. -B . \
+```bash
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+# Source CANN environment
+source "$CANN_HOME/set_env.sh"
+
+cmake -S . -B build \
   -DSOC_VERSION=ascend950 \
-  -DASCEND_CANN_PACKAGE_PATH=/usr/local/Ascend/cann-9.1.0 \
+  -DASCEND_CANN_PACKAGE_PATH="$CANN_HOME" \
   -DBUILD_TEST=ON \
   -DTEST_NAMES=cdotu \
   -DTEST_DEVICE_ID=0
 
-cmake --build . --target cdotu_test -j
+cmake --build build --target cdotu_test -j
 ```
 
 ## Test Execution
@@ -68,8 +68,8 @@ cmake --build . --target cdotu_test -j
   incx=0 / incy=0 / null x,y (n>0) return ACLBLAS_STATUS_INVALID_VALUE.
 
 ## Test Steps (reproducible)
-1. Source CANN env: `source /usr/local/Ascend/cann-9.1.0/set_env.sh`
-2. Configure: `cmake -S . -B build -DSOC_VERSION=ascend950 -DASCEND_CANN_PACKAGE_PATH=/usr/local/Ascend/cann-9.1.0 -DBUILD_TEST=ON -DTEST_NAMES=cdotu -DTEST_DEVICE_ID=0`
+1. From the repository root, set `CANN_HOME` to your CANN installation directory and load the environment: `CANN_HOME=/usr/local/Ascend/cann-9.1.0 && source "$CANN_HOME/set_env.sh"`
+2. Configure: `cmake -S . -B build -DSOC_VERSION=ascend950 -DASCEND_CANN_PACKAGE_PATH="$CANN_HOME" -DBUILD_TEST=ON -DTEST_NAMES=cdotu -DTEST_DEVICE_ID=0`
 3. Build: `cmake --build build --target cdotu_test -j`
 4. Run: `./build/test/dot/cdotu/cdotu_test`
 5. Expect: `[  PASSED  ] 1202 tests.`
