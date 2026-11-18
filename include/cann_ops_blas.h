@@ -464,6 +464,10 @@ aclblasStatus_t aclblasCgbmv(
 aclblasStatus_t aclblasStpttr(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* AP, float* A, int lda);
 
+aclblasStatus_t aclblasCtpttr(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const aclblasComplex* AP, aclblasComplex* A,
+    const int lda);
+
 aclblasStatus_t aclblasStrttp(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* A, int lda, float* AP);
 

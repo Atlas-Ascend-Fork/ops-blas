@@ -65,6 +65,26 @@ ops=()
 declare -A op_cases
 run_all=false
 ignore_dirs="common include utils frame"
+base_branch=""
+
+resolve_diff_base() {
+    if [ -n "$base_branch" ]; then
+        return
+    fi
+    base_branch="origin/${TARGET_BRANCH:-master}"
+    if git rev-parse --verify --quiet "$base_branch" >/dev/null; then
+        return
+    fi
+
+    # PreSmoke checks out the pre-merge commit by SHA at depth 1.
+    base_branch="HEAD^1"
+    if ! git rev-parse --verify --quiet "$base_branch" >/dev/null &&
+        [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+        if ! git fetch --no-tags --deepen=1 origin "$(git rev-parse HEAD)"; then
+            echo "Warning: could not fetch the pre-merge commit parent for test selection." >&2
+        fi
+    fi
+}
 
 # 公共头文件变更（issue #457）：include/cann_ops_blas.h 等被新增算子 PR 触发时，
 # 原策略直接 run_all → 全量用例必然触发 PreSmoke 30 分钟硬超时。改为：
@@ -78,8 +98,7 @@ while IFS= read -r filepath; do
     fi
     if [[ "$filepath" == include/* ]]; then
         header_ops=""
-        base_branch="origin/${TARGET_BRANCH:-master}"
-        git cat-file -e "$base_branch" 2>/dev/null || base_branch="HEAD~1"
+        resolve_diff_base
         # 从新增/修改行提取 API 函数名：aclblas<Xxx>( 形态
         funcs=$(git diff "$base_branch" HEAD -- "$filepath" 2>/dev/null \
                 | grep -E '^[+][^+]' \
@@ -171,8 +190,7 @@ while IFS= read -r filepath; do
         # 与 git 基线比对：新增/修改行的 case_name（删除行无法在本分支取到，不纳入）
         # 管道口径：'^[+][^+]' 取新增数据行（排除 +++ 头），awk 剥离 + 前缀后取
         # 首列 case_name，排除 header
-        base_branch="origin/${TARGET_BRANCH:-master}"
-        git cat-file -e "$base_branch" 2>/dev/null || base_branch="HEAD~1"
+        resolve_diff_base
         while IFS= read -r case_name; do
             [ -z "$case_name" ] && continue
             [[ "$case_name" == "case_name" ]] && continue

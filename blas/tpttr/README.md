@@ -15,6 +15,7 @@ A[triangular] = unpack(AP)
 | 接口名 | 功能简述 |
 |--------|---------|
 | aclblasStpttr | 单精度压缩三角矩阵展开为常规矩阵 |
+| aclblasCtpttr | 单精度复数 packed 三角矩阵按列解包 |
 
 ## 算子执行接口
 
@@ -191,3 +192,31 @@ int main()
     return 0;
 }
 ```
+
+### aclblasCtpttr
+
+#### 产品支持情况
+
+| 产品 | 支持情况 |
+|---|---|
+| Ascend 950PR | 支持 |
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasCtpttr(
+    aclblasHandle_t handle,
+    aclblasFillMode_t uplo,
+    const int n,
+    const aclblasComplex* AP,
+    aclblasComplex* A,
+    const int lda);
+```
+
+将单精度复数 packed 数组 AP 按列解包到前导维度为 lda 的列主序矩阵 A。
+UPPER 每列写入第 0 行到对角线，LOWER 每列写入对角线到最后一行。另一三角和 padding 保留原值。
+
+- uplo 取 ACLBLAS_UPPER 或 ACLBLAS_LOWER。
+- n ≥ 0，lda ≥ max(1, n)，AP 至少包含 n × (n + 1) / 2 个复数，A 至少容纳 lda × n 个复数。
+- AP 和 A 均在 Device 内存且须互不重叠。n = 0 时在校验 handle、n、uplo 和 lda 后直接返回。
+- 通过 handle 绑定的 stream 异步执行。调用方需要等待 stream 完成后再读取 A。
