@@ -36,6 +36,8 @@ ERROR_RATIO_TOL = 1e-4
 
 
 def verify_result(m, n, batch):
+    if m <= 0 or n <= 0 or batch <= 0:
+        raise ValueError("m, n and batch must be positive for accuracy verification")
     all_pass = True
     max_mere = 0.0
     total_elements = 0

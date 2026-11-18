@@ -15,10 +15,17 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
 
 
-def main():
+def parse_dimensions():
     m = int(sys.argv[1]) if len(sys.argv) > 1 else 16
     n = int(sys.argv[2]) if len(sys.argv) > 2 else 16
     batch_count = int(sys.argv[3]) if len(sys.argv) > 3 else 1
+    if m <= 0 or n <= 0 or batch_count <= 0:
+        raise ValueError("m, n and batch must be positive for accuracy verification")
+
+    return m, n, batch_count
+
+
+def main(m, n, batch_count):
 
     # FLOAT32 community standard
     threshold = 2**-13            # MERE threshold
@@ -73,4 +80,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        dimensions = parse_dimensions()
+    except ValueError as exc:
+        logging.error("%s", exc)
+        sys.exit(1)
+    main(*dimensions)
