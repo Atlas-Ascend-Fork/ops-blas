@@ -39,7 +39,7 @@ struct SswapTilingData {
 
 static SswapTilingData CalSswapTilingData(uint32_t n, uint32_t vecCoreNum, int32_t incx, int32_t incy)
 {
-    SswapTilingData tilingData;
+    SswapTilingData tilingData{};
     tilingData.n = n;
     tilingData.coreNum = 0;
     tilingData.incx = incx;

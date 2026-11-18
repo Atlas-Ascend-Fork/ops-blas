@@ -43,7 +43,7 @@ struct CswapTilingData {
 
 static CswapTilingData CalCswapTilingData(uint32_t n, uint32_t vecCoreNum, int32_t incx, int32_t incy)
 {
-    CswapTilingData tilingData;
+    CswapTilingData tilingData{};
     tilingData.n = n;
     tilingData.coreNum = 0;
     tilingData.incx = incx;

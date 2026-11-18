@@ -36,7 +36,7 @@ constexpr uint64_t ELEMENTS_PER_BLOCK_TILING = UB_BYTENUM_PER_BLOCK_TILING / BYT
 
 static StrsvTilingData CalStrsvTilingData(int n, int lda, uint32_t coreNum)
 {
-    StrsvTilingData tiling;
+    StrsvTilingData tiling{};
     tiling.n = static_cast<uint32_t>(n);
     tiling.lda = static_cast<uint32_t>(lda);
     tiling.useCoreNum = 0;
