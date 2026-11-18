@@ -537,6 +537,11 @@ aclblasStatus_t aclblasCgemmBatched(
     const aclblasComplex* alpha, const aclblasComplex* const Aarray[], int lda, const aclblasComplex* const Barray[],
     int ldb, const aclblasComplex* beta, aclblasComplex* const Carray[], int ldc, int batchCount);
 
+aclblasStatus_t aclblasHgemmBatched(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
+    const aclblasHalf* alpha, const aclblasHalf* const Aarray[], int lda, const aclblasHalf* const Barray[], int ldb,
+    const aclblasHalf* beta, aclblasHalf* const Carray[], int ldc, int batchCount);
+
 aclblasStatus_t aclblasSgetriBatched(
     aclblasHandle_t handle, int n, const float* const Aarray[], int lda, const int* PivotArray, float* const Carray[],
     int ldc, int* infoArray, int batchSize);

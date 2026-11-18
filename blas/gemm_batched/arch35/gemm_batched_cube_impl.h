@@ -222,13 +222,20 @@ __aicore__ inline uint32_t GbProcessMNTiles(
     uint32_t nStart, uint32_t nEnd, uint32_t tileM, uint32_t tileN, uint32_t K, uint32_t tileKChunk, uint32_t baseK,
     uint32_t kL1Iter, uint32_t outputPingPong = 0)
 {
+    // Decide the L0C banking mode from the configured tile size (not the
+    // per-tile tail), so every tile in the kernel uses the same bank so that
+    // the FIX_M handshake flags always match.  A tile larger than half of L0C
+    // cannot be double-buffered and instead uses the whole L0C as one bank.
+    const bool singleL0cBank =
+        static_cast<uint64_t>(tileM) * tileN * sizeof(float) > (AscendC::TOTAL_L0C_SIZE >> 1);
     for (uint32_t mOff = mStart; mOff < mEnd; mOff += tileM) {
         uint32_t curTileM = Min<uint32_t>(tileM, mEnd - mOff);
         for (uint32_t nOff = nStart; nOff < nEnd; nOff += tileN) {
             uint32_t curTileN = Min<uint32_t>(tileN, nEnd - nOff);
 
-            const uint16_t outputBank = static_cast<uint16_t>(outputPingPong & 1U);
-            const uint32_t l0cOffsetBytes = outputBank * (AscendC::TOTAL_L0C_SIZE >> 1);
+            const uint16_t outputBank = singleL0cBank ? static_cast<uint16_t>(0)
+                                                      : static_cast<uint16_t>(outputPingPong & 1U);
+            const uint32_t l0cOffsetBytes = singleL0cBank ? 0 : outputBank * (AscendC::TOTAL_L0C_SIZE >> 1);
             AscendC::WaitFlag<AscendC::HardEvent::FIX_M>(outputBank);
             uint64_t l1LoopCnt = 0;
             uint64_t l0PingPong = 0;
@@ -316,7 +323,7 @@ __aicore__ inline GbTaskBounds GbResolveTaskBounds(
     return {mStart, mEnd, nStart, nEnd};
 }
 
-template <class LayoutA, class LayoutB, uint32_t DtypeId>
+template <class LayoutA, class LayoutB, uint32_t DtypeId, typename COutT = float>
 __aicore__ inline uint32_t GbProcessOneTask(
     __gm__ uint64_t* aPtrArr, __gm__ uint64_t* bPtrArr, __gm__ uint64_t* cPtrArr, uint32_t taskId,
     const GemmBatchedGemmTilingData& tiling, uint32_t baseK, uint32_t kL1Iter, __gm__ uint8_t* directA = nullptr,
@@ -329,8 +336,11 @@ __aicore__ inline uint32_t GbProcessOneTask(
                                              reinterpret_cast<__gm__ DType*>(directA);
     __gm__ DType* bGm = directB == nullptr ? reinterpret_cast<__gm__ DType*>(bPtrArr[task.batch]) :
                                              reinterpret_cast<__gm__ DType*>(directB);
-    __gm__ float* cGm = directC == nullptr ? reinterpret_cast<__gm__ float*>(cPtrArr[task.batch]) :
-                                             reinterpret_cast<__gm__ float*>(directC);
+    // COutT selects the GM output element type.  When it differs from the L0C
+    // accumulator (float), the fixpipe performs the cast on copy-out (e.g. the
+    // FLOAT16 path writes half directly and skips a separate FP32 temporary).
+    __gm__ COutT* cGm = directC == nullptr ? reinterpret_cast<__gm__ COutT*>(cPtrArr[task.batch]) :
+                                             reinterpret_cast<__gm__ COutT*>(directC);
     auto gmATensor = AscendC::Te::MakeTensor(
         AscendC::Te::MakeMemPtr<AscendC::Te::Location::GM>(aGm),
         MakeGmLayout<DType>(LayoutA{}, tiling.m, tiling.k, tiling.lda));
@@ -339,7 +349,7 @@ __aicore__ inline uint32_t GbProcessOneTask(
         MakeGmLayout<DType>(LayoutB{}, tiling.k, tiling.n, tiling.ldb));
     auto gmCTensor = AscendC::Te::MakeTensor(
         AscendC::Te::MakeMemPtr<AscendC::Te::Location::GM>(cGm),
-        MakeGmLayout<DType>(AscendC::Te::NDExtLayoutPtn{}, tiling.m, tiling.n, tiling.ldc));
+        MakeGmLayout<COutT>(AscendC::Te::NDExtLayoutPtn{}, tiling.m, tiling.n, tiling.ldc));
     return GbProcessMNTiles<DtypeId>(
         gmATensor, gmBTensor, gmCTensor, bounds.mStart, bounds.mEnd, bounds.nStart, bounds.nEnd, tiling.tileM,
         tiling.tileN, tiling.k, tiling.tileKChunk, baseK, kL1Iter, outputPingPong);
@@ -398,6 +408,34 @@ __aicore__ inline void gemm_batched_gemm_kernel_impl(
 
     for (uint32_t taskId = AscendC::GetBlockIdx(); taskId < totalTasks; taskId += AscendC::GetBlockNum()) {
         GbProcessOneTask<LayoutA, LayoutB, DtypeId>(aPtrArr, bPtrArr, cPtrArr, taskId, tiling, baseK, kL1Iter);
+    }
+
+    GbFinalizeCubePipeline();
+}
+
+// FLOAT16-input GEMM that writes FLOAT16 output directly from the FP32 L0C
+// accumulator via the fixpipe cast, avoiding an FP32 temporary and a separate
+// epilogue pass.  Used by aclblasHgemmBatched's alpha==1 / beta==0 fast path.
+template <class LayoutA, class LayoutB, uint32_t DtypeId>
+__aicore__ inline void gemm_batched_gemm_kernel_impl_halfout(
+    __gm__ uint8_t* aarray, __gm__ uint8_t* barray, __gm__ uint8_t* carray, GemmBatchedGemmTilingData tiling)
+{
+    GbInitializeCubePipeline<DtypeId>();
+    using DType = typename GbDtypeTraits<DtypeId>::type;
+
+    const uint32_t totalTasks = tiling.totalTasks;
+    const uint32_t baseK = (sizeof(DType) == sizeof(float)) ? GEMM_BATCHED_FP32_L0_BASE_K : GEMM_BATCHED_FP16_L0_BASE_K;
+    const uint32_t K = tiling.k;
+    const uint32_t tileKChunk = tiling.tileKChunk;
+    const uint32_t kL1Iter = (K + tileKChunk - 1) / tileKChunk;
+
+    __gm__ uint64_t* aPtrArr = reinterpret_cast<__gm__ uint64_t*>(aarray);
+    __gm__ uint64_t* bPtrArr = reinterpret_cast<__gm__ uint64_t*>(barray);
+    __gm__ uint64_t* cPtrArr = reinterpret_cast<__gm__ uint64_t*>(carray);
+
+    for (uint32_t taskId = AscendC::GetBlockIdx(); taskId < totalTasks; taskId += AscendC::GetBlockNum()) {
+        GbProcessOneTask<LayoutA, LayoutB, DtypeId, half>(
+            aPtrArr, bPtrArr, cPtrArr, taskId, tiling, baseK, kL1Iter);
     }
 
     GbFinalizeCubePipeline();

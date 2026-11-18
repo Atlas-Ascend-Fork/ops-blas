@@ -77,9 +77,17 @@ if(DEFINED TEST_NAMES AND NOT "${TEST_NAMES}" STREQUAL "")
     # 新增算子复用 gemm_kernel_do 时须同步登记到本表。
     set(_GEMM_KERNEL_DEP_OPS "cherk;cher2k;cherkx")
     set(_KEEP_GEMM_KERNEL FALSE)
+    # host 代码复用 gemm_batched 同族 kernel（gemm_batched_kernel.cpp 中的发射函数）的算子：
+    # 单算子构建（--ops）时保留该目录下的 kernel 源文件，保证测试可执行文件链接通过。
+    # 新增算子复用 gemm_batched_* kernel 时须同步登记到本表。
+    set(_GEMM_BATCHED_FAMILY_OPS "hgemmBatched")
+    set(_KEEP_GEMM_BATCHED_KERNEL FALSE)
     foreach(_t ${TEST_NAMES})
         if(_t IN_LIST _GEMM_KERNEL_DEP_OPS)
             set(_KEEP_GEMM_KERNEL TRUE)
+        endif()
+        if(_t IN_LIST _GEMM_BATCHED_FAMILY_OPS)
+            set(_KEEP_GEMM_BATCHED_KERNEL TRUE)
         endif()
     endforeach()
     # arch22 的 cgemv_batched host 逐 batch 调用单矩阵 aclblasCgemv（其 host 定义于
@@ -124,6 +132,9 @@ if(DEFINED TEST_NAMES AND NOT "${TEST_NAMES}" STREQUAL "")
             set(_keep_src TRUE)
         endif()
         if(_KEEP_GEMMV_HOST AND _src_file MATCHES "/gemv/arch22/cgemv_(host|no_trans_kernel|do_trans_kernel)[.]cpp$")
+            set(_keep_src TRUE)
+        endif()
+        if(_KEEP_GEMM_BATCHED_KERNEL AND _src_file MATCHES "/gemm_batched/arch35/gemm_batched_")
             set(_keep_src TRUE)
         endif()
         get_filename_component(_src_name "${_src_file}" NAME)

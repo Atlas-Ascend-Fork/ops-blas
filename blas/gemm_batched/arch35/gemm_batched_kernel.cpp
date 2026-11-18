@@ -92,6 +92,15 @@ __aicore__ inline void gemm_batched_strided_gemm_kernel_impl(
         gemm_batched_gemm_kernel_impl<LAYOUT_A, LAYOUT_B, DTYPE_ID>(aarray, barray, carray, tiling);              \
     }
 
+// FLOAT16 output entry: fixpipe casts the FP32 accumulator to half on copy-out.
+#define GEMM_BATCHED_GEMM_HALFOUT_KERNEL_ENTRY(FUNC_NAME, LAYOUT_A, LAYOUT_B, DTYPE_ID)                           \
+    extern "C" __global__ __aicore__ __cube__ void FUNC_NAME(                                                     \
+        __gm__ uint8_t* aarray, __gm__ uint8_t* barray, __gm__ uint8_t* carray, GemmBatchedGemmTilingData tiling) \
+    {                                                                                                             \
+        KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIC_ONLY);                                                           \
+        gemm_batched_gemm_kernel_impl_halfout<LAYOUT_A, LAYOUT_B, DTYPE_ID>(aarray, barray, carray, tiling);      \
+    }
+
 GEMM_BATCHED_GEMM_KERNEL_ENTRY(
     gemm_batched_gemm_kernel_fp32_nn, AscendC::Te::NDExtLayoutPtn, AscendC::Te::NDExtLayoutPtn, 0)
 GEMM_BATCHED_GEMM_KERNEL_ENTRY(
@@ -116,6 +125,15 @@ GEMM_BATCHED_GEMM_KERNEL_ENTRY(
     gemm_batched_gemm_kernel_bf16_tn, AscendC::Te::DNExtLayoutPtn, AscendC::Te::NDExtLayoutPtn, 2)
 GEMM_BATCHED_GEMM_KERNEL_ENTRY(
     gemm_batched_gemm_kernel_bf16_tt, AscendC::Te::DNExtLayoutPtn, AscendC::Te::DNExtLayoutPtn, 2)
+
+GEMM_BATCHED_GEMM_HALFOUT_KERNEL_ENTRY(
+    gemm_batched_gemm_kernel_fp16out_nn, AscendC::Te::NDExtLayoutPtn, AscendC::Te::NDExtLayoutPtn, 1)
+GEMM_BATCHED_GEMM_HALFOUT_KERNEL_ENTRY(
+    gemm_batched_gemm_kernel_fp16out_nt, AscendC::Te::NDExtLayoutPtn, AscendC::Te::DNExtLayoutPtn, 1)
+GEMM_BATCHED_GEMM_HALFOUT_KERNEL_ENTRY(
+    gemm_batched_gemm_kernel_fp16out_tn, AscendC::Te::DNExtLayoutPtn, AscendC::Te::NDExtLayoutPtn, 1)
+GEMM_BATCHED_GEMM_HALFOUT_KERNEL_ENTRY(
+    gemm_batched_gemm_kernel_fp16out_tt, AscendC::Te::DNExtLayoutPtn, AscendC::Te::DNExtLayoutPtn, 1)
 
 extern "C" __global__ __aicore__ __cube__ void cgetri_strided_gemm_kernel_fp32_nn(
     __gm__ uint8_t* a, __gm__ uint8_t* b, __gm__ uint8_t* c, __gm__ uint8_t* infoArray, uint64_t strideA,
@@ -148,6 +166,7 @@ extern "C" __global__ __aicore__ __cube__ void cgetri_strided_gemm_kernel_fp32_n
 DEFINE_GEMM_DTYPE_LAUNCHER(LaunchGemmFp32, gemm_batched_gemm_kernel_fp32)
 DEFINE_GEMM_DTYPE_LAUNCHER(LaunchGemmFp16, gemm_batched_gemm_kernel_fp16)
 DEFINE_GEMM_DTYPE_LAUNCHER(LaunchGemmBf16, gemm_batched_gemm_kernel_bf16)
+DEFINE_GEMM_DTYPE_LAUNCHER(LaunchGemmFp16Out, gemm_batched_gemm_kernel_fp16out)
 #undef DEFINE_GEMM_DTYPE_LAUNCHER
 
 void gemm_batched_gemm_kernel_do(
@@ -169,6 +188,16 @@ void gemm_batched_gemm_kernel_do(
         default:
             break;
     }
+}
+
+// FLOAT16-input, FLOAT16-output GEMM launcher (fixpipe cast, no FP32 temporary).
+void gemm_batched_gemm_kernel_halfout_do(
+    uint32_t numBlocks, void* stream, const uint8_t* aarray, const uint8_t* barray, uint8_t* carray,
+    const GemmBatchedGemmTilingData& tilingData)
+{
+    uint8_t* a = const_cast<uint8_t*>(aarray);
+    uint8_t* b = const_cast<uint8_t*>(barray);
+    LaunchGemmFp16Out(numBlocks, stream, a, b, carray, tilingData);
 }
 
 void cgetri_strided_gemm_kernel_do(
@@ -513,6 +542,26 @@ public:
     {
         uint32_t cnt = static_cast<uint32_t>(count);
         uint64_t cOffset = static_cast<uint64_t>(col) * this->ldc_ + rowOffset;
+
+        // beta == 0 must zero C without reading it, so stale Inf/NaN contents cannot
+        // propagate (0 * Inf = NaN). Aligns with the alpha/beta kernel hasBeta==0 path.
+        if (beta_ == 0.0f) {
+            AscendC::LocalTensor<CType> zeroTile = outQue_.AllocTensor<CType>();
+            if constexpr (Base::IS_FP32) {
+                AscendC::Duplicate(zeroTile, 0.0f, cnt);
+            } else {
+                AscendC::LocalTensor<float> fp32Tile = calcQue_.AllocTensor<float>();
+                AscendC::Duplicate(fp32Tile, 0.0f, cnt);
+                AscendC::Cast(zeroTile, fp32Tile, Base::OUTPUT_ROUND, cnt);
+                AscendC::PipeBarrier<PIPE_ALL>();
+                calcQue_.FreeTensor(fp32Tile);
+            }
+            outQue_.EnQue(zeroTile);
+            AscendC::LocalTensor<CType> zeroReady = outQue_.DeQue<CType>();
+            GbAlignedCWrite<CType>(cGlobal_, zeroReady, cOffset, cnt);
+            outQue_.FreeTensor(zeroReady);
+            return;
+        }
 
         AscendC::LocalTensor<CType> inTile = inQue_.AllocTensor<CType>();
         GbAlignedCRead<CType>(inTile, cGlobal_, cOffset, cnt);

@@ -37,6 +37,7 @@ function(ops_blas_detect_asc_devkit_version)
       "CTRMM|/trmm/arch35/ctrmm|ctrmm"
       "SDGMM|/dgmm/arch35/sdgmm|sdgmm"
       "GEMM_BATCHED|/gemm_batched/arch35/gemm_batched_|sgemm_batched,cgemm_batched"
+      "HGEMM_BATCHED|/gemm_batched/arch35/hgemmBatched_|hgemmBatched"
       "SGEMM3M|/gemm3m/arch35/sgemm3m|sgemm3m"
       "SSYRK|/syrk/arch35/ssyrk|ssyrk"
       "SSYR2K|/syr2k/arch35/ssyr2k|ssyr2k"

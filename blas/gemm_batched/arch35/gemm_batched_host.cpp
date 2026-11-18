@@ -27,25 +27,16 @@
 #include "common/helper/host_utils.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "gemm_batched_tiling_data.h"
+#include "gemm_batched_host_common.h"
 
-// Kernel launchers (defined in gemm_batched_kernel.cpp)
-void gemm_batched_gemm_kernel_do(
-    uint32_t numBlocks, void* stream, const uint8_t* aarray, const uint8_t* barray, uint8_t* carray,
-    const GemmBatchedGemmTilingData& tilingData);
-
-void gemm_batched_alpha_beta_kernel_do(
-    uint32_t numBlocks, void* stream, const uint8_t* tempAB, uint8_t* carray,
-    const GemmBatchedAlphaBetaTilingData& tilingData);
-
-void gemm_batched_early_exit_kernel_do(
-    uint32_t numBlocks, void* stream, uint8_t* carray, const GemmBatchedAlphaBetaTilingData& tilingData);
+constexpr const char* SG_OP_NAME = "aclblasSgemmBatched";
 
 // ============================================================================
 // Workspace management
 // ============================================================================
 static aclblasStatus_t EnsureWorkspace(_aclblas_handle* h, size_t requiredSize)
 {
-    return EnsureDefaultWorkspace(h, requiredSize);
+    return GemmBatchedEnsureWorkspace(h, requiredSize);
 }
 
 // ============================================================================
@@ -100,129 +91,23 @@ static aclblasStatus_t ValidateSgemmBatchedParams(
 }
 
 // Minimum elements per AIV core to amortize launch overhead for post-process kernels.
-constexpr int64_t GEMM_BATCHED_AIV_ELEMENTS_PER_CORE = 16384;
-
 // ============================================================================
-// Tiling computation
+// Tiling computation (delegates to shared GEMM-batched helpers)
 // ============================================================================
-static int32_t GreatestCommonDivisor(int32_t lhs, int32_t rhs)
-{
-    while (rhs != 0) {
-        const int32_t remainder = lhs % rhs;
-        lhs = rhs;
-        rhs = remainder;
-    }
-    return lhs;
-}
-
-static void CalcMnBlockSplit(
-    int m, int n, int batchCount, uint32_t cubeCoreNum, int32_t& bestMBlocks, int32_t& bestNBlocks)
-{
-    uint32_t baseM = GEMM_BATCHED_BASE_M;
-    uint32_t baseN = GEMM_BATCHED_BASE_N;
-    int32_t mTiles = (m + baseM - 1) / baseM;
-    int32_t nTiles = (n + baseN - 1) / baseN;
-    // Batches are independent Cube tasks.  Only split each matrix far enough
-    // to fill the device after batch parallelism is taken into account;
-    // otherwise a batch of 32 matrices is fragmented into 32 * coreCount
-    // tiny tasks and spends most of its time in scalar task setup.
-    // Use the smallest spatial split that makes batchCount * spatialTasks an
-    // exact multiple of the Cube core count.  This removes the last partial
-    // task wave without introducing redundant fragments (for 28 cores and
-    // batch counts 32/16/8 the common split is seven spatial tasks).
-    const int32_t batchCoreGcd = GreatestCommonDivisor(static_cast<int32_t>(cubeCoreNum), batchCount);
-    const int32_t spatialCoreTarget =
-        std::max<int32_t>(1, static_cast<int32_t>(cubeCoreNum) / std::max<int32_t>(1, batchCoreGcd));
-
-    bestMBlocks = 1;
-    bestNBlocks = 1;
-    int32_t bestUtil = 0;
-    uint64_t bestTileLoops = UINT64_MAX;
-    uint64_t bestAspectDelta = UINT64_MAX;
-    for (int32_t mb = 1; mb <= mTiles && mb <= spatialCoreTarget; mb++) {
-        int32_t nb = std::min(nTiles, spatialCoreTarget / mb);
-        if (nb < 1)
-            nb = 1;
-        int32_t util = mb * nb;
-        const uint32_t blockM = CeilAlign(static_cast<uint32_t>((m + mb - 1) / mb), baseM);
-        const uint32_t blockN = CeilAlign(static_cast<uint32_t>((n + nb - 1) / nb), baseN);
-        const uint64_t tileLoops =
-            static_cast<uint64_t>((blockM + GEMM_BATCHED_DEFAULT_TILE_M - 1) / GEMM_BATCHED_DEFAULT_TILE_M) *
-            ((blockN + GEMM_BATCHED_DEFAULT_TILE_N - 1) / GEMM_BATCHED_DEFAULT_TILE_N);
-        const uint64_t scaledM = static_cast<uint64_t>(blockM) * GEMM_BATCHED_DEFAULT_TILE_N;
-        const uint64_t scaledN = static_cast<uint64_t>(blockN) * GEMM_BATCHED_DEFAULT_TILE_M;
-        const uint64_t aspectDelta = scaledM > scaledN ? scaledM - scaledN : scaledN - scaledM;
-        // Once every task fits a single output tile, preserve the historical
-        // orientation.  Extra aspect-ratio tie-breaking at that scale only
-        // perturbs small-matrix scheduling without removing a tile loop.
-        const bool betterShape =
-            tileLoops < bestTileLoops || (tileLoops == bestTileLoops && tileLoops > 1 && aspectDelta < bestAspectDelta);
-        if (util <= spatialCoreTarget && (util > bestUtil || (util == bestUtil && betterShape))) {
-            bestUtil = util;
-            bestMBlocks = mb;
-            bestNBlocks = nb;
-            bestTileLoops = tileLoops;
-            bestAspectDelta = aspectDelta;
-        }
-    }
-    if (bestUtil == 0) {
-        bestMBlocks = 1;
-        bestNBlocks = 1;
-    }
-}
-
 static aclblasStatus_t CalcGemmTiling(
     int m, int n, int k, int batchCount, int lda, int ldb, int ldc, bool isTransA, bool isTransB, uint32_t cubeCoreNum,
     GemmBatchedGemmTilingData& tiling)
 {
-    tiling = GemmBatchedGemmTilingData{};
-    tiling.m = static_cast<uint32_t>(m);
-    tiling.n = static_cast<uint32_t>(n);
-    tiling.k = static_cast<uint32_t>(k);
-    tiling.lda = static_cast<uint32_t>(lda);
-    tiling.ldb = static_cast<uint32_t>(ldb);
-    tiling.ldc = static_cast<uint32_t>(ldc);
-    tiling.isTransA = isTransA ? 1 : 0;
-    tiling.isTransB = isTransB ? 1 : 0;
-    tiling.batchCount = static_cast<uint32_t>(batchCount);
-    tiling.dtypeCase = GEMM_BATCHED_DTYPE_FP32;
-
-    tiling.tileM = GEMM_BATCHED_DEFAULT_TILE_M;
-    tiling.tileN = GEMM_BATCHED_DEFAULT_TILE_N;
-    tiling.tileKChunk = GEMM_BATCHED_DEFAULT_TILE_K_CHUNK;
-
-    int32_t bestMBlocks, bestNBlocks;
-    CalcMnBlockSplit(m, n, batchCount, cubeCoreNum, bestMBlocks, bestNBlocks);
-
-    uint32_t baseM = GEMM_BATCHED_BASE_M;
-    uint32_t baseN = GEMM_BATCHED_BASE_N;
-    tiling.mBlocks = static_cast<uint32_t>(bestMBlocks);
-    tiling.nBlocks = static_cast<uint32_t>(bestNBlocks);
-    tiling.singleCoreM = static_cast<uint32_t>(((m + bestMBlocks - 1) / bestMBlocks + baseM - 1) / baseM * baseM);
-    tiling.singleCoreN = static_cast<uint32_t>(((n + bestNBlocks - 1) / bestNBlocks + baseN - 1) / baseN * baseN);
-    if (tiling.singleCoreM > static_cast<uint32_t>(m))
-        tiling.singleCoreM = m;
-    if (tiling.singleCoreN > static_cast<uint32_t>(n))
-        tiling.singleCoreN = n;
-
-    int64_t totalTasks64 = static_cast<int64_t>(batchCount) * bestMBlocks * bestNBlocks;
-    if (totalTasks64 > static_cast<int64_t>(UINT32_MAX)) {
-        OP_LOGE("aclblasSgemmBatched", "totalTasks overflow: %lld", static_cast<long long>(totalTasks64));
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    tiling.totalTasks = static_cast<uint32_t>(totalTasks64);
-    tiling.usedAicCoreNum = static_cast<uint32_t>(std::min(static_cast<int64_t>(cubeCoreNum), totalTasks64));
-
-    return ACLBLAS_STATUS_SUCCESS;
+    // Keep the original minimal-divisible-wave search for the FLOAT32 path.
+    constexpr bool useTrailingWaveBalance = false;
+    return GemmBatchedCalcGemmTiling(
+        SG_OP_NAME, GEMM_BATCHED_DTYPE_FP32, useTrailingWaveBalance, m, n, k, batchCount, lda, ldb, ldc,
+        isTransA, isTransB, cubeCoreNum, tiling);
 }
 
 static void ApplyColumnMajorSwap(GemmBatchedGemmTilingData& tiling)
 {
-    std::swap(tiling.m, tiling.n);
-    std::swap(tiling.lda, tiling.ldb);
-    std::swap(tiling.isTransA, tiling.isTransB);
-    std::swap(tiling.singleCoreM, tiling.singleCoreN);
-    std::swap(tiling.mBlocks, tiling.nBlocks);
+    GemmBatchedApplyColumnMajorSwap(tiling);
 }
 
 // ============================================================================
@@ -232,67 +117,18 @@ static aclblasStatus_t PrepareTempWorkspace(
     _aclblas_handle* h, int batchCount, int origN, uint32_t tempRowStride, GemmBatchedGemmTilingData& tilingData,
     uint8_t*& workspace, size_t& alignedPtrArrayBytes)
 {
-    tilingData.ldc = tempRowStride;
-    size_t perBatchTempBytes = static_cast<size_t>(origN) * tempRowStride * sizeof(float);
-    size_t totalTempBytes = static_cast<size_t>(batchCount) * perBatchTempBytes;
-
-    constexpr size_t TEMP_DATA_ALIGN = 64;
-    size_t ptrArrayBytes = static_cast<size_t>(batchCount) * sizeof(void*);
-    alignedPtrArrayBytes = (ptrArrayBytes + TEMP_DATA_ALIGN - 1) & ~(TEMP_DATA_ALIGN - 1);
-    size_t totalWorkspaceBytes = alignedPtrArrayBytes + totalTempBytes;
-
-    aclblasStatus_t wsRet = EnsureWorkspace(h, totalWorkspaceBytes);
-    if (wsRet != ACLBLAS_STATUS_SUCCESS) {
-        OP_LOGE("aclblasSgemmBatched", "workspace ensure failed, required=%zu", totalWorkspaceBytes);
-        return wsRet;
-    }
-    workspace = static_cast<uint8_t*>(GetEffectiveWorkspace(h));
-
-    std::vector<uint64_t> tempPtrs(batchCount);
-    uint64_t tempDataBase = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(workspace + alignedPtrArrayBytes));
-    for (int i = 0; i < batchCount; i++) {
-        tempPtrs[i] = tempDataBase + static_cast<uint64_t>(i) * perBatchTempBytes;
-    }
-    aclError aclRet = aclrtMemcpy(workspace, ptrArrayBytes, tempPtrs.data(), ptrArrayBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        OP_LOGE("aclblasSgemmBatched", "Failed to copy temp ptr array, err=%d", aclRet);
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-    return ACLBLAS_STATUS_SUCCESS;
+    return GemmBatchedPrepareTempWorkspace(
+        SG_OP_NAME, h, batchCount, origN, tempRowStride, tilingData, workspace, alignedPtrArrayBytes);
 }
 
 static void LaunchAlphaBetaPostProcess(
     _aclblas_handle* h, int origM, int origN, int origLdc, uint32_t tempRowStride, float alphaVal, float betaVal,
     int batchCount, uint32_t aivCoreNum, uint8_t* workspace, size_t alignedPtrArrayBytes, float* const Carray[])
 {
-    GemmBatchedAlphaBetaTilingData abTiling{};
-    abTiling.m = origM;
-    abTiling.n = origN;
-    abTiling.ldc = origLdc;
-    abTiling.tempRowStride = static_cast<int32_t>(tempRowStride);
-    abTiling.alpha = alphaVal;
-    abTiling.beta = betaVal;
-    abTiling.hasBeta = (betaVal != 0.0f) ? 1 : 0;
-    abTiling.batchCount = batchCount;
-    abTiling.dtypeCase = GEMM_BATCHED_DTYPE_FP32;
-    abTiling.totalCols = static_cast<int64_t>(batchCount) * origN;
-
-    int64_t totalElements = static_cast<int64_t>(batchCount) * origM * origN;
-    abTiling.usedAivCoreNum = static_cast<int32_t>(std::min(
-        static_cast<int64_t>(aivCoreNum),
-        std::max(
-            static_cast<int64_t>(1),
-            (totalElements + GEMM_BATCHED_AIV_ELEMENTS_PER_CORE - 1) / GEMM_BATCHED_AIV_ELEMENTS_PER_CORE)));
-
-    const uint8_t* tempABData = workspace + alignedPtrArrayBytes;
     uint8_t* carrayPtrAB = const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(Carray));
-
-    OP_LOGI(
-        "aclblasSgemmBatched", "launching alpha/beta kernel: cores=%d, alpha=%.4f, beta=%.4f, batch=%d, m=%d, n=%d",
-        abTiling.usedAivCoreNum, alphaVal, betaVal, batchCount, origM, origN);
-
-    gemm_batched_alpha_beta_kernel_do(
-        static_cast<uint32_t>(abTiling.usedAivCoreNum), h->stream, tempABData, carrayPtrAB, abTiling);
+    GemmBatchedLaunchAlphaBetaPostProcess(
+        SG_OP_NAME, GEMM_BATCHED_DTYPE_FP32, h, origM, origN, origLdc, tempRowStride, alphaVal, betaVal, batchCount,
+        aivCoreNum, workspace, alignedPtrArrayBytes, carrayPtrAB);
 }
 
 // ============================================================================
@@ -300,17 +136,7 @@ static void LaunchAlphaBetaPostProcess(
 // ============================================================================
 static aclblasStatus_t ValidateCoreCounts(uint32_t& cubeCoreNum, uint32_t& aivCoreNum)
 {
-    cubeCoreNum = GetAicCoreCount();
-    if (cubeCoreNum == 0) {
-        OP_LOGE("aclblasSgemmBatched", "cube core count is 0");
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-    aivCoreNum = GetAivCoreCount();
-    if (aivCoreNum == 0) {
-        OP_LOGE("aclblasSgemmBatched", "GetAivCoreCount failed");
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-    return ACLBLAS_STATUS_SUCCESS;
+    return GemmBatchedValidateCoreCounts(SG_OP_NAME, cubeCoreNum, aivCoreNum);
 }
 
 static aclblasStatus_t ExecuteSgemmBatched(
@@ -380,44 +206,9 @@ static aclblasStatus_t ExecuteSgemmBatched(
 static aclblasStatus_t LaunchEarlyExit(
     _aclblas_handle* h, int m, int n, int ldc, int batchCount, float betaVal, float* const Carray[])
 {
-    if (betaVal == 1.0f) {
-        return ACLBLAS_STATUS_SUCCESS; // C unchanged
-    }
-
-    uint32_t aivCoreNum = GetAivCoreCount();
-    if (aivCoreNum == 0) {
-        OP_LOGE("aclblasSgemmBatched", "GetAivCoreCount failed");
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-
-    GemmBatchedAlphaBetaTilingData eeTiling{};
-    eeTiling.m = m;
-    eeTiling.n = n;
-    eeTiling.ldc = ldc;
-    eeTiling.tempRowStride = ldc;
-    eeTiling.alpha = 0.0f;
-    eeTiling.beta = betaVal;
-    eeTiling.hasBeta = 1;
-    eeTiling.batchCount = batchCount;
-    eeTiling.dtypeCase = GEMM_BATCHED_DTYPE_FP32;
-    eeTiling.totalCols = static_cast<int64_t>(batchCount) * n;
-
-    int64_t totalElements = static_cast<int64_t>(batchCount) * m * n;
-    eeTiling.usedAivCoreNum = static_cast<int32_t>(std::min(
-        static_cast<int64_t>(aivCoreNum),
-        std::max(
-            static_cast<int64_t>(1),
-            (totalElements + GEMM_BATCHED_AIV_ELEMENTS_PER_CORE - 1) / GEMM_BATCHED_AIV_ELEMENTS_PER_CORE)));
-
     uint8_t* carrayPtr = const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(Carray));
-
-    OP_LOGI(
-        "aclblasSgemmBatched", "early exit: beta=%.4f, batch=%d, m=%d, n=%d, cores=%d", betaVal, batchCount, m, n,
-        eeTiling.usedAivCoreNum);
-
-    gemm_batched_early_exit_kernel_do(static_cast<uint32_t>(eeTiling.usedAivCoreNum), h->stream, carrayPtr, eeTiling);
-
-    return ACLBLAS_STATUS_SUCCESS;
+    return GemmBatchedLaunchEarlyExit(
+        SG_OP_NAME, GEMM_BATCHED_DTYPE_FP32, h, m, n, ldc, batchCount, betaVal, carrayPtr);
 }
 
 // ============================================================================

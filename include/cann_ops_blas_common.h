@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -63,6 +65,13 @@ static_assert(ACLBLAS_OP_N == 111, "Inconsistent declaration of ACLBLAS_OP_N");
 static_assert(ACLBLAS_OP_T == 112, "Inconsistent declaration of ACLBLAS_OP_T");
 static_assert(ACLBLAS_OP_C == 113, "Inconsistent declaration of ACLBLAS_OP_C");
 #endif // ACLBLAS_OPERATION_DECLARED
+
+/*! \brief Half-precision (IEEE 754 binary16 / FLOAT16) real scalar type.
+ *
+ *  Stored as a 16-bit value; callers treat it as FLOAT16.  Shared across all
+ *  product lines so that half-precision BLAS APIs (e.g. aclblasHgemmBatched)
+ *  use a single common type instead of a per-SoC parallel definition. */
+typedef uint16_t aclblasHalf;
 
 /*! \brief Single-precision complex type. */
 typedef struct aclblasComplex {

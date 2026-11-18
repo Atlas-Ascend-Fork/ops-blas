@@ -18,6 +18,7 @@ C[i] = alpha * op(A[i]) * op(B[i]) + beta * C[i],  for i ∈ [0, batchCount - 1]
 |--------|---------|
 | aclblasSgemmBatched | 单精度浮点（FP32）批量矩阵乘法 |
 | aclblasCgemmBatched | 单精度复数（Complex FP32）批量矩阵乘法 |
+| aclblasHgemmBatched | 半精度浮点（FP16）批量矩阵乘法 |
 
 ## 算子执行接口
 
@@ -351,5 +352,121 @@ aclrtFree(dAarray);
 aclrtFree(dBarray);
 aclrtFree(dCarray);
 aclrtResetDevice(deviceId);
+aclFinalize();
+```
+
+### aclblasHgemmBatched
+
+#### 产品支持情况
+
+- Ascend 950PR：支持
+- Ascend 950DT：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+
+> Ascend 950PR 上的 hgemmBatched 依赖 CANN asc-devkit >= 9.1（`ASC_DEVKIT_MAJOR > 9 || (ASC_DEVKIT_MAJOR == 9 && ASC_DEVKIT_MINOR > 0)`），低于该版本时编译与运行将跳过此算子。
+> 该接口对齐 cuBLAS `cublasHgemmBatched` 参数序列，与其他产品线共用同一 API，不定义产品线私有平行接口。
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasHgemmBatched(aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k, const aclblasHalf* alpha, const aclblasHalf* const Aarray[], int lda, const aclblasHalf* const Barray[], int ldb, const aclblasHalf* beta, aclblasHalf* const Carray[], int ldc, int batchCount)
+```
+
+#### 参数说明
+
+| 参数名 | 输入/输出 | 参数类型 | 说明 |
+|--------|----------|---------|------|
+| handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，Host 内存 |
+| transa | 输入 | aclblasOperation_t | 矩阵 A 的转置操作（N / T / C），Host 内存；FP16 实数下 T 与 C 等价 |
+| transb | 输入 | aclblasOperation_t | 矩阵 B 的转置操作（N / T / C），Host 内存；FP16 实数下 T 与 C 等价 |
+| m | 输入 | int | op(A[i]) 的行数，也是 C[i] 的行数，Host 内存 |
+| n | 输入 | int | op(B[i]) 的列数，也是 C[i] 的列数，Host 内存 |
+| k | 输入 | int | op(A[i]) 的列数，也是 op(B[i]) 的行数，Host 内存 |
+| alpha | 输入 | const aclblasHalf* | FLOAT16 标量缩放因子 alpha，Host 内存；不可为 nullptr |
+| Aarray | 输入 | const aclblasHalf* const [] | 设备侧指针数组，每个元素指向 FLOAT16 矩阵 A[i]，Device 内存 |
+| lda | 输入 | int | 矩阵 A[i] 的 leading dimension，Host 内存 |
+| Barray | 输入 | const aclblasHalf* const [] | 设备侧指针数组，每个元素指向 FLOAT16 矩阵 B[i]，Device 内存 |
+| ldb | 输入 | int | 矩阵 B[i] 的 leading dimension，Host 内存 |
+| beta | 输入 | const aclblasHalf* | FLOAT16 标量缩放因子 beta，Host 内存；不可为 nullptr；beta == 0 时 C[i] 无需为有效输入 |
+| Carray | 输入/输出 | aclblasHalf* const [] | 设备侧指针数组，每个元素指向 FLOAT16 矩阵 C[i]（原地覆写），Device 内存 |
+| ldc | 输入 | int | 矩阵 C[i] 的 leading dimension，Host 内存 |
+| batchCount | 输入 | int | 批次数量，Host 内存 |
+
+#### 约束说明
+
+- m, n, k >= 0；batchCount >= 0
+- transa == N 时 lda >= max(1, m)；transa == T 或 C 时 lda >= max(1, k)
+- transb == N 时 ldb >= max(1, k)；transb == T 或 C 时 ldb >= max(1, n)
+- ldc >= max(1, m)
+- 仅支持 FLOAT16 主路径；alpha、beta 为 FLOAT16 标量指针，不可为 nullptr
+- `m == 0`、`n == 0` 或 `batchCount == 0` 为合法 no-op，返回 `ACLBLAS_STATUS_SUCCESS` 且不访问数组；`batchCount > 0` 时 Aarray/Barray/Carray 不可为 nullptr（即使 m == 0 或 n == 0）；`batchCount == 0` 时不校验数组指针
+- `k == 0` 时逐 batch 仅执行 `C[i] = beta * C[i]`（beta == 0 时置零），不引用 A/B
+- 参数校验顺序（与实现 `ValidateHgemmBatchedParams` 一致）：handle 判空 -> alpha/beta 判空 -> m/n/k/batchCount 非负 -> transa/transb 枚举合法性 -> lda/ldb/ldc 前导维约束 -> batchCount > 0 时 Aarray/Barray/Carray 判空 -> 主入口 m/n/batchCount == 0 短路返回。故当 `batchCount > 0` 且同时存在非法枚举与数组指针为空时，先命中的是枚举校验，返回 `ACLBLAS_STATUS_INVALID_ENUM`
+- 非法参数返回 `ACLBLAS_STATUS_INVALID_VALUE`；非法 transa/transb 枚举返回 `ACLBLAS_STATUS_INVALID_ENUM`；handle 为空返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`
+- 仅支持列主序；各 batch 矩阵连续存储，仅支持 lda/ldb/ldc 前导维语义；不支持广播、dynamic shape、确定性计算要求
+
+#### 精度验证
+
+golden 由 FLOAT32 参考实现（Netlib `cblas_sgemm`，逐 batch 计算）得到，按 IEEE 754 就近舍入转换为 FLOAT16 后逐元素比对。采用 `MIXED_TOLERANCE` 混合容差策略（对齐[生态算子开源精度标准](https://gitcode.com/cann/opbase/blob/master/docs/zh/ops_precision_standard/mixed_tolerance_standard.md) FLOAT16 档）：
+
+| 数据类型 | rtol | atol | required_matched_ratio | max_abs_error_limit |
+|----------|------|------|----------------------|-------------------|
+| FLOAT16 | 2^-10 (9.77e-4) | 2^-10 (9.77e-4) | 0.99 | 1e-1 或 32·ULP |
+
+判定：逐元素通过条件 `abs(actual - golden) <= atol + rtol * abs(golden)`；用例同时满足 `matched_ratio >= 0.99` 且 `max_abs_error <= max(1e-1, 32·ULP)` 时通过。Inf/NaN 按任务书规则：golden 与 actual 同为 NaN、同为同号 Inf，或一方 NaN 另一方 ±Inf 视为等效；一方有限、另一方非有限不通过。
+
+#### 调用示例
+
+示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。
+
+```cpp
+#include "acl/acl.h"
+#include "cann_ops_blas.h"
+
+int M = 256, N = 256, K = 128, batchCount = 4;
+aclInit(nullptr);
+aclrtSetDevice(0);
+aclblasHandle_t handle;
+aclblasCreate(&handle);
+aclrtStream stream = nullptr;
+aclrtCreateStream(&stream);
+aclblasSetStream(handle, stream);
+
+size_t sizeA = (size_t)M * K * sizeof(aclblasHalf);
+size_t sizeB = (size_t)K * N * sizeof(aclblasHalf);
+size_t sizeC = (size_t)M * N * sizeof(aclblasHalf);
+void* dA[batchCount];
+void* dB[batchCount];
+void* dC[batchCount];
+for (int i = 0; i < batchCount; i++) {
+    aclrtMalloc(&dA[i], sizeA, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc(&dB[i], sizeB, ACL_MEM_MALLOC_HUGE_FIRST);
+    aclrtMalloc(&dC[i], sizeC, ACL_MEM_MALLOC_HUGE_FIRST);
+    // ... 填充 FLOAT16 数据 ...
+}
+void** dAarray; void** dBarray; void** dCarray;
+aclrtMalloc((void**)&dAarray, batchCount * sizeof(void*), ACL_MEM_MALLOC_HUGE_FIRST);
+aclrtMalloc((void**)&dBarray, batchCount * sizeof(void*), ACL_MEM_MALLOC_HUGE_FIRST);
+aclrtMalloc((void**)&dCarray, batchCount * sizeof(void*), ACL_MEM_MALLOC_HUGE_FIRST);
+aclrtMemcpy(dAarray, batchCount * sizeof(void*), dA, batchCount * sizeof(void*), ACL_MEMCPY_HOST_TO_DEVICE);
+aclrtMemcpy(dBarray, batchCount * sizeof(void*), dB, batchCount * sizeof(void*), ACL_MEMCPY_HOST_TO_DEVICE);
+aclrtMemcpy(dCarray, batchCount * sizeof(void*), dC, batchCount * sizeof(void*), ACL_MEMCPY_HOST_TO_DEVICE);
+
+// FLOAT16 标量（1.0h / 0.0h 的位模式）
+aclblasHalf alpha = 0x3C00; // 1.0
+aclblasHalf beta  = 0x0000; // 0.0
+
+aclblasStatus_t status = aclblasHgemmBatched(
+    handle, ACLBLAS_OP_N, ACLBLAS_OP_N, M, N, K,
+    &alpha, (const aclblasHalf* const*)dAarray, M,
+    (const aclblasHalf* const*)dBarray, K,
+    &beta, (aclblasHalf* const*)dCarray, M, batchCount);
+
+aclrtSynchronizeStream(stream);
+aclrtDestroyStream(stream);
+aclblasDestroy(handle);
+// ... 释放 dA/dB/dC/dAarray/dBarray/dCarray ...
+aclrtResetDevice(0);
 aclFinalize();
 ```
