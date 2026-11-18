@@ -54,8 +54,9 @@ aclblasStatus_t aclblasSgemv(aclblasHandle_t handle, aclblasOperation_t trans, i
 
 - m >= 0, n >= 0
 - lda >= max(1, m)
-- incx != 0, incy != 0
+- incx、incy 非零且不为 `INT32_MIN`；向量跨度 `(len - 1) * |inc|` 不超过 `INT32_MAX`
 - alpha、beta 不可为 nullptr
+- arch22 在 alpha == 0 时计算 y = beta * y，跳过 A/x 数据读取；beta == 0 时直接覆写 y，beta == 1 时保持 y 不变
 
 #### 调用示例
 

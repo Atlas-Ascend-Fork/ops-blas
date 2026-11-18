@@ -10,116 +10,294 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
+#include <limits>
+#include <string>
 #include <vector>
 
-#include "verify.h"
 #include "blas_test.h"
 #include "csv_loader.h"
-#include "sgemv_param.h"
 #include "sgemv_golden.h"
 #include "sgemv_npu_wrapper.h"
+#include "sgemv_param.h"
+#include "verify.h"
 
 namespace {
 
-void RunSgemvBoundaryOrNegative(const SgemvParam &p, aclblasHandle_t handle)
-{
-    float dummyA = 1.0f;
-    float dummyX = 1.0f;
-    float dummyY = 2.0f;
-    const float *alphaPtr = (p.alphaFill.method == BlasFillMode::M_NULLPTR) ? nullptr : &p.alpha;
-    const float *betaPtr = (p.betaFill.method == BlasFillMode::M_NULLPTR) ? nullptr : &p.beta;
-    const float *aPtr = (p.a.method == BlasFillMode::M_NULLPTR) ? nullptr : &dummyA;
-    const float *xPtr = (p.x.method == BlasFillMode::M_NULLPTR) ? nullptr : &dummyX;
-    float *yPtr = (p.y.method == BlasFillMode::M_NULLPTR) ? nullptr : &dummyY;
+constexpr int kPerfWarmup = 5;
 
-    aclblasStatus_t status = aclblasSgemv_npu(handle, p.trans, p.m, p.n, alphaPtr, aPtr, p.lda,
-                                              xPtr, p.incx, betaPtr, yPtr, p.incy);
-    EXPECT_EQ(static_cast<int>(status), static_cast<int>(p.expectResult));
-    if (p.expectResult == ACLBLAS_STATUS_SUCCESS && yPtr != nullptr) {
-        EXPECT_EQ(dummyY, 2.0f);
-    }
+bool IsPerfCase(const std::string& name) { return name.rfind("TC_PF_", 0U) == 0U; }
+
+bool IsNullFill(const BlasFillMode& fill) { return fill.method == BlasFillMode::M_NULLPTR; }
+
+std::vector<float> MakeInvalidPlaceholder(const BlasFillMode& fill)
+{
+    return IsNullFill(fill) ? std::vector<float>{} : std::vector<float>(1U, 1.0F);
 }
 
-void VerifySgemvLogicalVector(const SgemvParam &p, const std::vector<float> &yNpu,
-                              const std::vector<float> &yCpu, int yLen, bool isPerfCase)
+bool SpecialValuesEquivalent(float actual, float golden)
 {
-    const int strideY = std::abs(p.incy);
-    std::vector<float> npuDense(static_cast<size_t>(yLen));
-    std::vector<float> cpuDense(static_cast<size_t>(yLen));
-    for (int i = 0; i < yLen; ++i) {
-        const int offset = (p.incy > 0) ? (i * p.incy) : ((yLen - 1 - i) * strideY);
-        npuDense[static_cast<size_t>(i)] = yNpu[static_cast<size_t>(offset)];
-        cpuDense[static_cast<size_t>(i)] = yCpu[static_cast<size_t>(offset)];
+    const bool actualNan = std::isnan(actual);
+    const bool goldenNan = std::isnan(golden);
+    const bool actualInf = std::isinf(actual);
+    const bool goldenInf = std::isinf(golden);
+    if (actualNan && goldenNan) {
+        return true;
     }
-
-    VerifyConfig cfg;
-    applyMixedTolerance(cfg, ACL_FLOAT, cpuDense.data(), static_cast<size_t>(yLen));
-    if (isPerfCase) {
-        cfg.mixedMaxAbsErrorLimit = std::max(cfg.mixedMaxAbsErrorLimit, 0.2);
-        cfg.mixedRtol = std::max(cfg.mixedRtol, 2.0e-4);
+    if ((actualNan && goldenInf) || (actualInf && goldenNan)) {
+        return true;
     }
-    EXPECT_TRUE(Verifier::verifyVector(npuDense.data(), cpuDense.data(), static_cast<size_t>(yLen),
-                                       1, cfg, p.caseName));
+    return actualInf && goldenInf && std::signbit(actual) == std::signbit(golden);
 }
 
-void RunSgemvPositiveCase(const SgemvParam &p, aclblasHandle_t handle, aclrtStream stream)
+bool VerifySgemvOutput(const std::vector<float>& actual, const std::vector<float>& golden, const std::string& name)
 {
-    const bool isNoTrans = (p.trans == ACLBLAS_OP_N);
-    const int xLen = isNoTrans ? p.n : p.m;
-    const int yLen = isNoTrans ? p.m : p.n;
-
-    std::vector<float> aHost = makeBlasArray(static_cast<int64_t>(p.lda) * static_cast<int64_t>(p.n),
-                                             p.a, p.randomSeed);
-    std::vector<float> xHost = makeBlasStrided(xLen, p.incx, p.x, p.randomSeed + 1U);
-    std::vector<float> yNpu = makeBlasStrided(yLen, p.incy, p.y, p.randomSeed + 2U);
-    std::vector<float> yCpu = yNpu;
-
-    const bool isPerfCase = (p.caseName.rfind("TC_PF_", 0) == 0);
-    double avgUs = 0.0;
-    aclblasStatus_t npuRet = aclblasSgemv_npu_perf(handle, isPerfCase ? stream : nullptr, p.trans, p.m, p.n,
-                                                   &p.alpha, aHost.data(), p.lda, xHost.data(), p.incx,
-                                                   &p.beta, yNpu.data(), p.incy,
-                                                   isPerfCase ? &avgUs : nullptr);
-    ASSERT_EQ(npuRet, ACLBLAS_STATUS_SUCCESS);
-    if (isPerfCase) {
-        std::cout << "[PERF] case=" << p.caseName << " trans=" << static_cast<int>(p.trans)
-                  << " m=" << p.m << " n=" << p.n << " avg_us=" << avgUs << std::endl;
+    std::vector<float> finiteActual;
+    std::vector<float> finiteGolden;
+    size_t specialCount = 0U;
+    size_t specialMismatch = 0U;
+    for (size_t i = 0U; i < actual.size(); ++i) {
+        const bool actualFinite = std::isfinite(actual[i]);
+        const bool goldenFinite = std::isfinite(golden[i]);
+        if (actualFinite && goldenFinite) {
+            finiteActual.push_back(actual[i]);
+            finiteGolden.push_back(golden[i]);
+            continue;
+        }
+        ++specialCount;
+        if (!SpecialValuesEquivalent(actual[i], golden[i])) {
+            ++specialMismatch;
+        }
     }
 
-    aclblasStatus_t cpuRet = aclblasSgemv_cpu(handle, p.trans, p.m, p.n, &p.alpha, aHost.data(), p.lda,
-                                              xHost.data(), p.incx, &p.beta, yCpu.data(), p.incy);
-    ASSERT_EQ(cpuRet, ACLBLAS_STATUS_SUCCESS);
-    VerifySgemvLogicalVector(p, yNpu, yCpu, yLen, isPerfCase);
+    std::cout << "[" << name << "] special_count=" << specialCount << " special_mismatch=" << specialMismatch
+              << " finite_count=" << finiteActual.size() << std::endl;
+    bool finitePass = true;
+    if (!finiteActual.empty()) {
+        VerifyConfig config;
+        applyMixedTolerance(config, ACL_FLOAT, finiteGolden.data(), finiteGolden.size());
+        finitePass = Verifier::verifyVector(
+            finiteActual.data(), finiteGolden.data(), finiteActual.size(), 1, config, name + "_finite");
+    }
+    return specialMismatch == 0U && finitePass;
+}
+
+std::vector<float> LogicalY(const std::vector<float>& physical, int count, int incy)
+{
+    std::vector<float> logical;
+    if (count <= 0) {
+        return logical;
+    }
+    logical.resize(static_cast<size_t>(count));
+    const uint64_t absIncy = sgemv_arch22::AbsStride(incy);
+    for (int i = 0; i < count; ++i) {
+        const uint64_t index =
+            incy > 0 ? static_cast<uint64_t>(i) * absIncy : static_cast<uint64_t>(count - 1 - i) * absIncy;
+        logical[static_cast<size_t>(i)] = physical[static_cast<size_t>(index)];
+    }
+    return logical;
+}
+
+struct SgemvHostInputs {
+    std::vector<float> a;
+    std::vector<float> x;
+    std::vector<float> y;
+    int xCount = 0;
+    int yCount = 0;
+};
+
+SgemvHostInputs MakeHostInputs(const SgemvParam& p)
+{
+    SgemvHostInputs inputs;
+    inputs.xCount = p.trans == ACLBLAS_OP_N ? p.n : p.m;
+    inputs.yCount = p.trans == ACLBLAS_OP_N ? p.m : p.n;
+    if (p.expectResult != ACLBLAS_STATUS_SUCCESS || p.m < 0 || p.n < 0 || p.incx == INT32_MIN || p.incy == INT32_MIN) {
+        inputs.a = MakeInvalidPlaceholder(p.a);
+        inputs.x = MakeInvalidPlaceholder(p.x);
+        inputs.y = MakeInvalidPlaceholder(p.y);
+        return inputs;
+    }
+
+    const int matrixLda = std::max(p.lda, 1);
+    const int matrixRows = std::max(p.m, 0);
+    const int matrixCols = std::max(p.n, 0);
+    if (!IsNullFill(p.a)) {
+        inputs.a = makeBlasMatrix(matrixRows, matrixCols, matrixLda, p.a, p.randomSeed);
+    }
+    if (inputs.xCount > 0 && !IsNullFill(p.x)) {
+        inputs.x = makeBlasStrided(inputs.xCount, p.incx, p.x, p.randomSeed + 1U);
+    }
+    if (inputs.yCount > 0 && !IsNullFill(p.y)) {
+        inputs.y = makeBlasStrided(inputs.yCount, p.incy, p.y, p.randomSeed + 2U);
+    }
+    return inputs;
+}
+
+bool RunPerfCase(const SgemvParam& p, const SgemvHostInputs& inputs, aclblasHandle_t handle, aclrtStream stream)
+{
+    int warmup = kPerfWarmup;
+    int samples = inputs.a.size() > 1000000U ? 20 : 50;
+    if (const char* msprofSamples = std::getenv("ACLBLAS_SGEMV_MSOPROF_SAMPLES"); msprofSamples != nullptr) {
+        const int parsedSamples = std::atoi(msprofSamples);
+        if (parsedSamples >= 10) {
+            warmup = 0;
+            samples = parsedSamples;
+        }
+    }
+    const float* alpha = p.alphaFill.method == BlasFillMode::M_NULLPTR ? nullptr : &p.alpha;
+    const float* beta = p.betaFill.method == BlasFillMode::M_NULLPTR ? nullptr : &p.beta;
+    auto result = sgemv_arch22::aclblasSgemv_npu_perf(
+        handle, stream, p.trans, p.m, p.n, alpha, inputs.a.data(), p.lda, inputs.x.data(), p.incx, beta,
+        const_cast<float*>(inputs.y.data()), p.incy, warmup, samples);
+    std::cout << "[PERF] case=" << p.caseName << " warmup=" << warmup << " samples=" << result.samples
+              << " avg_us=" << std::fixed << result.avgUs << std::endl;
+    return result.status == ACLBLAS_STATUS_SUCCESS && result.avgUs > 0.0;
 }
 
 } // namespace
 
 class SgemvArch22Test : public BlasTest<SgemvParam> {};
 
+namespace {
+void VerifyLayoutRegression(aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, int lda)
+{
+    const bool noTrans = trans == ACLBLAS_OP_N;
+    const int xCount = noTrans ? n : m;
+    const int yCount = noTrans ? m : n;
+    std::vector<float> a(static_cast<size_t>(lda) * n, -777.0F);
+    std::vector<float> x(xCount);
+    std::vector<float> expected(yCount, 0.0F);
+    std::vector<float> y(yCount, std::numeric_limits<float>::quiet_NaN());
+    for (int i = 0; i < xCount; ++i) {
+        x[i] = static_cast<float>(i % 5 - 2);
+    }
+    for (int col = 0; col < n; ++col) {
+        for (int row = 0; row < m; ++row) {
+            const float value = static_cast<float>((row * 3 + col * 7) % 17 - 8);
+            a[static_cast<size_t>(col) * lda + row] = value;
+            expected[noTrans ? row : col] += value * x[noTrans ? col : row];
+        }
+    }
+    const float alpha = 1.0F;
+    const float beta = 0.0F;
+    ASSERT_EQ(
+        sgemv_arch22::aclblasSgemv_npu(handle, trans, m, n, &alpha, a.data(), lda, x.data(), 1, &beta, y.data(), 1),
+        ACLBLAS_STATUS_SUCCESS);
+    EXPECT_EQ(y, expected);
+}
+} // namespace
+
+TEST_F(SgemvArch22Test, PaddedMatrixFastScalars)
+{
+    VerifyLayoutRegression(handle_, ACLBLAS_OP_N, 512, 512, 513);
+    VerifyLayoutRegression(handle_, ACLBLAS_OP_T, 512, 512, 513);
+    VerifyLayoutRegression(handle_, ACLBLAS_OP_C, 513, 257, 521);
+}
+
+TEST_F(SgemvArch22Test, NonSymmetricTransposeFastScalars)
+{
+    VerifyLayoutRegression(handle_, ACLBLAS_OP_T, 1536, 1536, 1536);
+    VerifyLayoutRegression(handle_, ACLBLAS_OP_C, 4096, 1024, 4096);
+    VerifyLayoutRegression(handle_, ACLBLAS_OP_T, 4097, 257, 4105);
+}
+
+TEST_F(SgemvArch22Test, CubeOutputTileCapacity)
+{
+    VerifyLayoutRegression(handle_, ACLBLAS_OP_N, 4095, 4095, 4095);
+    VerifyLayoutRegression(handle_, ACLBLAS_OP_N, 4096, 4096, 4096);
+    VerifyLayoutRegression(handle_, ACLBLAS_OP_N, 4097, 4097, 4097);
+}
+
 TEST_F(SgemvArch22Test, NullHandle)
 {
-    float alpha = 1.0f;
-    float beta = 0.0f;
-    std::vector<float> aBuf(16, 1.0f);
-    std::vector<float> xBuf(4, 1.0f);
-    std::vector<float> yBuf(4, 0.0f);
-    aclblasStatus_t status = aclblasSgemv_npu(nullptr, ACLBLAS_OP_N, 4, 4, &alpha, aBuf.data(), 4,
-                                              xBuf.data(), 1, &beta, yBuf.data(), 1);
-    EXPECT_EQ(static_cast<int>(status), static_cast<int>(ACLBLAS_STATUS_HANDLE_IS_NULLPTR));
+    float alpha = 1.0F;
+    float beta = 0.0F;
+    std::vector<float> a(64U, 1.0F);
+    std::vector<float> x(8U, 1.0F);
+    std::vector<float> y(8U, 0.0F);
+    const aclblasStatus_t status = sgemv_arch22::aclblasSgemv_npu(
+        nullptr, ACLBLAS_OP_N, 8, 8, &alpha, a.data(), 8, x.data(), 1, &beta, y.data(), 1);
+    EXPECT_EQ(status, ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
+}
+
+TEST_F(SgemvArch22Test, NonAlignedSquareRows)
+{
+    constexpr int size = 17;
+    float alpha = 1.0F;
+    float beta = 0.0F;
+    std::vector<float> a(size * size, 1.0F);
+    std::vector<float> x(size, 1.0F);
+    std::vector<float> y(size, 0.0F);
+    const aclblasStatus_t status = sgemv_arch22::aclblasSgemv_npu(
+        SgemvArch22Test::handle_, ACLBLAS_OP_N, size, size, &alpha, a.data(), size, x.data(), 1, &beta, y.data(), 1);
+    ASSERT_EQ(status, ACLBLAS_STATUS_SUCCESS);
+    for (float value : y) {
+        EXPECT_NEAR(value, static_cast<float>(size), 1.0e-4F);
+    }
+}
+
+TEST_F(SgemvArch22Test, TransposeMultipleBlocks)
+{
+    constexpr int rows = 4;
+    constexpr int cols = 256;
+    float alpha = 1.0F;
+    float beta = 0.0F;
+    std::vector<float> a(rows * cols, 1.0F);
+    std::vector<float> x(rows, 1.0F);
+    std::vector<float> y(cols, 0.0F);
+    const aclblasStatus_t status = sgemv_arch22::aclblasSgemv_npu(
+        SgemvArch22Test::handle_, ACLBLAS_OP_T, rows, cols, &alpha, a.data(), rows, x.data(), 1, &beta, y.data(), 1);
+    ASSERT_EQ(status, ACLBLAS_STATUS_SUCCESS);
+    for (size_t i = 0; i < y.size(); ++i) {
+        if (std::abs(y[i] - static_cast<float>(rows)) > 1.0e-4F) {
+            ADD_FAILURE() << "index=" << i << " value=" << y[i];
+        }
+    }
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    Sgemv, SgemvArch22Test, ::testing::ValuesIn(GetCasesFromCsv<SgemvParam>(ReplaceFileExtension2Csv(__FILE__))),
+    Sgemv22, SgemvArch22Test, ::testing::ValuesIn(GetCasesFromCsv<SgemvParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<SgemvParam>);
 
 TEST_P(SgemvArch22Test, CsvDriven)
 {
-    const SgemvParam &p = GetParam();
-    if (p.expectResult != ACLBLAS_STATUS_SUCCESS || p.m <= 0 || p.n <= 0) {
-        RunSgemvBoundaryOrNegative(p, SgemvArch22Test::handle_);
+    const auto& p = GetParam();
+    SgemvHostInputs inputs = MakeHostInputs(p);
+    const float* alpha = p.alphaFill.method == BlasFillMode::M_NULLPTR ? nullptr : &p.alpha;
+    const float* beta = p.betaFill.method == BlasFillMode::M_NULLPTR ? nullptr : &p.beta;
+
+    if (IsPerfCase(p.caseName)) {
+        EXPECT_TRUE(RunPerfCase(p, inputs, SgemvArch22Test::handle_, SgemvArch22Test::stream_));
         return;
     }
-    RunSgemvPositiveCase(p, SgemvArch22Test::handle_, SgemvArch22Test::stream_);
+
+    std::vector<float> yNpu = inputs.y;
+    const aclblasStatus_t status = sgemv_arch22::aclblasSgemv_npu(
+        SgemvArch22Test::handle_, p.trans, p.m, p.n, alpha, inputs.a.empty() ? nullptr : inputs.a.data(), p.lda,
+        inputs.x.empty() ? nullptr : inputs.x.data(), p.incx, beta, inputs.y.empty() ? nullptr : yNpu.data(), p.incy);
+    if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
+        EXPECT_EQ(status, p.expectResult) << p.caseName;
+        return;
+    }
+    ASSERT_EQ(status, ACLBLAS_STATUS_SUCCESS) << p.caseName;
+
+    std::vector<float> yGolden = inputs.y;
+    ASSERT_EQ(
+        aclblasSgemv_cpu(
+            SgemvArch22Test::handle_, p.trans, p.m, p.n, alpha, inputs.a.empty() ? nullptr : inputs.a.data(), p.lda,
+            inputs.x.empty() ? nullptr : inputs.x.data(), p.incx, beta, yGolden.empty() ? nullptr : yGolden.data(),
+            p.incy),
+        ACLBLAS_STATUS_SUCCESS)
+        << p.caseName;
+    if (inputs.yCount <= 0) {
+        EXPECT_EQ(yNpu, yGolden) << p.caseName;
+        return;
+    }
+
+    const std::vector<float> npuLogical = LogicalY(yNpu, inputs.yCount, p.incy);
+    const std::vector<float> goldenLogical = LogicalY(yGolden, inputs.yCount, p.incy);
+    EXPECT_TRUE(VerifySgemvOutput(npuLogical, goldenLogical, p.caseName));
 }

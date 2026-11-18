@@ -8,712 +8,1149 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
+/*!
+ * \file sgemv_kernel.cpp
+ * \brief FLOAT32 Sgemv kernel for Atlas A2/A3.
+ */
+
+#include <cstdint>
+
+#include "cann_ops_blas_common.h"
+#include "common/compute/simd.h"
+#include "common/iterator/iterator.h"
+#include "common/helper/kernel_utils.h"
+#include "../../trsv/arch22/ctrsv_kernel_utils.h"
 #include "kernel_operator.h"
+#include "lib/matmul_intf.h"
 #include "sgemv_tiling_data.h"
 
-namespace {
-constexpr uint32_t UB_A_FLOATS = 32768U;
-constexpr uint32_t UB_VEC_FLOATS = 2048U;
-constexpr uint32_t F32_BLOCK_LEN = 8U;
-constexpr uint32_t MAX_2D_STRIDE_BYTES = 65535U;
-constexpr uint32_t FAST_BATCH_COLS = 64U;
-constexpr uint32_t EXACT_TRANS_BATCH = 8U;
-constexpr int32_t FAST_TRANS_MIN_M = 65;
-constexpr int32_t FAST_TRANS_MAX_M = 65536;
+using namespace AscendC;
+using namespace matmul;
 
-union SgemvFp32Bits {
-    float f;
-    uint32_t u;
+namespace {
+union SgemvFloatBits {
+    float value;
+    uint32_t bits;
 };
 
-__aicore__ inline uint32_t AlignUp8(uint32_t count)
+__aicore__ inline bool IsFiniteFp32(float value)
 {
-    return (count + F32_BLOCK_LEN - 1U) & ~(F32_BLOCK_LEN - 1U);
+    SgemvFloatBits data{value};
+    return (data.bits & 0x7f800000U) != 0x7f800000U;
 }
 
-__aicore__ inline uint32_t SafeDivU32(uint32_t num, uint32_t den)
+__aicore__ inline uint32_t ExponentFp32(float value)
 {
-    if (den == 0U) {
-        return 1U;
-    }
-    return num / den;
+    SgemvFloatBits data{value};
+    return (data.bits >> 23U) & 0xffU;
 }
 
-__aicore__ inline uint64_t ShiftRightJam64(uint64_t val, uint32_t dist)
+__aicore__ inline float RoundAddFp32(float lhs, float rhs)
 {
-    if (dist == 0U) {
-        return val;
-    }
-    if (dist >= 64U) {
-        return static_cast<uint64_t>(val != 0U);
-    }
-    return (val >> dist) | static_cast<uint64_t>((val << (64U - dist)) != 0U);
+    volatile float result = lhs + rhs;
+    return result;
 }
 
-__aicore__ inline float PackNearestEvenFp32(uint64_t mag, uint32_t signBit, int32_t expVal)
+__aicore__ inline float RoundSubFp32(float lhs, float rhs)
 {
-    if (mag == 0U) {
-        return 0.0f;
+    volatile float result = lhs - rhs;
+    return result;
+}
+
+__aicore__ inline float RoundMulFp32(float lhs, float rhs)
+{
+    volatile float result = lhs * rhs;
+    return result;
+}
+
+__aicore__ inline float TwoSumHigh(float lhs, float rhs) { return RoundAddFp32(lhs, rhs); }
+
+__aicore__ inline float TwoSumError(float lhs, float rhs, float sum)
+{
+    const float rhsVirtual = RoundSubFp32(sum, lhs);
+    const float lhsError = RoundSubFp32(lhs, RoundSubFp32(sum, rhsVirtual));
+    const float rhsError = RoundSubFp32(rhs, rhsVirtual);
+    return RoundAddFp32(lhsError, rhsError);
+}
+
+__aicore__ inline void TwoProduct(float lhs, float rhs, float& product, float& error)
+{
+    constexpr float splitter = 4097.0f;
+    product = RoundMulFp32(lhs, rhs);
+    const float lhsScaled = RoundMulFp32(lhs, splitter);
+    const float lhsHigh = RoundSubFp32(lhsScaled, RoundSubFp32(lhsScaled, lhs));
+    const float lhsLow = RoundSubFp32(lhs, lhsHigh);
+    const float rhsScaled = RoundMulFp32(rhs, splitter);
+    const float rhsHigh = RoundSubFp32(rhsScaled, RoundSubFp32(rhsScaled, rhs));
+    const float rhsLow = RoundSubFp32(rhs, rhsHigh);
+    const float highProduct = RoundSubFp32(RoundMulFp32(lhsHigh, rhsHigh), product);
+    const float crossLow = RoundAddFp32(RoundMulFp32(lhsHigh, rhsLow), RoundMulFp32(lhsLow, rhsHigh));
+    error = RoundAddFp32(RoundAddFp32(highProduct, crossLow), RoundMulFp32(lhsLow, rhsLow));
+}
+
+__aicore__ inline float FmaFp32(float lhs, float rhs, float addend)
+{
+    if (!IsFiniteFp32(lhs) || !IsFiniteFp32(rhs) || !IsFiniteFp32(addend)) {
+        return lhs * rhs + addend;
     }
-    int32_t leadBit = 63 - static_cast<int32_t>(__builtin_clzll(mag));
-    expVal += leadBit - 61;
-    int32_t rshift = leadBit - 23;
-    if (expVal < -126) {
-        rshift += -126 - expVal;
-        expVal = -126;
+    const float roundedProduct = RoundMulFp32(lhs, rhs);
+    if (!IsFiniteFp32(roundedProduct)) {
+        return ctrsv_netlib::Fma(lhs, rhs, addend);
     }
-    uint64_t sig = 0U;
-    if (rshift < 64) {
-        if (rshift > 0) {
-            sig = mag >> static_cast<uint32_t>(rshift);
-            uint64_t rem = mag & ((uint64_t{1} << static_cast<uint32_t>(rshift)) - 1U);
-            uint64_t half = uint64_t{1} << static_cast<uint32_t>(rshift - 1);
-            sig += static_cast<uint64_t>(rem > half || (rem == half && (sig & 1U) != 0U));
-        } else {
-            sig = mag << static_cast<uint32_t>(-rshift);
+    if (ExponentFp32(lhs) >= 116U || ExponentFp32(rhs) >= 116U) {
+        return ctrsv_netlib::Fma(lhs, rhs, addend);
+    }
+    float product = 0.0f;
+    float productError = 0.0f;
+    TwoProduct(lhs, rhs, product, productError);
+
+    const float sum = TwoSumHigh(product, addend);
+    const float sumError = TwoSumError(product, addend, sum);
+    const float residualSum = TwoSumHigh(sumError, productError);
+    const float residualError = TwoSumError(sumError, productError, residualSum);
+    const float high = TwoSumHigh(sum, residualSum);
+    const float low = TwoSumError(sum, residualSum, high);
+    return RoundAddFp32(high, RoundAddFp32(low, residualError));
+}
+
+constexpr uint32_t SGEMMV_NORMAL_T_COL_CHUNK = 16;
+constexpr uint32_t SGEMMV_BYTES_PER_FLOAT = 4;
+constexpr uint32_t SGEMMV_ACC_FLOATS = 2048;
+constexpr uint32_t SGEMMV_A_FLOATS = 16384;
+constexpr uint32_t SGEMMV_X_FLOATS = 4608;
+constexpr uint32_t SGEMMV_WORK_FLOATS = SGEMMV_SMALL_N_COL_TILE;
+constexpr uint32_t SGEMMV_ROW_FLOATS = SGEMMV_SMALL_N_COL_TILE;
+constexpr uint32_t SGEMMV_REDUCE_FLOATS = 64;
+constexpr uint32_t SGEMMV_OUTPUT_FLOATS = 256;
+constexpr uint32_t SGEMMV_OFFSET_COUNT = SGEMMV_SMALL_N_COL_TILE;
+constexpr uint32_t SGEMMV_FAST_N_A_FLOATS = 16384;
+constexpr uint32_t SGEMMV_FAST_N_WORK_FLOATS = 16384;
+constexpr uint32_t SGEMMV_FAST_N_VEC_FLOATS = 2048;
+constexpr uint32_t SGEMMV_FAST_N_COL_BATCH = 64;
+constexpr int64_t SGEMMV_UINT16_STRIDE_LIMIT = 65536;
+constexpr int32_t SGEMMV_CUBE_COL_TILE = SGEMMV_CUBE_MAX_COLS;
+constexpr uint32_t SGEMMV_SPLIT_MAX = SGEMMV_CUBE_SPLIT_HARD_MAX;
+constexpr uint32_t SGEMMV_SPLIT_CHUNK = SGEMMV_CUBE_SPLIT_REDUCE_TILE;
+
+using SgemvDenseFp32 = MatmulType<TPosition::GM, CubeFormat::ND, float>;
+constexpr MatmulShapeParams SGEMMV_CUBE_SHAPE{16, SGEMMV_CUBE_COL_TILE, 8192, 16, 512, 32};
+constexpr MatmulFuncParams SGEMMV_CUBE_FUNC{
+    false, false, false, false, 0, IterateOrder::UNDEF, ScheduleType::INNER_PRODUCT, true, true};
+constexpr MatmulBiasParams SGEMMV_CUBE_BIAS{false};
+constexpr MatmulConfig SGEMMV_CUBE_CONFIG =
+    GetMMConfig<MatmulConfigMode::CONFIG_NORM>(SGEMMV_CUBE_SHAPE, SGEMMV_CUBE_FUNC, SGEMMV_CUBE_BIAS);
+constexpr auto SGEMMV_CUBE_TILING =
+    GetMatmulApiTiling<SgemvDenseFp32, SgemvDenseFp32, SgemvDenseFp32, SgemvDenseFp32>(SGEMMV_CUBE_CONFIG);
+constexpr MatmulShapeParams SGEMMV_ODD_CUBE_SHAPE{16, SGEMMV_CUBE_ODD_COLS, 8192, 16, SGEMMV_CUBE_BASE_COLS, 32};
+constexpr MatmulConfig SGEMMV_ODD_CUBE_CONFIG =
+    GetMMConfig<MatmulConfigMode::CONFIG_NORM>(SGEMMV_ODD_CUBE_SHAPE, SGEMMV_CUBE_FUNC, SGEMMV_CUBE_BIAS);
+constexpr auto SGEMMV_ODD_CUBE_TILING =
+    GetMatmulApiTiling<SgemvDenseFp32, SgemvDenseFp32, SgemvDenseFp32, SgemvDenseFp32>(SGEMMV_ODD_CUBE_CONFIG);
+using SgemvCubeMatmul = MatmulImpl<SgemvDenseFp32, SgemvDenseFp32, SgemvDenseFp32, SgemvDenseFp32, SGEMMV_CUBE_TILING>;
+using SgemvOddCubeMatmul =
+    MatmulImpl<SgemvDenseFp32, SgemvDenseFp32, SgemvDenseFp32, SgemvDenseFp32, SGEMMV_ODD_CUBE_TILING>;
+
+template <typename MatmulType>
+__aicore__ inline void ComputeCubeTile(
+    GlobalTensor<float> left, GlobalTensor<float> right, GlobalTensor<float> output, uint32_t outDim, uint32_t lda,
+    uint32_t cols, uint32_t kLen)
+{
+    TPipe pipe;
+    MatmulType matmul;
+    matmul.SetSubBlockIdx(0);
+    matmul.Init(static_cast<const TCubeTiling*>(nullptr), &pipe);
+    matmul.DisableBias();
+    matmul.SetOrgShape(1, lda, kLen, kLen, outDim);
+    matmul.SetSingleShape(1, cols, kLen);
+    matmul.SetTensorA(left, false);
+    matmul.SetTensorB(right, false);
+    matmul.IterateAll(output, 0);
+    matmul.End();
+}
+
+__aicore__ inline void CopyMatrixTile(
+    LocalTensor<float> dst, GlobalTensor<float> src, int64_t rowsActual, int64_t colsActual, int64_t srcStride,
+    int64_t dstStride, bool batchPadding = false)
+{
+    const int64_t rowsAligned = (rowsActual + SGEMMV_ALIGN - 1) / SGEMMV_ALIGN * SGEMMV_ALIGN;
+    if (rowsActual % SGEMMV_ALIGN == 0 && srcStride % SGEMMV_ALIGN == 0 && srcStride < SGEMMV_UINT16_STRIDE_LIMIT) {
+        gm_to_ub<ArchType::ASCEND_V220, float>(
+            dst, src, 0, colsActual, rowsAligned / SGEMMV_ALIGN, (srcStride - rowsAligned) / SGEMMV_ALIGN,
+            (dstStride - rowsAligned) / SGEMMV_ALIGN);
+    } else if (rowsActual % SGEMMV_ALIGN == 0 && srcStride * SGEMMV_ALIGN < SGEMMV_UINT16_STRIDE_LIMIT) {
+        const int64_t outer = colsActual / SGEMMV_ALIGN;
+        const int64_t tail = colsActual % SGEMMV_ALIGN;
+        for (int64_t i = 0; i < SGEMMV_ALIGN; ++i) {
+            if (outer > 0) {
+                gm_to_ub<ArchType::ASCEND_V220, float>(
+                    dst[i * dstStride], src[i * srcStride], 0, outer, rowsAligned / SGEMMV_ALIGN,
+                    (srcStride * SGEMMV_ALIGN - rowsAligned) / SGEMMV_ALIGN,
+                    (dstStride * SGEMMV_ALIGN - rowsAligned) / SGEMMV_ALIGN);
+            }
         }
-    }
-    if (sig >= 0x1000000U) {
-        sig >>= 1U;
-        expVal++;
-    }
-    SgemvFp32Bits res;
-    if (expVal > 127) {
-        res.u = signBit | 0x7F800000U;
-    } else if (sig < 0x800000U) {
-        res.u = signBit | static_cast<uint32_t>(sig);
+        for (int64_t j = 0; j < tail; ++j) {
+            gm_to_ub_align<ArchType::ASCEND_V220, float>(
+                dst[outer * SGEMMV_ALIGN * dstStride + j * dstStride],
+                src[outer * SGEMMV_ALIGN * srcStride + j * srcStride], 0, 1, rowsActual * SGEMMV_BYTES_PER_FLOAT, 0, 0,
+                0, 0);
+        }
+    } else if (
+        batchPadding && colsActual <= 4095 && dstStride % SGEMMV_ALIGN == 0 &&
+        srcStride - rowsActual <= 0xffffffffLL / SGEMMV_BYTES_PER_FLOAT) {
+        DataCopyExtParams copy{
+            static_cast<uint16_t>(colsActual), static_cast<uint32_t>(rowsActual * SGEMMV_BYTES_PER_FLOAT),
+            static_cast<uint32_t>((srcStride - rowsActual) * SGEMMV_BYTES_PER_FLOAT),
+            static_cast<uint32_t>((dstStride - rowsAligned) / SGEMMV_ALIGN), 0};
+        DataCopyPadExtParams<float> pad{true, 0, static_cast<uint8_t>(rowsAligned - rowsActual), 0.0f};
+        DataCopyPad(dst, src, copy, pad);
     } else {
-        res.u = signBit | (static_cast<uint32_t>(expVal + 127) << 23U) | (static_cast<uint32_t>(sig) & 0x7FFFFFU);
-    }
-    return res.f;
-}
-
-__aicore__ inline uint32_t UnpackMantissaFp32(uint32_t bits, uint32_t expField, int32_t *outExp)
-{
-    *outExp = static_cast<int32_t>(expField) - 127 + static_cast<int32_t>(expField == 0U);
-    return (bits & 0x7FFFFFU) | (static_cast<uint32_t>(expField != 0U) << 23U);
-}
-
-__aicore__ inline float SgemvExactFmaGeneral(SgemvFp32Bits ua, SgemvFp32Bits ub, SgemvFp32Bits uc)
-{
-    uint32_t ea = (ua.u >> 23U) & 0xFFU;
-    uint32_t eb = (ub.u >> 23U) & 0xFFU;
-    uint32_t ec = (uc.u >> 23U) & 0xFFU;
-    if (ec == 0xFFU && ea != 0xFFU && eb != 0xFFU) {
-        return uc.f + uc.f;
-    }
-    bool hasSpecial = (ea == 0xFFU) || (eb == 0xFFU) || (ec == 0xFFU);
-    bool prodZero = ((ua.u & 0x7FFFFFFFU) == 0U) || ((ub.u & 0x7FFFFFFFU) == 0U);
-    if (hasSpecial || prodZero) {
-        return ua.f * ub.f + uc.f;
-    }
-    if ((uc.u & 0x7FFFFFFFU) == 0U) {
-        return ua.f * ub.f;
-    }
-    int32_t expA = 0;
-    int32_t expB = 0;
-    int32_t expC = 0;
-    uint32_t ma = UnpackMantissaFp32(ua.u, ea, &expA);
-    uint32_t mb = UnpackMantissaFp32(ub.u, eb, &expB);
-    uint32_t mc = UnpackMantissaFp32(uc.u, ec, &expC);
-    uint64_t prod = static_cast<uint64_t>(ma) * static_cast<uint64_t>(mb);
-    int32_t topP = 63 - static_cast<int32_t>(__builtin_clzll(prod));
-    int32_t expP = expA + expB + topP - 46;
-    prod <<= static_cast<uint32_t>(61 - topP);
-    int32_t topC = 31 - static_cast<int32_t>(__builtin_clz(mc));
-    expC += topC - 23;
-    uint64_t addend = static_cast<uint64_t>(mc) << static_cast<uint32_t>(61 - topC);
-    int32_t refExp = expP;
-    if (expP > expC) {
-        addend = ShiftRightJam64(addend, static_cast<uint32_t>(expP - expC));
-    } else if (expP < expC) {
-        prod = ShiftRightJam64(prod, static_cast<uint32_t>(expC - expP));
-        refExp = expC;
-    }
-    uint32_t signP = (ua.u ^ ub.u) & 0x80000000U;
-    uint32_t signC = uc.u & 0x80000000U;
-    if (signP == signC) {
-        return PackNearestEvenFp32(prod + addend, signP, refExp);
-    }
-    if (prod >= addend) {
-        return PackNearestEvenFp32(prod - addend, signP, refExp);
-    }
-    return PackNearestEvenFp32(addend - prod, signC, refExp);
-}
-
-__aicore__ inline float SgemvExactFma(float a, float b, float c)
-{
-    SgemvFp32Bits ua{a};
-    SgemvFp32Bits ub{b};
-    SgemvFp32Bits uc{c};
-    uint32_t ea = (ua.u >> 23U) & 0xFFU;
-    uint32_t eb = (ub.u >> 23U) & 0xFFU;
-    uint32_t ec = (uc.u >> 23U) & 0xFFU;
-    if (ea != 0U && eb != 0U && ec != 0U && ea != 0xFFU && eb != 0xFFU && ec != 0xFFU && (ea + eb) >= 194U) {
-        int32_t cShift = static_cast<int32_t>(ec) - static_cast<int32_t>(ea + eb) + 150;
-        if (cShift >= 0 && cShift <= 37) {
-            uint64_t prod = static_cast<uint64_t>((ua.u & 0x7FFFFFU) | 0x800000U) *
-                            static_cast<uint64_t>((ub.u & 0x7FFFFFU) | 0x800000U);
-            uint64_t shiftedC = static_cast<uint64_t>((uc.u & 0x7FFFFFU) | 0x800000U) << static_cast<uint32_t>(cShift);
-            int64_t sProd = ((ua.u ^ ub.u) & 0x80000000U) ? -static_cast<int64_t>(prod) : static_cast<int64_t>(prod);
-            int64_t sAdd = (uc.u & 0x80000000U) ? -static_cast<int64_t>(shiftedC) : static_cast<int64_t>(shiftedC);
-            int64_t total = sProd + sAdd;
-            if (total == 0) {
-                return 0.0f;
-            }
-            uint32_t outSign = (total < 0) ? 0x80000000U : 0U;
-            uint64_t mag = (total < 0) ? static_cast<uint64_t>(-total) : static_cast<uint64_t>(total);
-            int32_t top = 63 - static_cast<int32_t>(__builtin_clzll(mag));
-            int32_t rshift = top - 23;
-            uint32_t rounded = 0U;
-            if (rshift > 0) {
-                uint64_t bias = (uint64_t{1} << static_cast<uint32_t>(rshift - 1)) - 1U +
-                                ((mag >> static_cast<uint32_t>(rshift)) & 1U);
-                rounded = static_cast<uint32_t>((mag + bias) >> static_cast<uint32_t>(rshift));
-            } else {
-                rounded = static_cast<uint32_t>(mag << static_cast<uint32_t>(-rshift));
-            }
-            uint32_t expField = static_cast<uint32_t>(static_cast<int32_t>(ea + eb) + top - 174) * 0x800000U + rounded;
-            SgemvFp32Bits out;
-            out.u = outSign | ((expField >= 0x7F800000U) ? 0x7F800000U : expField);
-            return out.f;
+        for (int64_t col = 0; col < colsActual; ++col) {
+            gm_to_ub_align<ArchType::ASCEND_V220, float>(
+                dst[col * dstStride], src[col * srcStride], 0, 1, rowsActual * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0, 0);
         }
     }
-    return SgemvExactFmaGeneral(ua, ub, uc);
 }
-
-__aicore__ inline void CopyGmToUb1D(const AscendC::LocalTensor<float> &dst, const AscendC::GlobalTensor<float> &src,
-                                    uint32_t count)
-{
-    AscendC::DataCopyExtParams copyParams{1, static_cast<uint32_t>(count * sizeof(float)), 0, 0, 0};
-    AscendC::DataCopyPadExtParams<float> padParams{false, 0, 0, 0};
-    AscendC::DataCopyPad(dst, src, copyParams, padParams);
-}
-
-__aicore__ inline void CopyUbToGm1D(const AscendC::GlobalTensor<float> &dst, const AscendC::LocalTensor<float> &src,
-                                    uint32_t count)
-{
-    AscendC::DataCopyExtParams copyParams{1, static_cast<uint32_t>(count * sizeof(float)), 0, 0, 0};
-    AscendC::DataCopyPad(dst, src, copyParams);
-}
-
-__aicore__ inline void CopyGmToUb2D(const AscendC::LocalTensor<float> &dst, const AscendC::GlobalTensor<float> &src,
-                                    uint32_t rows, uint32_t cols, uint32_t lda)
-{
-    if (lda == rows && ((rows & 7U) == 0U)) {
-        CopyGmToUb1D(dst, src, rows * cols);
-        return;
-    }
-    uint32_t strideBytes = (lda - rows) * static_cast<uint32_t>(sizeof(float));
-    AscendC::DataCopyPadExtParams<float> padParams{false, 0, 0, 0};
-    if (strideBytes <= MAX_2D_STRIDE_BYTES) {
-        AscendC::DataCopyExtParams copyParams{static_cast<uint16_t>(cols),
-                                              static_cast<uint32_t>(rows * sizeof(float)),
-                                              strideBytes, 0, 0};
-        AscendC::DataCopyPad(dst, src, copyParams, padParams);
-        return;
-    }
-    uint32_t pitch = AlignUp8(rows);
-    for (uint32_t c = 0; c < cols; ++c) {
-        CopyGmToUb1D(dst[c * pitch], src[static_cast<int64_t>(c) * static_cast<int64_t>(lda)], rows);
-    }
-}
+} // namespace
 
 class SgemvKernel {
 public:
-    __aicore__ inline SgemvKernel() = default;
-
-    __aicore__ inline void Init(GM_ADDR a, GM_ADDR x, GM_ADDR y, const SgemvTilingData &tiling, AscendC::TPipe *pipe)
+    __aicore__ inline void Init(GM_ADDR a, GM_ADDR x, GM_ADDR y, const SgemvTilingData& tiling, TPipe* pipe)
     {
         pipe_ = pipe;
-        kernelMode_ = tiling.kernelMode;
-        usedCoreNum_ = tiling.usedCoreNum;
-        workPerCore_ = tiling.workPerCore;
+        aGm_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(a));
+        xGm_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(x));
+        yGm_.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(y));
         m_ = tiling.m;
         n_ = tiling.n;
         lda_ = tiling.lda;
-        incx_ = tiling.incx;
-        incy_ = tiling.incy;
+        outPerBlock_ = tiling.outPerBlock;
+        path_ = tiling.path;
+        const bool isNPath =
+            (path_ == static_cast<uint32_t>(SgemvPath::NORMAL_N) ||
+             path_ == static_cast<uint32_t>(SgemvPath::SMALL_M_N));
+        xLength_ = isNPath ? n_ : m_;
+        yLength_ = isNPath ? m_ : n_;
         alpha_ = tiling.alpha;
         beta_ = tiling.beta;
+        incx_ = tiling.incx;
+        incy_ = tiling.incy;
+        absIncX_ = static_cast<uint32_t>(incx_ > 0 ? incx_ : -incx_);
+        absIncY_ = static_cast<uint32_t>(incy_ > 0 ? incy_ : -incy_);
 
-        const bool isNoTrans = (kernelMode_ != SGEMV_MODE_TRANS);
-        const int64_t xLen = isNoTrans ? static_cast<int64_t>(n_) : static_cast<int64_t>(m_);
-        const int64_t yLen = isNoTrans ? static_cast<int64_t>(m_) : static_cast<int64_t>(n_);
-        const int64_t absIncx = (incx_ > 0) ? static_cast<int64_t>(incx_) : -static_cast<int64_t>(incx_);
-        const int64_t absIncy = (incy_ > 0) ? static_cast<int64_t>(incy_) : -static_cast<int64_t>(incy_);
-
-        xBase_ = (incx_ > 0) ? 0 : (1 - xLen) * static_cast<int64_t>(incx_);
-        yBase_ = (incy_ > 0) ? 0 : (1 - yLen) * static_cast<int64_t>(incy_);
-
-        const uint64_t aSpan = static_cast<uint64_t>(lda_) * static_cast<uint64_t>(n_);
-        const uint64_t xSpan = static_cast<uint64_t>((xLen - 1) * absIncx + 1);
-        const uint64_t ySpan = static_cast<uint64_t>((yLen - 1) * absIncy + 1);
-
-        aGm_.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(a), aSpan);
-        xGm_.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(x), xSpan);
-        yGm_.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(y), ySpan);
-
-        pipe_->InitBuffer(aBuf_, UB_A_FLOATS * sizeof(float));
-        pipe_->InitBuffer(xBuf_, UB_VEC_FLOATS * sizeof(float));
-        pipe_->InitBuffer(yBuf_, UB_VEC_FLOATS * sizeof(float));
-        pipe_->InitBuffer(workBuf_, UB_VEC_FLOATS * sizeof(float));
-
-        ubA_ = aBuf_.Get<float>();
-        ubX_ = xBuf_.Get<float>();
-        ubY_ = yBuf_.Get<float>();
-        ubWork_ = workBuf_.Get<float>();
+        if (path_ == static_cast<uint32_t>(SgemvPath::NORMAL_N) && UseFastPath()) {
+            pipe_->InitBuffer(aBuf_, SGEMMV_FAST_N_A_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+            pipe_->InitBuffer(workBuf_, SGEMMV_FAST_N_WORK_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+            pipe_->InitBuffer(xBuf_, SGEMMV_FAST_N_VEC_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+            pipe_->InitBuffer(accBuf_, SGEMMV_FAST_N_VEC_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+            FetchEvents();
+            return;
+        }
+        if (path_ == static_cast<uint32_t>(SgemvPath::NORMAL_T) && UseFastPath() && m_ <= SGEMMV_FAST_T_MAX_ROWS) {
+            pipe_->InitBuffer(aBuf_, 40960U * SGEMMV_BYTES_PER_FLOAT);
+            pipe_->InitBuffer(xBuf_, SGEMMV_X_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+            pipe_->InitBuffer(rowBuf_, 640U * SGEMMV_BYTES_PER_FLOAT);
+            pipe_->InitBuffer(outputBuf_, SGEMMV_OUTPUT_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+            FetchEvents();
+            return;
+        }
+        pipe_->InitBuffer(accBuf_, SGEMMV_ACC_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+        pipe_->InitBuffer(aBuf_, SGEMMV_A_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+        pipe_->InitBuffer(xBuf_, SGEMMV_X_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+        pipe_->InitBuffer(productBuf_, SGEMMV_X_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+        pipe_->InitBuffer(rowBuf_, SGEMMV_ROW_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+        pipe_->InitBuffer(workBuf_, SGEMMV_WORK_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+        pipe_->InitBuffer(reduceBuf_, SGEMMV_REDUCE_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+        pipe_->InitBuffer(outputBuf_, SGEMMV_OUTPUT_FLOATS * SGEMMV_BYTES_PER_FLOAT);
+        pipe_->InitBuffer(offsetBuf_, SGEMMV_OFFSET_COUNT * sizeof(uint32_t));
+        FetchEvents();
     }
 
     __aicore__ inline void Process()
     {
-        uint32_t coreIdx = static_cast<uint32_t>(AscendC::GetBlockIdx());
-        if (coreIdx >= usedCoreNum_) {
-            return;
+        const uint32_t block = static_cast<uint32_t>(GetBlockIdx());
+        if (path_ == static_cast<uint32_t>(SgemvPath::NORMAL_N)) {
+            ProcessNormalN(block);
+        } else if (path_ == static_cast<uint32_t>(SgemvPath::NORMAL_T)) {
+            ProcessNormalT(block);
+        } else if (path_ == static_cast<uint32_t>(SgemvPath::SMALL_M_T)) {
+            ProcessSmallMT(block);
         }
-        if (kernelMode_ == SGEMV_MODE_NO_TRANS_SPLIT_N) {
-            ProcessNoTransSplitN(coreIdx);
-            return;
+    }
+
+    __aicore__ inline void ProcessSmallMN(uint32_t block) { ProcessSmallMCompute(block); }
+
+    __aicore__ inline void InitOutput()
+    {
+        const uint32_t count = m_;
+        const uint32_t countAligned = AlignUp8(count);
+        LocalTensor<float> acc = accBuf_.Get<float>();
+        if (beta_ == 0.0f) {
+            Duplicate(acc, 0.0f, countAligned);
+        } else {
+            LoadY(0U, count, acc);
+            Muls(acc, acc, beta_, countAligned);
+            SyncVToMte3();
         }
-        if (kernelMode_ == SGEMV_MODE_NO_TRANS) {
-            ProcessNoTrans(coreIdx);
-            return;
+        if (beta_ == 0.0f) {
+            SyncVToMte3();
         }
-        ProcessTrans(coreIdx);
+        StoreYContiguous(0U, count, acc);
     }
 
 private:
-    __aicore__ inline bool CanUseFastVec() const
+    __aicore__ static inline uint32_t AlignUp8(uint32_t value)
     {
-        return (incx_ == 1) && (incy_ == 1) && (alpha_ == 1.0f) && (beta_ == 0.0f);
+        return (value + SGEMMV_ALIGN - 1U) / SGEMMV_ALIGN * SGEMMV_ALIGN;
     }
 
-    __aicore__ inline void WriteScalarToGm(int64_t yIdx, float val)
+    __aicore__ inline uint32_t XPhysical(uint32_t logical) const
     {
-        ubWork_.SetValue(0, val);
-        AscendC::PipeBarrier<PIPE_ALL>();
-        CopyUbToGm1D(yGm_[yIdx], ubWork_, 1U);
-        AscendC::PipeBarrier<PIPE_ALL>();
+        if (incx_ > 0) {
+            return logical * absIncX_;
+        }
+        return (xLength_ - 1U - logical) * absIncX_;
     }
 
-    __aicore__ inline void ScaleYAlphaZero(uint32_t startIdx, uint32_t count)
+    __aicore__ inline uint32_t YPhysical(uint32_t logical) const
     {
-        if (incy_ == 1) {
-            for (uint32_t off = 0; off < count; off += UB_VEC_FLOATS) {
-                uint32_t cur = ((count - off) < UB_VEC_FLOATS) ? (count - off) : UB_VEC_FLOATS;
-                uint32_t aligned = AlignUp8(cur);
-                if (beta_ == 0.0f) {
-                    AscendC::Duplicate<float>(ubY_, 0.0f, static_cast<int32_t>(aligned));
-                } else {
-                    CopyGmToUb1D(ubY_, yGm_[startIdx + off], cur);
-                    AscendC::PipeBarrier<PIPE_ALL>();
-                    AscendC::Muls(ubY_, ubY_, beta_, static_cast<int32_t>(aligned));
-                }
-                AscendC::PipeBarrier<PIPE_ALL>();
-                CopyUbToGm1D(yGm_[startIdx + off], ubY_, cur);
-                AscendC::PipeBarrier<PIPE_ALL>();
-            }
-            return;
+        if (incy_ > 0) {
+            return logical * absIncY_;
         }
-        for (uint32_t i = 0; i < count; ++i) {
-            int64_t yIdx = yBase_ + static_cast<int64_t>(startIdx + i) * static_cast<int64_t>(incy_);
-            WriteScalarToGm(yIdx, (beta_ == 0.0f) ? 0.0f : (beta_ * yGm_.GetValue(yIdx)));
-        }
+        return (yLength_ - 1U - logical) * absIncY_;
     }
 
-    __aicore__ inline void AccumulateSplitNBatch(uint32_t tileM, uint32_t tileMAligned,
-                                                 uint32_t curBatch, uint32_t maxBatch)
+    __aicore__ inline bool UseFastPath() const { return alpha_ == 1.0f && beta_ == 0.0f && incx_ == 1 && incy_ == 1; }
+
+    __aicore__ inline void FetchEvents()
     {
-        if (curBatch == maxBatch) {
-            uint16_t rowBlocks = static_cast<uint16_t>(tileMAligned >> 3U);
-            uint8_t repeatTimes = static_cast<uint8_t>(curBatch >> 3U);
-            AscendC::BrcbRepeatParams brcbParams(rowBlocks, static_cast<uint16_t>(rowBlocks * 8U));
-            for (uint32_t b = 0; b < rowBlocks; ++b) {
-                AscendC::Brcb(ubWork_[b * 8U], ubX_, repeatTimes, brcbParams);
-            }
-            AscendC::PipeBarrier<PIPE_V>();
-            uint32_t totalElems = curBatch * tileMAligned;
-            AscendC::Mul(ubA_, ubA_, ubWork_, static_cast<int32_t>(totalElems));
-            AscendC::PipeBarrier<PIPE_V>();
-            for (uint32_t half = curBatch >> 1U; half >= 1U; half >>= 1U) {
-                uint32_t halfElems = half * tileMAligned;
-                AscendC::Add(ubA_, ubA_, ubA_[halfElems], static_cast<int32_t>(halfElems));
-                AscendC::PipeBarrier<PIPE_V>();
-            }
-            AscendC::Add(ubY_, ubY_, ubA_, static_cast<int32_t>(tileMAligned));
-            AscendC::PipeBarrier<PIPE_V>();
-            return;
-        }
-        for (uint32_t k = 0; k < curBatch; ++k) {
-            float xScaled = ubX_.GetValue(k);
-            AscendC::Axpy(ubY_, ubA_[k * tileMAligned], xScaled, static_cast<int32_t>(tileM));
-            AscendC::PipeBarrier<PIPE_V>();
-        }
+        eventMte2ToV_ = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
+        eventVToMte3_ = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE3));
+        eventVToS_ = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_S));
+        eventSToV_ = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::S_V));
+        eventVToMte2_ = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE2));
+        eventMte2ToS_ = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_S));
+        eventMte3ToMte2_ = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_MTE2));
+        eventMte3ToV_ = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_V));
     }
 
-    __aicore__ inline void ProcessNoTransSplitN(uint32_t coreIdx)
+    __aicore__ inline void SyncMte2ToV()
     {
-        uint32_t colStart = coreIdx * workPerCore_;
-        uint32_t totalN = static_cast<uint32_t>(n_);
-        if (colStart >= totalN) {
-            return;
-        }
-        uint32_t colEnd = ((colStart + workPerCore_) < totalN) ? (colStart + workPerCore_) : totalN;
-        uint32_t tileM = static_cast<uint32_t>(m_);
-        uint32_t tileMAligned = AlignUp8(tileM);
-        uint32_t maxBatch = (tileMAligned <= 8U) ? 256U : ((tileMAligned <= 16U) ? 128U : 64U);
-
-        AscendC::Duplicate<float>(ubY_, 0.0f, static_cast<int32_t>(tileMAligned));
-        AscendC::PipeBarrier<PIPE_ALL>();
-
-        for (uint32_t c = colStart; c < colEnd; c += maxBatch) {
-            uint32_t curBatch = ((colEnd - c) < maxBatch) ? (colEnd - c) : maxBatch;
-            CopyGmToUb1D(ubX_, xGm_[c], curBatch);
-            CopyGmToUb2D(ubA_, aGm_[static_cast<int64_t>(c) * static_cast<int64_t>(lda_)],
-                         tileM, curBatch, static_cast<uint32_t>(lda_));
-            AscendC::PipeBarrier<PIPE_ALL>();
-            AccumulateSplitNBatch(tileM, tileMAligned, curBatch, maxBatch);
-            AscendC::PipeBarrier<PIPE_ALL>();
-        }
-
-        AscendC::SetAtomicAdd<float>();
-        CopyUbToGm1D(yGm_, ubY_, tileM);
-        AscendC::PipeBarrier<PIPE_ALL>();
-        AscendC::SetAtomicNone();
+        SetFlag<HardEvent::MTE2_V>(eventMte2ToV_);
+        WaitFlag<HardEvent::MTE2_V>(eventMte2ToV_);
     }
 
-    __aicore__ inline void ProcessNoTransFastTile(uint32_t rowBase, uint32_t tileM)
+    __aicore__ inline void SyncVToMte3()
     {
-        uint32_t tileMAligned = AlignUp8(tileM);
-        uint32_t maxBatchN = SafeDivU32(UB_A_FLOATS, tileMAligned);
-        if (maxBatchN > FAST_BATCH_COLS) {
-            maxBatchN = FAST_BATCH_COLS;
-        }
-        uint32_t totalN = static_cast<uint32_t>(n_);
-
-        AscendC::Duplicate<float>(ubY_, 0.0f, static_cast<int32_t>(tileMAligned));
-        AscendC::PipeBarrier<PIPE_ALL>();
-
-        for (uint32_t colBase = 0; colBase < totalN; colBase += maxBatchN) {
-            uint32_t curBatchN = ((totalN - colBase) < maxBatchN) ? (totalN - colBase) : maxBatchN;
-            CopyGmToUb1D(ubX_, xGm_[colBase], curBatchN);
-            int64_t aOffset = static_cast<int64_t>(rowBase) +
-                              static_cast<int64_t>(colBase) * static_cast<int64_t>(lda_);
-            CopyGmToUb2D(ubA_, aGm_[aOffset], tileM, curBatchN, static_cast<uint32_t>(lda_));
-            AscendC::PipeBarrier<PIPE_ALL>();
-
-            for (uint32_t k = 0; k < curBatchN; ++k) {
-                float xVal = ubX_.GetValue(k);
-                AscendC::Axpy(ubY_, ubA_[k * tileMAligned], xVal, static_cast<int32_t>(tileM));
-                AscendC::PipeBarrier<PIPE_V>();
-            }
-            AscendC::PipeBarrier<PIPE_ALL>();
-        }
-
-        CopyUbToGm1D(yGm_[rowBase], ubY_, tileM);
-        AscendC::PipeBarrier<PIPE_ALL>();
+        SetFlag<HardEvent::V_MTE3>(eventVToMte3_);
+        WaitFlag<HardEvent::V_MTE3>(eventVToMte3_);
     }
 
-    __aicore__ inline void InitRowTileY(uint32_t rowBase, uint32_t tileM)
+    __aicore__ inline void SyncVToS()
     {
-        uint32_t aligned = AlignUp8(tileM);
-        if (beta_ == 0.0f) {
-            AscendC::Duplicate<float>(ubY_, 0.0f, static_cast<int32_t>(aligned));
-            AscendC::PipeBarrier<PIPE_ALL>();
-            return;
-        }
-        if (incy_ == 1) {
-            CopyGmToUb1D(ubY_, yGm_[rowBase], tileM);
-            AscendC::PipeBarrier<PIPE_ALL>();
-            AscendC::Muls(ubY_, ubY_, beta_, static_cast<int32_t>(aligned));
-            AscendC::PipeBarrier<PIPE_ALL>();
-            return;
-        }
-        for (uint32_t r = 0; r < tileM; ++r) {
-            int64_t yIdx = yBase_ + static_cast<int64_t>(rowBase + r) * static_cast<int64_t>(incy_);
-            ubY_.SetValue(r, beta_ * yGm_.GetValue(yIdx));
-        }
+        SetFlag<HardEvent::V_S>(eventVToS_);
+        WaitFlag<HardEvent::V_S>(eventVToS_);
     }
 
-    __aicore__ inline void StoreRowTileY(uint32_t rowBase, uint32_t tileM)
+    __aicore__ inline void SyncSToV()
     {
-        AscendC::PipeBarrier<PIPE_ALL>();
-        if (incy_ == 1) {
-            CopyUbToGm1D(yGm_[rowBase], ubY_, tileM);
-            AscendC::PipeBarrier<PIPE_ALL>();
-            return;
-        }
-        for (uint32_t r = 0; r < tileM; ++r) {
-            int64_t yIdx = yBase_ + static_cast<int64_t>(rowBase + r) * static_cast<int64_t>(incy_);
-            WriteScalarToGm(yIdx, ubY_.GetValue(r));
-        }
+        SetFlag<HardEvent::S_V>(eventSToV_);
+        WaitFlag<HardEvent::S_V>(eventSToV_);
     }
 
-    __aicore__ inline void LoadScaledXBatch(uint32_t colBase, uint32_t count)
+    __aicore__ inline void SyncVToMte2()
     {
+        SetFlag<HardEvent::V_MTE2>(eventVToMte2_);
+        WaitFlag<HardEvent::V_MTE2>(eventVToMte2_);
+    }
+
+    __aicore__ inline void SyncMte2ToS()
+    {
+        SetFlag<HardEvent::MTE2_S>(eventMte2ToS_);
+        WaitFlag<HardEvent::MTE2_S>(eventMte2ToS_);
+    }
+
+    __aicore__ inline void SyncMte3ToMte2()
+    {
+        SetFlag<HardEvent::MTE3_MTE2>(eventMte3ToMte2_);
+        WaitFlag<HardEvent::MTE3_MTE2>(eventMte3ToMte2_);
+    }
+
+    __aicore__ inline void SyncMte3ToV()
+    {
+        SetFlag<HardEvent::MTE3_V>(eventMte3ToV_);
+        WaitFlag<HardEvent::MTE3_V>(eventMte3ToV_);
+    }
+
+    __aicore__ inline void LoadX(uint32_t logicalStart, uint32_t count, LocalTensor<float> dst)
+    {
+        const uint32_t countAligned = AlignUp8(count);
         if (incx_ == 1) {
-            CopyGmToUb1D(ubX_, xGm_[colBase], count);
-            AscendC::PipeBarrier<PIPE_ALL>();
-            for (uint32_t k = 0; k < count; ++k) {
-                ubX_.SetValue(k, alpha_ * ubX_.GetValue(k));
+            DataCopyPadExtParams<float> pad{true, 0, static_cast<uint8_t>(countAligned - count), 0.0f};
+            DataCopyExtParams copy{1, count * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
+            DataCopyPad(dst, xGm_[logicalStart], copy, pad);
+            SyncMte2ToV();
+        } else {
+            Duplicate(dst, 0.0f, countAligned);
+            SyncVToS();
+            for (uint32_t i = 0; i < count; ++i) {
+                dst.SetValue(i, xGm_.GetValue(XPhysical(logicalStart + i)));
             }
-            return;
-        }
-        for (uint32_t k = 0; k < count; ++k) {
-            int64_t xIdx = xBase_ + static_cast<int64_t>(colBase + k) * static_cast<int64_t>(incx_);
-            ubX_.SetValue(k, alpha_ * xGm_.GetValue(xIdx));
+            SyncSToV();
         }
     }
 
-    __aicore__ inline void ProcessNoTransExactTile(uint32_t rowBase, uint32_t tileM)
+    __aicore__ inline void LoadY(uint32_t logicalStart, uint32_t count, LocalTensor<float> dst)
     {
-        uint32_t tileMAligned = AlignUp8(tileM);
-        uint32_t maxBatchN = SafeDivU32(UB_A_FLOATS, tileMAligned);
-        if (maxBatchN > FAST_BATCH_COLS) {
-            maxBatchN = FAST_BATCH_COLS;
+        const uint32_t countAligned = AlignUp8(count);
+        if (incy_ == 1 && beta_ == 0.0f) {
+            DataCopyPadExtParams<float> pad{true, 0, static_cast<uint8_t>(countAligned - count), 0.0f};
+            DataCopyExtParams copy{1, count * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
+            DataCopyPad(dst, yGm_[logicalStart], copy, pad);
+            SyncMte2ToV();
+        } else {
+            for (uint32_t i = 0; i < count; ++i) {
+                dst.SetValue(i, yGm_.GetValue(YPhysical(logicalStart + i)));
+            }
+            SyncSToV();
         }
-        uint32_t totalN = static_cast<uint32_t>(n_);
+    }
 
-        InitRowTileY(rowBase, tileM);
+    __aicore__ inline void StoreYContiguous(uint32_t logicalStart, uint32_t count, LocalTensor<float> src)
+    {
+        if (incy_ == 1 && beta_ == 0.0f) {
+            DataCopyExtParams copy{1, count * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
+            DataCopyPad(yGm_[logicalStart], src, copy);
+        } else {
+            SyncVToS();
+            for (uint32_t i = 0; i < count; ++i) {
+                yGm_.SetValue(YPhysical(logicalStart + i), src.GetValue(i));
+            }
+        }
+    }
 
-        for (uint32_t colBase = 0; colBase < totalN; colBase += maxBatchN) {
-            uint32_t curBatchN = ((totalN - colBase) < maxBatchN) ? (totalN - colBase) : maxBatchN;
-            LoadScaledXBatch(colBase, curBatchN);
-            int64_t aOffset = static_cast<int64_t>(rowBase) +
-                              static_cast<int64_t>(colBase) * static_cast<int64_t>(lda_);
-            CopyGmToUb2D(ubA_, aGm_[aOffset], tileM, curBatchN, static_cast<uint32_t>(lda_));
-            AscendC::PipeBarrier<PIPE_ALL>();
+    __aicore__ inline void FinishYChunk()
+    {
+        if (incy_ == 1 && beta_ == 0.0f) {
+            SyncMte3ToMte2();
+        }
+    }
 
-            for (uint32_t k = 0; k < curBatchN; ++k) {
-                float temp = ubX_.GetValue(k);
-                uint32_t colOff = k * tileMAligned;
-                for (uint32_t r = 0; r < tileM; ++r) {
-                    float prev = ubY_.GetValue(r);
-                    ubY_.SetValue(r, SgemvExactFma(ubA_.GetValue(colOff + r), temp, prev));
+    __aicore__ inline void LoadA2D(
+        GlobalTensor<float> src, uint32_t srcOffset, uint32_t rows, uint32_t cols, uint32_t dstStride,
+        LocalTensor<float> dst)
+    {
+        if (cols == 1U) {
+            for (uint32_t i = 0; i < rows; ++i) {
+                dst.SetValue(i, src.GetValue(srcOffset + i));
+            }
+            SyncSToV();
+        } else {
+            CopyMatrixTile(
+                dst, src[srcOffset], static_cast<int64_t>(rows), static_cast<int64_t>(cols), static_cast<int64_t>(lda_),
+                static_cast<int64_t>(dstStride));
+            SyncMte2ToV();
+        }
+    }
+
+    __aicore__ inline void LoadAColumn(uint32_t column, uint32_t rowStart, uint32_t count, LocalTensor<float> dst)
+    {
+        const uint32_t countAligned = AlignUp8(count);
+        DataCopyPadExtParams<float> pad{true, 0, static_cast<uint8_t>(countAligned - count), 0.0f};
+        DataCopyExtParams copy{1, count * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
+        DataCopyPad(dst, aGm_[static_cast<uint64_t>(column) * lda_ + rowStart], copy, pad);
+        SyncMte2ToV();
+    }
+
+    __aicore__ inline void LoadAContiguous(uint32_t srcOffset, uint32_t count, LocalTensor<float> dst)
+    {
+        constexpr uint32_t maxPiece = 8192;
+        uint32_t done = 0;
+        while (done < count) {
+            const uint32_t piece = (count - done < maxPiece) ? (count - done) : maxPiece;
+            const uint32_t pieceAligned = AlignUp8(piece);
+            DataCopyPadExtParams<float> pad{true, 0, static_cast<uint8_t>(pieceAligned - piece), 0.0f};
+            DataCopyExtParams copy{1, piece * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
+            DataCopyPad(dst[done], aGm_[srcOffset + done], copy, pad);
+            done += piece;
+        }
+        SyncMte2ToV();
+    }
+
+    __aicore__ inline void ProcessNormalN(uint32_t block)
+    {
+        if (UseFastPath()) {
+            ProcessFastN(block);
+            return;
+        }
+        ProcessReferenceN(block);
+    }
+
+    __aicore__ inline void ProcessFastN(uint32_t block)
+    {
+        const uint32_t rowBegin = block * outPerBlock_;
+        const uint32_t rowEnd = (rowBegin + outPerBlock_ < m_) ? (rowBegin + outPerBlock_) : m_;
+        if (rowBegin >= rowEnd) {
+            return;
+        }
+        LocalTensor<float> aTile = aBuf_.Get<float>();
+        LocalTensor<float> xTile = xBuf_.Get<float>();
+        LocalTensor<float> acc = accBuf_.Get<float>();
+        const bool useTree = n_ > SGEMMV_ALIGN;
+        const uint32_t rowTile = useTree ? 128U : SGEMMV_FAST_N_VEC_FLOATS;
+        for (uint32_t rowStart = rowBegin; rowStart < rowEnd; rowStart += rowTile) {
+            const uint32_t rows = (rowStart + rowTile < rowEnd) ? rowTile : (rowEnd - rowStart);
+            const uint32_t rowsAligned = AlignUp8(rows);
+            if (rowsAligned == 0U) {
+                return;
+            }
+            const uint32_t capacityBatch =
+                useTree ? SGEMMV_FAST_N_WORK_FLOATS / rowsAligned : SGEMMV_FAST_N_A_FLOATS / rowsAligned;
+            const uint32_t colBatch =
+                (capacityBatch < SGEMMV_FAST_N_COL_BATCH) ? capacityBatch : SGEMMV_FAST_N_COL_BATCH;
+            Duplicate(acc, 0.0f, rowsAligned);
+            bool firstBatch = true;
+            for (uint32_t colStart = 0; colStart < n_; colStart += colBatch) {
+                const uint32_t cols = (colStart + colBatch < n_) ? colBatch : (n_ - colStart);
+                if (!firstBatch) {
+                    SyncVToMte2();
                 }
+                firstBatch = false;
+                CopyMatrixTile(
+                    aTile, aGm_[static_cast<uint64_t>(colStart) * lda_ + rowStart], rows, cols, lda_, rowsAligned,
+                    true);
+                LoadX(colStart, cols, xTile);
+                SyncMte2ToS();
+                AccumulateFastNBatch(acc, aTile, xTile, rows, rowsAligned, cols);
             }
-            AscendC::PipeBarrier<PIPE_ALL>();
+            SyncVToMte3();
+            StoreYContiguous(rowStart, rows, acc);
+            SyncMte3ToV();
         }
-
-        StoreRowTileY(rowBase, tileM);
     }
 
-    __aicore__ inline void ProcessNoTrans(uint32_t coreIdx)
+    __aicore__ inline void AccumulateFastNBatch(
+        LocalTensor<float> acc, LocalTensor<float> aTile, LocalTensor<float> xTile, uint32_t rows, uint32_t rowsAligned,
+        uint32_t cols)
     {
-        uint32_t rowStart = coreIdx * workPerCore_;
-        uint32_t totalM = static_cast<uint32_t>(m_);
-        if (rowStart >= totalM) {
+        LocalTensor<float> work = workBuf_.Get<float>();
+        if (n_ <= SGEMMV_ALIGN || cols % SGEMMV_ALIGN != 0U) {
+            for (uint32_t col = 0; col < cols; ++col) {
+                Axpy(acc, aTile[col * rowsAligned], xTile.GetValue(col), rows);
+                PIPE_BARRIER(V);
+            }
             return;
         }
-        uint32_t coreRows = ((totalM - rowStart) < workPerCore_) ? (totalM - rowStart) : workPerCore_;
+        const uint16_t rowBlocks = static_cast<uint16_t>(rowsAligned / SGEMMV_ALIGN);
+        const uint8_t repeatTimes = static_cast<uint8_t>(cols / SGEMMV_ALIGN);
+        BrcbRepeatParams brcbParams(rowBlocks, static_cast<uint16_t>(rowBlocks * SGEMMV_ALIGN));
+        for (uint32_t rowBlock = 0; rowBlock < rowBlocks; ++rowBlock) {
+            Brcb(work[rowBlock * SGEMMV_ALIGN], xTile, repeatTimes, brcbParams);
+        }
+        PIPE_BARRIER(V);
+        Mul(aTile, aTile, work, cols * rowsAligned);
+        PIPE_BARRIER(V);
+        for (uint32_t half = cols / 2U; half >= 1U; half >>= 1U) {
+            Add(aTile, aTile, aTile[half * rowsAligned], half * rowsAligned);
+            PIPE_BARRIER(V);
+        }
+        Add(acc, acc, aTile, rowsAligned);
+    }
+
+    __aicore__ inline void ProcessReferenceN(uint32_t block)
+    {
+        const uint32_t outBegin = block * outPerBlock_;
+        const uint32_t outEnd = (outBegin + outPerBlock_ < m_) ? (outBegin + outPerBlock_) : m_;
+        if (outBegin >= outEnd) {
+            return;
+        }
         if (alpha_ == 0.0f) {
-            ScaleYAlphaZero(rowStart, coreRows);
-            return;
-        }
-        const bool fastVec = CanUseFastVec() && (n_ <= FAST_TRANS_MAX_M);
-        for (uint32_t rOff = 0; rOff < coreRows; rOff += UB_VEC_FLOATS) {
-            uint32_t tileM = ((coreRows - rOff) < UB_VEC_FLOATS) ? (coreRows - rOff) : UB_VEC_FLOATS;
-            if (fastVec) {
-                ProcessNoTransFastTile(rowStart + rOff, tileM);
+            if (beta_ == 0.0f) {
+                for (uint32_t row = outBegin; row < outEnd; ++row) {
+                    yGm_.SetValue(YPhysical(row), 0.0f);
+                }
             } else {
-                ProcessNoTransExactTile(rowStart + rOff, tileM);
-            }
-        }
-    }
-
-    __aicore__ inline void ReduceFastSubBatch(uint32_t colOff, uint32_t subCols, uint32_t tileM,
-                                              uint32_t tileMAligned)
-    {
-        for (uint32_t c = 0; c < subCols; ++c) {
-            AscendC::LocalTensor<float> aCol = ubA_[c * tileMAligned];
-            AscendC::Mul(aCol, aCol, ubX_, static_cast<int32_t>(tileM));
-            AscendC::PipeBarrier<PIPE_V>();
-            AscendC::ReduceSum<float>(ubWork_, aCol, ubWork_[F32_BLOCK_LEN], static_cast<int32_t>(tileM));
-            AscendC::PipeBarrier<PIPE_ALL>();
-            ubY_.SetValue(colOff + c, ubY_.GetValue(colOff + c) + ubWork_.GetValue(0));
-        }
-    }
-
-    __aicore__ inline void ProcessTransFastBatch(uint32_t colBase, uint32_t curCols)
-    {
-        uint32_t totalM = static_cast<uint32_t>(m_);
-        AscendC::Duplicate<float>(ubY_, 0.0f, static_cast<int32_t>(AlignUp8(curCols)));
-        AscendC::PipeBarrier<PIPE_ALL>();
-
-        for (uint32_t rowBase = 0; rowBase < totalM; rowBase += UB_VEC_FLOATS) {
-            uint32_t tileM = ((totalM - rowBase) < UB_VEC_FLOATS) ? (totalM - rowBase) : UB_VEC_FLOATS;
-            uint32_t tileMAligned = AlignUp8(tileM);
-            uint32_t maxSubCols = SafeDivU32(UB_A_FLOATS, tileMAligned);
-            CopyGmToUb1D(ubX_, xGm_[rowBase], tileM);
-            AscendC::PipeBarrier<PIPE_ALL>();
-
-            for (uint32_t cOff = 0; cOff < curCols; cOff += maxSubCols) {
-                uint32_t subCols = ((curCols - cOff) < maxSubCols) ? (curCols - cOff) : maxSubCols;
-                int64_t aOffset = static_cast<int64_t>(rowBase) +
-                                  static_cast<int64_t>(colBase + cOff) * static_cast<int64_t>(lda_);
-                CopyGmToUb2D(ubA_, aGm_[aOffset], tileM, subCols, static_cast<uint32_t>(lda_));
-                AscendC::PipeBarrier<PIPE_ALL>();
-                ReduceFastSubBatch(cOff, subCols, tileM, tileMAligned);
-            }
-        }
-
-        CopyUbToGm1D(yGm_[colBase], ubY_, curCols);
-        AscendC::PipeBarrier<PIPE_ALL>();
-    }
-
-    __aicore__ inline void LoadRawXTile(uint32_t rowBase, uint32_t tileM)
-    {
-        if (incx_ == 1) {
-            CopyGmToUb1D(ubX_, xGm_[rowBase], tileM);
-            AscendC::PipeBarrier<PIPE_ALL>();
-            return;
-        }
-        for (uint32_t i = 0; i < tileM; ++i) {
-            int64_t xIdx = xBase_ + static_cast<int64_t>(rowBase + i) * static_cast<int64_t>(incx_);
-            ubX_.SetValue(i, xGm_.GetValue(xIdx));
-        }
-    }
-
-    __aicore__ inline void AccumulateTransUnitX32(uint32_t colOff, uint32_t limit32, float (&v16)[16])
-    {
-        for (uint32_t i = 0; i < limit32; i += 32U) {
-            for (uint32_t k = 0; k < 16U; ++k) {
-                v16[k] = SgemvExactFma(ubA_.GetValue(colOff + i + k), ubX_.GetValue(i + k), v16[k]);
-            }
-            for (uint32_t k = 0; k < 16U; ++k) {
-                v16[k] = SgemvExactFma(ubA_.GetValue(colOff + i + 16U + k), ubX_.GetValue(i + 16U + k), v16[k]);
-            }
-        }
-    }
-
-    __aicore__ inline float FinalizeTransUnitXCol(uint32_t colOff, uint32_t tileM, float (&v16)[16])
-    {
-        uint32_t i = tileM & ~31U;
-        AccumulateTransUnitX32(colOff, i, v16);
-        if (m_ >= 32) {
-            for (uint32_t k = 0; k < 4U; ++k) {
-                v16[k] = ((v16[k] + v16[k + 4U]) + v16[k + 8U]) + v16[k + 12U];
-            }
-        }
-        for (; (i + 3U) < tileM; i += 4U) {
-            for (uint32_t k = 0; k < 4U; ++k) {
-                v16[k] = SgemvExactFma(ubA_.GetValue(colOff + i + k), ubX_.GetValue(i + k), v16[k]);
-            }
-        }
-        float colAcc = (v16[0] + v16[2]) + (v16[1] + v16[3]);
-        for (; i < tileM; ++i) {
-            colAcc = SgemvExactFma(ubA_.GetValue(colOff + i), ubX_.GetValue(i), colAcc);
-        }
-        return colAcc;
-    }
-
-    __aicore__ inline void WriteTransColOutput(uint32_t colIdx, float colAcc)
-    {
-        int64_t yIdx = yBase_ + static_cast<int64_t>(colIdx) * static_cast<int64_t>(incy_);
-        float yTerm = (beta_ == 0.0f) ? 0.0f : (beta_ * yGm_.GetValue(yIdx));
-        WriteScalarToGm(yIdx, SgemvExactFma(alpha_, colAcc, yTerm));
-    }
-
-    __aicore__ inline void ProcessTransExactBatch(uint32_t colBase, uint32_t subCols)
-    {
-        float v16[EXACT_TRANS_BATCH][16] = {{0.0f}};
-        float sAcc[EXACT_TRANS_BATCH] = {0.0f};
-        uint32_t totalM = static_cast<uint32_t>(m_);
-
-        for (uint32_t rowBase = 0; rowBase < totalM; rowBase += UB_VEC_FLOATS) {
-            uint32_t tileM = ((totalM - rowBase) < UB_VEC_FLOATS) ? (totalM - rowBase) : UB_VEC_FLOATS;
-            uint32_t tileMAligned = AlignUp8(tileM);
-            const bool isLastTile = ((rowBase + tileM) >= totalM);
-
-            LoadRawXTile(rowBase, tileM);
-            int64_t aOffset = static_cast<int64_t>(rowBase) +
-                              static_cast<int64_t>(colBase) * static_cast<int64_t>(lda_);
-            CopyGmToUb2D(ubA_, aGm_[aOffset], tileM, subCols, static_cast<uint32_t>(lda_));
-            AscendC::PipeBarrier<PIPE_ALL>();
-
-            for (uint32_t c = 0; c < subCols; ++c) {
-                uint32_t colOff = c * tileMAligned;
-                if (incx_ != 1) {
-                    for (uint32_t i = 0; i < tileM; ++i) {
-                        sAcc[c] = SgemvExactFma(ubA_.GetValue(colOff + i), ubX_.GetValue(i), sAcc[c]);
-                    }
-                } else if (!isLastTile) {
-                    AccumulateTransUnitX32(colOff, tileM, v16[c]);
-                } else {
-                    sAcc[c] = FinalizeTransUnitXCol(colOff, tileM, v16[c]);
+                for (uint32_t row = outBegin; row < outEnd; ++row) {
+                    yGm_.SetValue(YPhysical(row), beta_ * yGm_.GetValue(YPhysical(row)));
                 }
             }
-            AscendC::PipeBarrier<PIPE_ALL>();
+            return;
         }
-
-        for (uint32_t c = 0; c < subCols; ++c) {
-            WriteTransColOutput(colBase + c, sAcc[c]);
+        for (uint32_t row = outBegin; row < outEnd; ++row) {
+            float result = 0.0f;
+            if (beta_ != 0.0f) {
+                result = RoundMulFp32(beta_, yGm_.GetValue(YPhysical(row)));
+            }
+            for (uint32_t col = 0; col < n_; ++col) {
+                const float scaledX = RoundMulFp32(alpha_, xGm_.GetValue(XPhysical(col)));
+                result = FmaFp32(aGm_.GetValue(static_cast<uint64_t>(col) * lda_ + row), scaledX, result);
+            }
+            yGm_.SetValue(YPhysical(row), result);
         }
     }
 
-    __aicore__ inline void ProcessTrans(uint32_t coreIdx)
+    __aicore__ inline void ProcessReferenceT(uint32_t block)
     {
-        uint32_t colStart = coreIdx * workPerCore_;
-        uint32_t totalN = static_cast<uint32_t>(n_);
-        if (colStart >= totalN) {
+        const uint32_t outBegin = block * outPerBlock_;
+        const uint32_t outEnd = (outBegin + outPerBlock_ < n_) ? (outBegin + outPerBlock_) : n_;
+        if (outBegin >= outEnd) {
             return;
         }
-        uint32_t coreCols = ((totalN - colStart) < workPerCore_) ? (totalN - colStart) : workPerCore_;
         if (alpha_ == 0.0f) {
-            ScaleYAlphaZero(colStart, coreCols);
-            return;
-        }
-        const bool fastVec = CanUseFastVec() && (m_ >= FAST_TRANS_MIN_M) && (m_ <= FAST_TRANS_MAX_M);
-        if (fastVec) {
-            for (uint32_t cOff = 0; cOff < coreCols; cOff += FAST_BATCH_COLS) {
-                uint32_t curCols = ((coreCols - cOff) < FAST_BATCH_COLS) ? (coreCols - cOff) : FAST_BATCH_COLS;
-                ProcessTransFastBatch(colStart + cOff, curCols);
+            if (beta_ == 0.0f) {
+                for (uint32_t col = outBegin; col < outEnd; ++col) {
+                    yGm_.SetValue(YPhysical(col), 0.0f);
+                }
+            } else {
+                for (uint32_t col = outBegin; col < outEnd; ++col) {
+                    yGm_.SetValue(YPhysical(col), beta_ * yGm_.GetValue(YPhysical(col)));
+                }
             }
             return;
         }
-        for (uint32_t cOff = 0; cOff < coreCols; cOff += EXACT_TRANS_BATCH) {
-            uint32_t subCols = ((coreCols - cOff) < EXACT_TRANS_BATCH) ? (coreCols - cOff) : EXACT_TRANS_BATCH;
-            ProcessTransExactBatch(colStart + cOff, subCols);
+        for (uint32_t col = outBegin; col < outEnd; ++col) {
+            float sum = 0.0f;
+            for (uint32_t row = 0; row < m_; ++row) {
+                sum =
+                    FmaFp32(aGm_.GetValue(static_cast<uint64_t>(col) * lda_ + row), xGm_.GetValue(XPhysical(row)), sum);
+            }
+            float result = 0.0f;
+            if (beta_ != 0.0f) {
+                const float betaProduct = RoundMulFp32(beta_, yGm_.GetValue(YPhysical(col)));
+                result = FmaFp32(alpha_, sum, betaProduct);
+            } else {
+                result = alpha_ * sum;
+            }
+            yGm_.SetValue(YPhysical(col), result);
         }
     }
 
-    AscendC::TPipe *pipe_ = nullptr;
-    AscendC::TQueBind<AscendC::TPosition::VECIN, AscendC::TPosition::VECOUT, 1> dummy_;
-    AscendC::TBuf<AscendC::TPosition::VECCALC> aBuf_;
-    AscendC::TBuf<AscendC::TPosition::VECCALC> xBuf_;
-    AscendC::TBuf<AscendC::TPosition::VECCALC> yBuf_;
-    AscendC::TBuf<AscendC::TPosition::VECCALC> workBuf_;
-    AscendC::GlobalTensor<float> aGm_;
-    AscendC::GlobalTensor<float> xGm_;
-    AscendC::GlobalTensor<float> yGm_;
-    AscendC::LocalTensor<float> ubA_;
-    AscendC::LocalTensor<float> ubX_;
-    AscendC::LocalTensor<float> ubY_;
-    AscendC::LocalTensor<float> ubWork_;
-    int64_t xBase_ = 0;
-    int64_t yBase_ = 0;
-    uint32_t kernelMode_ = 0;
-    uint32_t usedCoreNum_ = 1;
-    uint32_t workPerCore_ = 1;
-    int32_t m_ = 0;
-    int32_t n_ = 0;
-    int32_t lda_ = 1;
-    int32_t incx_ = 1;
-    int32_t incy_ = 1;
+    __aicore__ inline void ReduceFastT(
+        LocalTensor<float> aTile, LocalTensor<float> output, uint32_t cols, uint32_t rowTileRows)
+    {
+        LocalTensor<float> sums = rowBuf_.Get<float>();
+        constexpr uint32_t lanes = 64;
+        const uint32_t segments = rowTileRows / lanes;
+        const uint32_t repeats = cols * segments;
+        for (uint32_t done = 0; done < repeats; done += 248U) {
+            const uint32_t count = repeats - done < 248U ? repeats - done : 248U;
+            WholeReduceSum(sums[done], aTile[done * lanes], lanes, count, 1, 1, lanes / SGEMMV_ALIGN);
+        }
+        PIPE_BARRIER(V);
+        if (segments <= lanes) {
+            WholeReduceSum(output, sums, segments, cols, 1, 1, segments / SGEMMV_ALIGN);
+        } else {
+            WholeReduceSum(output, sums, lanes, cols, 1, 1, segments / SGEMMV_ALIGN);
+            WholeReduceSum(output[128], sums[lanes], segments - lanes, cols, 1, 1, segments / SGEMMV_ALIGN);
+            PIPE_BARRIER(V);
+            Add(output, output, output[128], cols);
+        }
+    }
+
+    __aicore__ inline void ProcessPipelinedT(uint32_t outBegin, uint32_t outEnd)
+    {
+        constexpr uint32_t slotSize = 20480;
+        const uint32_t rowStride = CeilDiv(m_, 512U) * 512U;
+        const uint32_t colTile = slotSize / rowStride;
+        LocalTensor<float> aTile = aBuf_.Get<float>();
+        LocalTensor<float> xTile = xBuf_.Get<float>();
+        LocalTensor<float> output = outputBuf_.Get<float>();
+        if (m_ != rowStride) {
+            Duplicate(aTile, 0.0f, 2U * slotSize);
+            Duplicate(xTile, 0.0f, rowStride);
+            SyncVToMte2();
+        }
+        LoadX(0U, m_, xTile);
+        const uint32_t firstCols = outEnd - outBegin < colTile ? outEnd - outBegin : colTile;
+        CopyMatrixTile(aTile, aGm_[static_cast<uint64_t>(outBegin) * lda_], m_, firstCols, lda_, rowStride, true);
+        SyncMte2ToV();
+        uint32_t slot = 0;
+        for (uint32_t start = outBegin; start < outEnd; start += colTile) {
+            const uint32_t cols = outEnd - start < colTile ? outEnd - start : colTile;
+            const uint32_t next = start + colTile;
+            if (next < outEnd) {
+                const uint32_t nextCols = outEnd - next < colTile ? outEnd - next : colTile;
+                SyncVToMte2();
+                CopyMatrixTile(
+                    aTile[(1U - slot) * slotSize], aGm_[static_cast<uint64_t>(next) * lda_], m_, nextCols, lda_,
+                    rowStride, true);
+            }
+            LocalTensor<float> current = aTile[slot * slotSize];
+            for (uint32_t col = 0; col < cols; ++col) {
+                Mul(current[col * rowStride], current[col * rowStride], xTile, rowStride);
+            }
+            PIPE_BARRIER(V);
+            ReduceFastT(current, output, cols, rowStride);
+            SyncVToMte3();
+            StoreYContiguous(start, cols, output);
+            SyncMte3ToV();
+            if (next < outEnd) {
+                SyncMte2ToV();
+            }
+            slot = 1U - slot;
+        }
+    }
+
+    __aicore__ inline void ProcessFastT(uint32_t block)
+    {
+        const uint32_t groups = CeilDiv(n_, SGEMMV_ALIGN);
+        const uint32_t blocks = static_cast<uint32_t>(GetBlockNum());
+        if (blocks == 0U) {
+            return;
+        }
+        const uint32_t outBegin = static_cast<uint64_t>(block) * groups / blocks * SGEMMV_ALIGN;
+        const uint32_t alignedEnd = static_cast<uint64_t>(block + 1U) * groups / blocks * SGEMMV_ALIGN;
+        const uint32_t outEnd = alignedEnd < n_ ? alignedEnd : n_;
+        if (outBegin >= outEnd) {
+            return;
+        }
+        if (m_ >= 3072U) {
+            ProcessPipelinedT(outBegin, outEnd);
+            return;
+        }
+        LocalTensor<float> aTile = aBuf_.Get<float>();
+        LocalTensor<float> xTile = xBuf_.Get<float>();
+        LocalTensor<float> output = outputBuf_.Get<float>();
+        constexpr uint32_t rowAlign = 512;
+        const uint32_t rowTileRows = CeilDiv(m_, rowAlign) * rowAlign;
+        const uint32_t colTile = 40960U / rowTileRows;
+        if (m_ != rowTileRows) {
+            Duplicate(xTile, 0.0f, rowTileRows);
+            SyncVToMte2();
+        }
+        LoadX(0U, m_, xTile);
+        for (uint32_t colStart = outBegin; colStart < outEnd; colStart += colTile) {
+            const uint32_t cols = (colStart + colTile < outEnd) ? colTile : (outEnd - colStart);
+            if (m_ != rowTileRows) {
+                Duplicate(aTile, 0.0f, cols * rowTileRows);
+                SyncVToMte2();
+            }
+            CopyMatrixTile(aTile, aGm_[static_cast<uint64_t>(colStart) * lda_], m_, cols, lda_, rowTileRows, true);
+            SyncMte2ToV();
+            for (uint32_t col = 0; col < cols; ++col) {
+                const uint32_t offset = col * rowTileRows;
+                Mul(aTile[offset], aTile[offset], xTile, rowTileRows);
+            }
+            PIPE_BARRIER(V);
+            ReduceFastT(aTile, output, cols, rowTileRows);
+            SyncVToMte3();
+            StoreYContiguous(colStart, cols, output);
+            FinishYChunk();
+            SyncMte3ToV();
+        }
+    }
+
+    __aicore__ inline bool PrepareTransposeBlock(uint32_t block, uint32_t& outBegin, uint32_t& outEnd)
+    {
+        if (!UseFastPath()) {
+            ProcessReferenceT(block);
+            return false;
+        }
+        outBegin = block * outPerBlock_;
+        outEnd = (outBegin + outPerBlock_ < n_) ? (outBegin + outPerBlock_) : n_;
+        return outBegin < outEnd;
+    }
+
+    __aicore__ inline void AccumulateNormalT(uint32_t colStart, uint32_t cols, LocalTensor<float> output)
+    {
+        LocalTensor<float> aCol = aBuf_.Get<float>();
+        LocalTensor<float> xTile = xBuf_.Get<float>();
+        LocalTensor<float> product = productBuf_.Get<float>();
+        LocalTensor<float> reduceTmp = workBuf_.Get<float>();
+        LocalTensor<float> reduceOut = reduceBuf_.Get<float>();
+        bool firstRowTile = true;
+        for (uint32_t rowStart = 0; rowStart < m_; rowStart += SGEMMV_T_REDUCE_TILE) {
+            const uint32_t rows = (rowStart + SGEMMV_T_REDUCE_TILE < m_) ? SGEMMV_T_REDUCE_TILE : (m_ - rowStart);
+            const uint32_t rowsAligned = AlignUp8(rows);
+            if (!firstRowTile) {
+                SyncVToMte2();
+            }
+            LoadX(rowStart, rows, xTile);
+            firstRowTile = false;
+            for (uint32_t col = 0; col < cols; ++col) {
+                if (col != 0U) {
+                    SyncVToMte2();
+                }
+                LoadAColumn(colStart + col, rowStart, rows, aCol);
+                Mul(product, aCol, xTile, rowsAligned);
+                PIPE_BARRIER(V);
+                ReduceSum(reduceOut, product, reduceTmp, static_cast<int32_t>(rowsAligned));
+                SyncVToS();
+                const uint32_t compensationOffset = SGEMMV_NORMAL_T_COL_CHUNK + col;
+                const float corrected = reduceOut.GetValue(0) - output.GetValue(compensationOffset);
+                const float previous = output.GetValue(col);
+                const float current = previous + corrected;
+                output.SetValue(compensationOffset, (current - previous) - corrected);
+                output.SetValue(col, current);
+            }
+        }
+    }
+
+    __aicore__ inline void ProcessNormalT(uint32_t block)
+    {
+        if (UseFastPath() && m_ <= SGEMMV_FAST_T_MAX_ROWS) {
+            ProcessFastT(block);
+            return;
+        }
+        uint32_t outBegin;
+        uint32_t outEnd;
+        if (!PrepareTransposeBlock(block, outBegin, outEnd)) {
+            return;
+        }
+
+        LocalTensor<float> acc = accBuf_.Get<float>();
+        LocalTensor<float> output = outputBuf_.Get<float>();
+
+        for (uint32_t colStart = outBegin; colStart < outEnd; colStart += SGEMMV_NORMAL_T_COL_CHUNK) {
+            const uint32_t cols =
+                (colStart + SGEMMV_NORMAL_T_COL_CHUNK < outEnd) ? SGEMMV_NORMAL_T_COL_CHUNK : (outEnd - colStart);
+            Duplicate(output, 0.0f, SGEMMV_OUTPUT_FLOATS);
+            SyncVToS();
+
+            AccumulateNormalT(colStart, cols, output);
+
+            if (beta_ == 0.0f) {
+                Duplicate(acc, 0.0f, SGEMMV_NORMAL_T_COL_CHUNK);
+            } else {
+                LoadY(colStart, cols, acc);
+                Muls(acc, acc, beta_, SGEMMV_NORMAL_T_COL_CHUNK);
+            }
+            SyncSToV();
+            Muls(output, output, alpha_, SGEMMV_NORMAL_T_COL_CHUNK);
+            PIPE_BARRIER(V);
+            if (beta_ != 0.0f) {
+                Add(acc, acc, output, SGEMMV_NORMAL_T_COL_CHUNK);
+            } else {
+                Muls(acc, output, 1.0f, SGEMMV_NORMAL_T_COL_CHUNK);
+            }
+            StoreYContiguous(colStart, cols, acc);
+            FinishYChunk();
+            SyncVToMte2();
+        }
+    }
+
+    __aicore__ inline void BuildGatherOffsets(uint32_t stride)
+    {
+        LocalTensor<uint32_t> offsets = offsetBuf_.Get<uint32_t>();
+        LocalTensor<int32_t> table = offsets.ReinterpretCast<int32_t>();
+        constexpr uint32_t offsetBlock = 64;
+        const uint32_t head = (SGEMMV_OFFSET_COUNT < offsetBlock) ? SGEMMV_OFFSET_COUNT : offsetBlock;
+        for (uint32_t i = 0; i < head; ++i) {
+            table.SetValue(i, static_cast<int32_t>(i * stride * SGEMMV_BYTES_PER_FLOAT));
+        }
+        SyncSToV();
+        for (uint32_t off = head; off < SGEMMV_OFFSET_COUNT; off += offsetBlock) {
+            const uint32_t lanes =
+                (SGEMMV_OFFSET_COUNT - off < offsetBlock) ? (SGEMMV_OFFSET_COUNT - off) : offsetBlock;
+            Adds(
+                table[off], table[off - offsetBlock],
+                static_cast<int32_t>(offsetBlock * stride * SGEMMV_BYTES_PER_FLOAT), static_cast<int32_t>(lanes));
+        }
+    }
+
+    __aicore__ inline void ProcessSmallMT(uint32_t block)
+    {
+        uint32_t outBegin;
+        uint32_t outEnd;
+        if (!PrepareTransposeBlock(block, outBegin, outEnd)) {
+            return;
+        }
+
+        LocalTensor<float> acc = accBuf_.Get<float>();
+        LocalTensor<float> aTile = aBuf_.Get<float>();
+        LocalTensor<float> xTile = xBuf_.Get<float>();
+        LocalTensor<float> row = rowBuf_.Get<float>();
+        LocalTensor<float> product = productBuf_.Get<float>();
+        LocalTensor<uint32_t> offsets = offsetBuf_.Get<uint32_t>();
+        const uint32_t rowsAligned = AlignUp8(m_);
+
+        LoadX(0U, m_, xTile);
+        BuildGatherOffsets(rowsAligned);
+        bool firstTile = true;
+        for (uint32_t colStart = outBegin; colStart < outEnd; colStart += SGEMMV_T_COL_TILE) {
+            const uint32_t cols = (colStart + SGEMMV_T_COL_TILE < outEnd) ? SGEMMV_T_COL_TILE : (outEnd - colStart);
+            const uint32_t colsAligned = AlignUp8(cols);
+            if (!firstTile) {
+                SyncVToMte2();
+            }
+            LoadA2D(aGm_, static_cast<uint64_t>(colStart) * lda_, m_, cols, rowsAligned, aTile);
+            firstTile = false;
+            if (beta_ == 0.0f) {
+                Duplicate(acc, 0.0f, colsAligned);
+            } else {
+                LoadY(colStart, cols, acc);
+                Muls(acc, acc, beta_, colsAligned);
+            }
+            for (uint32_t rowIndex = 0; rowIndex < m_; ++rowIndex) {
+                Gather(row, aTile, offsets, rowIndex * SGEMMV_BYTES_PER_FLOAT, colsAligned);
+                const float xValue = xTile.GetValue(rowIndex);
+                SyncSToV();
+                Axpy(acc, row, alpha_ * xValue, colsAligned);
+            }
+            StoreYContiguous(colStart, cols, acc);
+            FinishYChunk();
+        }
+    }
+
+    __aicore__ inline void AccumulateSmallMRows(
+        uint32_t colsAligned, LocalTensor<float> aTile, LocalTensor<float> xTile, LocalTensor<float> partial)
+    {
+        LocalTensor<float> row = rowBuf_.Get<float>();
+        LocalTensor<float> product = productBuf_.Get<float>();
+        LocalTensor<float> reduceTmp = workBuf_.Get<float>();
+        LocalTensor<float> reduceOut = reduceBuf_.Get<float>();
+        LocalTensor<uint32_t> offsets = offsetBuf_.Get<uint32_t>();
+        for (uint32_t rowIndex = 0; rowIndex < m_; ++rowIndex) {
+            Gather(row, aTile, offsets, rowIndex * SGEMMV_BYTES_PER_FLOAT, colsAligned);
+            Mul(product, row, xTile, colsAligned);
+            ReduceSum(reduceOut, product, reduceTmp, static_cast<int32_t>(colsAligned));
+            SyncVToS();
+            const uint32_t compensationOffset = SGEMMV_ALIGN + rowIndex;
+            const float corrected = reduceOut.GetValue(0) - partial.GetValue(compensationOffset);
+            const float previous = partial.GetValue(rowIndex);
+            const float current = previous + corrected;
+            partial.SetValue(compensationOffset, (current - previous) - corrected);
+            partial.SetValue(rowIndex, current);
+        }
+    }
+
+    __aicore__ inline void ProcessSmallMCompute(uint32_t block)
+    {
+        const uint32_t colBegin = block * outPerBlock_;
+        const uint32_t colEnd = (colBegin + outPerBlock_ < n_) ? (colBegin + outPerBlock_) : n_;
+        if (colBegin >= colEnd) {
+            return;
+        }
+
+        LocalTensor<float> aTile = aBuf_.Get<float>();
+        LocalTensor<float> xTile = xBuf_.Get<float>();
+        LocalTensor<float> partial = outputBuf_.Get<float>();
+
+        const bool flatA = lda_ == m_ && m_ <= SGEMMV_SMALL_M_LIMIT;
+        const uint32_t aStride = flatA ? m_ : AlignUp8(m_);
+        uint32_t colTile = SGEMMV_A_FLOATS / aStride;
+        if (colTile > SGEMMV_SMALL_N_COL_TILE) {
+            colTile = SGEMMV_SMALL_N_COL_TILE;
+        }
+        colTile = colTile / SGEMMV_ALIGN * SGEMMV_ALIGN;
+        BuildGatherOffsets(aStride);
+        Duplicate(partial, 0.0f, SGEMMV_OUTPUT_FLOATS);
+        SyncVToS();
+        if (flatA) {
+            Duplicate(aTile, 0.0f, SGEMMV_A_FLOATS);
+            SyncVToMte2();
+        }
+        bool firstTile = true;
+        for (uint32_t colStart = colBegin; colStart < colEnd; colStart += colTile) {
+            const uint32_t cols = (colStart + colTile < colEnd) ? colTile : (colEnd - colStart);
+            const uint32_t colsAligned = AlignUp8(cols);
+            if (!firstTile) {
+                SyncVToMte2();
+            }
+            if (flatA) {
+                LoadAContiguous(colStart * lda_, m_ * cols, aTile);
+            } else {
+                LoadA2D(aGm_, static_cast<uint64_t>(colStart) * lda_, m_, cols, aStride, aTile);
+            }
+            LoadX(colStart, cols, xTile);
+            firstTile = false;
+            AccumulateSmallMRows(colsAligned, aTile, xTile, partial);
+        }
+        SyncSToV();
+        Muls(partial, partial, alpha_, SGEMMV_ALIGN);
+        SyncVToMte3();
+        SetAtomicAdd<float>();
+        DataCopyExtParams copy{1, m_ * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
+        DataCopyPad(yGm_[0], partial, copy);
+        SetAtomicNone();
+    }
+
+    TPipe* pipe_ = nullptr;
+    GlobalTensor<float> aGm_;
+    GlobalTensor<float> xGm_;
+    GlobalTensor<float> yGm_;
+    TBuf<TPosition::VECCALC> accBuf_;
+    TBuf<TPosition::VECCALC> aBuf_;
+    TBuf<TPosition::VECCALC> xBuf_;
+    TBuf<TPosition::VECCALC> productBuf_;
+    TBuf<TPosition::VECCALC> rowBuf_;
+    TBuf<TPosition::VECCALC> workBuf_;
+    TBuf<TPosition::VECCALC> reduceBuf_;
+    TBuf<TPosition::VECCALC> outputBuf_;
+    TBuf<TPosition::VECCALC> offsetBuf_;
+
+    event_t eventMte2ToV_;
+    event_t eventVToMte3_;
+    event_t eventVToS_;
+    event_t eventSToV_;
+    event_t eventVToMte2_;
+    event_t eventMte2ToS_;
+    event_t eventMte3ToMte2_;
+    event_t eventMte3ToV_;
+
+    uint32_t m_ = 0;
+    uint32_t n_ = 0;
+    uint32_t xLength_ = 0;
+    uint32_t yLength_ = 0;
+    uint32_t lda_ = 0;
+    uint32_t outPerBlock_ = 0;
+    uint32_t path_ = 0;
+    uint32_t absIncX_ = 1;
+    uint32_t absIncY_ = 1;
     float alpha_ = 1.0f;
     float beta_ = 0.0f;
+    int64_t incx_ = 1;
+    int64_t incy_ = 1;
 };
-} // namespace
 
 extern "C" __global__ __aicore__ void sgemv_kernel(GM_ADDR a, GM_ADDR x, GM_ADDR y, SgemvTilingData tiling)
 {
-    AscendC::TPipe pipe;
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    TPipe pipe;
     SgemvKernel op;
     op.Init(a, x, y, tiling, &pipe);
     op.Process();
 }
 
-void aclblasSgemv_do(uint32_t blockDim, void *stream, uint8_t *a, uint8_t *x, uint8_t *y, SgemvTilingData *tiling)
+extern "C" __global__ __aicore__ void sgemv_init_kernel(GM_ADDR y, SgemvTilingData tiling)
 {
-    sgemv_kernel<<<blockDim, nullptr, stream>>>(a, x, y, *tiling);
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    TPipe pipe;
+    SgemvKernel op;
+    op.Init(nullptr, nullptr, y, tiling, &pipe);
+    op.InitOutput();
+}
+
+extern "C" __global__ __aicore__ void sgemv_small_m_kernel(GM_ADDR a, GM_ADDR x, GM_ADDR y, SgemvTilingData tiling)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    TPipe pipe;
+    SgemvKernel op;
+    op.Init(a, x, y, tiling, &pipe);
+    op.ProcessSmallMN(static_cast<uint32_t>(GetBlockIdx()));
+}
+
+extern "C" __global__ __aicore__ __cube__ void sgemv_cube_kernel(
+    GM_ADDR a, GM_ADDR x, GM_ADDR y, SgemvTilingData tiling)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIC_ONLY);
+    AscendC::SetHF32Mode(AscendC::HF32Mode::DISABLE);
+
+    const bool isNPath =
+        (tiling.path == static_cast<uint32_t>(SgemvPath::NORMAL_N) ||
+         tiling.path == static_cast<uint32_t>(SgemvPath::SMALL_M_N));
+    const uint32_t outDim = isNPath ? tiling.m : tiling.n;
+    const uint32_t inDim = isNPath ? tiling.n : tiling.m;
+    const uint32_t splitK = tiling.cubeSplitK == 0U ? 1U : tiling.cubeSplitK;
+    const uint32_t outBlockNum = static_cast<uint32_t>(GetBlockNum()) / splitK;
+    const uint32_t task = static_cast<uint32_t>(GetBlockIdx());
+    const uint32_t outBlock = task / splitK;
+    const uint32_t kSlice = task % splitK;
+    const uint32_t colsPerBlock =
+        ((outDim + outBlockNum - 1U) / outBlockNum + SGEMMV_ALIGN - 1U) / SGEMMV_ALIGN * SGEMMV_ALIGN;
+    const uint32_t colBase = outBlock * colsPerBlock;
+    if (colBase >= outDim) {
+        return;
+    }
+    const uint32_t cols = (colBase + colsPerBlock < outDim) ? colsPerBlock : (outDim - colBase);
+    const uint32_t kStart = kSlice * tiling.cubeKPerSlice;
+    if (kStart >= inDim) {
+        return;
+    }
+    const uint32_t kRemain = inDim - kStart;
+    const uint32_t kLen = (kRemain < tiling.cubeKPerSlice) ? kRemain : tiling.cubeKPerSlice;
+
+    GlobalTensor<float> left;
+    GlobalTensor<float> right;
+    GlobalTensor<float> output;
+    left.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(x) + kStart, kLen);
+    const uint64_t aOffset = isNPath ? static_cast<uint64_t>(kStart) * tiling.lda + colBase :
+                                       static_cast<uint64_t>(colBase) * tiling.lda + kStart;
+    const uint64_t rightLength = isNPath ? static_cast<uint64_t>(kLen - 1U) * tiling.lda + cols :
+                                           static_cast<uint64_t>(cols - 1U) * tiling.lda + kLen;
+    right.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(a) + aOffset, rightLength);
+    const uint64_t outputOffset = static_cast<uint64_t>(splitK == 1U ? 0U : kSlice) * outDim + colBase;
+    output.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(y) + outputOffset, outDim - colBase);
+
+    if (isNPath && outDim >= 3840U && outDim % SGEMMV_CUBE_MAX_COLS != 0U) {
+        ComputeCubeTile<SgemvOddCubeMatmul>(left, right, output, outDim, tiling.lda, cols, kLen);
+    } else {
+        ComputeCubeTile<SgemvCubeMatmul>(left, right, output, outDim, tiling.lda, cols, kLen);
+    }
+}
+
+extern "C" __global__ __aicore__ void sgemv_split_reduce_kernel(GM_ADDR partialGm, GM_ADDR yGm, SgemvTilingData tiling)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    if (tiling.cubeSplitK <= 1U) {
+        return;
+    }
+
+    const bool isNPath =
+        (tiling.path == static_cast<uint32_t>(SgemvPath::NORMAL_N) ||
+         tiling.path == static_cast<uint32_t>(SgemvPath::SMALL_M_N));
+    const uint32_t outDim = isNPath ? tiling.m : tiling.n;
+    const uint32_t blockNum = static_cast<uint32_t>(GetBlockNum());
+    const uint32_t colsPerBlock =
+        ((outDim + blockNum - 1U) / blockNum + SGEMMV_ALIGN - 1U) / SGEMMV_ALIGN * SGEMMV_ALIGN;
+    const uint32_t colBase = static_cast<uint32_t>(GetBlockIdx()) * colsPerBlock;
+    if (colBase >= outDim) {
+        return;
+    }
+    const uint32_t cols = (colBase + colsPerBlock < outDim) ? colsPerBlock : (outDim - colBase);
+    const uint32_t colsAligned = (cols + SGEMMV_ALIGN - 1U) / SGEMMV_ALIGN * SGEMMV_ALIGN;
+    const uint8_t padding = static_cast<uint8_t>(colsAligned - cols);
+
+    TPipe pipe;
+    TBuf<TPosition::VECCALC> splitBuf;
+    pipe.InitBuffer(splitBuf, SGEMMV_SPLIT_MAX * SGEMMV_SPLIT_CHUNK * SGEMMV_BYTES_PER_FLOAT);
+    LocalTensor<float> base = splitBuf.Get<float>();
+    LocalTensor<float> acc = base;
+    GlobalTensor<float> partial;
+    GlobalTensor<float> y;
+    partial.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(partialGm));
+    y.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(yGm));
+
+    for (uint32_t offset = 0; offset < tiling.cubeSplitK; ++offset) {
+        DataCopyPadExtParams<float> pad{true, 0, padding, 0.0f};
+        DataCopyExtParams copy{1, cols * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
+        DataCopyPad(
+            base[offset * SGEMMV_SPLIT_CHUNK], partial[static_cast<uint64_t>(offset) * outDim + colBase], copy, pad);
+    }
+    SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
+    WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
+    for (uint32_t offset = 1; offset < tiling.cubeSplitK; ++offset) {
+        Add(acc, acc, base[offset * SGEMMV_SPLIT_CHUNK], colsAligned);
+    }
+    SetFlag<HardEvent::V_MTE3>(EVENT_ID1);
+    WaitFlag<HardEvent::V_MTE3>(EVENT_ID1);
+    DataCopyExtParams copy{1, cols * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
+    DataCopyPad(y[colBase], acc, copy);
+}
+
+void sgemv_kernel_do(
+    uint8_t* a, uint8_t* x, uint8_t* y, const SgemvTilingData& tiling, uint32_t numBlocks, void* stream)
+{
+    sgemv_kernel<<<numBlocks, nullptr, stream>>>(a, x, y, tiling);
+}
+
+void sgemv_init_kernel_do(uint8_t* y, const SgemvTilingData& tiling, void* stream)
+{
+    sgemv_init_kernel<<<1, nullptr, stream>>>(y, tiling);
+}
+
+void sgemv_small_m_kernel_do(
+    uint8_t* a, uint8_t* x, uint8_t* y, const SgemvTilingData& tiling, uint32_t numBlocks, void* stream)
+{
+    sgemv_small_m_kernel<<<numBlocks, nullptr, stream>>>(a, x, y, tiling);
+}
+
+void sgemv_cube_kernel_do(uint8_t* a, uint8_t* x, uint8_t* y, const SgemvTilingData& tiling, void* stream)
+{
+    sgemv_cube_kernel<<<tiling.numBlocks, nullptr, stream>>>(a, x, y, tiling);
+}
+
+void sgemv_split_reduce_kernel_do(
+    uint8_t* partial, uint8_t* y, const SgemvTilingData& tiling, uint32_t numBlocks, void* stream)
+{
+    sgemv_split_reduce_kernel<<<numBlocks, nullptr, stream>>>(partial, y, tiling);
 }
