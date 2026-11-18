@@ -186,6 +186,11 @@ aclblasStatus_t aclblasCsymv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, const aclblasComplex* A,
     int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y, int incy);
 
+/*! \brief Hermitian matrix-vector product (complex64, column-major).
+ * A/x/y are device buffers. Supports signed strides.
+ * Alpha/beta are host scalars on Ascend 950PR and host or device scalars on Atlas A2/A3.
+ * Only the selected triangle is read; diagonal imaginary components are ignored.
+ */
 aclblasStatus_t aclblasChemv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, const aclblasComplex* A,
     int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y, int incy);
@@ -195,9 +200,8 @@ aclblasStatus_t aclblasSsbmv(
     const float* x, int incx, const float* beta, float* y, int incy);
 
 aclblasStatus_t aclblasChbmv(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, int k, const aclblasComplex* alpha,
-    const aclblasComplex* A, int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta,
-    aclblasComplex* y, int incy);
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, int k, const aclblasComplex* alpha, const aclblasComplex* A,
+    int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y, int incy);
 
 aclblasStatus_t aclblasStpsv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,

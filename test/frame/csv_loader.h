@@ -427,6 +427,19 @@ inline aclblasComputeType_t parseComputeType(const std::string& s)
 //   Stored as int32_t so BlasFillMode / param structs can switch on it.
 using T_DtypeLocal = int32_t;
 
+// Newer SDKs define HIFLOAT4; older supported SDKs must still compile.
+template <typename Dtype>
+inline constexpr auto OptionalHifloat4Value(int) -> decltype(Dtype::ACL_HIFLOAT4, T_DtypeLocal{})
+{
+    return static_cast<T_DtypeLocal>(Dtype::ACL_HIFLOAT4);
+}
+
+template <typename Dtype>
+inline constexpr T_DtypeLocal OptionalHifloat4Value(...)
+{
+    return static_cast<T_DtypeLocal>(ACL_DT_UNDEFINED);
+}
+
 // issue #838: dtype 符号 token 表。置于命名空间作用域（inline constexpr 数组，
 // C++17 跨翻译单元单一定义）而非函数内 unordered_map——后者使 parseDataType
 // 达 66 行 nbnc，超 CodeCheck 超大函数阈值（>50）。覆盖 aclDataType 全部合法
@@ -501,6 +514,9 @@ inline constexpr std::pair<const char*, T_DtypeLocal> kDtypeTokenTable[] = {
 #ifdef ACL_HIFLOAT4
     {"ACL_HIFLOAT4", static_cast<T_DtypeLocal>(ACL_HIFLOAT4)},
     {"HIFLOAT4", static_cast<T_DtypeLocal>(ACL_HIFLOAT4)},
+#else
+    {"ACL_HIFLOAT4", OptionalHifloat4Value<aclDataType>(0)},
+    {"HIFLOAT4", OptionalHifloat4Value<aclDataType>(0)},
 #endif
 };
 
@@ -511,6 +527,9 @@ inline T_DtypeLocal parseDataType(const std::string& s)
     }
     for (const auto& kv : kDtypeTokenTable) {
         if (s == kv.first) {
+            if (kv.second == static_cast<T_DtypeLocal>(ACL_DT_UNDEFINED)) {
+                throw std::runtime_error("parseDataType: dtype is unavailable in this CANN SDK: " + s);
+            }
             return kv.second;
         }
     }
@@ -518,7 +537,7 @@ inline T_DtypeLocal parseDataType(const std::string& s)
         const int v = std::stoi(s);
         bool legal = false;
         for (const auto& kv : kDtypeTokenTable) {
-            if (static_cast<int>(kv.second) == v) {
+            if (kv.second != static_cast<T_DtypeLocal>(ACL_DT_UNDEFINED) && static_cast<int>(kv.second) == v) {
                 legal = true;
                 break;
             }

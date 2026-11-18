@@ -390,7 +390,17 @@ fi
 
 # issue #610: 路径展开加引号（rm -rf/mkdir/cmake），路径含空格时不再被拆分；
 # CMAKE_OPTIONS 保持分词展开（多选项语义），如未来需支持带空格选项应改为 bash 数组
-cmake -S "${BASE_PATH}" -B "${BUILD_DIR}" ${CMAKE_OPTIONS}
+# The clean build discards CMakeCache.txt, so forward the pinned CHEMV
+# reference explicitly instead of relying on an earlier configure step.
+CHEMV_CMAKE_OPTIONS=()
+if [ -n "${CHEMV_NETLIB_CONFIG:-}" ]; then
+    if [ ! -f "${CHEMV_NETLIB_CONFIG}" ]; then
+        print_error "CHEMV_NETLIB_CONFIG does not name an existing reference configuration"
+        exit 1
+    fi
+    CHEMV_CMAKE_OPTIONS+=("-DCHEMV_NETLIB_CONFIG=$(realpath "${CHEMV_NETLIB_CONFIG}")")
+fi
+cmake -S "${BASE_PATH}" -B "${BUILD_DIR}" ${CMAKE_OPTIONS} "${CHEMV_CMAKE_OPTIONS[@]}"
 cmake --build "${BUILD_DIR}" -j
 if [ "${ENABLE_PACKAGE}" == "TRUE" ]; then
     cmake --build "${BUILD_DIR}" --target package

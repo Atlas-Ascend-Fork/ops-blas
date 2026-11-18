@@ -442,6 +442,7 @@ int main()
 
 #### 产品支持情况
 
+- Ascend 950PR：支持
 - Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
 - Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 - 其他产品：不支持
@@ -449,33 +450,130 @@ int main()
 #### 函数原型
 
 ```cpp
-aclblasStatus_t aclblasChemv(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha,
-    const aclblasComplex* A, int lda, const aclblasComplex* x, int incx,
-    const aclblasComplex* beta, aclblasComplex* y, int incy);
+aclblasStatus_t aclblasChemv(aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, const aclblasComplex* A, int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y, int incy)
 ```
 
 #### 参数说明
 
-| 参数名 | 输入/输出 | 参数类型 | 说明 |
+| 参数名 | 输入/输出 | 数据类型 | 说明 |
 |--------|----------|---------|------|
-| handle | 输入 | aclblasHandle_t | ops-blas 上下文句柄，携带执行 stream，Host 内存 |
-| uplo | 输入 | aclblasFillMode_t | `ACLBLAS_UPPER` 使用 A 的上三角，`ACLBLAS_LOWER` 使用 A 的下三角，Host 内存 |
-| n | 输入 | int | Hermitian 矩阵 A 的行列数以及 x、y 的逻辑长度，`n >= 0`，Host 内存 |
-| alpha | 输入 | const aclblasComplex* | 复数乘数，支持 Host/Device 内存，不可为空 |
-| A | 输入 | const aclblasComplex* | 列主序单精度复数 Hermitian 矩阵，数组大小至少 `lda * n`，Device 内存 |
-| lda | 输入 | int | A 的前导维度，`lda >= max(1, n)`，Host 内存 |
-| x | 输入 | const aclblasComplex* | 逻辑长度为 n 的单精度复数向量，Device 内存 |
-| incx | 输入 | int | x 的元素步长，支持正负值且 `incx != 0`，Host 内存 |
-| beta | 输入 | const aclblasComplex* | 复数乘数，支持 Host/Device 内存，不可为空 |
-| y | 输入/输出 | aclblasComplex* | 逻辑长度为 n 的单精度复数向量，原地写回，Device 内存 |
-| incy | 输入 | int | y 的元素步长，支持正负值且 `incy != 0`，Host 内存 |
+| handle | 输入 | aclblasHandle_t | 已创建的 ops-blas 句柄，携带执行 stream；Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | `ACLBLAS_UPPER` 使用上三角，`ACLBLAS_LOWER` 使用下三角；Host 内存 |
+| n | 输入 | int | Hermitian 矩阵阶数及向量逻辑长度，n >= 0；Host 内存 |
+| alpha | 输入 | const aclblasComplex* | complex64 标量，n > 0 时须非空；950PR 使用 Host 内存，Atlas A2 / A3 支持 Host 或 Device 内存 |
+| A | 输入 | const aclblasComplex* | 按列主序存储的 lda × n 矩阵，仅指定三角有效；Device 内存 |
+| lda | 输入 | int | 矩阵列间跨度，n > 0 时 lda >= max(1, n)；Host 内存 |
+| x | 输入 | const aclblasComplex* | 逻辑长度为 n，存储跨度至少为 1+(n-1)×abs(incx)；Device 内存 |
+| incx | 输入 | int | x 的元素步长，支持正负值，不为 0 或 INT_MIN；Host 内存 |
+| beta | 输入 | const aclblasComplex* | complex64 标量，n > 0 时须非空；950PR 使用 Host 内存，Atlas A2 / A3 支持 Host 或 Device 内存 |
+| y | 输入/输出 | aclblasComplex* | 原地保存 y，存储跨度至少为 1+(n-1)×abs(incy)；Device 内存 |
+| incy | 输入 | int | y 的元素步长，支持正负值，不为 0 或 INT_MIN；Host 内存 |
 
 #### 约束说明
 
-- 计算 `y = alpha * A * x + beta * y`，其中 A 为 `n x n` 单精度复数 Hermitian 矩阵（`A = A^H`）。
-- 仅读取 `uplo` 指定的上/下三角元素；严格非存储三角元素由共轭对称关系 `A[i, j] = conj(A[j, i])` 推导，对角线元素视为实数（虚部强制忽略且不参与计算）。
-- `n == 0` 或 `alpha == (0, 0) && beta == (1, 0)` 时直接返回 `ACLBLAS_STATUS_SUCCESS`，不访问矩阵与向量内存。
-- `alpha == (0, 0)` 时退化为 `y = beta * y`，不读取 A 和 x；`beta == (0, 0)` 时不读取 y 的原值（y 指针仍须非空）。
-- `uplo` 非法时返回 `ACLBLAS_STATUS_INVALID_ENUM`；`handle == nullptr` 返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`；其他非法维度、步长或空指针返回 `ACLBLAS_STATUS_INVALID_VALUE`。
+- 计算 `y = alpha * A * x + beta * y`；A 满足 `A = Aᴴ`，未存储三角按共轭关系推导，对角元素只读取实部。
+- handle 必须有效。n 为 0 时直接返回成功，不检查其余参数，也不访问数据。
+- n > 0 时先校验 uplo、lda、步长及标量指针，再处理标量快捷路径。
+- alpha 为 `(0, 0)` 且 beta 为 `(1, 0)` 时直接返回成功，A、x、y 均可为空，y 保持不变。
+- alpha 为 `(0, 0)` 时不读取 A 和 x；其他计算路径要求 A、x、y 的必要指针有效。beta 为 `(0, 0)` 时不读取旧 y，但输出缓冲区仍须有效。
+- 负步长以完整存储区首地址为基址，首个逻辑元素偏移为 `(1-n)*inc`；x 与 y 使用独立缓冲区。
+- 950PR 在调用时从 Host 读取 alpha、beta。A、x、y 必须在句柄 stream 完成前保持有效；读取结果前须同步该 stream。
+- 空句柄返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`，非法 uplo 返回 `ACLBLAS_STATUS_INVALID_ENUM`，非法数值参数或必要指针返回 `ACLBLAS_STATUS_INVALID_VALUE`，没有可用 AIV 核时返回 `ACLBLAS_STATUS_EXECUTION_FAILED`。
 
+#### 调用示例
+
+构建和运行方式参见[编译与运行示例](../../docs/zh/develop/compile_and_run_example.md)。
+
+```cpp
+#include <cstdio>
+#include <memory>
+#include <type_traits>
+#include "acl/acl.h"
+#include "cann_ops_blas.h"
+
+#define CHECK_CALL(call) \
+    do { \
+        const auto status = (call); \
+        if (status != 0) { return static_cast<int>(status); } \
+    } while (false)
+
+class AclContext {
+public:
+    ~AclContext()
+    {
+        if (stream_ != nullptr) { aclrtDestroyStream(stream_); }
+        if (deviceSet_) { aclrtResetDevice(0); }
+        if (initialized_) { aclFinalize(); }
+    }
+    int Init()
+    {
+        CHECK_CALL(aclInit(nullptr));
+        initialized_ = true;
+        CHECK_CALL(aclrtSetDevice(0));
+        deviceSet_ = true;
+        CHECK_CALL(aclrtCreateStream(&stream_));
+        return 0;
+    }
+    aclrtStream Stream() const { return stream_; }
+private:
+    aclrtStream stream_ = nullptr;
+    bool initialized_ = false;
+    bool deviceSet_ = false;
+};
+
+struct DeviceDeleter {
+    void operator()(void* pointer) const
+    {
+        if (pointer != nullptr) { aclrtFree(pointer); }
+    }
+};
+using DevicePtr = std::unique_ptr<void, DeviceDeleter>;
+
+int CopyToDevice(const aclblasComplex* data, size_t count, DevicePtr& device)
+{
+    const size_t bytes = count * sizeof(aclblasComplex);
+    void* raw = nullptr;
+    CHECK_CALL(aclrtMalloc(&raw, bytes, ACL_MEM_MALLOC_HUGE_FIRST));
+    device.reset(raw);
+    CHECK_CALL(aclrtMemcpy(device.get(), bytes, data, bytes, ACL_MEMCPY_HOST_TO_DEVICE));
+    return 0;
+}
+
+int RunChemv(AclContext& context)
+{
+    aclblasHandle_t rawHandle = nullptr;
+    CHECK_CALL(aclblasCreate(&rawHandle));
+    using HandlePtr = std::unique_ptr<std::remove_pointer_t<aclblasHandle_t>, decltype(&aclblasDestroy)>;
+    HandlePtr handle(rawHandle, aclblasDestroy);
+    CHECK_CALL(aclblasSetStream(handle.get(), context.Stream()));
+
+    // A 按列主序存储，上三角有效；下三角由共轭关系推导。
+    const aclblasComplex a[] = {{2, 0}, {0, 0}, {1, 1}, {3, 0}};
+    const aclblasComplex x[] = {{1, 0}, {2, 0}};
+    aclblasComplex y[] = {{1, 0}, {1, 0}};
+    const aclblasComplex alpha{1, 0}, beta{1, 0};
+    DevicePtr deviceA, deviceX, deviceY;
+    CHECK_CALL(CopyToDevice(a, 4, deviceA));
+    CHECK_CALL(CopyToDevice(x, 2, deviceX));
+    CHECK_CALL(CopyToDevice(y, 2, deviceY));
+    CHECK_CALL(aclblasChemv(handle.get(), ACLBLAS_UPPER, 2, &alpha,
+        static_cast<const aclblasComplex*>(deviceA.get()), 2,
+        static_cast<const aclblasComplex*>(deviceX.get()), 1, &beta,
+        static_cast<aclblasComplex*>(deviceY.get()), 1));
+    CHECK_CALL(aclrtSynchronizeStream(context.Stream()));
+    CHECK_CALL(aclrtMemcpy(y, sizeof(y), deviceY.get(), sizeof(y), ACL_MEMCPY_DEVICE_TO_HOST));
+    for (const auto& value : y) {
+        std::printf("(%g, %g)\n", value.real, value.imag);
+    }
+    return 0;
+}
+
+int main()
+{
+    AclContext context;
+    CHECK_CALL(context.Init());
+    return RunChemv(context);
+}
+```
+
+实现设计见[设计文档](../../docs/zh/develop/aclblasChemv_design.md)。

@@ -158,6 +158,9 @@ if(BUILD_TEST)
     # 写成 ${OPS_BLAS} ${OPS_BLASLT} 时第二个实参落进 ARGN 被静默忽略，
     # blas_all_test 链接不到 libops_blasLt.so → 整个 blasLt API 面未定义符号。
     _ops_blas_register_all_runner("${OPS_BLAS};${OPS_BLASLT}")
+    if("arch35" IN_LIST SOC_ARCH_DIRS AND TARGET chemv_test AND TARGET blas_all_test)
+        target_link_libraries(blas_all_test PRIVATE ${CMAKE_DL_LIBS})
+    endif()
     if("arch22" IN_LIST SOC_ARCH_DIRS AND TARGET cgemm_strided_batched_test AND TARGET blas_all_test)
         # The CGEMM Netlib reference loader is also compiled into the combined runner.
         target_link_libraries(blas_all_test PRIVATE ${CMAKE_DL_LIBS})
