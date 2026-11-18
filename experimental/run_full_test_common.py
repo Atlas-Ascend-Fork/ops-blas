@@ -150,10 +150,14 @@ class Harness:
         logging.info("  PRECISION")
         logging.info("=" * 72)
         cfg_rel, tags = self.gen_precision()
+        if len(tags) != len(self.cases):
+            logging.error("Precision: generated %d tags for %d cases", len(tags), len(self.cases))
+            return False
         r = self.run([f"./{self.test_bin}", cfg_rel], timeout=900)
         if r.returncode != 0:
             logging.error((r.stdout or "")[-400:])
             logging.error((r.stderr or "")[-400:])
+            return False
 
         logging.info(self.prec_header)
         logging.info("-" * len(self.prec_header))
