@@ -43,7 +43,7 @@ struct SscalTilingData {
 
 SscalTilingData CalTilingData(uint32_t totalEleNum, uint32_t vecCoreNum, float alpha)
 {
-    SscalTilingData tilingData;
+    SscalTilingData tilingData{};
     tilingData.n = totalEleNum;
     tilingData.useCoreNum = 0;
     tilingData.alpha = alpha;

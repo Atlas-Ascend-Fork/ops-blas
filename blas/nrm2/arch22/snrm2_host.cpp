@@ -39,7 +39,7 @@ struct Nrm2TilingData {
 
 static Nrm2TilingData CalTilingData(uint32_t totalEleNum, uint32_t vecCoreNum)
 {
-    Nrm2TilingData tilingData;
+    Nrm2TilingData tilingData{};
     tilingData.n = totalEleNum;
     tilingData.useCoreNum = 0;
 
