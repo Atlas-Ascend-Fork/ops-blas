@@ -47,25 +47,12 @@ void FillTransposeMetadata(
     }
 }
 
-void FillTriangleMetadata(std::vector<uint32_t>& metadata)
+void FillDiagonalMetadata(std::vector<uint32_t>& metadata)
 {
     auto* diagonal = reinterpret_cast<uint8_t*>(metadata.data() + CHERK_ARCH22_META_DIAGONAL_OFFSET);
-    auto* upperTriangle = reinterpret_cast<uint8_t*>(metadata.data() + CHERK_ARCH22_META_UPPER_OFFSET);
-    auto* lowerTriangle = reinterpret_cast<uint8_t*>(metadata.data() + CHERK_ARCH22_META_LOWER_OFFSET);
     for (uint32_t row = 0U; row < 64U; ++row) {
-        for (uint32_t column = 0U; column < 64U; ++column) {
-            const uint32_t index = row * 64U + column;
-            const uint8_t bit = static_cast<uint8_t>(1U << (index & 7U));
-            if (row == column) {
-                diagonal[index >> 3U] |= bit;
-            }
-            if (row <= column) {
-                upperTriangle[index >> 3U] |= bit;
-            }
-            if (row >= column) {
-                lowerTriangle[index >> 3U] |= bit;
-            }
-        }
+        const uint32_t index = row * 64U + row;
+        diagonal[index >> 3U] |= static_cast<uint8_t>(1U << (index & 7U));
     }
 }
 
@@ -97,8 +84,6 @@ GM_ADDR GetCherkArch22Metadata(_aclblas_handle* handle)
     FillInterleaveMetadata(
         metadata, CHERK_ARCH22_META_INTERLEAVE_OFFSET, CHERK_ARCH22_META_INTERLEAVE_COUNT, 64U * 64U);
     FillTransposeMetadata(metadata, CHERK_ARCH22_META_TRANSPOSE_OFFSET, CHERK_ARCH22_META_TRANSPOSE_COUNT, 64U, 64U);
-    FillTransposeMetadata(metadata, CHERK_ARCH22_META_PACK_C_OFFSET, CHERK_ARCH22_META_PACK_C_COUNT, 64U, 32U);
-    FillTransposeMetadata(metadata, CHERK_ARCH22_META_PACK_C128_OFFSET, CHERK_ARCH22_META_PACK_C128_COUNT, 128U, 32U);
     FillTransposeMetadata(metadata, CHERK_ARCH22_META_TINY8_TRANSPOSE_OFFSET, 8U * 8U, 8U, 8U);
     FillTransposeMetadata(metadata, CHERK_ARCH22_META_TINY16_TRANSPOSE_OFFSET, 16U * 16U, 16U, 16U);
     FillTransposeMetadata(metadata, CHERK_ARCH22_META_TINY_TRANSPOSE_OFFSET, 32U * 32U, 32U, 32U);
@@ -115,7 +100,7 @@ GM_ADDR GetCherkArch22Metadata(_aclblas_handle* handle)
     for (uint32_t i = 0U; i < 2048U; ++i) {
         metadata[CHERK_ARCH22_META_GENERAL_PACK_C_OFFSET + i] = ((i % 32U) * 64U + i / 32U) * sizeof(float);
     }
-    FillTriangleMetadata(metadata);
+    FillDiagonalMetadata(metadata);
     return UploadCherkMetadata(handle, metadata);
 }
 
