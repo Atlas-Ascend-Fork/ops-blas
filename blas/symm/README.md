@@ -169,6 +169,15 @@ aclblasDestroy(handle);
 aclFinalize();
 ```
 
+#### 可选环境开关（生产代码，默认关闭）
+
+`blas/symm/ssymm_common_host.h` 内嵌以下调试开关（`std::getenv` 读取，默认未设置
+时不产生任何行为差异）。登记口径对齐 `test/trmm/ctrmm/README.md` 的环境开关表。
+
+| 变量 | 作用 | 取值与风险 |
+| --- | --- | --- |
+| `SSYMM_DEBUG_PLAN` | 打印实际执行的 backend 信息（`[ssymm-plan] side/uplo/backend`，输出到 stdout） | 仅接受 `1`/`true`/`TRUE`；**诊断专用**，会向 stdout 追加输出，生产环境不得开启 |
+
 ---
 
 ### aclblasCsymm

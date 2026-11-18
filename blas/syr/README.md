@@ -372,6 +372,17 @@ arch22 测试覆盖上下三角、正负步长、参数校验、Host/Device alph
 参数校验、Host/Device alpha、特殊浮点值、4 字节地址对齐，以及输入向量、另一
 三角区域和 padding 不被修改的检查。
 
+#### 可选环境开关（arch22 生产代码，默认关闭）
+
+`blas/syr/arch22/csyr_host.cpp` 内嵌以下调优/调试开关（`std::getenv` 读取，默认
+未设置时走自动推导行为）。登记口径对齐 `test/trmm/ctrmm/README.md` 的环境开关表。
+
+| 变量 | 作用 | 取值与风险 |
+| --- | --- | --- |
+| `CSYR_BATCH_COLS` | 覆盖自动推导的每核列批量 batchCols（UB 分批扫描/调试用） | 正整数生效；内部按当前布局的 UB 预算上限收敛，超限取上限 |
+| `CSYR_FORCE_CORES` | 覆盖按 shape 分档的核数策略 | `[1, 平台AIV核数]` 内生效，越界忽略；强行偏离分档可能明显回归性能 |
+| `CSYR_DBG_MODE` | 选择 kernel 调试调度模式（1~7，如 V-only 归因模式） | 1~7 生效，其余忽略；**会改变 kernel 执行路径（部分模式不写回结果），仅限诊断，生产环境不得开启** |
+
 ### aclblasCher
 
 #### 产品支持情况

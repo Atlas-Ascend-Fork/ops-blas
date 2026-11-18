@@ -47,7 +47,7 @@ aclblasStatus_t aclblasSspr(aclblasHandle_t handle, aclblasFillMode_t uplo, int 
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存；为 nullptr 时返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR` |
 | uplo | 输入 | aclblasFillMode_t | ACLBLAS_UPPER(121) 或 ACLBLAS_LOWER(122)，指定引用/更新的三角区域，Host 内存；取值不在上述枚举时返回 `ACLBLAS_STATUS_INVALID_ENUM` |
 | n | 输入 | int | 矩阵阶数，n >= 0，Host 内存；n=0 为合法 no-op（quick return），n<0 返回 `ACLBLAS_STATUS_INVALID_VALUE` |
-| alpha | 输入 | const float*（FP32） | 标量乘数指针，Host 内存；为 nullptr 时返回 `ACLBLAS_STATUS_INVALID_VALUE`；alpha=0 时为合法 no-op（不读取 x、ap 不变） |
+| alpha | 输入 | const float*（FP32） | 实数标量乘数指针；为 nullptr 时返回 `ACLBLAS_STATUS_INVALID_VALUE`；alpha=0 时为合法 no-op（不读取 x、ap 不变）。内存位置按 arch 区分：arch22 仅支持 Host 内存（直接解引用）；arch35 支持 Host/Device 内存（Host 指针直接读取，Device 指针内部 D2H 回读，与 hpr 口径一致） |
 | x | 输入 | const float*（FP32） | 输入向量指针，只读，ND 排布，逻辑长度 n，物理长度至少 1 + (n-1) * abs(incx)，Device 内存；n>0 时为 nullptr 返回 `ACLBLAS_STATUS_INVALID_VALUE` |
 | incx | 输入 | int | x 的元素间步长，incx != 0（=0 返回 `ACLBLAS_STATUS_INVALID_VALUE`），Host 内存；支持负步长（反向遍历） |
 | ap | 输入/输出 | float*（FP32） | packed 对称矩阵指针，一维数组长度 n*(n+1)/2，列主序堆叠 uplo 三角（含对角），输入旧值、原地覆写输出，Device 内存；n>0 时为 nullptr 返回 `ACLBLAS_STATUS_INVALID_VALUE` |
