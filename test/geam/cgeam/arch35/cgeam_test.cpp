@@ -135,6 +135,27 @@ TEST_F(CgeamArch35Test, NullBeta)
         ACLBLAS_STATUS_INVALID_VALUE);
 }
 
+// -- TEST_F: empty matrix with alpha=nullptr validates like aclblasSgeam ------
+// m=0 no longer bypasses the alpha/beta/ld checks (same contract as
+// aclblasSgeam: full validation precedes the empty-matrix quick return).
+TEST_F(CgeamArch35Test, EmptyMatrixNullAlpha)
+{
+    aclblasComplex beta = {1.0f, 0.0f};
+    auto A = c4x4(2.0f), B = c4x4(3.0f), C = c4x4(kBlasSentinel);
+    EXPECT_EQ(
+        aclblasCgeam(
+            CgeamArch35Test::handle_, ACLBLAS_OP_N, ACLBLAS_OP_N, 0, 4, nullptr,
+            reinterpret_cast<const aclblasComplex*>(A.data()), 4, &beta,
+            reinterpret_cast<const aclblasComplex*>(B.data()), 4, reinterpret_cast<aclblasComplex*>(C.data()), 4),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasCgeam(
+            CgeamArch35Test::handle_, ACLBLAS_OP_N, ACLBLAS_OP_N, 4, 0, nullptr,
+            reinterpret_cast<const aclblasComplex*>(A.data()), 4, &beta,
+            reinterpret_cast<const aclblasComplex*>(B.data()), 4, reinterpret_cast<aclblasComplex*>(C.data()), 4),
+        ACLBLAS_STATUS_INVALID_VALUE);
+}
+
 // -- TEST_F: transa invalid 0xFF (host validates) ----------------------------
 TEST_F(CgeamArch35Test, TransaInvalid)
 {
@@ -305,8 +326,8 @@ static std::vector<float> CgeamGenerateInput(const CgeamParam& p, bool isA, int 
 }
 
 // -- Helper: prepare C buffer (in-place aware, complex) -----------------------
-static aclblasComplex* CgeamPrepareC(const CgeamParam& p, const aclblasComplex* aPtr,
-                                     const aclblasComplex* bPtr, std::vector<float>& cHost)
+static aclblasComplex* CgeamPrepareC(
+    const CgeamParam& p, const aclblasComplex* aPtr, const aclblasComplex* bPtr, std::vector<float>& cHost)
 {
     if (p.inplace == 1 && aPtr) {
         return const_cast<aclblasComplex*>(aPtr);
@@ -322,16 +343,17 @@ static aclblasComplex* CgeamPrepareC(const CgeamParam& p, const aclblasComplex* 
 
 // -- Helper: compute golden reference (complex) --------------------------------
 static std::vector<float> CgeamComputeGolden(
-    const CgeamParam& p, aclblasComplex alpha, aclblasComplex beta,
-    const aclblasComplex* aPtr, const aclblasComplex* bPtr, aclblasComplex* cPtr,
-    const std::vector<float>& aHost, const std::vector<float>& bHost, const std::vector<float>& cHost)
+    const CgeamParam& p, aclblasComplex alpha, aclblasComplex beta, const aclblasComplex* aPtr,
+    const aclblasComplex* bPtr, aclblasComplex* cPtr, const std::vector<float>& aHost, const std::vector<float>& bHost,
+    const std::vector<float>& cHost)
 {
     std::vector<float> goldenC;
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS || p.m <= 0 || p.n <= 0 || !cPtr) {
         return goldenC;
     }
     size_t goldenSize = cHost.empty() ? (p.inplace == 1 ? aHost.size() :
-                                         p.inplace == 2 ? bHost.size() : 0) :
+                                         p.inplace == 2 ? bHost.size() :
+                                                          0) :
                                         cHost.size();
     goldenC.assign(goldenSize, kBlasSentinel);
     aclblasGeam_cpu<std::complex<float>>(
@@ -345,8 +367,8 @@ static std::vector<float> CgeamComputeGolden(
 
 // -- Helper: verify output precision (complex) ---------------------------------
 static void CgeamVerifyOutput(
-    const CgeamParam& p, const std::vector<float>& goldenC,
-    const std::vector<float>& aHost, const std::vector<float>& bHost, const std::vector<float>& cHost)
+    const CgeamParam& p, const std::vector<float>& goldenC, const std::vector<float>& aHost,
+    const std::vector<float>& bHost, const std::vector<float>& cHost)
 {
     const float* outPtr = nullptr;
     if (p.inplace == 1) {
@@ -379,10 +401,8 @@ static void CgeamVerifyOutput(
 
     VerifyConfig cfg;
     applyMixedTolerance(cfg, ACL_FLOAT, goldReal.data(), logicalCount);
-    EXPECT_TRUE(Verifier::verifyVector(
-        outReal.data(), goldReal.data(), logicalCount, 1, cfg, p.caseName + "_real"));
-    EXPECT_TRUE(Verifier::verifyVector(
-        outImag.data(), goldImag.data(), logicalCount, 1, cfg, p.caseName + "_imag"));
+    EXPECT_TRUE(Verifier::verifyVector(outReal.data(), goldReal.data(), logicalCount, 1, cfg, p.caseName + "_real"));
+    EXPECT_TRUE(Verifier::verifyVector(outImag.data(), goldImag.data(), logicalCount, 1, cfg, p.caseName + "_imag"));
 }
 
 // -- TEST_P: 5-step CSV-driven flow -----------------------------------------

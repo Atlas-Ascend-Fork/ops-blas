@@ -110,7 +110,7 @@ aclblasCherkx(handle, uplo, trans, n, k, &alpha, A, lda, B, ldb, &beta, C, ldc);
 - alpha、beta 不可为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 - alpha 与 beta 必须同为 Host 指针或同为 Device 指针（统一指针模式，禁止混合），混合模式返回 ACLBLAS_STATUS_INVALID_VALUE；Host 模式直接解引用（免同步），Device 模式内部通过 D2H 拷贝读回标量真值后再执行校验与计算
 - n>0 且 alpha!=0（实部与虚部均为 0 才视为 0，纯虚数不算）且 k>0 时，A、B 不可为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE；alpha==0 或 k==0 时 A、B 可为 nullptr（BLAS 标准）
-- beta!=0 时 C 不可为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE；beta==0 时 C 可为 nullptr（本算子放宽口径，见下方注），此时直接成功返回、不更新任何内存；Device beta 先读回真值再判断，两种指针模式下 beta==0 判定一致
+- beta!=0 时 C 不可为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE；beta==0 时 C 可为 nullptr（本算子放宽口径，见下方注），此时直接成功返回、不更新任何内存；Device beta 先读回真值再判断，两种指针模式下 beta==0 判定一致。同族 syrkx（ssyrkx）为有意更严的口径：n > 0 时一律要求 C 非空——其实现对 C 无条件读取（beta = 0 时非 uplo 段仍按 C_old 恒等回写），放行空指针会触发空指针访问（差异根因与依据见 syrkx README，两入口的该维度差异为各自文档化的有意口径）
 - alpha==0（复数零）或 k==0 时，跳过矩阵分解与 GEMM 计算，仅执行 C = beta * C 的缩放更新（对角线虚部仍强制清零）。含 beta=1 的组合亦不快返回：与 cherk/cher2k「快返回、C 字节不动（含对角线虚部）」不同，本算子无快返回，uplo 三角恒重写且对角虚部恒清零，有意贴合 cuBLAS "assumed and set to zero" 的字面承诺（族内三分叉为各自文档化的有意差异，见 cherk/cher2k README）
 - 当 beta == 0 时，不读取 C 旧值做缩放，uplo 段直接写入计算结果；但 uplo='L' 时对角列的非 uplo 段仍从 C 旧值恢复
 - 输出 C 满足 Hermitian 性质：C[i][j] = conj(C[j][i])，对角线元素虚部强制为零

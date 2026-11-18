@@ -543,7 +543,7 @@ aclblasStatus_t aclblasCtbmv(
     const uint32_t availableCoreNum = GetAivCoreCount();
     if (availableCoreNum == 0U) {
         OP_LOGE("aclblasCtbmv", "aclblasCtbmv: no available AIV cores");
-        return ACLBLAS_STATUS_EXECUTION_FAILED;
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
     const auto path = SelectCtbmvPath(n, k, lda, incx, uplo, trans, availableCoreNum);
     const auto cores = SelectCtbmvCores(path, static_cast<uint32_t>(n), incx, trans, availableCoreNum);

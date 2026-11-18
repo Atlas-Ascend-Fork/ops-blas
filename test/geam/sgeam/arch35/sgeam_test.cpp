@@ -103,6 +103,27 @@ TEST_F(SgeamArch35Test, NullBeta)
         ACLBLAS_STATUS_INVALID_VALUE);
 }
 
+// -- TEST_F: empty matrix still validates alpha/beta/ld before quick return ---
+// Locks the sgeam contract that cgeam is aligned to: the m=0/n=0 quick return
+// never bypasses the full parameter validation.
+TEST_F(SgeamArch35Test, EmptyMatrixNullAlpha)
+{
+    float beta = 1.0f;
+    std::vector<float> A(4 * 4, 2.0f);
+    std::vector<float> B(4 * 4, 3.0f);
+    std::vector<float> C(4 * 4, kBlasSentinel);
+    EXPECT_EQ(
+        aclblasSgeam(
+            SgeamArch35Test::handle_, ACLBLAS_OP_N, ACLBLAS_OP_N, 0, 4, nullptr, A.data(), 4, &beta, B.data(), 4,
+            C.data(), 4),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasSgeam(
+            SgeamArch35Test::handle_, ACLBLAS_OP_N, ACLBLAS_OP_N, 4, 0, nullptr, A.data(), 4, &beta, B.data(), 4,
+            C.data(), 4),
+        ACLBLAS_STATUS_INVALID_VALUE);
+}
+
 // -- TEST_F: transa invalid 0xFF (host validates) ----------------------------
 TEST_F(SgeamArch35Test, TransaInvalid)
 {
@@ -305,7 +326,8 @@ static std::vector<float> SgeamComputeGolden(
         return goldenC;
     }
     size_t goldenSize = cHost.empty() ? (p.inplace == 1 ? aHost.size() :
-                                         p.inplace == 2 ? bHost.size() : 0) :
+                                         p.inplace == 2 ? bHost.size() :
+                                                          0) :
                                         cHost.size();
     goldenC.assign(goldenSize, kBlasSentinel);
     aclblasGeam_cpu<float>(
@@ -317,8 +339,8 @@ static std::vector<float> SgeamComputeGolden(
 
 // -- Helper: verify output precision ------------------------------------------
 static void SgeamVerifyOutput(
-    const SgeamParam& p, const std::vector<float>& goldenC,
-    const std::vector<float>& aHost, const std::vector<float>& bHost, const std::vector<float>& cHost)
+    const SgeamParam& p, const std::vector<float>& goldenC, const std::vector<float>& aHost,
+    const std::vector<float>& bHost, const std::vector<float>& cHost)
 {
     VerifyConfig cfg;
     cfg.mode = PrecisionMode::MERE_MARE;

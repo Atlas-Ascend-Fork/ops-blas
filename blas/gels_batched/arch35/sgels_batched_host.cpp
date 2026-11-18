@@ -176,7 +176,7 @@ aclblasStatus_t aclblasSgelsBatched(
     uint32_t coreNum = GetAivCoreCount();
     if (coreNum == 0) {
         OP_LOGE(TAG, "GetAivCoreCount failed");
-        return ACLBLAS_STATUS_EXECUTION_FAILED;
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
 
     SgelsBatchedTilingData tiling = BuildTilingData(trans, m, n, nrhs, lda, ldc, batchSize, coreNum);

@@ -25,12 +25,14 @@ static inline GM_ADDR ToGmAddr(const float* p) { return reinterpret_cast<GM_ADDR
 
 static aclblasStatus_t ValidateUploAndTrans(aclblasFillMode_t uplo, aclblasOperation_t trans)
 {
+    // Illegal enums report ACLBLAS_STATUS_INVALID_ENUM, matching the sibling
+    // herkx entry and the #940 error-code semantic unification direction.
     CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
               OP_LOGE("aclblasSsyrkx", "uplo must be UPPER or LOWER, got %d", static_cast<int>(uplo));
-              return ACLBLAS_STATUS_INVALID_VALUE);
+              return ACLBLAS_STATUS_INVALID_ENUM);
     CHECK_RET(trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
               OP_LOGE("aclblasSsyrkx", "trans must be OP_N, OP_T or OP_C, got %d", static_cast<int>(trans));
-              return ACLBLAS_STATUS_INVALID_VALUE);
+              return ACLBLAS_STATUS_INVALID_ENUM);
     return ACLBLAS_STATUS_SUCCESS;
 }
 

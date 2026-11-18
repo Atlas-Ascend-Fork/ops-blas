@@ -180,7 +180,7 @@ aclblasStatus_t aclblasScalex(
     uint32_t aivCoreNum = GetAivCoreCount();
     if (aivCoreNum == 0) {
         OP_LOGE("aclblasScalex", "GetAivCoreCount failed");
-        return ACLBLAS_STATUS_EXECUTION_FAILED;
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
 
     auto* h = handle;

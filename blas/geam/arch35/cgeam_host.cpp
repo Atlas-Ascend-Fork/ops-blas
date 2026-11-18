@@ -1,9 +1,10 @@
 /**
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
- * This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
@@ -50,8 +51,7 @@ bool HasUnitScalars(float alphaR, float alphaI, float betaR, float betaI)
     return alphaR == 1.0f && alphaI == 0.0f && betaR == 1.0f && betaI == 0.0f;
 }
 
-void SelectTransposeTileShape(
-    uint32_t m, uint32_t n, uint32_t& tileRows, uint32_t& tileCols)
+void SelectTransposeTileShape(uint32_t m, uint32_t n, uint32_t& tileRows, uint32_t& tileCols)
 {
     // Let S be one matrix's size. Tall tiles cover the middle two capacity tiers:
     // 1) 3S < L2; 2) 3S >= L2 and 2S < L2; 3) 2S >= L2 and S <= L2; 4) S > L2.
@@ -66,17 +66,17 @@ bool IsNNFastPath(const CgeamTilingData& tiling)
 {
     const bool copyA = tiling.alphaR == 1.0f && tiling.alphaI == 0.0f && tiling.betaIsZero != 0U;
     const bool addAB = tiling.opB == ACLBLAS_OP_N && tiling.ldb == tiling.m &&
-        HasUnitScalars(tiling.alphaR, tiling.alphaI, tiling.betaR, tiling.betaI);
-    return tiling.opA == ACLBLAS_OP_N && tiling.lda == tiling.m && tiling.ldc == tiling.m &&
-        (copyA || addAB);
+                       HasUnitScalars(tiling.alphaR, tiling.alphaI, tiling.betaR, tiling.betaI);
+    return tiling.opA == ACLBLAS_OP_N && tiling.lda == tiling.m && tiling.ldc == tiling.m && (copyA || addAB);
 }
 
 void ConfigureNNFastPath(uint32_t aivCoreNum, CgeamTilingData& tiling)
 {
     const uint64_t totalComplex = static_cast<uint64_t>(tiling.m) * tiling.n;
     const uint64_t alignedTaskCount = (totalComplex + COMPLEX_PER_BLOCK - 1U) / COMPLEX_PER_BLOCK;
-    const uint32_t numBlocks = totalComplex < NN_MULTICORE_MIN_COMPLEX ? 1U :
-        static_cast<uint32_t>(std::min<uint64_t>(aivCoreNum, alignedTaskCount));
+    const uint32_t numBlocks = totalComplex < NN_MULTICORE_MIN_COMPLEX ?
+                                   1U :
+                                   static_cast<uint32_t>(std::min<uint64_t>(aivCoreNum, alignedTaskCount));
     const uint64_t rawPerCore = totalComplex / numBlocks;
     tiling.fastPath = 1U;
     tiling.fastPerCoreComplex = (rawPerCore / COMPLEX_PER_BLOCK) * COMPLEX_PER_BLOCK;
@@ -94,10 +94,10 @@ bool HasCompactTransposeInputs(const CgeamTilingData& tiling)
     const bool anyTransposed = tiling.opA != ACLBLAS_OP_N || tiling.opB != ACLBLAS_OP_N;
     const bool compactA = tiling.lda == (tiling.opA == ACLBLAS_OP_N ? tiling.m : tiling.n);
     const bool compactB = tiling.ldb == (tiling.opB == ACLBLAS_OP_N ? tiling.m : tiling.n);
-    const bool copyA = tiling.opA != ACLBLAS_OP_N && tiling.alphaR == 1.0f && tiling.alphaI == 0.0f &&
-        tiling.betaIsZero != 0U;
-    const bool addAB = anyTransposed && compactB &&
-        HasUnitScalars(tiling.alphaR, tiling.alphaI, tiling.betaR, tiling.betaI);
+    const bool copyA =
+        tiling.opA != ACLBLAS_OP_N && tiling.alphaR == 1.0f && tiling.alphaI == 0.0f && tiling.betaIsZero != 0U;
+    const bool addAB =
+        anyTransposed && compactB && HasUnitScalars(tiling.alphaR, tiling.alphaI, tiling.betaR, tiling.betaI);
     return compactA && tiling.ldc == tiling.m && (copyA || addAB);
 }
 
@@ -124,7 +124,7 @@ bool ConfigureTransposeTilePath(uint32_t aivCoreNum, CgeamTilingData& tiling)
     constexpr uint32_t INPUT_BURST_ALIGNMENT_BYTES = 128U;
     const bool sameTranspose = tiling.opA != ACLBLAS_OP_N && tiling.opA == tiling.opB;
     const bool merged = tiling.betaIsZero == 0U && sameTranspose && tileRows == TALL_TRANSPOSE_TILE_ROWS &&
-        (static_cast<uint64_t>(n) * sizeof(aclblasComplex)) % INPUT_BURST_ALIGNMENT_BYTES != 0U;
+                        (static_cast<uint64_t>(n) * sizeof(aclblasComplex)) % INPUT_BURST_ALIGNMENT_BYTES != 0U;
     if (merged) {
         tileCols = MERGED_TILE_COLS;
         // A wider tile can only decrease the column count already checked above.
@@ -148,8 +148,7 @@ void ConfigureGeneralSimtPath(uint32_t aivCoreNum, CgeamTilingData& tiling)
     const uint64_t perCore = (totalComplex + numBlocks - 1U) / numBlocks;
     const uint64_t alignedThreads =
         (perCore + SIMT_THREAD_GRANULARITY - 1U) / SIMT_THREAD_GRANULARITY * SIMT_THREAD_GRANULARITY;
-    tiling.simtThreads =
-        static_cast<uint32_t>(std::min<uint64_t>(alignedThreads, SIMT_SCHEDULING_THREAD_CAP));
+    tiling.simtThreads = static_cast<uint32_t>(std::min<uint64_t>(alignedThreads, SIMT_SCHEDULING_THREAD_CAP));
     tiling.blockCount = numBlocks;
 }
 
@@ -213,8 +212,8 @@ aclblasStatus_t LaunchCgeamKernel(
         "aclblasCgeam",
         "Tiling: fastPath=%u, transposeTilePath=%u, simtThreads=%u, fastTile=%u, "
         "totalBlocks=%u",
-        tiling.fastPath, static_cast<uint32_t>(tiling.transposeTilePath),
-        tiling.simtThreads, tiling.fastTileComplex, numBlocks);
+        tiling.fastPath, static_cast<uint32_t>(tiling.transposeTilePath), tiling.simtThreads, tiling.fastTileComplex,
+        numBlocks);
 
     // Convert pointers to GM_ADDR (complex data is stored as interleaved float pairs).
     // When alpha/beta value is 0, A/B may be nullptr; use C as a dummy valid GM address
@@ -241,14 +240,17 @@ extern "C" aclblasStatus_t aclblasCgeam(
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
 
-    if ((m == 0 || n == 0) && m >= 0 && n >= 0) {
-        return ValidateGeamTranspose(transa, transb, "aclblasCgeam");
-    }
-
+    // Same contract as aclblasSgeam: full parameter validation first (alpha/
+    // beta nullability, trans enums, dimensions, ld), then the empty-matrix
+    // quick return, so m=0/n=0 no longer bypasses the alpha/beta/ld checks.
     aclblasStatus_t status =
         ValidateGeamParams("aclblasCgeam", transa, transb, m, n, alpha, A, lda, beta, B, ldb, C, ldc);
     if (status != ACLBLAS_STATUS_SUCCESS) {
         return status;
+    }
+
+    if (m == 0 || n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
     }
 
     return LaunchCgeamKernel(handle, transa, transb, m, n, alpha, A, lda, beta, B, ldb, C, ldc);

@@ -66,7 +66,7 @@ static aclblasStatus_t CalTilingData(TpttrTilingData* tiling, int n, int lda, in
     uint32_t vectorCoreNum = GetAivCoreCount();
     if (vectorCoreNum == 0) {
         OP_LOGE("aclblasStpttr", "vector core count is 0");
-        return ACLBLAS_STATUS_EXECUTION_FAILED;
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
 
     uint32_t useCoreNum = vectorCoreNum;

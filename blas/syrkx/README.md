@@ -82,7 +82,7 @@ aclblasStatus_t aclblasSsyrkx(
 - beta 不可为 nullptr
 - A 在 n > 0 且 k > 0 时不可为 nullptr
 - B 在 n > 0 且 k > 0 时不可为 nullptr
-- C 在 n > 0 时不可为 nullptr。该校验为有意严于 cuBLAS 的差异：cuBLAS 仅在 beta != 0 时将 C 为 nullptr 视为错误，本实现为保证错误码口径一致，n > 0 时一律要求非空
+- C 在 n > 0 时不可为 nullptr。该校验为有意严于 cuBLAS 的差异：cuBLAS 仅在 beta != 0 时将 C 为 nullptr 视为错误，本实现为保证错误码口径一致，n > 0 时一律要求非空。差异根因是实现层面对 C 的无条件读取（beta = 0 时非 uplo 段仍按 C_old 恒等回写，见下方边界情况说明），放行 C == nullptr 会触发空指针访问；同族 herkx 实现在 beta = 0 且 C == nullptr 时直接成功返回（cuBLAS 口径），两入口的该维度差异为各自文档化的有意口径（另见 herkx README）
 - trans = ACLBLAS_OP_N 时：lda >= max(1, n)，ldb >= max(1, n)
 - trans = ACLBLAS_OP_T 或 ACLBLAS_OP_C 时：lda >= max(1, k)，ldb >= max(1, k)
 - ldc >= max(1, n)
