@@ -531,9 +531,10 @@ void MaybeRetileForDiagForm(
 }
 
 /*!
- * \brief |inc| in 64-bit. Negating INT_MIN as an int is undefined behaviour; widening first is not.
+ * \brief |inc| in 64-bit. Negating the most negative value inside the signed domain is undefined
+ * behaviour, so widen to unsigned first and negate there.
  */
-uint64_t AbsInc(int64_t inc) { return static_cast<uint64_t>(inc > 0 ? inc : -inc); }
+uint64_t AbsInc(int64_t inc) { return inc < 0 ? 0U - static_cast<uint64_t>(inc) : static_cast<uint64_t>(inc); }
 
 /*!
  * \brief 校验 aclblasSsbmv 的标量维度与指针参数。
