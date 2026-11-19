@@ -269,7 +269,7 @@ static StrmmTilings CalStrmmTilings(
     uint32_t uM, uint32_t uN, uint32_t uLda, uint32_t uLdb, uint32_t uLdc,
     float alphaVal)
 {
-    StrmmTilings t;
+    StrmmTilings t{};
     uint32_t dimA = (side == ACLBLAS_SIDE_LEFT) ? uM : uN;
     t.usedAivCoreNum = std::max<uint32_t>(std::min<uint32_t>(dimA, aivCoreNum), 1);
     uint64_t tileCount = static_cast<uint64_t>(CeilDiv<uint32_t>(uM, STRMM_ARCH35_BASE_M))
