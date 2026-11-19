@@ -60,7 +60,21 @@ __aicore__ inline void ForEachColumnTile(
 }
 
 namespace gemm_scale {
-using namespace AscendC;
+// Targeted using-declarations (not a blanket `using namespace`) to avoid leaking
+// the entire AscendC symbol set into every translation unit that includes this
+// shared header. Only the symbols actually used below are imported here.
+using AscendC::DataCopyExtParams;
+using AscendC::DataCopyPad;
+using AscendC::DataCopyPadExtParams;
+using AscendC::GetBlockIdx;
+using AscendC::GetBlockNum;
+using AscendC::GlobalTensor;
+using AscendC::LocalTensor;
+using AscendC::Muls;
+using AscendC::QuePosition;
+using AscendC::TBuf;
+using AscendC::TPipe;
+using AscendC::TQue;
 
 constexpr int32_t SCALE_TILE_SIZE = 256;
 constexpr int32_t SCALE_BUF_NUM = 2;
