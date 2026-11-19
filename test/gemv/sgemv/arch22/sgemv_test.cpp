@@ -258,6 +258,12 @@ TEST_F(SgemvArch22Test, TransposeMultipleBlocks)
     }
 }
 
+TEST_F(SgemvArch22Test, SplitKReduceBoundary)
+{
+    VerifyLayoutRegression(handle_, ACLBLAS_OP_N, 1024, 1024, 1024);
+    VerifyLayoutRegression(handle_, ACLBLAS_OP_N, 2048, 2048, 2048);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     Sgemv22, SgemvArch22Test, ::testing::ValuesIn(GetCasesFromCsv<SgemvParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<SgemvParam>);

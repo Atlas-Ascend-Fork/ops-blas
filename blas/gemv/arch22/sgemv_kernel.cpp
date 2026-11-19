@@ -822,6 +822,7 @@ private:
             } else {
                 Muls(acc, output, 1.0f, SGEMMV_NORMAL_T_COL_CHUNK);
             }
+            SyncVToMte3();
             StoreYContiguous(colStart, cols, acc);
             FinishYChunk();
             SyncVToMte2();
@@ -886,6 +887,7 @@ private:
                 SyncSToV();
                 Axpy(acc, row, alpha_ * xValue, colsAligned);
             }
+            SyncVToMte3();
             StoreYContiguous(colStart, cols, acc);
             FinishYChunk();
         }
@@ -894,6 +896,9 @@ private:
     __aicore__ inline void AccumulateSmallMRows(
         uint32_t colsAligned, LocalTensor<float> aTile, LocalTensor<float> xTile, LocalTensor<float> partial)
     {
+        // partial layout: Kahan sum area [0, m), compensation area [SGEMMV_SMALL_M_LIMIT, SGEMMV_SMALL_M_LIMIT + m).
+        // The areas must not overlap: m <= SGEMMV_SMALL_M_LIMIT keeps compensation beyond the sum area, so
+        // multi-tile accumulation never reads a partial sum as a compensation term.
         LocalTensor<float> row = rowBuf_.Get<float>();
         LocalTensor<float> product = productBuf_.Get<float>();
         LocalTensor<float> reduceTmp = workBuf_.Get<float>();
@@ -904,7 +909,7 @@ private:
             Mul(product, row, xTile, colsAligned);
             ReduceSum(reduceOut, product, reduceTmp, static_cast<int32_t>(colsAligned));
             SyncVToS();
-            const uint32_t compensationOffset = SGEMMV_ALIGN + rowIndex;
+            const uint32_t compensationOffset = SGEMMV_SMALL_M_LIMIT + rowIndex;
             const float corrected = reduceOut.GetValue(0) - partial.GetValue(compensationOffset);
             const float previous = partial.GetValue(rowIndex);
             const float current = previous + corrected;
@@ -956,7 +961,7 @@ private:
             AccumulateSmallMRows(colsAligned, aTile, xTile, partial);
         }
         SyncSToV();
-        Muls(partial, partial, alpha_, SGEMMV_ALIGN);
+        Muls(partial, partial, alpha_, m_);
         SyncVToMte3();
         SetAtomicAdd<float>();
         DataCopyExtParams copy{1, m_ * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
@@ -1078,6 +1083,45 @@ extern "C" __global__ __aicore__ __cube__ void sgemv_cube_kernel(
     }
 }
 
+// Reduce the split-K partial sums of this block's column range and store the block result.
+// colsPerBlock may exceed SGEMMV_SPLIT_CHUNK when fewer cores than CeilDiv(outDim, SGEMMV_SPLIT_CHUNK)
+// are available, so the block's column range is reduced in fixed-size chunks to keep every slice
+// write within its own SGEMMV_SPLIT_CHUNK slot of the buffer (acc aliases slot 0 of base).
+__aicore__ inline void SplitReduceChunks(
+    LocalTensor<float> base, GlobalTensor<float> partial, GlobalTensor<float> y, uint32_t outDim, uint32_t colBase,
+    uint32_t cols, uint32_t splitK)
+{
+    LocalTensor<float> acc = base;
+    for (uint32_t chunkStart = 0; chunkStart < cols; chunkStart += SGEMMV_SPLIT_CHUNK) {
+        const uint32_t chunkLen = (chunkStart + SGEMMV_SPLIT_CHUNK < cols) ? SGEMMV_SPLIT_CHUNK : (cols - chunkStart);
+        const uint32_t chunkAligned = (chunkLen + SGEMMV_ALIGN - 1U) / SGEMMV_ALIGN * SGEMMV_ALIGN;
+        const uint8_t padding = static_cast<uint8_t>(chunkAligned - chunkLen);
+        for (uint32_t offset = 0; offset < splitK; ++offset) {
+            DataCopyPadExtParams<float> pad{true, 0, padding, 0.0f};
+            DataCopyExtParams copy{1, chunkLen * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
+            DataCopyPad(
+                base[offset * SGEMMV_SPLIT_CHUNK],
+                partial[static_cast<uint64_t>(offset) * outDim + colBase + chunkStart], copy, pad);
+        }
+        SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
+        WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
+        for (uint32_t offset = 1; offset < splitK; ++offset) {
+            Add(acc, acc, base[offset * SGEMMV_SPLIT_CHUNK], chunkAligned);
+        }
+        // splitBuf slots are reused across chunks: the next chunk's MTE2 loads must wait
+        // for this chunk's Add reads (V) and y write (MTE3) to complete, matching the
+        // cross-iteration discipline used by ProcessNormalT/ProcessSmallMT.
+        SetFlag<HardEvent::V_MTE2>(EVENT_ID2);
+        WaitFlag<HardEvent::V_MTE2>(EVENT_ID2);
+        SetFlag<HardEvent::V_MTE3>(EVENT_ID1);
+        WaitFlag<HardEvent::V_MTE3>(EVENT_ID1);
+        DataCopyExtParams copy{1, chunkLen * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
+        DataCopyPad(y[colBase + chunkStart], acc, copy);
+        SetFlag<HardEvent::MTE3_MTE2>(EVENT_ID3);
+        WaitFlag<HardEvent::MTE3_MTE2>(EVENT_ID3);
+    }
+}
+
 extern "C" __global__ __aicore__ void sgemv_split_reduce_kernel(GM_ADDR partialGm, GM_ADDR yGm, SgemvTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
@@ -1097,34 +1141,16 @@ extern "C" __global__ __aicore__ void sgemv_split_reduce_kernel(GM_ADDR partialG
         return;
     }
     const uint32_t cols = (colBase + colsPerBlock < outDim) ? colsPerBlock : (outDim - colBase);
-    const uint32_t colsAligned = (cols + SGEMMV_ALIGN - 1U) / SGEMMV_ALIGN * SGEMMV_ALIGN;
-    const uint8_t padding = static_cast<uint8_t>(colsAligned - cols);
 
     TPipe pipe;
     TBuf<TPosition::VECCALC> splitBuf;
     pipe.InitBuffer(splitBuf, SGEMMV_SPLIT_MAX * SGEMMV_SPLIT_CHUNK * SGEMMV_BYTES_PER_FLOAT);
     LocalTensor<float> base = splitBuf.Get<float>();
-    LocalTensor<float> acc = base;
     GlobalTensor<float> partial;
     GlobalTensor<float> y;
     partial.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(partialGm));
     y.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(yGm));
-
-    for (uint32_t offset = 0; offset < tiling.cubeSplitK; ++offset) {
-        DataCopyPadExtParams<float> pad{true, 0, padding, 0.0f};
-        DataCopyExtParams copy{1, cols * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
-        DataCopyPad(
-            base[offset * SGEMMV_SPLIT_CHUNK], partial[static_cast<uint64_t>(offset) * outDim + colBase], copy, pad);
-    }
-    SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
-    WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
-    for (uint32_t offset = 1; offset < tiling.cubeSplitK; ++offset) {
-        Add(acc, acc, base[offset * SGEMMV_SPLIT_CHUNK], colsAligned);
-    }
-    SetFlag<HardEvent::V_MTE3>(EVENT_ID1);
-    WaitFlag<HardEvent::V_MTE3>(EVENT_ID1);
-    DataCopyExtParams copy{1, cols * SGEMMV_BYTES_PER_FLOAT, 0, 0, 0};
-    DataCopyPad(y[colBase], acc, copy);
+    SplitReduceChunks(base, partial, y, outDim, colBase, cols, tiling.cubeSplitK);
 }
 
 void sgemv_kernel_do(
