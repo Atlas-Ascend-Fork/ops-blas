@@ -91,10 +91,10 @@ aclblasStatus_t aclblasSrotg(aclblasHandle_t handle, float *a, float *b, float *
 | 参数名 | 输入/输出 | 参数类型 | 说明 |
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
-| a | 输入/输出 | float*（FP32） | 输入标量 a，运算后覆写为 r = ±√(a²+b²)，Device 内存 |
-| b | 输入/输出 | float*（FP32） | 输入标量 b，运算后覆写为恢复参数 z，Device 内存 |
-| c | 输出 | float*（FP32） | Givens 旋转矩阵余弦元素，Device 内存 |
-| s | 输出 | float*（FP32） | Givens 旋转矩阵正弦元素，Device 内存 |
+| a | 输入/输出 | float*（FP32） | 输入标量 a，运算后覆写为 r = ±√(a²+b²)，Host 或 Device 内存（四个指针须同侧） |
+| b | 输入/输出 | float*（FP32） | 输入标量 b，运算后覆写为恢复参数 z，Host 或 Device 内存（四个指针须同侧） |
+| c | 输出 | float*（FP32） | Givens 旋转矩阵余弦元素，Host 或 Device 内存（四个指针须同侧） |
+| s | 输出 | float*（FP32） | Givens 旋转矩阵正弦元素，Host 或 Device 内存（四个指针须同侧） |
 
 #### 约束说明
 
