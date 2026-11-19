@@ -48,7 +48,7 @@ aclblasStatus_t aclblasSgeam(aclblasHandle_t handle, aclblasOperation_t transa, 
 | beta | 输入 | const float*（FP32） | B 的缩放因子指针，指向 Host 侧单个标量；不可为 nullptr，Host 内存 |
 | B | 输入 | const float*（FP32） | 输入矩阵 B，列主序存储；当 *beta != 0 时不可为 nullptr，Device 内存 |
 | ldb | 输入 | int | 矩阵 B 的主维度，transb=N 时 ldb >= max(1, m)，transb=T/C 时 ldb >= max(1, n)，Host 内存 |
-| C | 输出 | float*（FP32） | 输出矩阵 C，列主序存储；m > 0 且 n > 0 时不可为 nullptr，Device 内存 |
+| C | 输出 | float*（FP32） | 输出矩阵 C，列主序存储；不可为 nullptr（包括 m == 0 或 n == 0 的调用），Device 内存 |
 | ldc | 输入 | int | 矩阵 C 的主维度，ldc >= max(1, m)，Host 内存 |
 
 #### 约束说明
@@ -65,9 +65,9 @@ aclblasStatus_t aclblasSgeam(aclblasHandle_t handle, aclblasOperation_t transa, 
 - *beta == 0 时，B 不被引用，可为 nullptr
 - *alpha != 0 时，A 不能为 nullptr
 - *beta != 0 时，B 不能为 nullptr
-- m > 0 且 n > 0 时，C 不能为 nullptr
+- C 不能为 nullptr（包括零维调用）
 - 支持 in-place：C == A 时要求 transa == N 且 lda == ldc；C == B 时要求 transb == N 且 ldb == ldc
-- m == 0 或 n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS，不执行计算
+- 所有参数、指针、leading dimension 和 in-place 约束均校验通过后，若 m == 0 或 n == 0，则返回 ACLBLAS_STATUS_SUCCESS，不启动计算
 
 #### 调用示例
 
@@ -314,7 +314,7 @@ aclblasStatus_t aclblasCgeam(aclblasHandle_t handle, aclblasOperation_t transa, 
 - *beta != 0 时，B 不能为 nullptr
 - m > 0 且 n > 0 时，C 不能为 nullptr
 - 支持 in-place：C == A 时要求 transa == N 且 lda == ldc；C == B 时要求 transb == N 且 ldb == ldc
-- m == 0 或 n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS，不执行计算
+- 当 m == 0 或 n == 0 且 m、n 均非负时，仅校验 handle 非空以及 transa/transb 枚举合法；通过后返回 ACLBLAS_STATUS_SUCCESS，不检查 alpha/beta/A/B/C 指针、lda/ldb/ldc 或 in-place 条件，也不读取或写入矩阵
 - ACLBLAS_OP_C 对复数执行共轭转置，实部不变，虚部取反
 
 #### 调用示例
