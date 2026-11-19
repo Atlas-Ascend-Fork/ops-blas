@@ -256,4 +256,5 @@ aclblasStatus_t aclblasScasum(aclblasHandle_t handle, int n, const aclblasComple
 | incx | 输入 | int | x 中相邻复数元素之间的步长（以复数元素为单位），Host 内存 |
 | result | 输出 | float*（FP32） | 各元素绝对值分量之和 Σ(\|Re\|+\|Im\|)，Device 内存 |
 
-- n <= 0 或 incx <= 0 时，result 被置为 0 并返回成功
+- Atlas A2/A3（arch22）：`n` 必须非负；`n == 0` 时返回成功并将 `result` 置为 0；`n > 0` 时要求 `incx > 0`，非正 `incx` 不适用零值快速返回语义。
+- Ascend 950PR/950DT（arch35）：`n <= 0` 或 `incx <= 0` 时，`result` 被置为 0 并返回成功。
