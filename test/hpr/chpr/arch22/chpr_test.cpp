@@ -39,6 +39,35 @@ TEST_F(ChprArch22Test, NullHandle)
     EXPECT_EQ(ret, ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 }
 
+// issue #965: alpha 为 Device 指针时经 D2H 读回再建 tiling，不得在 Host 直接解引用设备地址
+TEST_F(ChprArch22Test, DeviceAlpha)
+{
+    constexpr int n = 8;
+    constexpr float alpha = 2.5f;
+
+    std::vector<aclblasComplex> xHost = PackComplex(makeBlasArray(n * 2, "RANDOM_2_2", 42));
+    std::vector<aclblasComplex> apOrig = PackComplex(makeBlasArray(n * (n + 1), "RANDOM_2_2", 43));
+    std::vector<aclblasComplex> apHost = apOrig;
+
+    // alphaOnDevice = true：alpha 按设备指针传入（包装层同名形参，issue #965 覆盖路径）
+    aclblasStatus_t ret =
+        aclblasChpr_npu(ChprArch22Test::handle_, ACLBLAS_UPPER, n, &alpha, xHost.data(), 1, apHost.data(), true);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_SUCCESS));
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        return;
+    }
+
+    std::vector<aclblasComplex> golden = apOrig;
+    aclblasChpr_cpu(ChprArch22Test::handle_, ACLBLAS_UPPER, n, &alpha, xHost.data(), 1, golden.data());
+
+    VerifyConfig cfg;
+    applyMixedTolerance(
+        cfg, ACL_FLOAT, reinterpret_cast<const float*>(golden.data()), static_cast<size_t>(golden.size()) * 2);
+    EXPECT_TRUE(Verifier::verifyVector(
+        reinterpret_cast<const float*>(apHost.data()), reinterpret_cast<const float*>(golden.data()),
+        static_cast<size_t>(golden.size()) * 2, 1, cfg, "DeviceAlpha"));
+}
+
 INSTANTIATE_TEST_SUITE_P(
     Chpr, ChprArch22Test, ::testing::ValuesIn(GetCasesFromCsv<ChprParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<ChprParam>);

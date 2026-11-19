@@ -22,12 +22,11 @@
 static aclblasStatus_t ValidateChprParams(
     aclblasFillMode_t uplo, int incx, const float* alpha, const aclblasComplex* x, const aclblasComplex* ap)
 {
-    CHECK_RET(
-        alpha != nullptr, OP_LOGE("aclblasChpr", "alpha must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE("aclblasChpr", "uplo must be UPPER(121) or LOWER(122), got %d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(alpha != nullptr, OP_LOGE("aclblasChpr", "alpha must not be nullptr");
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE("aclblasChpr", "uplo must be UPPER(121) or LOWER(122), got %d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasChpr", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != INT_MIN, OP_LOGE("aclblasChpr", "incx must not be INT_MIN"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(x != nullptr, OP_LOGE("aclblasChpr", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
@@ -35,15 +34,33 @@ static aclblasStatus_t ValidateChprParams(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// issue #965: 对齐 arch35 的 Host/Device 双支持口径（同 srotm arch22 #869 的
+// ResolveSrotmParam 模式）：Host 指针直接读取；Device 指针经 D2H 回读，
+// 避免对设备地址做 Host 解引用的非法访问/读到错误标量。
+static aclblasStatus_t ResolveChprAlpha(aclblasHandle_t handle, const float* alpha, float& alphaVal, bool& quickReturn)
+{
+    bool alphaIsDevice = false;
+    aclblasStatus_t st = CheckPtrLocation(alpha, &alphaIsDevice);
+    if (st != ACLBLAS_STATUS_SUCCESS) {
+        return st;
+    }
+    if (!alphaIsDevice) {
+        alphaVal = *alpha;
+        quickReturn = (alphaVal == 0.0f);
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    st = ReadHostScalarFromDevice(alpha, alphaVal, handle->stream, "aclblasChpr");
+    if (st == ACLBLAS_STATUS_SUCCESS) {
+        quickReturn = (alphaVal == 0.0f);
+    }
+    return st;
+}
+
 static aclblasStatus_t LaunchChprKernel(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* alpha, const aclblasComplex* x, int incx,
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, float alpha, const aclblasComplex* x, int incx,
     aclblasComplex* ap)
 {
     auto* h = handle;
-    float alphaVal = *alpha;
-    if (alphaVal == 0.0f) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
 
     uint32_t aivCoreNum = GetAivCoreCount();
     if (aivCoreNum == 0) {
@@ -62,7 +79,7 @@ static aclblasStatus_t LaunchChprKernel(
     tiling.useCoreNum = useCoreNum;
     tiling.uplo = static_cast<uint32_t>(uplo);
     tiling.incx = static_cast<int64_t>(incx);
-    tiling.alpha = alphaVal;
+    tiling.alpha = alpha;
 
     OP_LOGD(
         "aclblasChpr", "tiling: n=%u, uplo=%u, incx=%ld, cores=%u, alpha=%f", tiling.n, tiling.uplo,
@@ -89,5 +106,16 @@ aclblasStatus_t aclblasChpr(
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
     }
-    return LaunchChprKernel(handle, uplo, n, alpha, x, incx, ap);
+    // issue #965: alpha 位置经 CheckPtrLocation 判定，Device 指针 D2H 回读；
+    // 零系数快速返回判定同样基于回读值。
+    float alphaValue = 0.0f;
+    bool alphaQuickReturn = false;
+    const aclblasStatus_t alphaStatus = ResolveChprAlpha(handle, alpha, alphaValue, alphaQuickReturn);
+    if (alphaStatus != ACLBLAS_STATUS_SUCCESS) {
+        return alphaStatus;
+    }
+    if (alphaQuickReturn) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    return LaunchChprKernel(handle, uplo, n, alphaValue, x, incx, ap);
 }

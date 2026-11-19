@@ -145,21 +145,43 @@ aclblasStatus_t aclblasDotEx(
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
     if (n == 0) {
+        // issue #966: n==0 快速路径不读 x/y/inc，保留既有快速成功返回契约（对齐
+        // crot QuickReturnSkipsDataPointerValidation 口径）；仅校验写 result 所需
+        // 子集：result 空指针与 resultType 元素宽度——防止按 4 字节宽度向 1 字节
+        // 元素宽度的 resultType 缓冲（如 ACL_INT8）越界写，result 空指针时不再以
+        // EXECUTION_FAILED 暴露 memset 失败位置。
+        if (result == nullptr) {
+            OP_LOGE("aclblasDotEx", "result must not be nullptr");
+            return ACLBLAS_STATUS_INVALID_VALUE;
+        }
+        if (resultType != ACL_FLOAT && resultType != ACL_FLOAT16 && resultType != ACL_BF16) {
+            OP_LOGE("aclblasDotEx", "resultType %d not supported (only FP32/FP16/BF16)", static_cast<int>(resultType));
+            return ACLBLAS_STATUS_NOT_SUPPORTED;
+        }
         size_t sz = (resultType == ACL_FLOAT16 || resultType == ACL_BF16) ? sizeof(uint16_t) : sizeof(float);
         aclError ret = aclrtMemset(result, sz, 0, sz);
-        if (ret != ACL_SUCCESS) { OP_LOGE("aclblasDotEx", "aclrtMemset failed"); return ACLBLAS_STATUS_EXECUTION_FAILED; }
+        if (ret != ACL_SUCCESS) {
+            OP_LOGE("aclblasDotEx", "aclrtMemset failed");
+            return ACLBLAS_STATUS_EXECUTION_FAILED;
+        }
         return ACLBLAS_STATUS_SUCCESS;
     }
 
     aclblasStatus_t status = ValidateDotexParams(n, x, xType, incx, y, yType, incy, result, resultType, executionType);
-    if (status != ACLBLAS_STATUS_SUCCESS) return status;
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
 
     uint32_t vectorCoreNum = GetAivCoreCount();
-    if (vectorCoreNum == 0) { OP_LOGE("aclblasDotEx", "vector core count is 0"); return ACLBLAS_STATUS_EXECUTION_FAILED; }
+    if (vectorCoreNum == 0) {
+        OP_LOGE("aclblasDotEx", "vector core count is 0");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 
     DotexTilingData tilingData = CalDotexTilingData(n, xType, incx, incy, vectorCoreNum);
-    OP_LOGD("aclblasDotEx", "n=%d inc=%d incy=%d cores=%u threads=%u",
-            tilingData.n, tilingData.incx, tilingData.incy, tilingData.useCoreNum, tilingData.numThreads);
+    OP_LOGD(
+        "aclblasDotEx", "n=%d inc=%d incy=%d cores=%u threads=%u", tilingData.n, tilingData.incx, tilingData.incy,
+        tilingData.useCoreNum, tilingData.numThreads);
 
     auto* h = reinterpret_cast<_aclblas_handle*>(handle);
     return LaunchDotexKernel(h, tilingData, x, y, result);

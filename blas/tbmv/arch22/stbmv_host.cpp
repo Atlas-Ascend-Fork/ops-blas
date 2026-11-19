@@ -70,6 +70,16 @@ aclblasStatus_t aclblasStbmv_legacy(
     if (incx == 0) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    // k/lda 与 n/incx 同为 host 侧契约入参：k<0 或超出 uint32_t 表示域时经
+    // static_cast<uint32_t>(k) 回绕（如 0xFFFFFFFF），内核以该值驱动带状循环
+    // 产生越界访问；lda<k+1 时 A 按列主序带状布局的行跨度不足以覆盖整个带。
+    // arch35 ValidateStbmvParams 与 stbsv/ctbsv arch22 均已校验，此处补齐同口径。
+    if (k < 0 || k > static_cast<int64_t>(UINT32_MAX) - 1) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (lda < k + 1) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
 
     uint32_t uploVal = static_cast<uint32_t>(uplo);
     uint32_t transVal = static_cast<uint32_t>(trans);

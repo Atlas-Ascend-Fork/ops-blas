@@ -37,9 +37,20 @@ static aclblasStatus_t ChprAllocCopyToDevice(void** dst, const void* src, size_t
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// issue #965: alphaOnDevice 时按设备指针传入，覆盖 Device 标量指针路径
+static aclblasStatus_t ChprPrepareAlphaDevice(const float* alpha, void** dAlpha, const float** alphaArg)
+{
+    aclblasStatus_t st = ChprAllocCopyToDevice(dAlpha, alpha, sizeof(float));
+    if (st != ACLBLAS_STATUS_SUCCESS) {
+        return st;
+    }
+    *alphaArg = static_cast<const float*>(*dAlpha);
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 inline aclblasStatus_t aclblasChpr_npu(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* alpha, const aclblasComplex* x, int incx,
-    aclblasComplex* ap)
+    aclblasComplex* ap, bool alphaOnDevice = false)
 {
     if (handle == nullptr || n <= 0) {
         return aclblasChpr(handle, uplo, n, alpha, x, incx, ap);
@@ -52,6 +63,8 @@ inline aclblasStatus_t aclblasChpr_npu(
 
     void* dX = nullptr;
     void* dAP = nullptr;
+    void* dAlpha = nullptr;
+    const float* alphaArg = alpha;
 
     aclblasStatus_t st = ChprAllocCopyToDevice(&dX, x, xBytes);
     if (st != ACLBLAS_STATUS_SUCCESS) {
@@ -66,14 +79,26 @@ inline aclblasStatus_t aclblasChpr_npu(
         return st;
     }
 
+    if (alphaOnDevice && alpha != nullptr) {
+        st = ChprPrepareAlphaDevice(alpha, &dAlpha, &alphaArg);
+        if (st != ACLBLAS_STATUS_SUCCESS) {
+            aclrtFree(dX);
+            aclrtFree(dAP);
+            return st;
+        }
+    }
+
     aclblasStatus_t ret = aclblasChpr(
-        handle, uplo, n, alpha, static_cast<const aclblasComplex*>(dX), incx, static_cast<aclblasComplex*>(dAP));
+        handle, uplo, n, alphaArg, static_cast<const aclblasComplex*>(dX), incx, static_cast<aclblasComplex*>(dAP));
 
     aclrtSynchronizeDevice();
     if (ret == ACLBLAS_STATUS_SUCCESS && ap != nullptr) {
         aclrtMemcpy(ap, apBytes, dAP, apBytes, ACL_MEMCPY_DEVICE_TO_HOST);
     }
 
+    if (dAlpha) {
+        aclrtFree(dAlpha);
+    }
     if (dX) {
         aclrtFree(dX);
     }
