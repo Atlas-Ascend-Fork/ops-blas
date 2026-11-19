@@ -28,16 +28,17 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "gemm_batched_tiling_data.h"
 
-// Kernel launchers (defined in gemm_batched_kernel.cpp)
-void gemm_batched_gemm_kernel_do(
+// Kernel launchers (defined in gemm_batched_kernel.cpp). They return the runtime
+// status of the <<<>>> launch so callers can detect and report launch failures.
+aclError gemm_batched_gemm_kernel_do(
     uint32_t numBlocks, void* stream, const uint8_t* aarray, const uint8_t* barray, uint8_t* carray,
     const GemmBatchedGemmTilingData& tilingData);
 
-void gemm_batched_alpha_beta_kernel_do(
+aclError gemm_batched_alpha_beta_kernel_do(
     uint32_t numBlocks, void* stream, const uint8_t* tempAB, uint8_t* carray,
     const GemmBatchedAlphaBetaTilingData& tilingData);
 
-void gemm_batched_early_exit_kernel_do(
+aclError gemm_batched_early_exit_kernel_do(
     uint32_t numBlocks, void* stream, uint8_t* carray, const GemmBatchedAlphaBetaTilingData& tilingData);
 
 // Minimum elements per AIV core to amortize launch overhead for post-process kernels.
@@ -149,8 +150,7 @@ static inline void GemmBatchedCalcMnBlockSplit(
     const int32_t batchCoreGcd = GemmBatchedGreatestCommonDivisor(static_cast<int32_t>(cubeCoreNum), batchCount);
     const int32_t spatialCoreTarget =
         std::max<int32_t>(1, static_cast<int32_t>(cubeCoreNum) / std::max<int32_t>(1, batchCoreGcd));
-    GemmBatchedFindBestSpatialSplit(
-        m, n, mTiles, nTiles, spatialCoreTarget, baseM, baseN, bestMBlocks, bestNBlocks);
+    GemmBatchedFindBestSpatialSplit(m, n, mTiles, nTiles, spatialCoreTarget, baseM, baseN, bestMBlocks, bestNBlocks);
 }
 
 static inline aclblasStatus_t GemmBatchedCalcGemmTiling(
@@ -175,8 +175,7 @@ static inline aclblasStatus_t GemmBatchedCalcGemmTiling(
 
     int32_t bestMBlocks = 1;
     int32_t bestNBlocks = 1;
-    GemmBatchedCalcMnBlockSplit(
-        m, n, batchCount, cubeCoreNum, useTrailingWaveBalance, bestMBlocks, bestNBlocks);
+    GemmBatchedCalcMnBlockSplit(m, n, batchCount, cubeCoreNum, useTrailingWaveBalance, bestMBlocks, bestNBlocks);
 
     uint32_t baseM = GEMM_BATCHED_BASE_M;
     uint32_t baseN = GEMM_BATCHED_BASE_N;
@@ -219,12 +218,31 @@ static inline aclblasStatus_t GemmBatchedPrepareTempWorkspace(
     tilingData.ldc = tempRowStride;
     // The Cube kernel always writes the FP32 accumulator temporary, regardless of
     // the input dtype, so the temporary buffer size uses sizeof(float).
-    size_t perBatchTempBytes = static_cast<size_t>(origN) * tempRowStride * sizeof(float);
+    // The derivation below is overflow-guarded (mirroring the totalTasks check in
+    // GemmBatchedCalcGemmTiling): a wrapped-around small workspace would let
+    // EnsureWorkspace succeed while tempPtrs still strides with the true byte counts,
+    // making the device write out of bounds.
+    const uint64_t rowBytes = static_cast<uint64_t>(origN) * static_cast<uint64_t>(tempRowStride);
+    if (rowBytes > UINT64_MAX / sizeof(float)) {
+        OP_LOGE(opName, "per-batch temp bytes overflow: origN=%d rowStride=%u", origN, tempRowStride);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    const size_t perBatchTempBytes = static_cast<size_t>(rowBytes) * sizeof(float);
+    if (perBatchTempBytes != 0 && static_cast<uint64_t>(batchCount) > UINT64_MAX / perBatchTempBytes) {
+        OP_LOGE(opName, "total temp bytes overflow: batchCount=%d perBatch=%zu", batchCount, perBatchTempBytes);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     size_t totalTempBytes = static_cast<size_t>(batchCount) * perBatchTempBytes;
 
     constexpr size_t TEMP_DATA_ALIGN = 64;
     size_t ptrArrayBytes = static_cast<size_t>(batchCount) * sizeof(void*);
     alignedPtrArrayBytes = (ptrArrayBytes + TEMP_DATA_ALIGN - 1) & ~(TEMP_DATA_ALIGN - 1);
+    if (totalTempBytes > SIZE_MAX - alignedPtrArrayBytes) {
+        OP_LOGE(
+            opName, "total workspace bytes overflow: alignedPtrArray=%zu temp=%zu", alignedPtrArrayBytes,
+            totalTempBytes);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     size_t totalWorkspaceBytes = alignedPtrArrayBytes + totalTempBytes;
 
     aclblasStatus_t wsRet = GemmBatchedEnsureWorkspace(h, totalWorkspaceBytes);
@@ -290,10 +308,10 @@ static inline void GemmBatchedEnlargeOutputTileForLargeOperands(GemmBatchedGemmT
 
 // Dtype-agnostic alpha/beta post-process launch: the C pointer array is passed
 // as a raw byte pointer and reinterpreted inside the launcher.
-static inline void GemmBatchedLaunchAlphaBetaPostProcess(
+static inline aclblasStatus_t GemmBatchedLaunchAlphaBetaPostProcess(
     const char* opName, int dtypeCase, _aclblas_handle* h, int origM, int origN, int origLdc, uint32_t tempRowStride,
-    float alphaVal, float betaVal, int batchCount, uint32_t aivCoreNum, uint8_t* workspace,
-    size_t alignedPtrArrayBytes, uint8_t* carrayPtrAB)
+    float alphaVal, float betaVal, int batchCount, uint32_t aivCoreNum, uint8_t* workspace, size_t alignedPtrArrayBytes,
+    uint8_t* carrayPtrAB)
 {
     GemmBatchedAlphaBetaTilingData abTiling{};
     abTiling.m = origM;
@@ -320,8 +338,13 @@ static inline void GemmBatchedLaunchAlphaBetaPostProcess(
         opName, "launching alpha/beta kernel: cores=%d, alpha=%.4f, beta=%.4f, batch=%d, m=%d, n=%d",
         abTiling.usedAivCoreNum, alphaVal, betaVal, batchCount, origM, origN);
 
-    gemm_batched_alpha_beta_kernel_do(
+    const aclError launch = gemm_batched_alpha_beta_kernel_do(
         static_cast<uint32_t>(abTiling.usedAivCoreNum), h->stream, tempABData, carrayPtrAB, abTiling);
+    if (launch != ACL_SUCCESS) {
+        OP_LOGE(opName, "alpha/beta kernel launch failed, aclRet=%d", static_cast<int>(launch));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
 // Early-exit launch for the k==0 / alpha==0 degenerate case (C = beta*C).
@@ -362,7 +385,11 @@ static inline aclblasStatus_t GemmBatchedLaunchEarlyExit(
         opName, "early exit: beta=%.4f, batch=%d, m=%d, n=%d, cores=%d", betaVal, batchCount, m, n,
         eeTiling.usedAivCoreNum);
 
-    gemm_batched_early_exit_kernel_do(static_cast<uint32_t>(eeTiling.usedAivCoreNum), h->stream, carrayPtr, eeTiling);
-
+    const aclError launch = gemm_batched_early_exit_kernel_do(
+        static_cast<uint32_t>(eeTiling.usedAivCoreNum), h->stream, carrayPtr, eeTiling);
+    if (launch != ACL_SUCCESS) {
+        OP_LOGE(opName, "early-exit kernel launch failed, aclRet=%d", static_cast<int>(launch));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }

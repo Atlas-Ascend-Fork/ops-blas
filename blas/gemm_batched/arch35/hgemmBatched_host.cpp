@@ -39,7 +39,8 @@ constexpr const char* HB_OP_NAME = "aclblasHgemmBatched";
 // Kernel launchers (defined in gemm_batched_kernel.cpp)
 // FLOAT16-input / FLOAT16-output GEMM: casts the FP32 L0C accumulator to half
 // directly on copy-out (no FP32 temporary + epilogue).
-void gemm_batched_gemm_kernel_halfout_do(
+// Returns the runtime status of the <<<>>> launch.
+aclError gemm_batched_gemm_kernel_halfout_do(
     uint32_t numBlocks, void* stream, const uint8_t* aarray, const uint8_t* barray, uint8_t* carray,
     const GemmBatchedGemmTilingData& tilingData);
 
@@ -120,8 +121,8 @@ static aclblasStatus_t PrepareHgemmLaunchContext(
     // Keep the trailing-wave N-split balancing for the FLOAT16 path.
     constexpr bool useTrailingWaveBalance = true;
     aclblasStatus_t tilingRet = GemmBatchedCalcGemmTiling(
-        HB_OP_NAME, GEMM_BATCHED_DTYPE_FP16, useTrailingWaveBalance, m, n, k, batchCount, lda, ldb, ldc,
-        isTransA, isTransB, cubeCoreNum, ctx.tilingData);
+        HB_OP_NAME, GEMM_BATCHED_DTYPE_FP16, useTrailingWaveBalance, m, n, k, batchCount, lda, ldb, ldc, isTransA,
+        isTransB, cubeCoreNum, ctx.tilingData);
     if (tilingRet != ACLBLAS_STATUS_SUCCESS) {
         return tilingRet;
     }
@@ -143,6 +144,17 @@ static aclblasStatus_t PrepareHgemmLaunchContext(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// Route the GEMM kernel launch and surface the runtime status of the <<<>>> call.
+static aclError LaunchHgemmGemmKernel(
+    bool fastDirectOut, uint32_t numBlocks, void* stream, const uint8_t* aarray, const uint8_t* barray,
+    uint8_t* carrayPtr, const GemmBatchedGemmTilingData& tilingData)
+{
+    if (fastDirectOut) {
+        return gemm_batched_gemm_kernel_halfout_do(numBlocks, stream, aarray, barray, carrayPtr, tilingData);
+    }
+    return gemm_batched_gemm_kernel_do(numBlocks, stream, aarray, barray, carrayPtr, tilingData);
+}
+
 static aclblasStatus_t ExecuteHgemmBatched(
     _aclblas_handle* h, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
     const aclblasHalf* alpha, const aclblasHalf* const Aarray[], int lda, const aclblasHalf* const Barray[], int ldb,
@@ -160,8 +172,8 @@ static aclblasStatus_t ExecuteHgemmBatched(
     bool needPostProcess = !fastDirectOut;
 
     HgemmLaunchContext ctx;
-    aclblasStatus_t prepRet = PrepareHgemmLaunchContext(
-        h, needPostProcess, isTransA, isTransB, m, n, k, lda, ldb, ldc, batchCount, ctx);
+    aclblasStatus_t prepRet =
+        PrepareHgemmLaunchContext(h, needPostProcess, isTransA, isTransB, m, n, k, lda, ldb, ldc, batchCount, ctx);
     if (prepRet != ACLBLAS_STATUS_SUCCESS) {
         return prepRet;
     }
@@ -182,19 +194,23 @@ static aclblasStatus_t ExecuteHgemmBatched(
     const uint8_t* kernelBarray = reinterpret_cast<const uint8_t*>(Aarray);
     uint8_t* carrayPtr = needPostProcess ? workspace : const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(Carray));
 
-    if (fastDirectOut) {
-        gemm_batched_gemm_kernel_halfout_do(
-            tilingData.usedAicCoreNum, h->stream, kernelAarray, kernelBarray, carrayPtr, tilingData);
-    } else {
-        gemm_batched_gemm_kernel_do(
-            tilingData.usedAicCoreNum, h->stream, kernelAarray, kernelBarray, carrayPtr, tilingData);
-    }
+    const aclError gemmLaunch = LaunchHgemmGemmKernel(
+        fastDirectOut, tilingData.usedAicCoreNum, h->stream, kernelAarray, kernelBarray, carrayPtr, tilingData);
+    CHECK_RET(gemmLaunch == ACL_SUCCESS,
+              OP_LOGE(HB_OP_NAME, "gemm kernel launch failed, aclRet=%d", static_cast<int>(gemmLaunch));
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
+    // The post-process reads the FP32 temporary written by the GEMM kernel and
+    // overwrites the user C, so it must only run after a successful GEMM launch,
+    // and its own launch failure must surface as well.
     if (needPostProcess) {
         uint8_t* carrayPtrAB = const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(Carray));
-        GemmBatchedLaunchAlphaBetaPostProcess(
-            HB_OP_NAME, GEMM_BATCHED_DTYPE_FP16, h, origM, origN, origLdc, tempRowStride, alphaVal, betaVal,
-            batchCount, aivCoreNum, workspace, alignedPtrArrayBytes, carrayPtrAB);
+        const aclblasStatus_t postRet = GemmBatchedLaunchAlphaBetaPostProcess(
+            HB_OP_NAME, GEMM_BATCHED_DTYPE_FP16, h, origM, origN, origLdc, tempRowStride, alphaVal, betaVal, batchCount,
+            aivCoreNum, workspace, alignedPtrArrayBytes, carrayPtrAB);
+        CHECK_RET(postRet == ACLBLAS_STATUS_SUCCESS,
+                  OP_LOGE(HB_OP_NAME, "alpha/beta post-process launch failed, st=%d", static_cast<int>(postRet));
+                  return postRet);
     }
 
     return ACLBLAS_STATUS_SUCCESS;

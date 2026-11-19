@@ -460,12 +460,12 @@ aclblasStatus_t aclblasChemv(aclblasHandle_t handle, aclblasFillMode_t uplo, int
 | handle | 输入 | aclblasHandle_t | 已创建的 ops-blas 句柄，携带执行 stream；Host 内存 |
 | uplo | 输入 | aclblasFillMode_t | `ACLBLAS_UPPER` 使用上三角，`ACLBLAS_LOWER` 使用下三角；Host 内存 |
 | n | 输入 | int | Hermitian 矩阵阶数及向量逻辑长度，n >= 0；Host 内存 |
-| alpha | 输入 | const aclblasComplex* | complex64 标量，n > 0 时须非空；950PR 使用 Host 内存，Atlas A2 / A3 支持 Host 或 Device 内存 |
+| alpha | 输入 | const aclblasComplex* | complex64 标量，n > 0 时须非空；支持 Host 或 Device 内存 |
 | A | 输入 | const aclblasComplex* | 按列主序存储的 lda × n 矩阵，仅指定三角有效；Device 内存 |
 | lda | 输入 | int | 矩阵列间跨度，n > 0 时 lda >= max(1, n)；Host 内存 |
 | x | 输入 | const aclblasComplex* | 逻辑长度为 n，存储跨度至少为 1+(n-1)×abs(incx)；Device 内存 |
 | incx | 输入 | int | x 的元素步长，支持正负值，不为 0 或 INT_MIN；Host 内存 |
-| beta | 输入 | const aclblasComplex* | complex64 标量，n > 0 时须非空；950PR 使用 Host 内存，Atlas A2 / A3 支持 Host 或 Device 内存 |
+| beta | 输入 | const aclblasComplex* | complex64 标量，n > 0 时须非空；支持 Host 或 Device 内存 |
 | y | 输入/输出 | aclblasComplex* | 原地保存 y，存储跨度至少为 1+(n-1)×abs(incy)；Device 内存 |
 | incy | 输入 | int | y 的元素步长，支持正负值，不为 0 或 INT_MIN；Host 内存 |
 
@@ -477,7 +477,7 @@ aclblasStatus_t aclblasChemv(aclblasHandle_t handle, aclblasFillMode_t uplo, int
 - alpha 为 `(0, 0)` 且 beta 为 `(1, 0)` 时直接返回成功，A、x、y 均可为空，y 保持不变。
 - alpha 为 `(0, 0)` 时不读取 A 和 x；其他计算路径要求 A、x、y 的必要指针有效。beta 为 `(0, 0)` 时不读取旧 y，但输出缓冲区仍须有效。
 - 负步长以完整存储区首地址为基址，首个逻辑元素偏移为 `(1-n)*inc`；x 与 y 使用独立缓冲区。
-- 950PR 在调用时从 Host 读取 alpha、beta。A、x、y 必须在句柄 stream 完成前保持有效；读取结果前须同步该 stream。
+- alpha、beta 支持 Host 或 Device 内存：Host 标量直接解引用，Device 标量经句柄 stream 异步 D2H 读取并同步后使用。A、x、y 必须在句柄 stream 完成前保持有效；读取结果前须同步该 stream。
 - 空句柄返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`，非法 uplo 返回 `ACLBLAS_STATUS_INVALID_ENUM`，非法数值参数或必要指针返回 `ACLBLAS_STATUS_INVALID_VALUE`，没有可用 AIV 核时返回 `ACLBLAS_STATUS_EXECUTION_FAILED`。
 
 #### 调用示例

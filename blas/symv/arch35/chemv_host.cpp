@@ -16,10 +16,6 @@
 #include "common/helper/kernel_constant.h"
 #include "chemv_tiling_data.h"
 
-// Keep equal to CHEMV_REG_ROWS in the scratch kernel (up to64 register rows supported).
-constexpr uint32_t CHEMV_REG_ROWS = 64U;
-static_assert(CHEMV_REG_ROWS > 0U && CHEMV_REG_ROWS <= 64U, "invalid row tile");
-
 void chemv_kernel_do(uint8_t* a, uint8_t* x, uint8_t* y, uint32_t blocks, const ChemvTilingData& tiling, void* stream);
 
 namespace {
@@ -34,6 +30,25 @@ aclblasStatus_t ValidateChemvAttributes(
         beta == nullptr) {
         OP_LOGE("aclblasChemv", "Invalid dimensions, increments or scalar pointers");
         return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+// Resolve alpha/beta by memory location: host scalars are dereferenced directly,
+// device scalars are snapshotted via D2H on the handle stream. Same contract as
+// the arch22 chemv and the 950PR cherk/csyrk family (issues #849/#628); a device
+// pointer must never be silently dereferenced as host memory.
+aclblasStatus_t ResolveChemvScalars(
+    const aclblasComplex* alpha, const aclblasComplex* beta, aclrtStream stream, aclblasComplex& a, aclblasComplex& b)
+{
+    aclblasStatus_t ret = ReadScalarFromHostOrDevice(alpha, stream, a);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE("aclblasChemv", "Failed to resolve alpha scalar location, st=%d", static_cast<int>(ret));
+        return ret;
+    }
+    ret = ReadScalarFromHostOrDevice(beta, stream, b);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE("aclblasChemv", "Failed to resolve beta scalar location, st=%d", static_cast<int>(ret));
+        return ret;
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
@@ -67,6 +82,32 @@ ChemvTilingData ChemvMakeTiling(
     t.betaImag = b.imag;
     return t;
 }
+// Core-count guard, rowsPerBlock selection and the kernel launch. The host-side
+// gate keeps an out-of-set rowsPerBlock from reaching the tiling, where the
+// kernel fast path would silently skip every block and leave y unwritten.
+aclblasStatus_t LaunchChemvKernel(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, int lda, int incx, int incy, const aclblasComplex* A,
+    const aclblasComplex* x, aclblasComplex* y, const aclblasComplex& a, const aclblasComplex& b)
+{
+    const uint32_t cores = GetAivCoreCount();
+    if (cores == 0) {
+        OP_LOGE("aclblasChemv", "No available AIV cores");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
+    const bool regFast = a.real == 1.0f && a.imag == 0.0f && b.real == 0.0f && b.imag == 0.0f && incx == 1 && incy == 1;
+    const uint32_t rowsPerBlock = ChemvRowsPerBlock(regFast, n, cores);
+    if (!CHEMV_ROWS_PER_BLOCK_VALID(rowsPerBlock)) {
+        OP_LOGE("aclblasChemv", "rowsPerBlock outside supported set {16,32,64}: %u", rowsPerBlock);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    const uint32_t blocks = std::min(CeilDiv<uint32_t>(n, rowsPerBlock), cores);
+    const auto t = ChemvMakeTiling(n, lda, uplo, incx, incy, a, b, rowsPerBlock);
+    chemv_kernel_do(
+        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(A)),
+        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)), reinterpret_cast<uint8_t*>(y), blocks, t,
+        handle->stream);
+    return ACLBLAS_STATUS_SUCCESS;
+}
 } // namespace
 
 aclblasStatus_t aclblasChemv(
@@ -89,9 +130,13 @@ aclblasStatus_t aclblasChemv(
     if (status != ACLBLAS_STATUS_SUCCESS) {
         return status;
     }
-    // This API uses host scalar pointers. Snapshot them before asynchronous launch.
-    const aclblasComplex a = *alpha;
-    const aclblasComplex b = *beta;
+    // Resolve alpha/beta by memory location (see ResolveChemvScalars).
+    aclblasComplex a{};
+    aclblasComplex b{};
+    const aclblasStatus_t scalarRet = ResolveChemvScalars(alpha, beta, handle->stream, a, b);
+    if (scalarRet != ACLBLAS_STATUS_SUCCESS) {
+        return scalarRet;
+    }
     const bool alphaZero = a.real == 0.0f && a.imag == 0.0f;
     // No-op contract: A, x and y may be null because no device buffer is accessed.
     // Scalar, dimension and stride validation above still applies.
@@ -102,18 +147,5 @@ aclblasStatus_t aclblasChemv(
         OP_LOGE("aclblasChemv", "Required device buffer is nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    const uint32_t cores = GetAivCoreCount();
-    if (cores == 0) {
-        OP_LOGE("aclblasChemv", "No available AIV cores");
-        return ACLBLAS_STATUS_EXECUTION_FAILED;
-    }
-    const bool regFast = a.real == 1.0f && a.imag == 0.0f && b.real == 0.0f && b.imag == 0.0f && incx == 1 && incy == 1;
-    const uint32_t rowsPerBlock = ChemvRowsPerBlock(regFast, n, cores);
-    const uint32_t blocks = std::min(CeilDiv<uint32_t>(n, rowsPerBlock), cores);
-    const auto t = ChemvMakeTiling(n, lda, uplo, incx, incy, a, b, rowsPerBlock);
-    chemv_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(A)),
-        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)), reinterpret_cast<uint8_t*>(y), blocks, t,
-        handle->stream);
-    return ACLBLAS_STATUS_SUCCESS;
+    return LaunchChemvKernel(handle, uplo, n, lda, incx, incy, A, x, y, a, b);
 }

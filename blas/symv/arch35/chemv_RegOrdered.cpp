@@ -131,11 +131,11 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(128) inline void ChemvCompute(
 
 using namespace AscendC;
 namespace {
-constexpr uint32_t CHEMV_REG_ROWS = 64U;
+// CHEMV_REG_ROWS comes from chemv_tiling_data.h: the shared definition keeps the
+// kernel register tile and the host rowsPerBlock bound from drifting apart.
 constexpr uint32_t CHEMV_REG_COLS = 64U;
 constexpr uint32_t CHEMV_REG_PITCH = 136U;
 constexpr uint32_t CHEMV_REG_MATRIX_SLOTS = CHEMV_REG_ROWS > CHEMV_REG_COLS ? CHEMV_REG_ROWS : CHEMV_REG_COLS;
-static_assert(CHEMV_REG_ROWS > 0U && CHEMV_REG_ROWS <= 64U, "one register lane per row");
 static_assert(CHEMV_REG_COLS > 0U && CHEMV_REG_COLS <= 64U, "x buffer and mirror pitch limit");
 static_assert(CHEMV_REG_PITCH >= 2U * CHEMV_REG_COLS, "mirror run must fit its UB slot");
 
@@ -389,7 +389,10 @@ public:
             return;
         }
         const uint32_t rowTile = t_.rowsPerBlock;
-        if (rowTile != 16U && rowTile != 32U && rowTile != 64U) {
+        // Fail-silent safety net: the host gates rowsPerBlock to the supported set
+        // before tiling (device code has no host-side log channel). If this guard
+        // ever trips, check the shared CHEMV_REG_ROWS contract in chemv_tiling_data.h.
+        if (!CHEMV_ROWS_PER_BLOCK_VALID(rowTile)) {
             return;
         }
         const uint64_t groups = (static_cast<uint64_t>(t_.n) + rowTile - 1U) / rowTile;

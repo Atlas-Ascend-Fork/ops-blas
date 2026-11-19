@@ -10,6 +10,21 @@
 #pragma once
 #include <cstdint>
 
+// Register-tile row count shared by the host tiling and the RegOrdered kernel:
+// one definition so the two sides cannot drift apart.
+// The kernel fast path only accepts a rowsPerBlock from {16, 32, 64}; the host
+// ChemvRowsPerBlock stays within that set by construction (starts at 16 and
+// doubles while below CHEMV_REG_ROWS).
+constexpr uint32_t CHEMV_REG_ROWS = 64U;
+static_assert(CHEMV_REG_ROWS > 0U && CHEMV_REG_ROWS <= 64U, "one register lane per row");
+
+// Single definition of the supported rowsPerBlock set, consumed by the host
+// tiling gate and the kernel fail-silent guard alike. A function-like macro is
+// used because the kernel consumes it inside __aicore__ code, where only
+// device-callee functions are callable in the ccec device pass.
+#define CHEMV_ROWS_PER_BLOCK_VALID(rowsPerBlock) \
+    ((rowsPerBlock) == 16U || (rowsPerBlock) == 32U || (rowsPerBlock) == 64U)
+
 struct ChemvTilingData {
     uint32_t n;
     uint32_t lda;

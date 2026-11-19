@@ -18,8 +18,10 @@
  * Cube uses tensor_api (AscendC::Te); vector uses low-level AscendC API.
  */
 
+#include <cstddef>
 #include <cstdint>
 
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
 #define ASCENDC_CUBE_ONLY
@@ -145,22 +147,42 @@ extern "C" __global__ __aicore__ __cube__ void cgetri_strided_gemm_kernel_fp32_n
 }
 
 // ── Kernel 1 launcher ──
-#define DEFINE_GEMM_DTYPE_LAUNCHER(LAUNCHER_NAME, KERNEL_PREFIX)                          \
-    static inline void LAUNCHER_NAME(                                                     \
-        uint32_t numBlocks, void* stream, uint8_t* a, uint8_t* b, uint8_t* carray,        \
-        const GemmBatchedGemmTilingData& tilingData)                                      \
-    {                                                                                     \
-        bool isTransA = tilingData.isTransA != 0;                                         \
-        bool isTransB = tilingData.isTransB != 0;                                         \
-        if (isTransA && isTransB) {                                                       \
-            KERNEL_PREFIX##_tt<<<numBlocks, nullptr, stream>>>(a, b, carray, tilingData); \
-        } else if (isTransA) {                                                            \
-            KERNEL_PREFIX##_tn<<<numBlocks, nullptr, stream>>>(a, b, carray, tilingData); \
-        } else if (isTransB) {                                                            \
-            KERNEL_PREFIX##_nt<<<numBlocks, nullptr, stream>>>(a, b, carray, tilingData); \
-        } else {                                                                          \
-            KERNEL_PREFIX##_nn<<<numBlocks, nullptr, stream>>>(a, b, carray, tilingData); \
-        }                                                                                 \
+// Launches through aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs so the
+// runtime status of the launch is returned to the caller: the <<<>>> statement
+// form cannot be used as an rvalue, and thread-wide last-error state may contain
+// unrelated runtime calls. Same pattern as the arch22 cgemm_batched launchers
+// and chbmv_kernel_do.
+#define DEFINE_GEMM_DTYPE_LAUNCHER(LAUNCHER_NAME, KERNEL_PREFIX)                                                      \
+    static inline aclError LAUNCHER_NAME(                                                                             \
+        uint32_t numBlocks, void* stream, uint8_t* a, uint8_t* b, uint8_t* carray,                                    \
+        const GemmBatchedGemmTilingData& tilingData)                                                                  \
+    {                                                                                                                 \
+        bool isTransA = tilingData.isTransA != 0;                                                                     \
+        bool isTransB = tilingData.isTransB != 0;                                                                     \
+        const void* symbol = nullptr;                                                                                 \
+        if (isTransA && isTransB) {                                                                                   \
+            symbol = reinterpret_cast<const void*>(&KERNEL_PREFIX##_tt);                                              \
+        } else if (isTransA) {                                                                                        \
+            symbol = reinterpret_cast<const void*>(&KERNEL_PREFIX##_tn);                                              \
+        } else if (isTransB) {                                                                                        \
+            symbol = reinterpret_cast<const void*>(&KERNEL_PREFIX##_nt);                                              \
+        } else {                                                                                                      \
+            symbol = reinterpret_cast<const void*>(&KERNEL_PREFIX##_nn);                                              \
+        }                                                                                                             \
+        aclrtFuncHandle function = nullptr;                                                                           \
+        const aclError lookup = aclrtGetFuncBySymbol(symbol, &function);                                              \
+        if (lookup != ACL_SUCCESS) {                                                                                  \
+            return lookup;                                                                                            \
+        }                                                                                                             \
+        struct Arguments {                                                                                            \
+            uint8_t* a;                                                                                               \
+            uint8_t* b;                                                                                               \
+            uint8_t* carray;                                                                                          \
+            GemmBatchedGemmTilingData tiling;                                                                         \
+        };                                                                                                            \
+        Arguments args{a, b, carray, tilingData};                                                                     \
+        static_assert(offsetof(Arguments, tiling) == 3U * sizeof(uint8_t*), "kernel ABI mismatch");                   \
+        return aclrtLaunchKernelWithHostArgs(function, numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U); \
     }
 
 DEFINE_GEMM_DTYPE_LAUNCHER(LaunchGemmFp32, gemm_batched_gemm_kernel_fp32)
@@ -169,7 +191,7 @@ DEFINE_GEMM_DTYPE_LAUNCHER(LaunchGemmBf16, gemm_batched_gemm_kernel_bf16)
 DEFINE_GEMM_DTYPE_LAUNCHER(LaunchGemmFp16Out, gemm_batched_gemm_kernel_fp16out)
 #undef DEFINE_GEMM_DTYPE_LAUNCHER
 
-void gemm_batched_gemm_kernel_do(
+aclError gemm_batched_gemm_kernel_do(
     uint32_t numBlocks, void* stream, const uint8_t* aarray, const uint8_t* barray, uint8_t* carray,
     const GemmBatchedGemmTilingData& tilingData)
 {
@@ -177,27 +199,24 @@ void gemm_batched_gemm_kernel_do(
     uint8_t* b = const_cast<uint8_t*>(barray);
     switch (tilingData.dtypeCase) {
         case GEMM_BATCHED_DTYPE_FP32:
-            LaunchGemmFp32(numBlocks, stream, a, b, carray, tilingData);
-            break;
+            return LaunchGemmFp32(numBlocks, stream, a, b, carray, tilingData);
         case GEMM_BATCHED_DTYPE_FP16:
-            LaunchGemmFp16(numBlocks, stream, a, b, carray, tilingData);
-            break;
+            return LaunchGemmFp16(numBlocks, stream, a, b, carray, tilingData);
         case GEMM_BATCHED_DTYPE_BF16:
-            LaunchGemmBf16(numBlocks, stream, a, b, carray, tilingData);
-            break;
+            return LaunchGemmBf16(numBlocks, stream, a, b, carray, tilingData);
         default:
-            break;
+            return ACL_ERROR_INVALID_PARAM;
     }
 }
 
 // FLOAT16-input, FLOAT16-output GEMM launcher (fixpipe cast, no FP32 temporary).
-void gemm_batched_gemm_kernel_halfout_do(
+aclError gemm_batched_gemm_kernel_halfout_do(
     uint32_t numBlocks, void* stream, const uint8_t* aarray, const uint8_t* barray, uint8_t* carray,
     const GemmBatchedGemmTilingData& tilingData)
 {
     uint8_t* a = const_cast<uint8_t*>(aarray);
     uint8_t* b = const_cast<uint8_t*>(barray);
-    LaunchGemmFp16Out(numBlocks, stream, a, b, carray, tilingData);
+    return LaunchGemmFp16Out(numBlocks, stream, a, b, carray, tilingData);
 }
 
 void cgetri_strided_gemm_kernel_do(
@@ -488,18 +507,43 @@ GEMM_BATCHED_AB_KERNEL_ENTRY(gemm_batched_alpha_beta_kernel_fp32, 0)
 GEMM_BATCHED_AB_KERNEL_ENTRY(gemm_batched_alpha_beta_kernel_fp16, 1)
 GEMM_BATCHED_AB_KERNEL_ENTRY(gemm_batched_alpha_beta_kernel_bf16, 2)
 
-void gemm_batched_alpha_beta_kernel_do(
+// AIV launchers follow the same status-returning host-args pattern as the GEMM
+// launcher above (the <<<>>> statement form cannot be used as an rvalue).
+static inline aclError LaunchAlphaBetaKernel(
+    uint32_t numBlocks, void* stream, uint8_t* tempABPtr, uint8_t* carray, int dtypeCase,
+    const GemmBatchedAlphaBetaTilingData& tilingData)
+{
+    const void* symbol = nullptr;
+    if (dtypeCase == GEMM_BATCHED_DTYPE_FP32) {
+        symbol = reinterpret_cast<const void*>(&gemm_batched_alpha_beta_kernel_fp32);
+    } else if (dtypeCase == GEMM_BATCHED_DTYPE_FP16) {
+        symbol = reinterpret_cast<const void*>(&gemm_batched_alpha_beta_kernel_fp16);
+    } else if (dtypeCase == GEMM_BATCHED_DTYPE_BF16) {
+        symbol = reinterpret_cast<const void*>(&gemm_batched_alpha_beta_kernel_bf16);
+    } else {
+        return ACL_ERROR_INVALID_PARAM;
+    }
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(symbol, &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        uint8_t* tempAB;
+        uint8_t* carray;
+        GemmBatchedAlphaBetaTilingData tiling;
+    };
+    Arguments args{tempABPtr, carray, tilingData};
+    static_assert(offsetof(Arguments, tiling) == 2U * sizeof(uint8_t*), "kernel ABI mismatch");
+    return aclrtLaunchKernelWithHostArgs(function, numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
+}
+
+aclError gemm_batched_alpha_beta_kernel_do(
     uint32_t numBlocks, void* stream, const uint8_t* tempAB, uint8_t* carray,
     const GemmBatchedAlphaBetaTilingData& tilingData)
 {
-    uint8_t* tempABPtr = const_cast<uint8_t*>(tempAB);
-    if (tilingData.dtypeCase == GEMM_BATCHED_DTYPE_FP32) {
-        gemm_batched_alpha_beta_kernel_fp32<<<numBlocks, nullptr, stream>>>(tempABPtr, carray, tilingData);
-    } else if (tilingData.dtypeCase == GEMM_BATCHED_DTYPE_FP16) {
-        gemm_batched_alpha_beta_kernel_fp16<<<numBlocks, nullptr, stream>>>(tempABPtr, carray, tilingData);
-    } else if (tilingData.dtypeCase == GEMM_BATCHED_DTYPE_BF16) {
-        gemm_batched_alpha_beta_kernel_bf16<<<numBlocks, nullptr, stream>>>(tempABPtr, carray, tilingData);
-    }
+    return LaunchAlphaBetaKernel(
+        numBlocks, stream, const_cast<uint8_t*>(tempAB), carray, tilingData.dtypeCase, tilingData);
 }
 
 // ============================================================================
@@ -618,16 +662,31 @@ GEMM_BATCHED_EE_KERNEL_ENTRY(gemm_batched_early_exit_kernel_fp32, 0)
 GEMM_BATCHED_EE_KERNEL_ENTRY(gemm_batched_early_exit_kernel_fp16, 1)
 GEMM_BATCHED_EE_KERNEL_ENTRY(gemm_batched_early_exit_kernel_bf16, 2)
 
-void gemm_batched_early_exit_kernel_do(
+aclError gemm_batched_early_exit_kernel_do(
     uint32_t numBlocks, void* stream, uint8_t* carray, const GemmBatchedAlphaBetaTilingData& tilingData)
 {
+    const void* symbol = nullptr;
     if (tilingData.dtypeCase == GEMM_BATCHED_DTYPE_FP32) {
-        gemm_batched_early_exit_kernel_fp32<<<numBlocks, nullptr, stream>>>(carray, tilingData);
+        symbol = reinterpret_cast<const void*>(&gemm_batched_early_exit_kernel_fp32);
     } else if (tilingData.dtypeCase == GEMM_BATCHED_DTYPE_FP16) {
-        gemm_batched_early_exit_kernel_fp16<<<numBlocks, nullptr, stream>>>(carray, tilingData);
+        symbol = reinterpret_cast<const void*>(&gemm_batched_early_exit_kernel_fp16);
     } else if (tilingData.dtypeCase == GEMM_BATCHED_DTYPE_BF16) {
-        gemm_batched_early_exit_kernel_bf16<<<numBlocks, nullptr, stream>>>(carray, tilingData);
+        symbol = reinterpret_cast<const void*>(&gemm_batched_early_exit_kernel_bf16);
+    } else {
+        return ACL_ERROR_INVALID_PARAM;
     }
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(symbol, &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        uint8_t* carray;
+        GemmBatchedAlphaBetaTilingData tiling;
+    };
+    Arguments args{carray, tilingData};
+    static_assert(offsetof(Arguments, tiling) == sizeof(uint8_t*), "kernel ABI mismatch");
+    return aclrtLaunchKernelWithHostArgs(function, numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }
 
 // ============================================================================
