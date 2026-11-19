@@ -409,10 +409,47 @@ aclblasStatus_t aclblasCtrmm(
     aclblasDiagType_t diag, int m, int n, const aclblasComplex* alpha, const aclblasComplex* A, int lda,
     const aclblasComplex* B, int ldb, aclblasComplex* C, int ldc);
 
+/**
+ * @brief Solves a single-precision real triangular matrix equation in place.
+ *
+ * Solves op(A) * X = alpha * B for ACLBLAS_SIDE_LEFT, or
+ * X * op(A) = alpha * B for ACLBLAS_SIDE_RIGHT. side accepts
+ * ACLBLAS_SIDE_LEFT or ACLBLAS_SIDE_RIGHT. A and B use column-major Device
+ * storage; alpha is a Host pointer. uplo accepts ACLBLAS_UPPER or
+ * ACLBLAS_LOWER and selects the stored triangle of A. trans accepts
+ * ACLBLAS_OP_N, ACLBLAS_OP_T, or ACLBLAS_OP_C, selecting A, A^T, or A^H;
+ * ACLBLAS_OP_C is equivalent to ACLBLAS_OP_T for real data. diag accepts
+ * ACLBLAS_NON_UNIT or ACLBLAS_UNIT. With ACLBLAS_UNIT, the diagonal is
+ * treated as one and is not read.
+ *
+ * A is order m for LEFT and order n for RIGHT. lda is the number of elements
+ * between columns of A and must be at least max(1, m) for LEFT or max(1, n)
+ * for RIGHT. B is an m-by-n matrix; ldb is the number of elements between
+ * columns of B and must be at least max(1, m). On success, B is overwritten
+ * by X. When alpha is zero, A is not referenced and B is set to zero.
+ */
 aclblasStatus_t aclblasStrsm(
     aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t trans,
     aclblasDiagType_t diag, int m, int n, const float* alpha, const float* A, int lda, float* B, int ldb);
 
+/**
+ * @brief Solves a single-precision complex triangular matrix equation in place.
+ *
+ * Solves op(A) * X = alpha * B for ACLBLAS_SIDE_LEFT, or
+ * X * op(A) = alpha * B for ACLBLAS_SIDE_RIGHT. side accepts
+ * ACLBLAS_SIDE_LEFT or ACLBLAS_SIDE_RIGHT. A and B use column-major Device
+ * storage; alpha is a Host pointer. uplo accepts ACLBLAS_UPPER or
+ * ACLBLAS_LOWER and selects the stored triangle of A. trans accepts
+ * ACLBLAS_OP_N, ACLBLAS_OP_T, or ACLBLAS_OP_C, selecting A, A^T, or A^H.
+ * diag accepts ACLBLAS_NON_UNIT or ACLBLAS_UNIT. With ACLBLAS_UNIT, the
+ * diagonal is treated as one and is not read.
+ *
+ * A is order m for LEFT and order n for RIGHT. lda is the number of elements
+ * between columns of A and must be at least max(1, m) for LEFT or max(1, n)
+ * for RIGHT. B is an m-by-n matrix; ldb is the number of elements between
+ * columns of B and must be at least max(1, m). On success, B is overwritten
+ * by X. When alpha is zero, A is not referenced and B is set to zero.
+ */
 aclblasStatus_t aclblasCtrsm(
     aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t trans,
     aclblasDiagType_t diag, int m, int n, const aclblasComplex* alpha, const aclblasComplex* A, int lda,

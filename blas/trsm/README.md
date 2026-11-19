@@ -40,16 +40,16 @@ aclblasStatus_t aclblasStrsm(aclblasHandle_t handle, aclblasSideMode_t side, acl
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
 | side | 输入 | aclblasSideMode_t | A 在等式左侧(ACLBLAS_SIDE_LEFT)或右侧(ACLBLAS_SIDE_RIGHT)，Host 内存 |
-| uplo | 输入 | aclblasFillMode_t | A 为上三角(ACLBLAS_UPPER)或下三角(ACLBLAS_LOWER)，Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | A 为上三角(ACLBLAS_UPPER)或下三角(ACLBLAS_LOWER)，仅引用指定三角部分，Host 内存 |
 | trans | 输入 | aclblasOperation_t | op(A) 类型：ACLBLAS_OP_N(不转置)、ACLBLAS_OP_T(转置)、ACLBLAS_OP_C(共轭转置，实数下同 T)，Host 内存 |
-| diag | 输入 | aclblasDiagType_t | 对角线类型：ACLBLAS_NON_UNIT(非单位对角线)、ACLBLAS_UNIT(单位对角线)，Host 内存 |
+| diag | 输入 | aclblasDiagType_t | 对角线类型：ACLBLAS_NON_UNIT(非单位对角线)、ACLBLAS_UNIT(单位对角线)；UNIT 按 1 处理且不读取 A 的对角元，Host 内存 |
 | m | 输入 | int | B 的行数，m >= 0，Host 内存 |
 | n | 输入 | int | B 的列数，n >= 0，Host 内存 |
 | alpha | 输入 | const float*（FP32） | 标量系数，仅支持 Host 指针，alpha == 0 时 B 直接置零，Host 内存 |
-| A | 输入 | const float*（FP32） | 三角矩阵，side==LEFT 时维度 m×m，side==RIGHT 时维度 n×n，Device 内存 |
-| lda | 输入 | int | A 的 leading dimension，side==LEFT 时 lda >= max(1, m)，side==RIGHT 时 lda >= max(1, n)，Host 内存 |
-| B | 输入/输出 | float*（FP32） | m×n 矩阵，输入为右端矩阵，输出原地覆盖为解矩阵 X，Device 内存 |
-| ldb | 输入 | int | B 的 leading dimension，ldb >= max(1, m)，Host 内存 |
+| A | 输入 | const float*（FP32） | 列主序三角矩阵，side==LEFT 时维度 m×m，side==RIGHT 时维度 n×n，Device 内存 |
+| lda | 输入 | int | A 的 leading dimension（元素数），side==LEFT 时 lda >= max(1, m)，side==RIGHT 时 lda >= max(1, n)，Host 内存 |
+| B | 输入/输出 | float*（FP32） | 列主序 m×n 矩阵，输入为右端矩阵，输出原地覆盖为解矩阵 X，Device 内存 |
+| ldb | 输入 | int | B 的 leading dimension（元素数），ldb >= max(1, m)，Host 内存 |
 
 #### 约束说明
 
@@ -261,9 +261,9 @@ aclblasStatus_t aclblasCtrsm(aclblasHandle_t handle, aclblasSideMode_t side, acl
 | n | 输入 | int | B 的列数，`n >= 0` |
 | alpha | 输入 | const aclblasComplex* | Host 侧 COMPLEX64 标量；不可为 nullptr |
 | A | 输入 | const aclblasComplex* | Device 侧 COMPLEX64 三角矩阵，列主序；`alpha != 0` 时不可为 nullptr |
-| lda | 输入 | int | A 的前导维；LEFT 时 `lda >= max(1,m)`，RIGHT 时 `lda >= max(1,n)` |
+| lda | 输入 | int | A 的前导维（元素数）；LEFT 时 `lda >= max(1,m)`，RIGHT 时 `lda >= max(1,n)` |
 | B | 输入/输出 | aclblasComplex* | Device 侧 COMPLEX64 矩阵，列主序；输出 X 原地覆盖 B |
-| ldb | 输入 | int | B 的前导维，`ldb >= max(1,m)` |
+| ldb | 输入 | int | B 的前导维（元素数），`ldb >= max(1,m)` |
 
 #### 约束说明
 
