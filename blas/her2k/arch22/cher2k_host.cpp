@@ -10,9 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstring>
 #include <limits>
-#include <cstdlib>
 #include <vector>
 
 #include "securec.h"
@@ -154,7 +152,9 @@ void LimitCher2kDirectAicCores(Cher2kTilingData& tiling)
     if (tiling.directHermitianPath == 0U) {
         return;
     }
-    if (tiling.directOutputPath != 0U && tiling.trans == ACLBLAS_OP_C) {
+    // directHermitianPath 仅在 trans == OP_C 时由 host 置位（IsCher2kDirectHermitianCandidate
+    // 要求 OP_C），进入此分支时 trans 恒为 OP_C，无需再判。
+    if (tiling.directOutputPath != 0U) {
         const uint64_t directTileAxis =
             (tiling.nAligned + CHER2K_DIRECT_OUTPUT_N_ALIGN - 1ULL) / CHER2K_DIRECT_OUTPUT_N_ALIGN;
         const uint64_t directTasks = directTileAxis * (directTileAxis + 1ULL) / 2ULL;
@@ -268,7 +268,7 @@ aclblasStatus_t ValidateCher2kEnums(aclblasFillMode_t uplo, aclblasOperation_t t
 
 aclblasStatus_t ValidateCher2kParams(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const aclblasComplex* alpha,
-    const aclblasComplex* a, int lda, const aclblasComplex* b, int ldb, const float* beta, aclblasComplex* c, int ldc)
+    const aclblasComplex* a, int lda, const aclblasComplex* b, int ldb, const float* beta, int ldc)
 {
     if (handle == nullptr) {
         OP_LOGE("aclblasCher2k", "ValidateCher2kParams: handle must not be nullptr");
@@ -575,7 +575,7 @@ extern "C" aclblasStatus_t aclblasCher2k(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const aclblasComplex* alpha,
     const aclblasComplex* a, int lda, const aclblasComplex* b, int ldb, const float* beta, aclblasComplex* c, int ldc)
 {
-    aclblasStatus_t status = ValidateCher2kParams(handle, uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+    aclblasStatus_t status = ValidateCher2kParams(handle, uplo, trans, n, k, alpha, a, lda, b, ldb, beta, ldc);
     if (status != ACLBLAS_STATUS_SUCCESS || n == 0) {
         return status;
     }

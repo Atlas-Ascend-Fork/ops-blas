@@ -8,11 +8,9 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#include "common/helper/triangle_store_arch22.h"
 #include "kernel_operator.h"
 #include "cann_ops_blas_common.h"
 #include "common/helper/kernel_utils.h"
-#include "common/compute/simd.h"
 #define CHERK_ARCH22_DEVICE_IMPL
 #include "cherk_kernel.h"
 

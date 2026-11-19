@@ -12,7 +12,6 @@
 #include "kernel_operator.h"
 #include "cann_ops_blas_common.h"
 #include "common/helper/kernel_utils.h"
-#include "common/compute/simd.h"
 #include "cherk_kernel.h"
 #include "common/helper/triangle_store_arch22.h"
 

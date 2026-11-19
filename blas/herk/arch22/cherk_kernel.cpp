@@ -11,7 +11,6 @@
 #include "kernel_operator.h"
 #include "cann_ops_blas_common.h"
 #include "common/helper/kernel_utils.h"
-#include "common/compute/simd.h"
 #define CHERK_ARCH22_DEVICE_IMPL
 #include "cherk_kernel.h"
 #include "common/helper/scaled_scalar_arch22.h"
@@ -94,7 +93,8 @@ __aicore__ inline scaled_scalar::Complex CherkWideAccumulate(
     return sum;
 }
 
-template <uint32_t N>
+// 模板参数 N 在函数体内未被使用（仅依赖 tiling.n/tiling.ldc 与块索引），
+// 保留形参会为每个 TINY_N 实例生成多份等价代码，去模板化为单一实现。
 __aicore__ inline void CherkTinyReferenceFallback(
     float alpha, float beta, GM_ADDR aGm, GM_ADDR cGm, const CherkArch22TilingData& tiling)
 {
@@ -441,7 +441,7 @@ __aicore__ inline void RunTinyVector(
     float beta)
 {
     if (LoadTinyVectorInput(ctx, tiling)) {
-        CherkTinyReferenceFallback<TINY_N>(alpha, beta, aGm, cGm, tiling);
+        CherkTinyReferenceFallback(alpha, beta, aGm, cGm, tiling);
         return;
     }
     const uint32_t colBase = static_cast<uint32_t>(AscendC::GetBlockIdx()) * TINY_VECTOR_BATCH_COLS;
@@ -572,10 +572,17 @@ __aicore__ inline void InitTinyTransposeStorage(
     pipe.InitBuffer(product, matrix * 4U * sizeof(float));
     pipe.InitBuffer(accum, outputPlane * 2U * sizeof(float));
     pipe.InitBuffer(old, outputPlane * 2U * sizeof(float));
-    pipe.InitBuffer(output, N > 32U ? 32U : matrix * 2U * sizeof(float));
+    // N>32（tiny64）实例在 LoadTinyTransposeInput 中经 if constexpr (N > 32U)
+    // 直接返回，output/scratch/threshold 三个缓冲从不参与读写；按 N 分域守卫，
+    // 避免 tiny64 每次启动分配三块死缓冲。
+    if constexpr (N <= 32U) {
+        pipe.InitBuffer(output, matrix * 2U * sizeof(float));
+    }
     pipe.InitBuffer(metadata, (TRANSPOSE_COUNT + INTERLEAVE_COUNT) * sizeof(uint32_t));
-    pipe.InitBuffer(scratch, N > 32U ? 32U : matrix * sizeof(float));
-    pipe.InitBuffer(threshold, N > 32U ? 32U : matrix * sizeof(float));
+    if constexpr (N <= 32U) {
+        pipe.InitBuffer(scratch, matrix * sizeof(float));
+        pipe.InitBuffer(threshold, matrix * sizeof(float));
+    }
     pipe.InitBuffer(mask, matrix / 8U < 32U ? 32U : matrix / 8U);
 }
 
@@ -709,7 +716,7 @@ __aicore__ inline void RunTinyTranspose(
 {
     if (LoadTinyTransposeInput<TINY_N, TRANSPOSE_OFFSET, TRANSPOSE_COUNT, INTERLEAVE_OFFSET, INTERLEAVE_COUNT>(
             ctx, tiling)) {
-        CherkTinyReferenceFallback<TINY_N>(alpha, beta, aGm, cGm, tiling);
+        CherkTinyReferenceFallback(alpha, beta, aGm, cGm, tiling);
         return;
     }
     RunTinyTransposeColumns(ctx, tiling, alpha, beta);
