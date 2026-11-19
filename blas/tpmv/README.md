@@ -7,7 +7,7 @@ tpmv (Triangular Packed Matrix-Vector Multiplication) 实现三角压缩矩阵�
 数学表达式：
 
 ```
-x = A * x
+x = op(A) * x
 ```
 
 包含以下接口：
@@ -43,14 +43,19 @@ aclblasStatus_t aclblasStpmv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 | trans | 输入 | aclblasOperation_t | 矩阵操作类型：ACLBLAS_OP_N(不转置)、ACLBLAS_OP_T(转置)、ACLBLAS_OP_C(共轭转置)，Host 内存 |
 | diag | 输入 | aclblasDiagType_t | 对角线类型：ACLBLAS_NON_UNIT(非单位对角线)、ACLBLAS_UNIT(单位对角线)，Host 内存 |
 | n | 输入 | int | 三角压缩矩阵的行数和列数，Host 内存 |
-| AP | 输入 | const float*（FP32） | 三角压缩矩阵 float 数组，维度为 n*(n+1)/2，Device 内存 |
-| x | 输入/输出 | float*（FP32） | 输入/输出向量，包含 n 个元素，Device 内存 |
-| incx | 输入 | int | x 中连续元素之间的步长，Host 内存 |
+| AP | 输入 | const float*（FP32） | 三角压缩矩阵，按列 packed 存储，共 n*(n+1)/2 个元素，Device 内存 |
+| x | 输入/输出 | float*（FP32） | 含 n 个逻辑元素；n > 0 时物理跨度至少为 1+(n-1)*\|incx\| 个元素，Device 内存 |
+| incx | 输入 | int | x 中逻辑元素之间的步长，可为正或负但不能为 0，Host 内存 |
 
 #### 约束说明
 
 - n >= 0
 - incx != 0
+
+#### 存储布局
+
+- AP 使用 0 基列压缩索引：uplo = ACLBLAS_UPPER 时，A(i,j)（0 <= i <= j < n）位于 AP[i + j*(j+1)/2]；uplo = ACLBLAS_LOWER 时，A(i,j)（0 <= j <= i < n）位于 AP[i + j*(2*n-j-1)/2]。
+- x 包含 n 个逻辑元素。incx > 0 时逻辑元素 i 位于 x[i*incx]；incx < 0 时位于 x[(n-1-i)*|incx|]。因此 n > 0 时物理存储至少包含 1+(n-1)*|incx| 个元素。
 
 #### 调用示例
 
@@ -222,9 +227,9 @@ aclblasStatus_t aclblasCtpmv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 | trans | 输入 | aclblasOperation_t | 矩阵操作类型：ACLBLAS_OP_N(不转置)、ACLBLAS_OP_T(转置)、ACLBLAS_OP_C(共轭转置)，Host 内存 |
 | diag | 输入 | aclblasDiagType_t | 对角线类型：ACLBLAS_NON_UNIT(非单位对角线)、ACLBLAS_UNIT(单位对角线，对角假定为 1，不读取 AP 对角位置)，Host 内存 |
 | n | 输入 | int | 三角压缩矩阵的行数和列数，Host 内存 |
-| AP | 输入 | const aclblasComplex*（COMPLEX64） | 三角压缩矩阵 packed 数组（列优先紧凑，无 lda），维度为 n*(n+1)/2，Device 内存 |
-| x | 输入/输出 | aclblasComplex*（COMPLEX64） | 输入/输出向量，原地覆写，包含 n 个元素（步长展开后 1+(n-1)*\|incx\|），Device 内存 |
-| incx | 输入 | int | x 中连续元素之间的步长（支持负步长反向遍历），Host 内存 |
+| AP | 输入 | const aclblasComplex*（COMPLEX64） | 三角压缩矩阵，按列 packed 存储，共 n*(n+1)/2 个复数元素，Device 内存 |
+| x | 输入/输出 | aclblasComplex*（COMPLEX64） | 含 n 个逻辑元素；n > 0 时物理跨度至少为 1+(n-1)*\|incx\| 个复数元素，Device 内存 |
+| incx | 输入 | int | x 中逻辑元素之间的步长，可为正或负但不能为 0，Host 内存 |
 
 #### 约束说明
 
@@ -235,6 +240,8 @@ aclblasStatus_t aclblasCtpmv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 - 临时存储复用 handle 的 workspace，算子内不分配、不释放，也不隐式同步。连续调用须在同一 stream 上有序提交；跨 stream 共享数据须由调用方建立依赖。
 - 令 `S = n * sizeof(aclblasComplex)`：T/C 且 `incx=1、n>=8` 需要 `3*S+32768` 字节；N 且 `n<=32` 需要 `2*S`；N 且 `32<n<=128` 需要 `33*S`；其余路径需要 `(B+9)*S`，其中 `n<=8` 时 `B=1`，否则 `B=min(n, AIV核数)`。
 - 创建 handle 时预分配 32 MiB 默认 workspace。容量不足返回 `ACLBLAS_STATUS_EXECUTION_FAILED`，可先用 `aclblasSetWorkspace` 配置足够大的设备缓冲区后重试。用户 workspace 在关联 stream 完成前必须保持有效，库不会释放它。
+- AP 使用 0 基列压缩索引：uplo = ACLBLAS_UPPER 时，A(i,j)（0 <= i <= j < n）位于 AP[i + j*(j+1)/2]；uplo = ACLBLAS_LOWER 时，A(i,j)（0 <= j <= i < n）位于 AP[i + j*(2*n-j-1)/2]。
+- x 包含 n 个逻辑元素。incx > 0 时逻辑元素 i 位于 x[i*incx]；incx < 0 时位于 x[(n-1-i)*|incx|]。incx != 0；n > 0 时物理存储至少包含 1+(n-1)*|incx| 个复数元素。
 
 #### 调用示例
 

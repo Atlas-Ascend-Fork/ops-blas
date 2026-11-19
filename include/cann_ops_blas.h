@@ -211,6 +211,13 @@ aclblasStatus_t aclblasCtpsv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
     const aclblasComplex* AP, aclblasComplex* x, int incx);
 
+/*
+ * Stpmv and Ctpmv use 0-based column-packed AP storage: UPPER A(i,j) is at
+ * AP[i + j*(j+1)/2], and LOWER A(i,j) is at AP[i + j*(2*n-j-1)/2].
+ * For n > 0, x has n logical elements and a physical span of at least
+ * 1+(n-1)*|incx| elements. incx must be nonzero; for incx < 0, logical x[i]
+ * is at x[(n-1-i)*|incx|].
+ */
 aclblasStatus_t aclblasStpmv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
     const float* AP, float* x, int incx);
