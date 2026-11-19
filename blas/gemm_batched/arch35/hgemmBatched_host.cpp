@@ -171,7 +171,7 @@ static aclblasStatus_t ExecuteHgemmBatched(
     bool fastDirectOut = (alphaVal == 1.0f) && (betaVal == 0.0f);
     bool needPostProcess = !fastDirectOut;
 
-    HgemmLaunchContext ctx;
+    HgemmLaunchContext ctx{};
     aclblasStatus_t prepRet =
         PrepareHgemmLaunchContext(h, needPostProcess, isTransA, isTransB, m, n, k, lda, ldb, ldc, batchCount, ctx);
     if (prepRet != ACLBLAS_STATUS_SUCCESS) {
