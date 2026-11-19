@@ -91,11 +91,7 @@ struct Bands {
         const uint32_t bytes = (2U * t.n * sizeof(float) + 255U) & ~255U;
         storage.Init(pipe, x, y, a, bytes, 4U);
         auto index = storage.ab1.Get<int32_t>();
-        if constexpr (Manual) {
-            Csyr2Vector::InitOddRotationIndex(index, 2U * last);
-        } else {
-            Csyr2Vector::InitRotationIndex(index, 2U * last);
-        }
+        Csyr2Vector::InitRotationIndex(index, 2U * last);
         storage.v.Load(0U, last);
         set_flag(PIPE_MTE2, PIPE_V, EVENT_ID4);
         if constexpr (Manual) {

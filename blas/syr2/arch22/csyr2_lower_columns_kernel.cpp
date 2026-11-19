@@ -122,8 +122,9 @@ static bool PreferFullPair(uint32_t n, uint32_t cores, uint32_t cut1, uint32_t c
 
 void csyr2_lower_columns_do(uint32_t blocks, void* stream, uint8_t* x, uint8_t* y, uint8_t* a, const Csyr2TilingData& t)
 {
-    // Contiguous prefetch pays off for longer columns with aligned row pitch.
-    // Keep residue-lane atomic stores for short or unaligned matrices.
+    // The contiguous route consumes A directly with UB-resident delta plus
+    // SetAtomicAdd write-back; it pays off for longer columns with aligned
+    // row pitch. Keep residue-lane atomic stores for short or unaligned matrices.
     if (t.n >= 1024U && t.n <= 2048U && t.n % 8U == 0U) {
         csyr2_lower_contiguous_do(blocks, stream, x, y, a, t);
         return;
@@ -225,7 +226,7 @@ __global__ __aicore__ __vector__ void csyr2_lower_full_pair(
     auto index = storage.ab0.Get<int32_t>();
     storage.v.Load(first, rows0);
     // (i + 1) - 2*(i is odd) == (i xor 1), then convert to byte offsets.
-    Csyr2Vector::InitOddRotationIndex(index, 2U * rows0);
+    Csyr2Vector::InitRotationIndex(index, 2U * rows0);
     PipeBarrier<PIPE_ALL>();
     Csyr2Vector::RotateVectors(
         storage.v.xr, storage.v.yr, storage.v.xv, storage.v.yv, index.ReinterpretCast<uint32_t>(), 2U * rows0);

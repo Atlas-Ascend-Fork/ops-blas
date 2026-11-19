@@ -125,15 +125,6 @@ __aicore__ inline ColumnRange AtomicRange(uint32_t n, uint32_t cut1, uint32_t cu
     const uint32_t limit = (stop + 15U) & ~15U;
     return {first, limit < n ? limit : n};
 }
-__aicore__ inline void InitOddRotationIndex(LocalTensor<int32_t> index, uint32_t count)
-{
-    uint64_t odd[2] = {0xaaaaaaaaaaaaaaaaULL, 0ULL};
-    CreateVecIndex(index, int32_t(1), count);
-    PipeBarrier<PIPE_V>();
-    Adds(index, index, int32_t(-2), odd, uint8_t((count + 63U) / 64U), {1, 1, 8, 8});
-    PipeBarrier<PIPE_V>();
-    ShiftLeft(index, index, int32_t(2), count);
-}
 template <bool ToMte2, bool Atomic>
 __aicore__ inline void Finish(const bool (&pending)[2])
 {
@@ -154,7 +145,10 @@ __aicore__ inline void Finish(const bool (&pending)[2])
     }
 }
 
-// Build byte offsets for the (imaginary, real) companion vector.
+// Build byte offsets for the (imaginary, real) companion vector: even lanes
+// take 4*(i+1) and odd lanes take 4*(i-1). The former InitOddRotationIndex
+// variant built the identical sequence from a start-1 arange with a single
+// odd-masked -2 add; the duplicate was folded into this function (#991).
 __aicore__ inline void InitRotationIndex(LocalTensor<int32_t> index, uint32_t count)
 {
     uint64_t even[2] = {0x5555555555555555ULL, 0ULL};

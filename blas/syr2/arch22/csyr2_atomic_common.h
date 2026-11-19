@@ -68,7 +68,7 @@ __aicore__ inline void Run(
     auto index = storage.ab0.Get<int32_t>();
     storage.v.Load(Upper ? 0U : first, rows0);
     if constexpr (Upper) {
-        Csyr2Vector::InitOddRotationIndex(index, 2U * rows0);
+        Csyr2Vector::InitRotationIndex(index, 2U * rows0);
     } else {
         Csyr2Vector::InitRotationIndex(index, 2U * rows0);
     }

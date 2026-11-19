@@ -109,8 +109,10 @@ __global__ __aicore__ __vector__ void csyr2_banded_vector_manual(
     bands.Run<true>();
 }
 // Selected from the 16-device search. The larger late-column cost gives
-// the long-column region more cores. Prefetch the first A band into a0
-// while the rotation indices in a1 are still in use.
+// the long-column region more cores. The manual variant signals the
+// MTE2->S semaphore before the first A band prefetch (UpperIn) so the
+// rotation-index loads settle ahead of the scalar-dependent steps, and it
+// runs without the RequiresPrecise probe used by the plain path.
 void csyr2_banded_vector_manual_do(
     uint32_t blocks, void* stream, uint8_t* x, uint8_t* y, uint8_t* a, const Csyr2TilingData& t)
 {
@@ -134,9 +136,8 @@ __global__ __aicore__ __vector__ void csyr2_banded_vector(GM_ADDR xGm, GM_ADDR y
     }
     bands.Run<false>();
 }
-// Selected from the 16-device search. The larger late-column cost gives
-// the long-column region more cores. Prefetch the first A band into a0
-// while the rotation indices in a1 are still in use.
+// Routes shapes above the banded threshold to the manual variant; smaller
+// shapes run the plain kernel, which probes RequiresPrecise before computing.
 void csyr2_banded_vector_do(uint32_t blocks, void* stream, uint8_t* x, uint8_t* y, uint8_t* a, const Csyr2TilingData& t)
 {
     if (t.n > 32U) {

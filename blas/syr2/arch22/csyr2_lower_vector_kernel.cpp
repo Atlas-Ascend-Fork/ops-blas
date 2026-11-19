@@ -123,23 +123,6 @@ void csyr2_lower_vector_do(uint32_t blocks, void* stream, uint8_t* x, uint8_t* y
     csyr2_lower_vector<1024U><<<blocks, nullptr, stream>>>(x, y, a, t);
 }
 
-// One exact suffix transfer per column; left padding aligns all four
-// columns to the same row origin. No access above the diagonal.
-__aicore__ inline void ContiguousLowerIn(
-    LocalTensor<float> dst, GlobalTensor<float> a, uint32_t col, uint32_t rows, uint32_t columns, uint32_t lda)
-{
-    const uint32_t pitch = (2U * rows + 7U) & ~7U;
-#pragma unroll
-    for (uint32_t j = 0; j < 4U; ++j) {
-        if (j >= columns) {
-            break;
-        }
-        DataCopyExtParams copy{1, 8U * (rows - j), 0, 0, 0};
-        DataCopyPadExtParams<float> pad{true, static_cast<uint8_t>(2U * j), 0, 0.0F};
-        DataCopyPad(dst[pitch * j], a[2ULL * (uint64_t(col + j) * lda + col + j)], copy, pad);
-    }
-}
-
 __aicore__ inline void RunContiguous(
     Csyr2Vector::DiagonalBuffers& storage, uint32_t first, uint32_t last, const Csyr2TilingData& t)
 {
@@ -197,7 +180,7 @@ __global__ __aicore__ __vector__ void csyr2_lower_contiguous_atomic(
     storage.Init(pipe, xGm, yGm, aGm, t.n);
     auto index = storage.ab1.Get<int32_t>();
     const uint32_t vectorRows = t.n - range.first;
-    Csyr2Vector::InitOddRotationIndex(index, 2U * vectorRows);
+    Csyr2Vector::InitRotationIndex(index, 2U * vectorRows);
     storage.v.Load(range.first, vectorRows);
     set_flag(PIPE_MTE2, PIPE_V, EVENT_ID4);
     set_flag(PIPE_MTE2, PIPE_S, EVENT_ID0);
