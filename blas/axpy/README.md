@@ -24,8 +24,8 @@ y[i] = alpha * x[i] + y[i]  for i = 0 to n-1
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
 #### 函数原型
 
@@ -47,9 +47,11 @@ aclblasStatus_t aclblasSaxpy(aclblasHandle_t handle, int n, const float* alpha, 
 
 #### 约束说明
 
-- n >= 0
-- incx != 0
-- incy != 0
+- handle 为空时返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR；n <= 0 为合法 no-op（不访问 alpha/x/y，y 保持不变）
+- n > 0 时 alpha、x、y 均不可为空，incx、incy 不可为 0，否则返回 ACLBLAS_STATUS_INVALID_VALUE
+- **arch22（Atlas A2/A3）额外校验**：incx、incy 不可为 INT32_MIN，且 (n-1)×|incx| 或 (n-1)×|incy| 超出 INT32_MAX 时返回 ACLBLAS_STATUS_INVALID_VALUE；arch35（Ascend 950）实现目前仅拒绝 0，如需要两端行为一致可另行同步
+- 支持正、负步长：负步长按 BLAS 语义从物理 span 尾端起算；alpha == 0 时 y 不变且不读取 x（对齐 Netlib saxpy.f）
+- alpha 为 Host 内存标量，由算子 Host 侧同步解引用后下发
 
 #### 调用示例
 

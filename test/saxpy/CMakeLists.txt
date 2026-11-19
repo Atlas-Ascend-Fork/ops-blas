@@ -8,8 +8,10 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
-if(SOC_VERSION STREQUAL "ascend950")
+# Ascend 950（arch35）与 Atlas A2/A3（arch22）均使用 CSV 驱动 GTest 用例（共享 test_main.cpp）。
+if(SOC_VERSION STREQUAL "ascend950" OR "arch22" IN_LIST SOC_ARCH_DIRS)
     ops_blas_add_gtest_tests(${OPS_BLAS} saxpy_test)
 else()
     ops_blas_add_tests(${OPS_BLAS})
 endif()
+
