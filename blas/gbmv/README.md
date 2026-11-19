@@ -71,10 +71,10 @@ aclblasStatus_t aclblasSgbmv(
 | n | 输入 | int | 矩阵 A 的列数，n ≥ 0；n=0 时为合法 no-op，Host 内存 |
 | kl | 输入 | int | A 的下带宽（主对角线以下的非零对角线数），kl ≥ 0；实现加严：m>0 时 kl < m（见约束说明，与 cuBLAS 的已知行为差异），Host 内存 |
 | ku | 输入 | int | A 的上带宽（主对角线以上的非零对角线数），ku ≥ 0；实现加严：n>0 时 ku < n，Host 内存 |
-| alpha | 输入 | const float*（FP32） | 标量乘数，Host 内存；不可为 nullptr（即使 alpha=0）；alpha=0 时不引用 A 与 x |
-| A | 输入 | const float*（FP32） | 带状矩阵，维度为 lda×n（存带状部分），列主序，Device 内存，只读；带外槽位不引用 |
+| alpha | 输入 | const float*（FP32） | 标量乘数，Host 内存；不可为 nullptr（即使 alpha=0）；alpha=0 时 arch22 不引用 A/x，arch35 仍访问 A/x，见约束说明 |
+| A | 输入 | const float*（FP32） | 带状矩阵，维度为 lda×n（存带状部分），列主序，Device 内存，只读；带外槽位不引用。m、n 均大于 0 且 alpha 非零时必须非空；alpha 为 0 时 arch22 不引用 A，arch35 仍要求 A 非空且 kernel 会读取带内元素 |
 | lda | 输入 | int | 带状矩阵 A 的存储行数（前导维度），lda ≥ kl+ku+1，Host 内存 |
-| x | 输入 | const float*（FP32） | 输入向量，Device 内存，只读；逻辑长度 trans=N 时为 n、trans=T/C 时为 m，物理长度 ≥ 1+(len-1)\|incx\| |
+| x | 输入 | const float*（FP32） | 输入向量，Device 内存，只读；逻辑长度 trans=N 时为 n、trans=T/C 时为 m，物理长度 ≥ 1+(len-1)\|incx\|。m、n 均大于 0 且 alpha 非零时必须非空；alpha 为 0 时 arch22 不引用 x，arch35 仍要求 x 非空且 kernel 会读取相应元素 |
 | incx | 输入 | int | x 中连续元素之间的步长，incx ≠ 0（可正可负，负值时 x 反向存储），Host 内存 |
 | beta | 输入 | const float*（FP32） | 标量乘数，Host 内存；不可为 nullptr；beta=0 时 y 不必是有效输入（结果 y 被覆写） |
 | y | 输入/输出 | float*（FP32） | 输出向量（读入旧值、原地覆写新值），Device 内存；逻辑长度 trans=N 时为 m、trans=T/C 时为 n，物理长度 ≥ 1+(len-1)\|incy\| |
@@ -88,23 +88,23 @@ aclblasStatus_t aclblasSgbmv(
 - incx ≠ 0、incy ≠ 0，支持负步长（x/y 可为反向向量，Netlib 语义反向遍历）。
 - alpha、beta 不可为 nullptr（即使取值为 0 也须传有效 Host 指针）。
 - m=0 或 n=0 为合法 no-op 直接返回成功（不引用 A、x、y，此时三者允许为 nullptr——A/x/y 判空在该分支不生效）。
-- **alpha=0 特例（不引用 A 与 x，A/x 允许为 nullptr）**：beta=1 时 y 逐位不变（host 侧 quick return，位精确）；beta=0 时 y 各元素置 +0.0（位精确）；其余 beta 值 y 逐元素缩放（y = beta·y，单次 fp32 乘位精确）。
-- beta=0 时 y 不必是有效输入（可用 NaN 初始化 y）；alpha=0 时 A、x 不被引用。
+- **alpha=0 特例**：arch22 不读取 A/x，允许 A/x 为 nullptr；beta=1 时 Host quick return，y 逐位不变。arch35 仍要求 A/x 非空，kernel 在应用 alpha 前会读取带内 A 与对应 x 元素；beta=1 时也会下发 kernel，数学结果为原 y，但不保证逐位不变。跨产品调用应始终传入有效的 A/x 指针。
+- beta=0 时 y 的旧值不被读取（可用 NaN 初始化 y），两种实现均将结果写为 alpha 项；alpha=0 时该项为 0。
 - y 为原地覆写，不返回视图；不支持超出 incx/incy/lda 步长语义的非连续内存访问；无 broadcast；确定性计算不做要求。
 - 数据类型仅支持 FLOAT32（单精度实数）；非零形状能力口径：m/n/kl/ku 为 int 运行时入参（接口域 m,n ≤ 2^31-1），A 元素偏移全程 uint64 核算；测试工程覆盖口径 m,n ≤ 65536、lda·n ≤ 2^30（1 073 741 824，建模软约束，非算子能力上限）。
-- 精度：FLOAT32 按生态算子开源精度标准——rtol = 2^-10 (9.77e-4)、atol = 2^-16 (1.53e-5)、required_matched_ratio = 0.99、逐元素 max_abs_error_limit = 1e-2 或 32×ULP；alpha=0 计算路径与 quick return 位精确（EXACT）；golden 由 cblas（Netlib `sgbmv`）生成，输出 y 全向量逐元素验证。全量自测 **1201/1201 通过**（仓内 1200 条用例全量 + handle-null 负向；最低 matchedRatio 0.99805、最大 maxAbsErr 3.91e-03）。
+- 精度：FLOAT32 按生态算子开源精度标准——rtol = 2^-10 (9.77e-4)、atol = 2^-16 (1.53e-5)、required_matched_ratio = 0.99、逐元素 max_abs_error_limit = 1e-2 或 32×ULP；arch22 的 alpha=0 路径与 quick return 位精确（EXACT）；arch35 的 alpha=0 路径仍执行带内累加及 kernel 写回，不承诺 y 位精确不变；golden 由 cblas（Netlib `sgbmv`）生成，输出 y 全向量逐元素验证。全量自测 **1201/1201 通过**（仓内 1200 条用例全量 + handle-null 负向；最低 matchedRatio 0.99805、最大 maxAbsErr 3.91e-03）。
 - **性能口径为 kernel-only**（msprof plain 模式 op_summary Task Duration，warmup 10 + 有效采样 60、每 case 3 轮取中位）；测量环境 Atlas 800I A2（910B3）+ CANN 9.1.0，四标杆（1024²/16、2048²/32、T 1024²/16、4096²/64）实测 **4.900 / 7.150 / 4.559 / 12.350 µs**（标杆 12.53 / 15.54 / 10.58 / 21.98 µs，余量 1.78–2.56×）。
 
 #### 错误码
 
 | 返回值 | 说明 |
 |--------|------|
-| ACLBLAS_STATUS_SUCCESS (0) | 接口调用成功（含 m=0 / n=0 合法 no-op，及 alpha=0 且 beta=1 时 y 位精确不变的 quick return） |
-| ACLBLAS_STATUS_INVALID_VALUE (3) | m/n/kl/ku < 0；m>0 时 kl ≥ m 或 n>0 时 ku ≥ n（加严校验）；lda < kl+ku+1；incx = 0 或 incy = 0；alpha/beta 为 nullptr；m>0 且 n>0 时 y 为 nullptr；m>0 且 n>0 且 alpha≠0 时 A 或 x 为 nullptr |
+| ACLBLAS_STATUS_SUCCESS (0) | 接口调用成功（含 m=0 / n=0 合法 no-op；alpha=0 且 beta=1 时 arch22 直接 quick return，arch35 在 A/x 非空时执行 kernel 后成功） |
+| ACLBLAS_STATUS_INVALID_VALUE (3) | m/n/kl/ku < 0；m>0 时 kl ≥ m 或 n>0 时 ku ≥ n（加严校验）；lda < kl+ku+1；incx = 0 或 incy = 0；alpha/beta 为 nullptr；m>0 且 n>0 时 y 为 nullptr；arch22 在 alpha≠0 时 A 或 x 为空、arch35 在任意 alpha 下 A 或 x 为空 |
 | ACLBLAS_STATUS_HANDLE_IS_NULLPTR (9) | handle 为空指针 |
 | ACLBLAS_STATUS_INVALID_ENUM (10) | trans 取值不在 {ACLBLAS_OP_N, ACLBLAS_OP_T, ACLBLAS_OP_C} 内 |
 
-- 校验顺序：handle → trans（枚举）→ dims（m/n/kl/ku/lda，含加严）→ scalars（incx/incy/alpha/beta）→ arrays（A/x/y 条件判空）→ quick return 判定 → kernel 下发。
+- 校验顺序：arch22 为 handle → trans（枚举）→ dims（m/n/kl/ku/lda，含加严）→ scalars（incx/incy/alpha/beta）→ arrays（alpha 非零时检查 A/x，始终检查 y）→ quick return 判定 → kernel 下发；arch35 在任意 alpha 下先检查 A/x/y，再下发 kernel。
 - 资源类异常（如库内部内存分配失败）可能返回 ACLBLAS_STATUS_ALLOC_FAILED 等其他状态码，语义见 `include/cann_ops_blas_common.h`。
 
 #### 调用示例
