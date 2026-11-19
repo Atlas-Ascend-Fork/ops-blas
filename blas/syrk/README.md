@@ -43,7 +43,7 @@ aclblasStatus_t aclblasSsyrk(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 | 参数名 | 输入/输出 | 参数类型 | 说明 |
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
-| uplo | 输入 | aclblasFillMode_t | C 矩阵存储模式：ACLBLAS_UPPER(121) 保留上三角或 ACLBLAS_LOWER(122) 保留下三角，Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | C 矩阵更新模式：ACLBLAS_UPPER(121) 仅更新上三角或 ACLBLAS_LOWER(122) 仅更新下三角，Host 内存 |
 | trans | 输入 | aclblasOperation_t | A 矩阵转置模式：ACLBLAS_OP_N(111) 不转置、ACLBLAS_OP_T(112) 转置或 ACLBLAS_OP_C(113) 共轭转置（实数域等价于 OP_T），Host 内存 |
 | n | 输入 | int | C 矩阵的阶数，n >= 0，Host 内存 |
 | k | 输入 | int | 归约维度：trans='N' 时为 A 的列数（第二维度），trans='T'/'C' 时为 A 的行数（第一维度），k >= 0，Host 内存 |
@@ -228,8 +228,8 @@ int aclblasSsyrkTest(AclContext& ctx)
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy for beta failed. ERROR: %d\n", aclRet); return aclRet);
 
     // 4. 调用 aclblasSsyrk
-    // 计算 C = 1.0 * A * A^T + 0.0 * C
-    // A * A^T = [[1,2],[3,4]] * [[1,3],[2,4]] = [[5,11],[11,25]]
+    // 数学上的完整结果为 A * A^T = [[5,11],[11,25]]。
+    // uplo=LOWER 时接口只更新 C 的下三角；这里 C[0][1] 仍是输入旧值 0。
     blasRet = aclblasSsyrk(
         static_cast<aclblasHandle_t>(handlePtr.get()), ACLBLAS_LOWER, ACLBLAS_OP_N,
         n, k,
@@ -248,6 +248,12 @@ int aclblasSsyrkTest(AclContext& ctx)
     std::vector<float> cResult(n * n, 0.0f);
     aclRet = aclrtMemcpy(cResult.data(), cSize, dCPtr.get(), cSize, ACL_MEMCPY_DEVICE_TO_HOST);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy result failed. ERROR: %d\n", aclRet); return aclRet);
+    // 仅在需要完整对称矩阵时，镜像 Host 副本中的已计算下三角。
+    for (int column = 1; column < n; column++) {
+        for (int row = 0; row < column; row++) {
+            cResult[column * ldc + row] = cResult[row * ldc + column];
+        }
+    }
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
             LOG_PRINT("C[%d][%d] = %f\n", i, j, cResult[j * ldc + i]);
@@ -292,7 +298,7 @@ aclblasStatus_t aclblasCsyrk(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 | 参数名 | 输入/输出 | 参数类型 | 说明 |
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
-| uplo | 输入 | aclblasFillMode_t | C 矩阵存储模式：ACLBLAS_UPPER(121) 保留上三角或 ACLBLAS_LOWER(122) 保留下三角，Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | C 矩阵更新模式：ACLBLAS_UPPER(121) 仅更新上三角或 ACLBLAS_LOWER(122) 仅更新下三角，Host 内存 |
 | trans | 输入 | aclblasOperation_t | A 矩阵转置模式：ACLBLAS_OP_N(111) 不转置、ACLBLAS_OP_T(112) 普通转置；`ACLBLAS_OP_C`(113) 仅 arch35 接受（本算子为对称（非厄米特）运算，OP_C 不共轭、按 OP_T 等价处理），Host 内存 |
 | n | 输入 | int | C 矩阵的阶数，n >= 0，Host 内存 |
 | k | 输入 | int | A 矩阵的第二维度（trans='N' 时为 A 的列数，trans='T'/'C' 时为 A 的行数），k >= 0，Host 内存 |
@@ -459,9 +465,9 @@ int aclblasCsyrkTest(AclContext& ctx)
     // 4. 调用 aclblasCsyrk
     // 计算 C = alpha * A * A^T + beta * C (trans='N', uplo=LOWER)
     // 注意是普通转置 A^T 而非共轭转置：A^T = [[1+1i, 3+0i], [2+0i, 4+0i]]
-    // A * A^T = [[4+2i, 11+3i], [11+3i, 25+0i]]
-    // 结果为对称矩阵: C[0][1] = C[1][0]（不取共轭），且 C[0][0] 的虚部为 2 而非 0
-    // uplo=LOWER: 仅更新下三角 (C[0][0], C[1][0], C[1][1])
+    // 数学上的完整结果为 A * A^T = [[4+2i, 11+3i], [11+3i, 25+0i]]。
+    // uplo=LOWER 时接口只更新 C 的下三角；这里 C[0][1] 仍是输入旧值 0。
+    // 对称性不取共轭；已计算的 C[0][0] 虚部为 2。
     blasRet = aclblasCsyrk(
         handlePtr.get(), ACLBLAS_LOWER, ACLBLAS_OP_N,
         n, k,
@@ -480,6 +486,12 @@ int aclblasCsyrkTest(AclContext& ctx)
     std::vector<aclblasComplex> cResult(n * n, {0.0f, 0.0f});
     aclRet = aclrtMemcpy(cResult.data(), cSize, dCPtr.get(), cSize, ACL_MEMCPY_DEVICE_TO_HOST);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy result failed. ERROR: %d\n", aclRet); return aclRet);
+    // 仅在需要完整对称矩阵时，镜像 Host 副本中的已计算下三角。
+    for (int column = 1; column < n; column++) {
+        for (int row = 0; row < column; row++) {
+            cResult[column * ldc + row] = cResult[row * ldc + column];
+        }
+    }
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
             aclblasComplex val = cResult[static_cast<size_t>(j) * ldc + i];

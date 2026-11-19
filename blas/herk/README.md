@@ -238,8 +238,9 @@ int aclblasCherkTest(AclContext& ctx)
     // 计算 C = 1.0 * A * A^H + 0.0 * C (trans='N', uplo=LOWER)
     // A^H = [[1-1i, 3+0i], [2+0i, 4+0i]]
     // A * A^H = [[6, 11+3i], [11-3i, 25]]
-    // C 为 Hermitian 矩阵: C[0][1] = conj(C[1][0]), 对角线虚部为零
-    // uplo=LOWER: 仅更新下三角 (C[0][0], C[1][0], C[1][1])
+    // 数学上的完整 Hermitian 结果为 [[6, 11+3i], [11-3i, 25]]。
+    // uplo=LOWER 时接口只更新 C 的下三角；这里 C[0][1] 仍是输入旧值 0。
+    // 已计算的对角线虚部为零；完整矩阵的上三角需由调用方取下三角共轭得到。
     blasRet = aclblasCherk(
         handlePtr.get(), ACLBLAS_LOWER, ACLBLAS_OP_N,
         n, k,
@@ -258,6 +259,14 @@ int aclblasCherkTest(AclContext& ctx)
     std::vector<aclblasComplex> cResult(n * n, {0.0f, 0.0f});
     aclRet = aclrtMemcpy(cResult.data(), cSize, dCPtr.get(), cSize, ACL_MEMCPY_DEVICE_TO_HOST);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy result failed. ERROR: %d\n", aclRet); return aclRet);
+    // 仅在需要完整 Hermitian 矩阵时，将 Host 副本的下三角共轭到上三角。
+    for (int column = 1; column < n; column++) {
+        for (int row = 0; row < column; row++) {
+            const aclblasComplex lower = cResult[row * ldc + column];
+            cResult[column * ldc + row].real = lower.real;
+            cResult[column * ldc + row].imag = -lower.imag;
+        }
+    }
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
             aclblasComplex val = cResult[static_cast<size_t>(j) * ldc + i];
