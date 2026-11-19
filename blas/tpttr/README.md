@@ -2,7 +2,7 @@
 
 ## 算子概述
 
-Tpttr（Symmetric Triangular matrix, Packed format To Triangular matrix, Regular storage）算子将 LAPACK 压缩格式（packed format）中的对称三角矩阵展开为按列主序存储的常规二维矩阵。仅写入 `uplo` 指定的三角区域，矩阵另一三角及未参与运算的元素保持原值不变。属于 LAPACK 格式转换算子。
+Tpttr（Triangular matrix, Packed format To Triangular matrix, Regular storage）算子将 LAPACK 压缩格式（packed format）中的三角矩阵展开为按列主序存储的常规二维矩阵。展开是 packed 与常规存储之间的纯搬运，不做转置或共轭运算（复数接口同样只搬运元素值）。仅写入 `uplo` 指定的三角区域，矩阵另一三角及未参与运算的元素保持原值不变。属于 LAPACK 格式转换算子。
 
 数学表达式：
 
@@ -39,7 +39,7 @@ aclblasStatus_t aclblasStpttr(aclblasHandle_t handle, aclblasFillMode_t uplo, in
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
 | uplo | 输入 | aclblasFillMode_t | 三角存储方式：ACLBLAS_UPPER(121)、ACLBLAS_LOWER(122)，Host 内存 |
-| n | 输入 | int | 方阵维数，须 >= 0；为 0 时立即返回成功，Host 内存 |
+| n | 输入 | int | 方阵维数，须 >= 0；为 0 时在校验 handle、uplo 和 lda 后立即返回成功，Host 内存 |
 | AP | 输入 | const float*（FP32） | 压缩格式输入，float 数组，长度 n*(n+1)/2，Device 内存 |
 | A | 输入/输出 | float*（FP32） | 常规输出矩阵，float 数组，维度 lda × n；非目标三角保持原值，Device 内存 |
 | lda | 输入 | int | A 的主维长度，须满足 lda >= max(1, n)，Host 内存 |
@@ -47,7 +47,7 @@ aclblasStatus_t aclblasStpttr(aclblasHandle_t handle, aclblasFillMode_t uplo, in
 #### 约束说明
 
 - n >= 0
-- lda >= max(1, n)
+- lda >= max(1, n)（n = 0 时仍须满足，即 lda >= 1，(n = 0, lda = 0) 返回 ACLBLAS_STATUS_INVALID_VALUE）
 - uplo 必须为 ACLBLAS_UPPER 或 ACLBLAS_LOWER
 
 #### 调用示例
@@ -200,6 +200,7 @@ int main()
 | 产品 | 支持情况 |
 |---|---|
 | Ascend 950PR | 支持 |
+| Ascend 950DT | 支持 |
 
 #### 函数原型
 

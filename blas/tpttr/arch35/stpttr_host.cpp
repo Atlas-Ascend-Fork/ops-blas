@@ -40,12 +40,15 @@ static aclblasStatus_t ValidateParams(
         OP_LOGE("aclblasStpttr", "uplo=%d, expected 121(UPPER) or 122(LOWER)", static_cast<int>(uplo));
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    // The lda check precedes the n == 0 early return so that (n = 0, lda = 0) is
+    // rejected exactly like aclblasCtpttr and LAPACK (LDA >= MAX(1, N), INFO = -5),
+    // keeping the zero-dim contract of both tpttr interfaces consistent (#1016).
+    if (lda < std::max(1, n)) {
+        OP_LOGE("aclblasStpttr", "lda=%d, expected >= max(1, n=%d)", lda, n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     if (n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
-    }
-    if (lda < n) {
-        OP_LOGE("aclblasStpttr", "lda=%d, expected >= n=%d", lda, n);
-        return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (AP == nullptr) {
         OP_LOGE("aclblasStpttr", "AP must not be nullptr");

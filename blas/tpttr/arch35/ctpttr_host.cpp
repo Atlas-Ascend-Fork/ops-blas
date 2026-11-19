@@ -14,6 +14,7 @@
 #include "cann_ops_blas.h"
 #include "ctpttr_kernel.h"
 #include "common/helper/host_utils.h"
+#include "log/log.h"
 
 static_assert(sizeof(aclblasComplex) == 8U, "complex64 ABI mismatch");
 
@@ -22,31 +23,42 @@ extern "C" aclblasStatus_t aclblasCtpttr(
     const int lda)
 {
     if (handle == nullptr) {
+        OP_LOGE("aclblasCtpttr", "handle is nullptr");
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
     if (n < 0) {
+        OP_LOGE("aclblasCtpttr", "n=%d, expected >= 0", n);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (uplo != ACLBLAS_UPPER && uplo != ACLBLAS_LOWER) {
+        OP_LOGE("aclblasCtpttr", "uplo=%d, expected 121(UPPER) or 122(LOWER)", static_cast<int>(uplo));
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (lda < std::max(1, n)) {
+        OP_LOGE("aclblasCtpttr", "lda=%d, expected >= max(1, n=%d)", lda, n);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }
-    if (A == nullptr || AP == nullptr) {
+    if (AP == nullptr) {
+        OP_LOGE("aclblasCtpttr", "AP must not be nullptr");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (A == nullptr) {
+        OP_LOGE("aclblasCtpttr", "A must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     // Non-overlap is a caller precondition, not an in-place operation.
     aclrtStream stream = nullptr;
     const auto status = aclblasGetStream(handle, &stream);
     if (status != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE("aclblasCtpttr", "aclblasGetStream failed, status=%d", static_cast<int>(status));
         return status;
     }
     const uint32_t cores = GetAivCoreCount();
     if (cores == 0U) {
+        OP_LOGE("aclblasCtpttr", "vector core count is 0");
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
     const auto tiling =
