@@ -223,7 +223,7 @@ aclblasStatus_t aclblasCsymm(aclblasHandle_t handle, aclblasSideMode_t side, acl
 - side=LEFT 时 lda >= max(1, m)；side=RIGHT 时 lda >= max(1, n)
 - ldb >= max(1, m)，ldc >= max(1, m)，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 - m>0 且 n>0 时，alpha、beta 不可为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE
-- m>0 且 n>0 且 alpha!=(0,0) 时，A、B 不可为 nullptr；alpha==(0,0) 时 A、B 可为 nullptr（BLAS 标准）
+- m>0 且 n>0 且 alpha!=(0,0) 时，A、B 不可为 nullptr。arch35 在 alpha==(0,0) 时允许 A、B 为 nullptr；arch22 即使 alpha==(0,0) 也要求 A、B 非空。
 - beta==(0,0) 时 C 可为 nullptr（BLAS 标准：此时 C 不需要是有效输入，实现也不会读取 C，避免 0×NaN 污染结果）
 - alpha==(0,0) 且 beta==(1,0) 时 C 保持不变（Netlib csymm quick return）；alpha==(0,0) 时跳过矩阵乘，仅执行 C = beta * C
 - 矩阵 A、B、C 均按列主序（column-major）存储，复数元素 (row, col) 存储于 col*ld + row 位置，实部在前、虚部在后
