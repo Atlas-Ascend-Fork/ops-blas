@@ -19,7 +19,8 @@ BLAS_TEST_MODE=smoke 时把每个算子的 CSV 用例做确定性抽样，
   2. 负例（expect_result 列非 SUCCESS 值）全量保留；
   3. 组内按 case_name 排序后等距取样：小组（<=12）全保，
      大组保 max(4, size/8) 上限 24，边界样本（首/尾）必留；
-  4. 找不到 CSV 或解析失败的算子跳过（回退全量，build.sh 不为其生成条目）。
+  4. 找不到 CSV 或解析失败的算子回退全量。混合抽样时发出 op:ALL，
+     让合并测试运行器也运行该算子；所有算子均未抽样时输出为空。
 
 用法：
     python3 smoke_sample.py <soc_arch> <op1> [op2 ...]
@@ -131,12 +132,10 @@ def main():
         return 2
     soc_arch = sys.argv[1]
     os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-    out = []
-    for op in sys.argv[2:]:
-        entry = sample_op(op, soc_arch)
-        if entry:
-            out.append(entry)
-    sys.stdout.write("".join(out))
+    ops = sys.argv[2:]
+    samples = [sample_op(op, soc_arch) for op in ops]
+    if any(samples):
+        sys.stdout.write("".join(sample or f"{op}:ALL;" for op, sample in zip(ops, samples)))
     return 0
 
 
