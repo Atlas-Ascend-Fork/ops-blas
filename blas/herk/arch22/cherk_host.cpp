@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <vector>
 
@@ -301,27 +302,35 @@ extern "C" aclblasStatus_t aclblasCherk(
         return ACLBLAS_STATUS_SUCCESS;
     }
 
-    auto* internalHandle = static_cast<_aclblas_handle*>(handle);
-    CherkArch22TilingData tiling{};
-    status = PrepareTiling(
-        internalHandle, uplo, trans, static_cast<uint32_t>(n), static_cast<uint32_t>(k), static_cast<uint32_t>(lda),
-        static_cast<uint32_t>(ldc), tiling);
-    if (status != ACLBLAS_STATUS_SUCCESS) {
-        return status;
-    }
-
-    void* workspace = GetEffectiveWorkspace(internalHandle);
-    GM_ADDR metadata = nullptr;
-    if (tiling.smallPath != 1U) {
-        metadata = GetCherkArch22Metadata(internalHandle);
-        if (metadata == nullptr) {
-            OP_LOGE(OP_TAG, "aclblasCherk: failed to prepare persistent arch22 metadata");
-            return ACLBLAS_STATUS_ALLOC_FAILED;
+    // Host orchestration (workspace sizing, metadata upload, kernel dispatch)
+    // allocates via std::vector/aclrt; a std::exception here must not cross
+    // the extern "C" boundary (same contract as sgemm_grouped_batched).
+    try {
+        auto* internalHandle = static_cast<_aclblas_handle*>(handle);
+        CherkArch22TilingData tiling{};
+        status = PrepareTiling(
+            internalHandle, uplo, trans, static_cast<uint32_t>(n), static_cast<uint32_t>(k), static_cast<uint32_t>(lda),
+            static_cast<uint32_t>(ldc), tiling);
+        if (status != ACLBLAS_STATUS_SUCCESS) {
+            return status;
         }
+
+        void* workspace = GetEffectiveWorkspace(internalHandle);
+        GM_ADDR metadata = nullptr;
+        if (tiling.smallPath != 1U) {
+            metadata = GetCherkArch22Metadata(internalHandle);
+            if (metadata == nullptr) {
+                OP_LOGE(OP_TAG, "aclblasCherk: failed to prepare persistent arch22 metadata");
+                return ACLBLAS_STATUS_ALLOC_FAILED;
+            }
+        }
+        cherk_arch22_kernel_do(
+            reinterpret_cast<GM_ADDR>(const_cast<float*>(alpha)),
+            reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(a)),
+            reinterpret_cast<GM_ADDR>(const_cast<float*>(beta)), reinterpret_cast<GM_ADDR>(c),
+            reinterpret_cast<GM_ADDR>(workspace), metadata, tiling, internalHandle->stream);
+    } catch (const std::exception&) {
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
-    cherk_arch22_kernel_do(
-        reinterpret_cast<GM_ADDR>(const_cast<float*>(alpha)), reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(a)),
-        reinterpret_cast<GM_ADDR>(const_cast<float*>(beta)), reinterpret_cast<GM_ADDR>(c),
-        reinterpret_cast<GM_ADDR>(workspace), metadata, tiling, internalHandle->stream);
     return ACLBLAS_STATUS_SUCCESS;
 }

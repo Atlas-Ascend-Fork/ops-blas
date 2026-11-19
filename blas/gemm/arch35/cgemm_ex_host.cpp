@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <vector>
 #include "log/log.h"
 #include "cann_ops_blas.h"
@@ -1033,6 +1034,27 @@ static aclblasStatus_t PreparePublicTypes(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// issue #735: alpha/beta 按 gbmv/cherk/strmm/ssymm/axpy_ex/srot 等惯例支持 host/device
+// 双位置——入口统一探测并读入 host 副本，下游全部使用 host 值。原实现直接解引用
+// device 标量指针会段错误或读到垃圾值。
+static aclblasStatus_t ReadCgemmExScalars(
+    const aclblasComplex* alpha, const aclblasComplex* beta, aclblasHandle_t handle, aclblasComplex& alphaHost,
+    aclblasComplex& betaHost)
+{
+    auto* h = reinterpret_cast<_aclblas_handle*>(handle);
+    aclblasStatus_t scalarSt = ReadScalarFromHostOrDevice(alpha, h->stream, alphaHost);
+    if (scalarSt != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE("aclblasCgemmEx", "resolve alpha failed, status=%d", static_cast<int>(scalarSt));
+        return scalarSt;
+    }
+    scalarSt = ReadScalarFromHostOrDevice(beta, h->stream, betaHost);
+    if (scalarSt != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE("aclblasCgemmEx", "resolve beta failed, status=%d", static_cast<int>(scalarSt));
+        return scalarSt;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 } // namespace
 
 extern "C" aclblasStatus_t aclblasCgemmEx(
@@ -1045,25 +1067,15 @@ extern "C" aclblasStatus_t aclblasCgemmEx(
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
     }
-    // issue #735: alpha/beta 按 gbmv/cherk/strmm/ssymm/axpy_ex/srot 等惯例支持 host/device
-    // 双位置——入口统一探测并读入 host 副本，下游全部使用 host 值。原实现直接解引用
-    // device 标量指针会段错误或读到垃圾值。
     if (handle == nullptr) {
         OP_LOGE("aclblasCgemmEx", "handle is nullptr");
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
-    auto* h = reinterpret_cast<_aclblas_handle*>(handle);
     aclblasComplex alphaHost{};
     aclblasComplex betaHost{};
-    aclblasStatus_t scalarSt = ReadScalarFromHostOrDevice(alpha, h->stream, alphaHost);
-    if (scalarSt != ACLBLAS_STATUS_SUCCESS) {
-        OP_LOGE("aclblasCgemmEx", "resolve alpha failed, status=%d", static_cast<int>(scalarSt));
-        return scalarSt;
-    }
-    scalarSt = ReadScalarFromHostOrDevice(beta, h->stream, betaHost);
-    if (scalarSt != ACLBLAS_STATUS_SUCCESS) {
-        OP_LOGE("aclblasCgemmEx", "resolve beta failed, status=%d", static_cast<int>(scalarSt));
-        return scalarSt;
+    st = ReadCgemmExScalars(alpha, beta, handle, alphaHost, betaHost);
+    if (st != ACLBLAS_STATUS_SUCCESS) {
+        return st;
     }
     alpha = &alphaHost;
     beta = &betaHost;
@@ -1077,22 +1089,29 @@ extern "C" aclblasStatus_t aclblasCgemmEx(
     if (m == 0 || n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }
-    if (k == 0 || IsZeroComplex(alpha)) {
-        return HandleScaleOnly(handle, m, n, ldc, beta, C, tc);
+    // Path dispatch allocates via std::vector/aclrt; a std::exception here
+    // must not cross the extern "C" boundary (sgemm_grouped_batched contract).
+    // Parameter and enum validation stays outside the guard.
+    try {
+        if (k == 0 || IsZeroComplex(alpha)) {
+            return HandleScaleOnly(handle, m, n, ldc, beta, C, tc);
+        }
+        if (IsHalfType(ta) || IsHalfType(tb) || IsHalfType(tc)) {
+            return LaunchHalfPath(handle, transa, transb, m, n, k, alpha, A, ta, lda, B, tb, ldb, beta, C, tc, ldc);
+        }
+        if (ta == ACLBLAS_C_32 && tb == ACLBLAS_C_32) {
+            return LaunchC32Path(
+                handle, transa, transb, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc, tc == ACLBLAS_C_32 ? 1 : 0);
+        }
+        if (ta != ACLBLAS_C_32 && tb != ACLBLAS_C_32) {
+            return LaunchR32Path(
+                handle, transa, transb, m, n, k, alpha, static_cast<const float*>(A), lda, static_cast<const float*>(B),
+                ldb, beta, C, ldc, tc);
+        }
+        return LaunchMixedPromote(handle, transa, transb, m, n, k, alpha, A, ta, lda, B, tb, ldb, beta, C, tc, ldc);
+    } catch (const std::exception&) {
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
-    if (IsHalfType(ta) || IsHalfType(tb) || IsHalfType(tc)) {
-        return LaunchHalfPath(handle, transa, transb, m, n, k, alpha, A, ta, lda, B, tb, ldb, beta, C, tc, ldc);
-    }
-    if (ta == ACLBLAS_C_32 && tb == ACLBLAS_C_32) {
-        return LaunchC32Path(
-            handle, transa, transb, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc, tc == ACLBLAS_C_32 ? 1 : 0);
-    }
-    if (ta != ACLBLAS_C_32 && tb != ACLBLAS_C_32) {
-        return LaunchR32Path(
-            handle, transa, transb, m, n, k, alpha, static_cast<const float*>(A), lda, static_cast<const float*>(B),
-            ldb, beta, C, ldc, tc);
-    }
-    return LaunchMixedPromote(handle, transa, transb, m, n, k, alpha, A, ta, lda, B, tb, ldb, beta, C, tc, ldc);
 }
 
 #endif

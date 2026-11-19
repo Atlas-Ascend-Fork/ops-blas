@@ -17,6 +17,7 @@
  */
 
 #include <cstdint>
+#include <exception>
 #include <vector>
 #include <algorithm>
 #include "acl/acl.h"
@@ -277,14 +278,21 @@ extern "C" aclblasStatus_t aclblasCdgmm(
         return ACLBLAS_STATUS_SUCCESS;
     }
 
-    uint32_t aivCoreNum = GetAivCoreCount();
-    if (aivCoreNum == 0) {
-        OP_LOGE("aclblasCdgmm", "GetAivCoreCount failed");
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    // Launch orchestration allocates via std::vector/aclrt; a std::exception
+    // here must not cross the extern "C" boundary (sgemm_grouped_batched
+    // contract). Parameter validation stays outside the guard.
+    try {
+        uint32_t aivCoreNum = GetAivCoreCount();
+        if (aivCoreNum == 0) {
+            OP_LOGE("aclblasCdgmm", "GetAivCoreCount failed");
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+
+        CdgmmLaunchConfig config;
+        BuildCdgmmLaunchConfig(mode, m, n, lda, incx, ldc, aivCoreNum, config);
+
+        return LaunchCdgmm(handle->stream, A, x, C, config);
+    } catch (const std::exception&) {
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
-
-    CdgmmLaunchConfig config;
-    BuildCdgmmLaunchConfig(mode, m, n, lda, incx, ldc, aivCoreNum, config);
-
-    return LaunchCdgmm(handle->stream, A, x, C, config);
 }

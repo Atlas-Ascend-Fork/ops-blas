@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <vector>
 
@@ -611,11 +612,19 @@ extern "C" aclblasStatus_t aclblasCher2k(
     // scalars to the host.  Keep this path value-independent: the fused AIV
     // kernel reads alpha/beta from GM on every invocation, so in-place scalar
     // updates retain normal BLAS semantics.
-    if (TryLaunchCher2kSmallIngress(
-            h, uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc, alphaDevice, betaDevice)) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
+    // Kernel dispatch allocates via std::vector/aclrt; a std::exception here
+    // must not cross the extern "C" boundary (sgemm_grouped_batched contract).
+    try {
+        const bool smallIngressOk = TryLaunchCher2kSmallIngress(
+            h, uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc, alphaDevice, betaDevice);
+        if (smallIngressOk) {
+            return ACLBLAS_STATUS_SUCCESS;
+        }
 
-    // Device scalars stay in GM; host scalars are read once to select the graph.
-    return BuildAndLaunchCher2k(h, uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc, alphaDevice && betaDevice);
+        // Device scalars stay in GM; host scalars are read once to select the graph.
+        return BuildAndLaunchCher2k(
+            h, uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc, alphaDevice && betaDevice);
+    } catch (const std::exception&) {
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 }
