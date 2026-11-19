@@ -84,7 +84,7 @@ aclblasStatus_t aclblasStpsv(
         numThreads = std::min(CeilAlign<uint32_t>(static_cast<uint32_t>(n), SIMT_MIN_THREAD_NUM), SIMT_MAX_THREAD_NUM);
     }
 
-    StpsvTilingData tiling;
+    StpsvTilingData tiling{};
     tiling.ap = reinterpret_cast<uint64_t>(AP);
     tiling.x = reinterpret_cast<uint64_t>(x);
     tiling.n = static_cast<uint32_t>(n);

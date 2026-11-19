@@ -113,7 +113,7 @@ aclblasStatus_t aclblasStpsv(
     }
 
     auto* h = handle;
-    StpsvTilingData tiling;
+    StpsvTilingData tiling{};
     tiling.ap = reinterpret_cast<uint64_t>(AP);
     tiling.x = reinterpret_cast<uint64_t>(x);
     tiling.n = static_cast<uint32_t>(n);

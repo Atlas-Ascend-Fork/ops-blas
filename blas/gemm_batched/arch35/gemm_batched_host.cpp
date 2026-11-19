@@ -157,7 +157,7 @@ static aclblasStatus_t ExecuteSgemmBatched(
         return coreRet;
     }
 
-    GemmBatchedGemmTilingData tilingData;
+    GemmBatchedGemmTilingData tilingData{};
     aclblasStatus_t tilingRet =
         CalcGemmTiling(m, n, k, batchCount, lda, ldb, ldc, isTransA, isTransB, cubeCoreNum, tilingData);
     if (tilingRet != ACLBLAS_STATUS_SUCCESS) {
@@ -544,7 +544,7 @@ static aclblasStatus_t LaunchCgemmDeinterleaveAndGemm(
     bool isRealTransA = (realTransA != ACLBLAS_OP_N);
     bool isRealTransB = (realTransB != ACLBLAS_OP_N);
     int ldcTemp = static_cast<int>(ctx.tempRowStride);
-    GemmBatchedGemmTilingData realGemmTiling;
+    GemmBatchedGemmTilingData realGemmTiling{};
     aclblasStatus_t tilingRet =
         CalcGemmTiling(m, n, k, batchCount, lda, ldb, ldcTemp, isRealTransA, isRealTransB, cubeCoreNum, realGemmTiling);
     if (tilingRet != ACLBLAS_STATUS_SUCCESS) {

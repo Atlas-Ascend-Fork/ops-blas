@@ -43,7 +43,7 @@ struct CscalTilingData {
 
 CscalTilingData CalTilingData(int32_t n, int32_t incx, float alphaReal, float alphaImag)
 {
-    CscalTilingData tilingData;
+    CscalTilingData tilingData{};
     tilingData.n = n;
     tilingData.incx = incx;
     tilingData.alphaReal = alphaReal;

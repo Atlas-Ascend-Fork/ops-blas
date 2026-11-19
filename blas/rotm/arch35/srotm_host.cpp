@@ -125,7 +125,7 @@ aclblasStatus_t aclblasSrotm(aclblasHandle_t handle, int n, float* x, int incx, 
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
 
-    SrotmTilingData tilingData;
+    SrotmTilingData tilingData{};
     BuildTilingData(n, incx, incy, paramHost, numBlocks, tilingData);
 
     srotm_kernel_do_arch35(

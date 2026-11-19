@@ -122,7 +122,7 @@ static aclblasStatus_t LaunchSaxpyKernel(
     }
 
     uint32_t totalN = static_cast<uint32_t>(n);
-    SaxpyTilingData tiling;
+    SaxpyTilingData tiling{};
     uint32_t numBlocks;
 
     if (incx == 1 && incy == 1) {

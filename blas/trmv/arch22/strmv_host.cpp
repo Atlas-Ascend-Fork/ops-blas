@@ -108,7 +108,7 @@ aclblasStatus_t aclblasStrmv(
         numBlocks = 1;
     }
 
-    StrmvTilingData tiling;
+    StrmvTilingData tiling{};
     tiling.matSizeN = n;
     tiling.uplo = (uplo == ACLBLAS_UPPER) ? 1 : 0;
     tiling.trans = (trans == ACLBLAS_OP_N) ? 0 : 1;

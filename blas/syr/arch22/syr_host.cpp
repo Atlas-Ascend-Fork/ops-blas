@@ -61,7 +61,7 @@ aclblasStatus_t aclblasSsyr(
 
     uint32_t vecCoreNum = DEFAULT_VECTOR_NUM;
 
-    SsyrTilingData tiling;
+    SsyrTilingData tiling{};
     tiling.uplo = (uplo == ACLBLAS_UPPER) ? 1 : 0;
     tiling.n = static_cast<uint32_t>(n);
     tiling.alpha = alphaVal;

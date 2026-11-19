@@ -119,7 +119,7 @@ static aclblasStatus_t LaunchScalexKernel(
     int n, int incx, uint32_t aivCoreNum, const void* alpha, bool alphaIsDevice, uint32_t xType, void* x,
     aclrtStream stream)
 {
-    ScalexTilingData tiling;
+    ScalexTilingData tiling{};
     uint32_t numBlocks;
 
     if (incx == 1) {

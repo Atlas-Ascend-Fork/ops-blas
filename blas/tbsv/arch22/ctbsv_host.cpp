@@ -82,7 +82,7 @@ aclblasStatus_t aclblasCtbsv(
         return ACLBLAS_STATUS_SUCCESS;
     }
 
-    CtbsvTilingData tiling;
+    CtbsvTilingData tiling{};
     FillCtbsvTiling(A, x, n, k, uplo, trans, diag, lda, incx, tiling);
     OP_LOGD(
         "aclblasCtbsv", "tiling: n=%u k=%u uplo=%u trans=%u diag=%u incx=%d lda=%u gmFallback=%u", tiling.n, tiling.k,

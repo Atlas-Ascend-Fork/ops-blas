@@ -53,7 +53,7 @@ constexpr uint32_t CDOTU_SMALL_N_THREADS = 512;
 // workspace residue). Combine reads exactly useCoreNum slots, all of which are valid.
 static CdotuTilingData CalCdotuTilingData(int n, uint32_t vecCoreNum, int incx, int incy, uint32_t nthreads)
 {
-    CdotuTilingData tiling;
+    CdotuTilingData tiling{};
     tiling.n = n;
     tiling.incx = incx;
     tiling.incy = incy;

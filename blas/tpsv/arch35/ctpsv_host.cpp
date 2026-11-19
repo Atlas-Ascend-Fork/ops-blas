@@ -104,7 +104,7 @@ aclblasStatus_t aclblasCtpsv(
         numThreads = std::max(numThreads, 32U);
     }
 
-    CtpsvTilingData tiling;
+    CtpsvTilingData tiling{};
     tiling.ap = reinterpret_cast<uint64_t>(AP);
     tiling.x = reinterpret_cast<uint64_t>(x);
     tiling.n = static_cast<uint32_t>(n);

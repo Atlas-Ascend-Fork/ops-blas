@@ -62,7 +62,7 @@ aclblasStatus_t aclblasSsyr2(
         return alphaStatus;
     }
 
-    Ssyr2TilingData tiling;
+    Ssyr2TilingData tiling{};
     tiling.uplo = (uplo == ACLBLAS_UPPER) ? 1 : 0;
     tiling.n = n;
     tiling.alpha = alphaVal;

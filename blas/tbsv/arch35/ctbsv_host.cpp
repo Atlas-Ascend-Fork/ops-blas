@@ -121,7 +121,7 @@ aclblasStatus_t aclblasCtbsv(
         return ACLBLAS_STATUS_SUCCESS;
     }
 
-    CtbsvTilingData tiling;
+    CtbsvTilingData tiling{};
     FillCtbsvTiling(
         A, x, n, k, uplo, trans, diag, lda, incx,
         ChooseCtbsvNumThreads(trans, static_cast<uint32_t>(n), static_cast<uint32_t>(k)), tiling);

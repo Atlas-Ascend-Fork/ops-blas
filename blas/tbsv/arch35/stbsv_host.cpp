@@ -81,7 +81,7 @@ aclblasStatus_t aclblasStbsv(
         numThreads = std::min(static_cast<uint32_t>(n), SIMT_MAX_THREAD_NUM);
     }
 
-    StbsvTilingData tiling;
+    StbsvTilingData tiling{};
     tiling.a = reinterpret_cast<uint64_t>(A);
     tiling.x = reinterpret_cast<uint64_t>(x);
     tiling.n = static_cast<uint32_t>(n);

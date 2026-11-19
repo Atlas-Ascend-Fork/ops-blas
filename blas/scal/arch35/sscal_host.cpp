@@ -147,7 +147,7 @@ aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, 
     auto* h = handle;
     uint32_t totalN = static_cast<uint32_t>(n);
 
-    SscalTilingData tiling;
+    SscalTilingData tiling{};
     uint32_t numBlocks;
 
     if (incx == 1) {

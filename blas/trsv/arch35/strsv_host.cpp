@@ -78,7 +78,7 @@ aclblasStatus_t aclblasStrsv(
 
     uint32_t numThreads = SIMT_OPTIMAL_THREADS;
 
-    StrsvTilingData tiling;
+    StrsvTilingData tiling{};
     tiling.n = static_cast<uint32_t>(n);
     tiling.uplo = static_cast<uint32_t>(uplo);
     tiling.trans = static_cast<uint32_t>(trans);

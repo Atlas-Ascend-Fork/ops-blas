@@ -86,7 +86,7 @@ aclblasStatus_t aclblasCsrot(
     uint32_t numBlocks = 8;
     size_t workSpaceSize = 32;
 
-    RotTilingData tiling;
+    RotTilingData tiling{};
     // kernel 按交织复数的 float 分量逐分量旋转（x'_r = c*x_r + s*y_r 等），
     // elementCount 必须是 float 分量数 2*n；传 n 会导致仅前一半复数元素
     // 被旋转、后一半保持原值（issue #358 测试缓冲修正后暴露）
