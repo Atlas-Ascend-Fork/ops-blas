@@ -80,7 +80,7 @@ aclblasStatus_t aclblasSgemmGroupedBatched(aclblasHandle_t handle, int groupCoun
 aclInit(nullptr);
 aclrtSetDevice(0);
 aclblasHandle_t handle = nullptr;
-aclblasCreateHandle(&handle);
+aclblasCreate(&handle);
 
 // 定义 2 个分组
 int groupCount = 2;
@@ -112,7 +112,7 @@ aclblasStatus_t ret = aclblasSgemmGroupedBatched(
     Carray, ldcArray, groupSizeArray);
 
 // 清理
-aclblasDestroyHandle(handle);
+aclblasDestroy(handle);
 aclrtResetDevice(0);
 aclFinalize();
 ```
