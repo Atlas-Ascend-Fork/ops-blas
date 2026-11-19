@@ -21,7 +21,9 @@
 需要 CMake≥3.16、GCC/G++、gfortran、Python3、GTest；按仓库说明准备CANN及公共依赖。所有命令在ops-blas仓库根执行，下面输出目录须事先不存在。
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
+# 将 CANN_HOME 改为本机 set_env.sh 所在的目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/set_env.sh"
 TEST=test/gemm/hgemmStridedBatched
 python3 "$TEST/run_self_test.py" --filter 'TC_L0_*' --device 0 --output /tmp/hgemm-l0
 ```
@@ -59,7 +61,9 @@ CPU参考在大矩阵上按独立输出列并行，保持完整K归约及同一N
 在950环境加载CANN后使用`mssanitizer --help`核对工具安装。单独构建带`--sanitizer -g`的内存检查版本，保留正常构建用于精度与性能；检查版本仅通过mssanitizer启动。以下命令在仓库根目录执行，离线Netlib输入的配置同上：
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
+# 将 CANN_HOME 改为本机 set_env.sh 所在的目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/set_env.sh"
 TEST=test/gemm/hgemmStridedBatched
 python3 "$TEST/reference/build_reference.py" build-memcheck/reference
 export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64"

@@ -4,10 +4,12 @@
 
 ## 构建
 
-在 ops-blas 根目录运行（以下目录为 CANN 9.1.0 的常见安装位置，使用实际安装路径）：
+在 ops-blas 根目录运行，以下以 CANN 9.1.0 为例：
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
+# 将 CANN_HOME 改为本机 set_env.sh 所在的目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/set_env.sh"
 export EAGER_LIBRARY_PATH="$ASCEND_HOME_PATH/lib64"
 cmake -S . -B build-release -DSOC_VERSION=ascend950 \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TEST=ON -DTEST_NAMES=csyr2 \

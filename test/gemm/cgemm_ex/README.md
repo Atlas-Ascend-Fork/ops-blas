@@ -2,9 +2,12 @@
 
 ## 编译与运行
 
+在 ops-blas 仓库根目录运行以下命令。
+
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
-cd ops-blas
+# 将 CANN_HOME 改为本机 set_env.sh 所在的目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/set_env.sh"
 bash build.sh --soc=ascend950 --ops=cgemm_ex --run --device=0
 ```
 

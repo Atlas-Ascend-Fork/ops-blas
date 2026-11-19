@@ -7,7 +7,9 @@
 依赖 CANN 9.1.0、GTest、Netlib BLAS 和 LAPACK 开发包。使用实际设备编号；默认是逻辑卡 0。
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
+# 将 CANN_HOME 改为本机 set_env.sh 所在的目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/set_env.sh"
 export EAGER_LIBRARY_PATH=$ASCEND_HOME_PATH/lib64
 bash build.sh --soc=ascend910b3 --ops=cgemm_strided_batched --device=0
 export LD_LIBRARY_PATH=$PWD/build:$ASCEND_HOME_PATH/lib64:$LD_LIBRARY_PATH
