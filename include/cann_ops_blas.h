@@ -373,6 +373,19 @@ aclblasStatus_t aclblasStrmv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
     const float* A, int lda, float* x, int incx);
 
+/**
+ * @brief Single-precision triangular matrix-matrix multiplication.
+ *
+ * Computes C = alpha * op(A) * B for side=LEFT or C = alpha * B * op(A) for
+ * side=RIGHT. A, B, and C are column-major; side selects the order of A
+ * (m for LEFT, n for RIGHT), and uplo selects the stored triangle of A before
+ * trans is applied. With diag=UNIT, A's diagonal is treated as one and is not
+ * read; diag=NON_UNIT reads the stored diagonal. The result contains only the
+ * logical m-by-n elements C[j*ldc+i] (i < m, j < n); padding rows are outside
+ * the result.
+ * When alpha is zero, A and B are not referenced and the logical output is
+ * zeroed.
+ */
 aclblasStatus_t aclblasStrmm(
     aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t trans,
     aclblasDiagType_t diag, int m, int n, const float* alpha, const float* A, int lda, const float* B, int ldb,
@@ -382,10 +395,14 @@ aclblasStatus_t aclblasStrmm(
  * @brief Single-precision complex triangular matrix-matrix multiplication.
  *
  * Computes C = alpha * op(A) * B (side=LEFT) or C = alpha * B * op(A) (side=RIGHT),
- * where op(A) is one of A, A^T or A^H. A is a triangular matrix; when diag=UNIT,
- * the diagonal of A is assumed to be unity and not referenced. B may be aliased
- * with C for in-place computation (B == C). For alpha == (0,0), A and B are not
- * referenced and the m×n region of C is set to zero.
+ * where op(A) is one of A, A^T or A^H. A, B, and C are column-major; side
+ * selects the order of A (m for LEFT, n for RIGHT), and uplo selects the stored
+ * triangle of A before trans is applied. With diag=UNIT, A's diagonal is
+ * treated as one and is not read; diag=NON_UNIT reads the stored diagonal.
+ * The result contains only the logical m-by-n elements C[j*ldc+i] (i < m,
+ * j < n); padding rows are outside the result. B may be aliased with C for
+ * in-place computation (B == C). For alpha == (0,0), A and B are not
+ * referenced and the logical output is zeroed.
  */
 aclblasStatus_t aclblasCtrmm(
     aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, aclblasOperation_t trans,

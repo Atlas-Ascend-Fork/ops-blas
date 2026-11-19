@@ -46,10 +46,10 @@ aclblasStatus_t aclblasStrmm(aclblasHandle_t handle, aclblasSideMode_t side, acl
 | 参数名 | 输入/输出 | 参数类型 | 说明 |
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
-| side | 输入 | aclblasSideMode_t | A 矩阵位置：ACLBLAS_SIDE_LEFT（左侧）或 ACLBLAS_SIDE_RIGHT（右侧），Host 内存 |
-| uplo | 输入 | aclblasFillMode_t | A 矩阵存储模式：ACLBLAS_UPPER（上三角）或 ACLBLAS_LOWER（下三角），Host 内存 |
+| side | 输入 | aclblasSideMode_t | A 矩阵位置：ACLBLAS_SIDE_LEFT 时计算 `alpha * op(A) * B`，ACLBLAS_SIDE_RIGHT 时计算 `alpha * B * op(A)`；A 的阶数分别为 m 或 n，Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | A 的有效存储三角：ACLBLAS_UPPER（上三角）或 ACLBLAS_LOWER（下三角）；另一侧不参与读取，Host 内存 |
 | trans | 输入 | aclblasOperation_t | A 矩阵操作类型：A2/A3 支持 ACLBLAS_OP_N（不转置）和 ACLBLAS_OP_T（转置）；Ascend 950 还支持 ACLBLAS_OP_C，Host 内存 |
-| diag | 输入 | aclblasDiagType_t | 对角线类型：ACLBLAS_UNIT（单位三角，对角线为 1）或 ACLBLAS_NON_UNIT（非单位三角），Host 内存 |
+| diag | 输入 | aclblasDiagType_t | 对角线类型：ACLBLAS_UNIT（对角线视为 1，且不读取 A 的对角位置）或 ACLBLAS_NON_UNIT（使用 A 中存储的对角元），Host 内存 |
 | m | 输入 | int | 矩阵 B/C 的行数，m >= 0，Host 内存 |
 | n | 输入 | int | 矩阵 B/C 的列数，n >= 0，Host 内存 |
 | alpha | 输入 | const float*（FP32） | 标量 alpha，不可为 nullptr，支持 Host 或 Device 内存 |
@@ -57,7 +57,7 @@ aclblasStatus_t aclblasStrmm(aclblasHandle_t handle, aclblasSideMode_t side, acl
 | lda | 输入 | int | 矩阵 A 的主维（列主序），side=LEFT 时 lda >= max(1, m)，side=RIGHT 时 lda >= max(1, n)，Host 内存 |
 | B | 输入 | const float*（FP32） | m×n 输入矩阵，列主序存储，Device 内存 |
 | ldb | 输入 | int | 矩阵 B 的主维（列主序），ldb >= max(1, m)，Host 内存 |
-| C | 输出 | float*（FP32） | m×n 输出矩阵，列主序存储，Device 内存 |
+| C | 输出 | float*（FP32） | 列主序 m×n 逻辑输出；有效元素为每列前 m 个元素，ldc 填充行不属于结果，Device 内存 |
 | ldc | 输入 | int | 矩阵 C 的主维（列主序），ldc >= max(1, m)，Host 内存 |
 
 #### 约束说明
@@ -206,7 +206,7 @@ aclblasStatus_t aclblasCtrmm(
 | lda | 输入 | int | 矩阵 A 的主维（列主序），side=LEFT 时 lda >= max(1, m)，side=RIGHT 时 lda >= max(1, n)，Host 内存 |
 | B | 输入 | const aclblasComplex*（COMPLEX64） | m×n 输入矩阵，列主序存储，Device 内存 |
 | ldb | 输入 | int | 矩阵 B 的主维（列主序），ldb >= max(1, m)，Host 内存 |
-| C | 输出 | aclblasComplex*（COMPLEX64） | m×n 输出矩阵，列主序存储，Device 内存；允许与 B 为同一指针（原地计算） |
+| C | 输出 | aclblasComplex*（COMPLEX64） | 列主序 m×n 逻辑输出；有效元素为每列前 m 个元素，ldc 填充行不属于结果；允许与 B 为同一指针（原地计算），Device 内存 |
 | ldc | 输入 | int | 矩阵 C 的主维（列主序），ldc >= max(1, m)，Host 内存 |
 
 #### 约束说明
