@@ -138,9 +138,16 @@ class Harness:
             csvs = glob.glob(os.path.join(base, name, "OpBasicInfo_*.csv"))
             if not csvs:
                 continue
-            with open(csvs[0]) as fh:
-                rows = list(csv.reader(fh))
-            durs.append((int(name), float(rows[1][2])))  # 第3列 = Task Duration(us)
+            try:
+                with open(csvs[0], newline="") as fh:
+                    reader = csv.reader(fh)
+                    next(reader, None)
+                    row = next(reader, [])
+                duration = float(row[2])
+            except (OSError, IndexError, ValueError, csv.Error):
+                logging.error("Cannot read Task Duration from msprof report: %s", csvs[0])
+                return []
+            durs.append((int(name), duration))
         durs.sort()
         return [v for _, v in durs]
 
