@@ -52,6 +52,7 @@ failed=0
 checked=0
 
 while IFS= read -r filepath || [ -n "$filepath" ]; do
+    filepath=${filepath%$'\r'}
     # 跳过空行
     [ -z "$filepath" ] && continue
 
