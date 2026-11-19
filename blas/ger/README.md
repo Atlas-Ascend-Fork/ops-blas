@@ -101,7 +101,8 @@ aclblasStatus_t aclblasCgeru(aclblasHandle_t handle, int m, int n, const aclblas
 - incx != 0，incy != 0
 - 列主序矩阵的 lda >= max(1, m)，不以列数 n 作为下限
 - handle 和 alpha 不为空；非快速返回时 x、y、A 不为空
-- 额外 GM 工作区需求为 0 字节；各架构的全部执行路径均仅使用核内 UB 或寄存器作为临时存储，不分配或使用 handle 工作区
+- 额外 GM 工作区需求为 0 字节（arch35 各路径；arch22 的成对交换字节偏移表与交错符号表都在 UB 内
+  按算术级数现算，既不占 handle 常驻缓冲，也不占 GM 工作区）
 
 #### 调用示例
 
@@ -198,17 +199,27 @@ SIMT 路径根据 FP32 指数判断复乘的任一乘积是否可能溢出；对
 RegBase 中 alpha 的 UB 标量写入使用 `volatile` 保留实际存储，并通过 S→V 事件建立流水线顺序，
 与上述防乘加收缩的用途不同。
 
-Atlas A2/A3（arch22，经典向量编程模型）：单 kernel，按列分核；每核内按 1024 行块处理。
+Atlas A2/A3（arch22，经典向量编程模型）：单 kernel，按列分核；每核内按行片段循环，片段长度
+`CGERU_ROW_TILE_MAX = 2048` 个复数（m 更小时即整列）。
 
-- **快路径**（`incx == 1 && lda == m`，且 `m*2` 为 8 的倍数、UB 预算足够）：
-  将整列 x 一次搬入 UB，构造 `xKeep = [xr, xi]` 与 `xSwap = [-xi, xr]` 两个交错向量；
-  每列 j 直接从 GM 读 y[j] 合成 `coeff = alpha * y[j]`，随后两次融合 Axpy 完成
-  `A[:, j] += cr * xKeep + ci * xSwap`；A 列按批连续搬入/搬出。快路径 UB 预算 176 KiB。
-- **通用路径**（`incx != 1` 或 `lda > m`，或快路径预算不足）：
-  x 按 1024 行块装入 UB；`incx == 1` 时整块连续 DataCopyPad，`incx != 1` 时逐元素
-  `GetValue` 折算；y 标量始终从 GM 逐元素读取（`incy` 只影响地址步长，不做突发/带隙拷贝）。
-  每列用 GatherMask 解交织 x、Gather 重交织乘积，再写回 A；UB 总预算 192 KiB，额外 GM workspace 0 字节。
+- **列分核**：`useCoreNum = min(n, AIV 核数)`、`colsPerCore = ceil(n / useCoreNum)`，每核负责一段
+  连续列；A 中每个元素只属于一个核，不需要原子加或跨核归约。
+- **行片段内**：x 片段搬入 UB 一次，构造 `S = (xi, -xr)`（成对交换 + 交错符号，偏移与符号表由
+  kernel 在 UB 内现算）一次，供片段内所有列复用；`t = alpha*y[j] = (u, v)` 在 kernel 入口一次性
+  算好（`|incy| == 1` 时整段 y 搬入 UB，否则逐个标量读取），主循环不再访问 y 的 GM。
+- **两种搬运路径**：`chunk` 与 `lda` 均为 4 的整数倍（`m % 4 == 0 && lda % 4 == 0`）时走列块路径
+  ——一次 `DataCopyPad` 2D 多 burst 把若干列搬入 32B 对齐的 UB 槽，按 2/3 槽轮转，逐列就地累加后
+  回写；不满足对齐条件时走逐列 1D 路径——每列一条 `DataCopyPad` 搬入 32B 对齐槽（非 32B 尾块由硬件
+  补位），每遍处理 `slotFloats / ceil8(2*chunk)` 列，逐列累加后回写。
+- **每列计算**（交错布局，A 在 UB 内就地更新，长度 2*chunk 个 float）：
+  ```text
+  acc  = Muls(S, -v)        // (-v*xi, +v*xr)
+  acc  = Axpy(acc, X, u)    // (u*xr - v*xi, u*xi + v*xr)
+  curA = Add(curA, curA, acc)
+  ```
+  `u = ar*yr - ai*yi`、`v = ar*yi + ai*yr`，与 Netlib `cgeru.f` 的 `TEMP = ALPHA*Y(JY)`、
+  `A(I,J) = A(I,J) + X(I)*TEMP` 舍入次序一致。UB 总预算 192 KiB，每次调用不申请 GM workspace。
 
-浮点语义：`CgeruCoeff` 刻意不做“纯实/纯虚 shortcut”，与 cblas golden 的 `0*Inf→NaN`
-保持一致（TC_FL_103）；唯一整列跳过是 `y[j] == (0, 0)`（对应 Netlib cgeru 的
-`IF (Y(J).NE.ZERO)` 守卫）。
+浮点语义：`ALPHA*Y(J) == 0` 的列整列跳过（对应 Netlib cgeru 的 `IF (TEMP.NE.ZERO)` 守卫），
+避免 `0*Inf/0*NaN` 污染 A；其余路径刻意不做“纯实/纯虚 shortcut”，与 cblas golden 的
+`0*Inf→NaN` 保持一致（TC_FL_103）。

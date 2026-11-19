@@ -1,121 +1,141 @@
 /**
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
- * This program is free software: you can redistribute it and/or modify it under the terms and conditions of
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
  * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
- * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-/* !
- * \file cgeru_npu_wrapper.h
- * \brief Test harness for aclblasCgeru on arch22: runs one call with device
- *        resident operands (H2D -> call -> sync -> D2H) and returns the raw
- *        aclblasStatus_t.
- *
- * Argument-invalid combinations are passed through with the host pointers
- * unchanged: the operator must reject them without touching any device
- * buffer, which is exactly the behaviour the negative CSV cases pin down.
- */
+#ifndef CGERU_ARCH22_NPU_WRAPPER_H
+#define CGERU_ARCH22_NPU_WRAPPER_H
 
-#pragma once
-
-#include <cstddef>
+#include <algorithm>
+#include <climits>
 #include <cstdint>
-#include <limits>
 
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
 
-namespace cgeru_arch22_test {
+// Host-side convenience wrapper for the arch22 (Atlas 800I A3 / ascend910b) test.
+// The public API takes device pointers; this wrapper performs the H2D/D2H copies
+// so the GTest code can keep a plain host reference implementation.
 
-// Physical element count of a strided vector, 0 when the call cannot touch it.
-inline uint64_t PhysicalComplexCount(int logicalLength, int increment)
+// Validation is delegated to aclblasCgeru itself: the wrapper never returns an
+// expected error code on its own, otherwise the API's own validation cases would
+// become tautological. When the arguments are not usable for a real launch (null
+// pointer, illegal dimension/stride/lda), the wrapper issues a "validation call"
+// with null device pointers; the library rejects or quick-returns those inputs
+// before it would dereference any pointer.
+static inline aclError CgeruAllocCopyH2D(void*& dPtr, const void* hPtr, size_t bytes)
 {
-    if (logicalLength <= 0 || increment == 0) {
-        return 0;
-    }
-    const uint64_t stride =
-        (increment < 0) ? static_cast<uint64_t>(-static_cast<int64_t>(increment)) : static_cast<uint64_t>(increment);
-    return 1U + static_cast<uint64_t>(logicalLength - 1) * stride;
-}
-
-inline bool ComplexVectorBytes(int logicalLength, int increment, size_t& bytes)
-{
-    const uint64_t count = PhysicalComplexCount(logicalLength, increment);
-    if (count > std::numeric_limits<size_t>::max() / sizeof(aclblasComplex)) {
-        return false;
-    }
-    bytes = static_cast<size_t>(count) * sizeof(aclblasComplex);
-    return true;
-}
-
-// Pass-through combinations never dereference x/y/A on the host side of the
-// operator: handle null, empty dimensions, invalid strides or lda, missing
-// operands, and the alpha quick return.
-inline bool MustPassThrough(
-    aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,
-    const aclblasComplex* y, int incy, const aclblasComplex* A, int lda)
-{
-    if (handle == nullptr || m <= 0 || n <= 0 || alpha == nullptr || incx == 0 || incy == 0 || lda < std::max(1, m)) {
-        return true;
-    }
-    if (alpha->real == 0.0f && alpha->imag == 0.0f) {
-        return true;
-    }
-    return x == nullptr || y == nullptr || A == nullptr;
-}
-
-// Device buffers for one call; released by ReleaseOperands on every exit path.
-struct DeviceOperands {
-    void* x = nullptr;
-    void* y = nullptr;
-    void* a = nullptr;
-};
-
-inline void ReleaseOperands(DeviceOperands& operands)
-{
-    if (operands.x != nullptr) {
-        aclrtFree(operands.x);
-        operands.x = nullptr;
-    }
-    if (operands.y != nullptr) {
-        aclrtFree(operands.y);
-        operands.y = nullptr;
-    }
-    if (operands.a != nullptr) {
-        aclrtFree(operands.a);
-        operands.a = nullptr;
-    }
-}
-
-// Mirrors one host-side operand into the device buffer `host -> device`.
-inline aclError UploadOperand(const void* host, size_t bytes, void*& device)
-{
-    aclError ret = aclrtMalloc(&device, bytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (ret != ACL_SUCCESS) {
+    dPtr = nullptr;
+    if (hPtr == nullptr || bytes == 0)
+        return ACL_SUCCESS;
+    aclError ret = aclrtMalloc(&dPtr, bytes, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (ret != ACL_SUCCESS)
         return ret;
-    }
-    ret = aclrtMemcpy(device, bytes, host, bytes, ACL_MEMCPY_HOST_TO_DEVICE);
+    ret = aclrtMemcpy(dPtr, bytes, hPtr, bytes, ACL_MEMCPY_HOST_TO_DEVICE);
     if (ret != ACL_SUCCESS) {
-        aclrtFree(device);
-        device = nullptr;
+        aclrtFree(dPtr);
+        dPtr = nullptr;
     }
     return ret;
 }
 
-// Uploads x, y and A; leaves the device pointers in `operands` on success.
-inline aclError UploadOperands(
-    const aclblasComplex* x, size_t xBytes, const aclblasComplex* y, size_t yBytes, const aclblasComplex* A,
-    size_t aBytes, DeviceOperands& operands)
+// |inc| == INT_MIN 时物理跨度 2^31 只有 len <= 1 才可寻址（与 host 侧
+// CgeruStrideSpanValid 保持同一语义）。
+static inline bool CgeruStrideSpanValid(int length, int inc)
 {
-    aclError ret = UploadOperand(x, xBytes, operands.x);
-    if (ret == ACL_SUCCESS) {
-        ret = UploadOperand(y, yBytes, operands.y);
+    if (inc == 0) {
+        return false;
     }
-    if (ret == ACL_SUCCESS) {
-        ret = UploadOperand(A, aBytes, operands.a);
+    if (inc != INT_MIN) {
+        return true;
+    }
+    return length <= 1;
+}
+
+// 物理长度 1 + (len - 1) * |inc|；INT_MIN 且 len <= 1 时只有一个元素，按 1 计算，
+// 避免按 2^31 分配缓冲区。
+static inline int64_t CgeruStrideSpanLength(int length, int inc)
+{
+    if (length <= 0) {
+        return 0;
+    }
+    if (inc == INT_MIN) {
+        return length <= 1 ? 1 : 0;
+    }
+    const int64_t stride = (inc < 0) ? -static_cast<int64_t>(inc) : static_cast<int64_t>(inc);
+    return 1 + static_cast<int64_t>(length - 1) * stride;
+}
+
+static inline bool CgeruNeedsOnePassValidation(aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha,
+                                               const aclblasComplex* x, int incx, const aclblasComplex* y, int incy,
+                                               const aclblasComplex* A, int lda)
+{
+    return handle == nullptr || alpha == nullptr || x == nullptr || y == nullptr || A == nullptr || m <= 0 ||
+           n <= 0 || !CgeruStrideSpanValid(m, incx) || !CgeruStrideSpanValid(n, incy) || lda < std::max(1, m);
+}
+
+static inline void CgeruFreeDevice(void*& dX, void*& dY, void*& dA)
+{
+    if (dA)
+        aclrtFree(dA);
+    if (dY)
+        aclrtFree(dY);
+    if (dX)
+        aclrtFree(dX);
+    dA = nullptr;
+    dY = nullptr;
+    dX = nullptr;
+}
+
+// 分配并上传 x/y/A；返回非 SUCCESS 时三块已分配缓冲都已释放。
+static inline aclError CgeruUploadInputs(const aclblasComplex* x, int m, int incx, const aclblasComplex* y, int n,
+                                         int incy, const aclblasComplex* A, int lda, void*& dX, void*& dY,
+                                         void*& dA)
+{
+    // Physical length of a strided vector is 1 + (len - 1) * |inc|.
+    const size_t xBytes =
+        static_cast<size_t>(CgeruStrideSpanLength(m, incx)) * sizeof(aclblasComplex);
+    const size_t yBytes =
+        static_cast<size_t>(CgeruStrideSpanLength(n, incy)) * sizeof(aclblasComplex);
+    // Column-major A: lda rows * n columns.
+    const size_t aBytes = static_cast<size_t>(n) * static_cast<size_t>(lda) * sizeof(aclblasComplex);
+    aclError aclRet = CgeruAllocCopyH2D(dX, x, xBytes);
+    if (aclRet != ACL_SUCCESS)
+        return aclRet;
+    aclRet = CgeruAllocCopyH2D(dY, y, yBytes);
+    if (aclRet != ACL_SUCCESS) {
+        CgeruFreeDevice(dX, dY, dA);
+        return aclRet;
+    }
+    aclRet = CgeruAllocCopyH2D(dA, A, aBytes);
+    if (aclRet != ACL_SUCCESS) {
+        CgeruFreeDevice(dX, dY, dA);
+        return aclRet;
+    }
+    return ACL_SUCCESS;
+}
+
+// 下发、同步并回拷 A；失败时返回 INTERNAL_ERROR。
+static inline aclblasStatus_t CgeruRunAndCopyBack(aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha,
+                                                  int incx, int incy, int lda, aclblasComplex* A, void* dX,
+                                                  void* dY, void* dA)
+{
+    aclblasStatus_t ret = aclblasCgeru(
+        handle, m, n, alpha, static_cast<const aclblasComplex*>(dX), incx, static_cast<const aclblasComplex*>(dY),
+        incy, static_cast<aclblasComplex*>(dA), lda);
+    aclError syncRet = aclrtSynchronizeDevice();
+    if (ret == ACLBLAS_STATUS_SUCCESS && syncRet != ACL_SUCCESS)
+        ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+    if (ret == ACLBLAS_STATUS_SUCCESS && A != nullptr && dA != nullptr) {
+        const size_t aBytes = static_cast<size_t>(n) * static_cast<size_t>(lda) * sizeof(aclblasComplex);
+        aclError copyRet = aclrtMemcpy(A, aBytes, dA, aBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+        if (copyRet != ACL_SUCCESS)
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
     }
     return ret;
 }
@@ -124,41 +144,19 @@ inline aclblasStatus_t aclblasCgeru_npu(
     aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,
     const aclblasComplex* y, int incy, aclblasComplex* A, int lda)
 {
-    if (MustPassThrough(handle, m, n, alpha, x, incx, y, incy, A, lda)) {
-        return aclblasCgeru(handle, m, n, alpha, x, incx, y, incy, A, lda);
+    if (CgeruNeedsOnePassValidation(handle, m, n, alpha, x, incx, y, incy, A, lda)) {
+        return aclblasCgeru(handle, m, n, alpha, nullptr, incx, nullptr, incy, nullptr, lda);
     }
 
-    size_t xBytes = 0;
-    size_t yBytes = 0;
-    size_t aBytes = 0;
-    if (!ComplexVectorBytes(m, incx, xBytes) || !ComplexVectorBytes(n, incy, yBytes) ||
-        n > 0 && (static_cast<uint64_t>(lda) * static_cast<uint64_t>(n) >
-                  std::numeric_limits<size_t>::max() / sizeof(aclblasComplex))) {
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    aBytes = static_cast<size_t>(static_cast<uint64_t>(lda) * static_cast<uint64_t>(n)) * sizeof(aclblasComplex);
-
-    DeviceOperands operands;
-    if (UploadOperands(x, xBytes, y, yBytes, A, aBytes, operands) != ACL_SUCCESS) {
-        ReleaseOperands(operands);
+    void* dX = nullptr;
+    void* dY = nullptr;
+    void* dA = nullptr;
+    if (CgeruUploadInputs(x, m, incx, y, n, incy, A, lda, dX, dY, dA) != ACL_SUCCESS) {
         return ACLBLAS_STATUS_ALLOC_FAILED;
     }
-
-    const aclblasStatus_t status = aclblasCgeru(
-        handle, m, n, alpha, static_cast<const aclblasComplex*>(operands.x), incx,
-        static_cast<const aclblasComplex*>(operands.y), incy, static_cast<aclblasComplex*>(operands.a), lda);
-    aclError runtimeRet = ACL_SUCCESS;
-    if (status == ACLBLAS_STATUS_SUCCESS) {
-        runtimeRet = aclrtSynchronizeDevice();
-        if (runtimeRet == ACL_SUCCESS) {
-            runtimeRet = aclrtMemcpy(A, aBytes, operands.a, aBytes, ACL_MEMCPY_DEVICE_TO_HOST);
-        }
-    }
-    ReleaseOperands(operands);
-    if (runtimeRet != ACL_SUCCESS) {
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-    return status;
+    aclblasStatus_t ret = CgeruRunAndCopyBack(handle, m, n, alpha, incx, incy, lda, A, dX, dY, dA);
+    CgeruFreeDevice(dX, dY, dA);
+    return ret;
 }
 
-} // namespace cgeru_arch22_test
+#endif // CGERU_ARCH22_NPU_WRAPPER_H

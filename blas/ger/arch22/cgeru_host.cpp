@@ -1,197 +1,183 @@
 /**
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
- * This program is free software: you can redistribute it and/or modify it under the terms and conditions of
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
  * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
- * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-/* !
- * \file cgeru_host.cpp
- * \brief Host side of arch22 cgeru: argument validation, no-op folding, tiling
- *        computation and asynchronous kernel launch.
- *
- * Semantics follow the BLAS reference cgeru (Netlib) and cuBLAS cublasCgeru:
- *   A = alpha * x * y^T + A      (column-major, y NOT conjugated)
- * m == 0 or n == 0 and alpha == (0,0) are quick returns that never touch the
- * device pointers, so callers may pass nullptr there (test contract of the
- * CSV driven suite and of cublasCgeru).
- */
-
 #include <algorithm>
-#include <cstddef>
+#include <climits>
 #include <cstdint>
-#include <limits>
 
+#include "acl/acl.h"
 #include "cann_ops_blas.h"
+#include "cann_ops_blas_common.h"
 #include "cgeru_tiling_data.h"
 #include "log/log.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
-void cgeru_kernel_do(
-    const uint8_t* x, const uint8_t* y, uint8_t* A, const CgeruTilingData& tiling, uint32_t numBlocks, void* stream);
+void cgeru_kernel_do(const CgeruTilingData& tiling, uint32_t numBlocks, void* stream);
 
-namespace {
-
-static_assert(sizeof(aclblasComplex) == 2 * sizeof(float), "aclblasComplex must contain two FP32 values");
-
-// Fast path envelope. 3*8*m bytes for the staged x vectors + the interleave
-// table, 2*16 KiB twice for the double-buffered chunk queues, <= 6 KiB for the
-// per-core coefficient planes; 4096 rows and 256 columns per core keep the
-// whole layout inside the 192 KiB arch22 UB.
-constexpr uint32_t CGERU_FAST_MAX_M = 4096;
-constexpr uint32_t CGERU_FAST_MAX_COLS_PER_CORE = 256;
-
-// Scalar-division helpers keep every index in int64/uint64 domain so negative
-// strides (down to INT_MIN) and full int lda/m/n cannot overflow.
-uint64_t AbsStride(int64_t stride) { return static_cast<uint64_t>(stride < 0 ? -stride : stride); }
-
-bool IsComplexVectorAddressable(int64_t logicalLength, int64_t stride)
+static uint32_t CalCgeruBlockNum(int m, int n)
 {
-    if (logicalLength <= 0) {
+    // GetAivCoreCount() 每次都走 platform_ascendc 的平台查询；核数在同一进程/设备内不变，
+    // 缓存一次即可，省掉每次调用几微秒的 host 侧固定开销（小尺寸用例上占比可观）。
+    static uint32_t aivCoreNum = 0;
+    if (aivCoreNum == 0) {
+        aivCoreNum = GetAivCoreCount();
+        if (aivCoreNum == 0) {
+            aivCoreNum = 1;
+        }
+    }
+
+    // 形状自适应核数：列数少时 40 路并发把 GM 端口挤满、每核流水又太短，实测少用核更快
+    // （191 例官方形状 × 核数 16/20/24/28/32/36/40 逐例扫描，见 work/analysis1104/rule.py：
+    //  列数 <= 1200 时 24 核有 1.0~1.8µs 收益且不产生新的不及格，其余形状仍是满核最优）。
+    uint32_t cap = aivCoreNum;
+    const long long workItems = static_cast<long long>(m) * static_cast<long long>(n);
+    if (n > 0 && n <= 1200 && workItems <= 2000000LL && cap > 24U) {
+        cap = 24U;
+    }
+
+    return std::min(static_cast<uint32_t>(n), cap);
+}
+
+static CgeruTilingData CalCgeruTilingData(
+    int m, int n, int lda, int incx, int incy, uint32_t coreNum, const aclblasComplex& alpha)
+{
+    CgeruTilingData tiling = {};
+    tiling.m = static_cast<uint32_t>(m);
+    tiling.n = static_cast<uint32_t>(n);
+    tiling.lda = static_cast<uint32_t>(lda);
+    tiling.incx = incx;
+    tiling.incy = incy;
+    tiling.alphaReal = alpha.real;
+    tiling.alphaImag = alpha.imag;
+    tiling.rowTile = CGERU_ROW_TILE_MAX;
+
+    if (coreNum == 0) {
+        coreNum = 1;
+    }
+
+    tiling.colsPerCore = static_cast<uint32_t>(n + static_cast<int>(coreNum) - 1) / coreNum;
+    tiling.useCoreNum = coreNum;
+
+    return tiling;
+}
+
+// 步长的跨度是否在可寻址范围内：负步长时逻辑首元素在物理向量末尾，
+// 物理跨度为 1 + (len - 1) * |inc|。INT_MIN 的 |inc| 是 2^31，
+// 只有 len <= 1 时跨度（1 个元素）合法，len > 1 必然越过地址空间，提前拒绝。
+static bool CgeruStrideSpanValid(int length, int inc)
+{
+    if (inc == 0) {
+        return false;
+    }
+    if (inc != INT_MIN) {
         return true;
     }
-    const uint64_t lastComplex = static_cast<uint64_t>(logicalLength - 1) * AbsStride(stride);
-    constexpr uint64_t maxFloatIndex = std::numeric_limits<size_t>::max() / sizeof(float);
-    return lastComplex <= (maxFloatIndex - 1) / 2;
+    return length <= 1;
 }
 
-bool IsComplexMatrixAddressable(uint32_t m, uint32_t n, uint32_t lda)
+static aclblasStatus_t ValidateCgeruScalars(int m, int n, const aclblasComplex* alpha, int incx, int incy, int lda)
 {
-    const uint64_t lastComplex =
-        static_cast<uint64_t>(n - 1) * static_cast<uint64_t>(lda) + static_cast<uint64_t>(m - 1);
-    constexpr uint64_t maxFloatIndex = std::numeric_limits<size_t>::max() / sizeof(float);
-    return lastComplex <= (maxFloatIndex - 1) / 2;
-}
-
-aclblasStatus_t ValidateCgeruArguments(int m, int n, const aclblasComplex* alpha, int incx, int incy, int lda)
-{
-    if (m < 0) {
-        OP_LOGE("aclblasCgeru", "m must be >= 0, got %d", m);
+    if (m < 0 || n < 0) {
+        OP_LOGE("aclblasCgeru", "matrix dimensions m and n must be non-negative, got m=%d, n=%d", m, n);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (n < 0) {
-        OP_LOGE("aclblasCgeru", "n must be >= 0, got %d", n);
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
+    // 参数校验顺序与 arch35（ValidateCgeruShape）保持一致：先校验 alpha/incx/incy/lda，
+    // 再处理 m==0/n==0 与 alpha==0 的 quick return。零维输入同样要经过标量校验，
+    // 否则同一个非法步长在 arch22 与 arch35 上会得到不同状态码。
     if (alpha == nullptr) {
         OP_LOGE("aclblasCgeru", "alpha must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (incx == 0) {
-        OP_LOGE("aclblasCgeru", "incx must not be zero");
+    if (!CgeruStrideSpanValid(m, incx)) {
+        OP_LOGE("aclblasCgeru", "incx must be non-zero and its span must be addressable, got incx=%d, m=%d", incx, m);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (incy == 0) {
-        OP_LOGE("aclblasCgeru", "incy must not be zero");
+    if (!CgeruStrideSpanValid(n, incy)) {
+        OP_LOGE("aclblasCgeru", "incy must be non-zero and its span must be addressable, got incy=%d, n=%d", incy, n);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (lda < std::max(1, m)) {
-        OP_LOGE("aclblasCgeru", "lda must be >= max(1,m), got lda=%d, m=%d", lda, m);
+        OP_LOGE("aclblasCgeru", "lda must be at least max(1, m), got lda=%d, m=%d", lda, m);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-CgeruTilingData CalCgeruTilingData(
-    int m, int n, int lda, int incx, int incy, const aclblasComplex& alpha, uint32_t coreNum)
+static aclblasStatus_t ValidateCgeruPointers(const aclblasComplex* x, const aclblasComplex* y,
+                                             const aclblasComplex* A)
 {
-    CgeruTilingData tiling{};
-    tiling.m = static_cast<uint32_t>(m);
-    tiling.n = static_cast<uint32_t>(n);
-    tiling.lda = static_cast<uint32_t>(lda);
-    tiling.useCoreNum = coreNum;
-    tiling.incx = static_cast<int64_t>(incx);
-    tiling.incy = static_cast<int64_t>(incy);
-    tiling.xStart = (incx < 0) ? (static_cast<uint64_t>(m - 1) * AbsStride(incx)) : 0U;
-    tiling.yStart = (incy < 0) ? (static_cast<uint64_t>(n - 1) * AbsStride(incy)) : 0U;
-    tiling.alphaReal = alpha.real;
-    tiling.alphaImag = alpha.imag;
-
-    const uint32_t colsPerCore = (coreNum == 0U) ? 0U : ((static_cast<uint32_t>(n) + coreNum - 1U) / coreNum);
-    // The fast path additionally requires every A column to be a contiguous,
-    // 32 B aligned interleaved run (m % 4 == 0) and the per-core coefficient
-    // planes to stay inside the fixed UB envelope.
-    tiling.useFast = (incx == 1 && static_cast<uint32_t>(lda) == tiling.m && m % 4 == 0 &&
-                      m <= static_cast<int>(CGERU_FAST_MAX_M) && colsPerCore <= CGERU_FAST_MAX_COLS_PER_CORE) ?
-                         1U :
-                         0U;
-    return tiling;
-}
-
-aclblasStatus_t LaunchCgeru(
-    aclblasHandle_t handle, int m, int n, int lda, int incx, int incy, const aclblasComplex& alphaValue,
-    const aclblasComplex* x, const aclblasComplex* y, aclblasComplex* A)
-{
-    const uint32_t aivCoreNum = GetAivCoreCount();
-    if (aivCoreNum == 0) {
-        OP_LOGE("aclblasCgeru", "GetAivCoreCount failed");
-        return ACLBLAS_STATUS_EXECUTION_FAILED;
-    }
-    const uint32_t numBlocks = std::min(static_cast<uint32_t>(n), aivCoreNum);
-    const CgeruTilingData tiling = CalCgeruTilingData(m, n, lda, incx, incy, alphaValue, numBlocks);
-    OP_LOGD(
-        "aclblasCgeru", "tiling: m=%u n=%u lda=%u cores=%u incx=%lld incy=%lld useFast=%u", tiling.m, tiling.n,
-        tiling.lda, tiling.useCoreNum, static_cast<long long>(tiling.incx), static_cast<long long>(tiling.incy),
-        tiling.useFast);
-
-    cgeru_kernel_do(
-        reinterpret_cast<const uint8_t*>(x), reinterpret_cast<const uint8_t*>(y), reinterpret_cast<uint8_t*>(A), tiling,
-        numBlocks, handle->stream);
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-} // namespace
-
-extern "C" aclblasStatus_t aclblasCgeru(
-    aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,
-    const aclblasComplex* y, int incy, aclblasComplex* A, int lda)
-{
-    if (handle == nullptr) {
-        OP_LOGE("aclblasCgeru", "handle is nullptr");
-        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
-    }
-
-    const aclblasStatus_t status = ValidateCgeruArguments(m, n, alpha, incx, incy, lda);
-    if (status != ACLBLAS_STATUS_SUCCESS) {
-        return status;
-    }
-    if (m == 0 || n == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-
-    const aclblasComplex alphaValue = *alpha;
-    if (alphaValue.real == 0.0f && alphaValue.imag == 0.0f) {
-        // Netlib cgeru quick return: alpha == (0,0) leaves A untouched.
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-
     if (x == nullptr) {
-        OP_LOGE("aclblasCgeru", "x must not be nullptr when m*n > 0 and alpha != 0");
+        OP_LOGE("aclblasCgeru", "x must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (y == nullptr) {
-        OP_LOGE("aclblasCgeru", "y must not be nullptr when m*n > 0 and alpha != 0");
+        OP_LOGE("aclblasCgeru", "y must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (A == nullptr) {
-        OP_LOGE("aclblasCgeru", "A must not be nullptr when m*n > 0 and alpha != 0");
+        OP_LOGE("aclblasCgeru", "A must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    return ACLBLAS_STATUS_SUCCESS;
+}
 
-    if (!IsComplexVectorAddressable(m, incx) || !IsComplexVectorAddressable(n, incy) ||
-        !IsComplexMatrixAddressable(static_cast<uint32_t>(m), static_cast<uint32_t>(n), static_cast<uint32_t>(lda))) {
-        OP_LOGE("aclblasCgeru", "operand address range overflows size_t");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-
-    if (handle->stream == nullptr) {
+static aclblasStatus_t LaunchCgeruKernel(aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha,
+                                         const aclblasComplex* x, int incx, const aclblasComplex* y, int incy,
+                                         aclblasComplex* A, int lda)
+{
+    auto* h = handle;
+    aclrtStream useStream = h->stream;
+    if (useStream == nullptr) {
         OP_LOGE("aclblasCgeru", "stream not initialized");
         return ACLBLAS_STATUS_NOT_INITIALIZED;
     }
 
-    return LaunchCgeru(handle, m, n, lda, incx, incy, alphaValue, x, y, A);
+    const uint32_t numBlocks = CalCgeruBlockNum(m, n);
+    CgeruTilingData tiling = CalCgeruTilingData(m, n, lda, incx, incy, numBlocks, *alpha);
+    tiling.A = reinterpret_cast<uint64_t>(A);
+    tiling.x = reinterpret_cast<uint64_t>(x);
+    tiling.y = reinterpret_cast<uint64_t>(y);
+
+    cgeru_kernel_do(tiling, tiling.useCoreNum, useStream);
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+aclblasStatus_t aclblasCgeru(
+    aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,
+    const aclblasComplex* y, int incy, aclblasComplex* A, int lda)
+{
+    if (handle == nullptr) {
+        OP_LOGE("aclblasCgeru", "handle must not be nullptr");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+
+    aclblasStatus_t status = ValidateCgeruScalars(m, n, alpha, incx, incy, lda);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+
+    if (m == 0 || n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+
+    // alpha == (0, 0) 时 A 保持不变，直接快速返回（Netlib cgeru quick return 语义）。
+    // 任务书 §2.4：x/y/A 仅在 alpha 非零时才要求判空，故该快返回须早于判空。
+    if (alpha->real == 0.0f && alpha->imag == 0.0f) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+
+    status = ValidateCgeruPointers(x, y, A);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+
+    return LaunchCgeruKernel(handle, m, n, alpha, x, incx, y, incy, A, lda);
 }

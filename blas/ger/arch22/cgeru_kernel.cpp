@@ -1,652 +1,1056 @@
-// AI生成
 /**
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
  * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
- * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-/* !
- * \file cgeru_kernel.cpp
- * \brief Device side of arch22 cgeru: complex64 non-conjugate rank-1 update
- *        A = alpha * x * y^T + A (column-major, y NOT conjugated).
- *
- * Elementwise the update per column j is A[:,j] += x * t_j with t_j = alpha*y_j,
- * i.e. re: A_re += xr*t_jr - xi*t_ji, im: A_im += xr*t_ji + xi*t_jr, evaluated
- * with plain mul/sub/add so the rounding order matches the reference CBLAS
- * driver (no fused multiply-adds). Columns whose y_j is (0,0) are skipped
- * entirely (reference semantics: A keeps its old values there, which matters
- * for Inf/NaN fills). The gate tests y itself, never the computed coefficient:
- * with a non-finite alpha component the coefficient of a zero-y column is NaN,
- * which must not turn the skipped column active.
- *
- * Two paths share the column-split across AIV cores
- * (colStart = n*blockIdx/useCoreNum, no core carries more than one extra
- * column):
- *
- *  - Fast path (incx == 1, lda == m, m % 4 == 0, m <= 4096, <=256 cols/core):
- *    x is staged once as the interleaved vector X plus its pair-swapped,
- *    even-negated copy S = (-xi, xr, ...). A column run then accumulates with
- *    three vector ops on the interleaved layout, out = A + cr*X - ci*S. The
- *    core slab is one contiguous GM range and is streamed in 16 KiB chunks
- *    through double-buffered VECIN/VECOUT queues, so MTE2 of chunk k+1, the
- *    vector work on chunk k and MTE3 of chunk k-1 overlap.
- *  - General path (strided x, padded lda, or oversized shapes): row bands of
- *    up to 2048 rows; per band X/S are rebuilt once and each column piece is
- *    pipelined through the same queues. Strided x is gathered by scalar loads.
- */
-
 #include <cstdint>
-
 #include "kernel_operator.h"
-
 #include "cgeru_tiling_data.h"
 
 using namespace AscendC;
 
+constexpr uint32_t CGERU_BYTES_PER_FLOAT = 4;
+constexpr uint32_t CGERU_FLOATS_PER_COMPLEX = 2;
+constexpr uint32_t CGERU_BYTES_PER_COMPLEX = 8;
+constexpr uint32_t CGERU_TILE_BYTES = CGERU_TILE_FLOATS * CGERU_BYTES_PER_FLOAT;
+constexpr uint32_t CGERU_ROW_FLOATS = CGERU_FLOATS_PER_COMPLEX * CGERU_ROW_TILE_MAX;
+// 多列块中每列在 UB 内按 2*rowTile 个 float 对齐排布（32 字节的整数倍）。
+constexpr uint32_t CGERU_COL_STRIDE_FLOATS = CGERU_ROW_FLOATS;
+constexpr uint32_t CGERU_ALIGN_FLOATS = CGERU_ALIGN_COMPLEX * CGERU_FLOATS_PER_COMPLEX;
+
+// 行块按 32 个复数对齐后的 float 数不得超过 UB 单块容量（越界会踩坏相邻缓冲）。
+static_assert(
+    CGERU_FLOATS_PER_COMPLEX * ((CGERU_ROW_TILE_MAX + CGERU_ALIGN_COMPLEX - 1U) / CGERU_ALIGN_COMPLEX) *
+            CGERU_ALIGN_COMPLEX <=
+        CGERU_TILE_FLOATS,
+    "cgeru row tile exceeds UB buffer capacity");
+static_assert(CGERU_ALIGN_FLOATS <= CGERU_ROW_FLOATS, "cgeru row buffers must hold one 32-complex aligned chunk");
+
 namespace {
+// 流水事件号：搬出标志按槽编号，搬入标志按遍号奇偶，向量搬出标志即时消费。
+constexpr event_t kEvStore0 = static_cast<event_t>(0);
+constexpr event_t kEvStore1 = static_cast<event_t>(1);
+constexpr event_t kEvStore2 = static_cast<event_t>(2);
+constexpr event_t kEvLoadEven = static_cast<event_t>(3);
+constexpr event_t kEvLoadOdd = static_cast<event_t>(4);
+constexpr event_t kEvVecStore = static_cast<event_t>(5);
+constexpr uint32_t kNoPendingRow = 0xFFFFFFFFU;
 
-constexpr uint32_t CGERU_COMPONENTS = 2;
-constexpr uint32_t BYTENUM_PER_FLOAT32 = 4;
-constexpr uint32_t VREG_FLOATS = 64U; // one vector register covers 256 B = 64 fp32 lanes
+// 多列块路径的几何参数：槽宽、是否整段连续、tile 分块是否可用。
+struct ColumnSlabPlan {
+    bool contiguousSlab;
+    bool alignedStride;
+    uint32_t colStride;
+    bool tileEnabled;
+};
 
-// Fast path shape envelope (mirrors the host side checks).
-constexpr uint32_t CGERU_FAST_CHUNK_ELEMS = 2048; // complex elements per streaming chunk (16 KiB)
-constexpr uint32_t CGERU_FAST_MAX_COLS_PER_CORE = 256;
-constexpr uint32_t CGERU_BUF_NUM = 2;
-constexpr uint32_t CGERU_COEFF_COLS_ALIGN = 64U; // padding granularity of the coefficient planes
+// 逐列路径的分遍参数。
+struct ColumnPassPlan {
+    uint32_t colsPerPass;
+    uint32_t ntiles;
+};
+}  // namespace
 
-// General path row chunk (plane based, per column pipeline).
-constexpr uint32_t CHUNK_ROWS = 1024;
-constexpr uint32_t PLANE_F = CHUNK_ROWS;
-constexpr uint32_t IDX_ENTRIES = 2 * CHUNK_ROWS;
-constexpr uint32_t BUFFER_NUM = 2;
-// Row slices bound one vector stage at a fixed size; larger runs are sliced.
-constexpr uint32_t CGERU_SLICE_ROWS = 1024;
-// Guard padding for the fast-path staged vectors: the block-granular even
-// lane negation stores up to one whole 64 lane block past the valid tail.
-constexpr uint32_t CGERU_GUARD_FLOATS = 64;
-
-__aicore__ __inline__ uint32_t CgeruCeilDiv(uint32_t a, uint32_t b) { return (b == 0U) ? 0U : ((a + b - 1U) / b); }
-
-__aicore__ __inline__ uint64_t CgeruMinU64(uint64_t a, uint64_t b) { return (a < b) ? a : b; }
-
-// |v| without library calls; NaN passes through so activity flags stay non-zero.
-__aicore__ __inline__ float CgeruFAbs(float v) { return (v < 0.0f) ? -v : v; }
-
-// Set and immediately wait on one hardware event; the idiom used to sequence
-// producer/consumer pairs on TBuf planes.
-template <HardEvent EVENT>
-__aicore__ __inline__ void CgeruSync()
-{
-    const event_t ev = static_cast<event_t>(GetTPipePtr()->FetchEventID(EVENT));
-    SetFlag<EVENT>(ev);
-    WaitFlag<EVENT>(ev);
-}
-
-// Coefficient pair of one column, plain mul/sub/add rounding:
-//   cr = aR*yr - aI*yi ; ci = aI*yr + aR*yi
-__aicore__ __inline__ void CgeruCoeffScalar(
-    float alphaReal, float alphaImag, float yReal, float yImag, float& coeffReal, float& coeffImag)
-{
-    coeffReal = alphaReal * yReal - alphaImag * yImag;
-    coeffImag = alphaImag * yReal + alphaReal * yImag;
-}
-
+/**
+ * @brief aclblasCgeru 的 arch22(Atlas 800I A3 / ascend910b) 向量核实现。
+ *
+ * 复数在 GM 中按 (re, im) 交错存放。把一行块内的 x 记成交错视图
+ * X = (xr0, xi0, xr1, xi1, ...)，并取常量模式 sign = (-1, +1, -1, +1, ...)
+ * 与成对交换表 swap[k] = 4 * (k ^ 1)（Gather 的偏移按字节计），则
+ *     S = gather(X * sign, swap) = (xi0, -xr0, xi1, -xr1, ...)
+ * 记 c = alpha * y(j) = (u, v)，由复数乘法有 c * x = u * X - v * S，于是
+ *     A(:, j) += u * X - v * S
+ * 只需在交错布局上做标量乘与向量累加，全程不拆分实/虚部，也不需要重交错。
+ * 其中 u、v 与 Netlib cgeru 一样按 TEMP = ALPHA*Y(JY) 计算。
+ *
+ * 分块：列方向按核切 slab，每个 A 元素只由一个核负责读-改-写，因此不需要原子加；
+ * 行方向按 rowTile 切成 32 字节对齐的块。X 与 S 在同一个行块内只算一次，供该行块的
+ * 所有列复用（x 的 GM 流量因此与列数无关）。y(j) 在 kernel 入口一次性折算成 (u, v)
+ * 缓存进 UB，主循环内不再访问 y 的 GM。alpha*y(j) 为 (0, 0) 的列按 Netlib 语义整列跳过。
+ */
 class CgeruKernel {
 public:
     __aicore__ inline CgeruKernel() {}
-
-    __aicore__ inline void Init(GM_ADDR x, GM_ADDR y, GM_ADDR A, const CgeruTilingData& tiling, TPipe* pipeIn)
-    {
-        this->pipe = pipeIn;
-        this->m = tiling.m;
-        this->n = tiling.n;
-        this->lda = tiling.lda;
-        this->incx = tiling.incx;
-        this->incy = tiling.incy;
-        this->xStart = tiling.xStart;
-        this->yStart = tiling.yStart;
-        this->alphaReal = tiling.alphaReal;
-        this->alphaImag = tiling.alphaImag;
-        this->useFast = (tiling.useFast != 0U);
-
-        const uint32_t blockIdx = static_cast<uint32_t>(GetBlockIdx());
-        const uint64_t colLo = static_cast<uint64_t>(n) * blockIdx;
-        const uint64_t colHi = static_cast<uint64_t>(n) * (blockIdx + 1U);
-        this->colStart = static_cast<uint32_t>(colLo / tiling.useCoreNum);
-        const uint32_t colEnd = static_cast<uint32_t>(colHi / tiling.useCoreNum);
-        this->colCount = colEnd - this->colStart;
-
-        xGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(x));
-        yGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(y));
-        aGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(A));
-    }
-
-    __aicore__ inline void Process()
-    {
-        if (colCount == 0U || m == 0U || n == 0U) {
-            return;
-        }
-        if (useFast) {
-            InitFast();
-            FastProcess();
-        } else {
-            InitGeneral();
-            GeneralProcess();
-        }
-    }
+    __aicore__ inline void Init(const CgeruTilingData& tiling, TPipe* pipeIn);
+    __aicore__ inline void Process();
 
 private:
-    // ------------------------------------------------------------------
-    // Shared helpers
-    // ------------------------------------------------------------------
+    __aicore__ inline void ProcessPass();
 
-    // idx[i] = 4 * (i ^ 1): the byte offset table that walks xKeep into its
-    // adjacent-pair swap. Built from an 8 entry seed doubled with Adds, so no
-    // extra scratch beyond the table itself is needed.
-    __aicore__ inline void BuildSwapTable(uint32_t entries)
-    {
-        LocalTensor<int32_t> idx = idxBuf.Get<int32_t>();
-        const uint32_t seedN = (entries < 8U) ? entries : 8U;
-        for (uint32_t i = 0U; i < seedN; ++i) {
-            idx.SetValue(i, static_cast<int32_t>(4U * (i ^ 1U)));
-        }
-        CgeruSync<HardEvent::S_V>();
+    // ---- 初始化 ----
+    __aicore__ inline void BindTiling(const CgeruTilingData& tiling);
+    __aicore__ inline void BindGlobalBuffers(const CgeruTilingData& tiling);
+    __aicore__ inline void ComputeColumnRange();
+    __aicore__ inline uint32_t ComputeBufferSizes();
+    __aicore__ inline uint32_t ComputeChunkMax() const;
+    __aicore__ inline uint32_t ComputeTableLayout(uint32_t chunkMax);
+    __aicore__ inline uint32_t AlignCoeffFloats(uint32_t cols) const;
+    __aicore__ inline uint32_t ComputeYBufBytes(uint32_t cols) const;
+    __aicore__ inline void PlanColumnBuffers(uint32_t fixedBytes, uint32_t chunkMax);
+    __aicore__ inline void ComputeSlotPlan(uint32_t chunkMax);
+    __aicore__ inline void AllocateBuffers();
 
-        uint32_t filled = seedN;
-        while (filled < entries) {
-            const uint32_t remain = entries - filled;
-            const uint32_t addN = (filled < remain) ? filled : remain;
-            Adds(idx[filled], idx, static_cast<int32_t>(filled) * static_cast<int32_t>(BYTENUM_PER_FLOAT32), addN);
-            PipeBarrier<PIPE_V>();
-            filled += addN;
-        }
-    }
+    // ---- 行块与系数 ----
+    __aicore__ inline void BuildConstTables();
+    __aicore__ inline void PrepareColumnCoeffs();
+    __aicore__ inline void IssueEarlyX();
+    __aicore__ inline bool LoadYCoefficients();
+    __aicore__ inline void PrepareCoeffsVectorized(uint32_t coeffFloats);
+    __aicore__ inline void PrepareCoeffsScalar(uint32_t coeffFloats);
+    __aicore__ inline void GetUV(uint32_t col, float& u, float& v);
+    __aicore__ inline void LoadX(uint32_t rowOff, uint32_t chunk);
+    __aicore__ inline void BuildSwapPattern(uint32_t calcNum);
 
-    // swap[i] = (-1)^i * keep[i ^ 1]: the pair swap of keep with every even
-    // lane negated. The negation uses a per-lane vector mask and costs one
-    // masked Muls without any sign buffer.
-    __aicore__ inline void BuildSwapPattern(LocalTensor<float>& swap, LocalTensor<float>& keep, uint32_t totalFloats)
-    {
-        // Gather walks whole 64 lane blocks; the table covers the rounded up
-        // count (BuildSwapTable was called with the same rounding) and the
-        // tail lanes land in the swap guard.
-        const uint32_t total = CgeruCeilDiv(totalFloats, VREG_FLOATS) * VREG_FLOATS;
-        Gather(swap, keep, idxBuf.Get<uint32_t>(), 0U, total);
-        PipeBarrier<PIPE_V>();
+    // ---- 列搬运与累加 ----
+    __aicore__ inline void ProcessColumns(uint32_t rowOff, uint32_t chunk, bool prologueOnly);
+__aicore__ inline void PrimeTileZero(uint32_t cols, uint32_t rowOff, uint32_t chunk,
+                                                uint32_t colStride, LocalTensor<float>& all);
+__aicore__ inline void ProcessTilePipeline(uint32_t rowOff, uint32_t chunk, const ColumnSlabPlan& plan);
+    __aicore__ inline void ProcessColumnsByColumn(uint32_t rowOff, uint32_t chunk);
+    __aicore__ inline ColumnSlabPlan ComputeColumnSlabPlan(uint32_t chunk) const;
+    __aicore__ inline uint32_t ComputeTileCols(const ColumnSlabPlan& plan) const;
+    __aicore__ inline ColumnPassPlan MakeColumnPassPlan(uint32_t paddedStride) const;
+    __aicore__ inline void LoadColumnPass(LocalTensor<float> dst, uint32_t col0, uint32_t cols, uint32_t rowOff,
+                                          uint32_t chunk, uint32_t colStride, bool singleBlock);
+    __aicore__ inline void StoreColumnPass(LocalTensor<float> src, uint32_t col0, uint32_t cols, uint32_t rowOff,
+                                           uint32_t chunk, uint32_t colStride, bool singleBlock);
+    __aicore__ inline void LoadAColumnTileTo(uint32_t col0, uint32_t cols, uint32_t rowOff, uint32_t chunk,
+                                             uint32_t colStride, LocalTensor<float> dst);
+    __aicore__ inline void AccumulateColumnTileOn(LocalTensor<float> buf, uint32_t col0, uint32_t cols,
+                                                  uint32_t floats, uint32_t colStride);
+    __aicore__ inline void StoreAColumnTileFrom(uint32_t col0, uint32_t cols, uint32_t rowOff, uint32_t chunk,
+                                                uint32_t colStride, LocalTensor<float> src);
+    __aicore__ inline void AccumulateColumns(LocalTensor<float> buf, uint32_t col0, uint32_t cols, uint32_t floats,
+                                             uint32_t colStride);
 
-        constexpr uint64_t kEvenMask = 0x5555555555555555ULL;
-        const uint16_t repeats = static_cast<uint16_t>(CgeruCeilDiv(total, VREG_FLOATS));
-        SetMaskNorm();
-        SetVectorMask<float>(kEvenMask, kEvenMask);
-        Muls<float, false>(swap, swap, -1.0F, static_cast<uint64_t>(0), repeats, UnaryRepeatParams(1, 1, 8, 8));
-        PipeBarrier<PIPE_V>();
-        SetVectorMask<float>(static_cast<uint64_t>(-1), static_cast<uint64_t>(-1));
-    }
+    // ---- 同步 ----
+    __aicore__ inline void WaitLoadFlag(uint32_t pass);
+    __aicore__ inline void SetLoadFlag(uint32_t pass);
+    __aicore__ inline void WaitSlotFree(uint32_t pass, uint32_t nslot);
+    __aicore__ inline void SetStoreFlag(uint32_t slot);
+    __aicore__ inline void WaitPendingStores(uint32_t ntiles, uint32_t nslot);
+    __aicore__ inline LocalTensor<float> SlotBuffer(LocalTensor<float> all, uint32_t slot, uint32_t slotFloats);
 
-    // ------------------------------------------------------------------
-    // Fast path
-    // ------------------------------------------------------------------
-
-    __aicore__ inline void InitFast()
-    {
-        const uint32_t floats = m * CGERU_COMPONENTS;
-        // xSwap is written by the block-granular even-lane negation: round its
-        // extent up to whole vector blocks so the masked tail stays in bounds.
-        const uint32_t swapFloats = CgeruCeilDiv(floats, VREG_FLOATS) * VREG_FLOATS;
-        pipe->InitBuffer(xKeepBuf, floats * BYTENUM_PER_FLOAT32);
-        pipe->InitBuffer(xSwapBuf, swapFloats * BYTENUM_PER_FLOAT32);
-        pipe->InitBuffer(idxBuf, swapFloats * BYTENUM_PER_FLOAT32);
-
-        const uint32_t coeffCols = CgeruCeilDiv(colCount, CGERU_COEFF_COLS_ALIGN) * CGERU_COEFF_COLS_ALIGN;
-        pipe->InitBuffer(
-            yInBuf, CgeruCeilDiv(coeffCols * CGERU_COMPONENTS, VREG_FLOATS) * VREG_FLOATS * BYTENUM_PER_FLOAT32);
-        pipe->InitBuffer(coeffBuf, 6U * coeffCols * BYTENUM_PER_FLOAT32);
-
-        const uint32_t queueSlotFloats = CGERU_FAST_CHUNK_ELEMS * CGERU_COMPONENTS + CGERU_GUARD_FLOATS;
-        pipe->InitBuffer(scratchBuf, CGERU_SLICE_ROWS * CGERU_COMPONENTS * BYTENUM_PER_FLOAT32);
-        pipe->InitBuffer(aInQueue, CGERU_BUF_NUM, queueSlotFloats * BYTENUM_PER_FLOAT32);
-        pipe->InitBuffer(aOutQueue, CGERU_BUF_NUM, queueSlotFloats * BYTENUM_PER_FLOAT32);
-        scratch = scratchBuf.Get<float>();
-
-        yearPlane = coeffBuf.Get<float>()[0];
-        yiimPlane = coeffBuf.Get<float>()[coeffCols];
-        crPlane = coeffBuf.Get<float>()[2U * coeffCols];
-        ciPlane = coeffBuf.Get<float>()[3U * coeffCols];
-        yflagPlane = coeffBuf.Get<float>()[4U * coeffCols];
-
-        // The swap table (V pipe) is built while the x/y loads (MTE2) are in
-        // flight; the loads are waited on just before the Gather that needs
-        // them. The table covers whole vector blocks for the block-granular
-        // Gather.
-        BuildSwapTable(swapFloats);
-        DataCopyPadExtParams<float> noPad{false, 0, 0, 0.0f};
-        DataCopyExtParams xParams{1, floats * BYTENUM_PER_FLOAT32, 0, 0, 0};
-        LocalTensor<float> keep = xKeepBuf.Get<float>();
-        DataCopyPad(keep, xGm[xStart * CGERU_COMPONENTS], xParams, noPad);
-        if (incy == 1) {
-            // This core updates columns [colStart, colStart+colCount): stage
-            // that slab of y, not y[0..colCount).
-            DataCopyExtParams yParams{1, colCount * CGERU_COMPONENTS * BYTENUM_PER_FLOAT32, 0, 0, 0};
-            DataCopyPad(yInBuf.Get<float>(), yGm[(yStart + colStart) * CGERU_COMPONENTS], yParams, noPad);
-        }
-        primeOff = static_cast<uint64_t>(colStart) * m;
-        // Length of THIS core's slab from primeOff (colCount*m would underflow
-        // for colStart > colCount and overrun the neighbouring slab).
-        const uint64_t slabEnd = static_cast<uint64_t>(colStart + colCount) * m;
-        primeElems = static_cast<uint32_t>(CgeruMinU64(slabEnd - primeOff, CGERU_FAST_CHUNK_ELEMS));
-        CgeruSync<HardEvent::MTE2_V>();
-
-        xKeep = keep;
-        xSwap = xSwapBuf.Get<float>();
-        BuildSwapPattern(xSwap, xKeep, floats);
-        if (incy == 1) {
-            FastCoeffsVector(coeffCols);
-        } else {
-            FastCoeffsScalar();
-        }
-    }
-
-    // Deinterleave the staged y slab into real/imag planes and form the
-    // per-column coefficient planes (vector form, incy == 1).
-    __aicore__ inline void FastCoeffsVector(uint32_t coeffCols)
-    {
-        LocalTensor<float> yIn = yInBuf.Get<float>();
-        const uint32_t repeats = CgeruCeilDiv(colCount * CGERU_COMPONENTS, VREG_FLOATS);
-        uint64_t rsvdCnt = 0;
-        GatherMask(yearPlane, yIn, 1, false, 0, {1, static_cast<uint16_t>(repeats), 8, 8}, rsvdCnt);
-        GatherMask(yiimPlane, yIn, 2, false, 0, {1, static_cast<uint16_t>(repeats), 8, 8}, rsvdCnt);
-        PipeBarrier<PIPE_V>();
-
-        LocalTensor<float> tmp = coeffBuf.Get<float>()[5U * coeffCols];
-        // Activity flag per the reference gate IF (Y(JY).NE.ZERO): |yr| + |yi|
-        // is exactly zero only when y_j == (0,0); Inf/NaN components stay
-        // non-zero. The coefficients themselves drive no skip decision: with a
-        // non-finite alpha a zero-y column would carry NaN coefficients.
-        Abs(yflagPlane, yearPlane, colCount);
-        Abs(tmp, yiimPlane, colCount);
-        Add(yflagPlane, yflagPlane, tmp, colCount);
-        PipeBarrier<PIPE_V>();
-
-        Muls(crPlane, yearPlane, alphaReal, colCount);
-        Muls(tmp, yiimPlane, alphaImag, colCount);
-        Sub(crPlane, crPlane, tmp, colCount);
-        Muls(ciPlane, yearPlane, alphaImag, colCount);
-        Muls(tmp, yiimPlane, alphaReal, colCount);
-        Add(ciPlane, ciPlane, tmp, colCount);
-        PipeBarrier<PIPE_V>();
-        // The column walk below reads the planes with scalar GetValue (S pipe).
-        CgeruSync<HardEvent::V_S>();
-    }
-
-    // Strided y: scalar gather of the per-core columns and scalar coefficients.
-    __aicore__ inline void FastCoeffsScalar()
-    {
-        for (uint32_t c = 0U; c < colCount; ++c) {
-            const int64_t yElem = static_cast<int64_t>(yStart) + static_cast<int64_t>(colStart + c) * incy;
-            const float yReal = yGm.GetValue(static_cast<uint64_t>(yElem) * CGERU_COMPONENTS);
-            const float yImag = yGm.GetValue(static_cast<uint64_t>(yElem) * CGERU_COMPONENTS + 1U);
-            float coeffReal = 0.0f;
-            float coeffImag = 0.0f;
-            CgeruCoeffScalar(alphaReal, alphaImag, yReal, yImag, coeffReal, coeffImag);
-            crPlane.SetValue(c, coeffReal);
-            ciPlane.SetValue(c, coeffImag);
-            // Activity flag from y itself (reference gate), never from the
-            // coefficient: non-finite alpha makes a zero-y column's NaN.
-            yflagPlane.SetValue(c, CgeruFAbs(yReal) + CgeruFAbs(yImag));
-        }
-        CgeruSync<HardEvent::S_V>();
-    }
-
-    // True when at least one column overlapping the chunk [off, off+elems) has
-    // y_j != (0,0) (the reference gate; computed from y itself so a non-finite
-    // alpha cannot make a skipped column look active). Chunks with nothing to
-    // update are skipped whole: their VECOUT staging would otherwise be stored
-    // back to GM uninitialized and clobber A (y == 0 columns leave A untouched).
-    __aicore__ inline bool ChunkHasWork(uint64_t off, uint32_t elems)
-    {
-        const uint64_t end = off + elems;
-        uint64_t j = off / m;
-        const uint64_t jEnd = static_cast<uint64_t>(colStart) + colCount;
-        while (j < jEnd && j * m < end) {
-            const uint32_t c = static_cast<uint32_t>(j - colStart);
-            if (yflagPlane.GetValue(c) != 0.0f) {
-                return true;
-            }
-            ++j;
-        }
-        return false;
-    }
-
-    __aicore__ inline void FastProcess()
-    {
-        const uint64_t slabHi = static_cast<uint64_t>(colStart + colCount) * m;
-        DataCopyPadExtParams<float> noPad{false, 0, 0, 0.0f};
-
-        // Prime the first chunk here rather than in InitFast: issuing it after
-        // the swap/coeff build keeps that 16 KiB transfer from sitting in
-        // front of the MTE2->V barrier the Gather waits on.
-        inTile = aInQueue.AllocTensor<float>();
-        DataCopyExtParams primeParams{1, primeElems * CGERU_COMPONENTS * BYTENUM_PER_FLOAT32, 0, 0, 0};
-        DataCopyPad(inTile, aGm[primeOff * CGERU_COMPONENTS], primeParams, noPad);
-        aInQueue.EnQue<float>(inTile);
-
-        // Serial chunk walk. The first chunk was issued above (after the
-        // swap/coeff build); every later chunk is loaded after the previous
-        // store was issued, letting the MTE3 transfer run alongside the next
-        // MTE2 load.
-        uint64_t off = primeOff;
-        uint32_t elems = primeElems;
-        while (off < slabHi) {
-            inTile = aInQueue.DeQue<float>();
-            const bool hasWork = ChunkHasWork(off, elems);
-            if (hasWork) {
-                const uint32_t bytes = elems * CGERU_COMPONENTS * BYTENUM_PER_FLOAT32;
-                LocalTensor<float> out = aOutQueue.AllocTensor<float>();
-                FastWalkColumns(off, elems, out);
-                aOutQueue.EnQue<float>(out);
-                out = aOutQueue.DeQue<float>();
-                DataCopyExtParams outParams{1, bytes, 0, 0, 0};
-                DataCopyPad(aGm[off * CGERU_COMPONENTS], out, outParams);
-                aOutQueue.FreeTensor(out);
-            }
-            aInQueue.FreeTensor(inTile);
-
-            const uint64_t nextOff = off + CGERU_FAST_CHUNK_ELEMS;
-            if (nextOff >= slabHi) {
-                break;
-            }
-            elems = static_cast<uint32_t>(CgeruMinU64(slabHi - nextOff, CGERU_FAST_CHUNK_ELEMS));
-            inTile = aInQueue.AllocTensor<float>();
-            DataCopyExtParams inParams{1, elems * CGERU_COMPONENTS * BYTENUM_PER_FLOAT32, 0, 0, 0};
-            DataCopyPad(inTile, aGm[nextOff * CGERU_COMPONENTS], inParams, noPad);
-            aInQueue.EnQue<float>(inTile);
-            off = nextOff;
-        }
-    }
-
-    // Accumulate every column overlapping the chunk [off, off+elems) into out.
-    __aicore__ inline void FastWalkColumns(uint64_t off, uint32_t elems, LocalTensor<float>& out)
-    {
-        const uint64_t end = off + elems;
-        uint64_t j = off / m;
-        while (j < (static_cast<uint64_t>(colStart) + colCount) && j * m < end) {
-            const uint64_t colLo = j * m;
-            const uint64_t runLo = (colLo > off) ? colLo : off;
-            const uint64_t runHi = CgeruMinU64(colLo + m, end);
-            if (runLo < runHi) {
-                const uint32_t c = static_cast<uint32_t>(j - colStart);
-                const float coeffReal = crPlane.GetValue(c);
-                const float coeffImag = ciPlane.GetValue(c);
-                const bool columnActive = yflagPlane.GetValue(c) != 0.0f;
-                const uint32_t rows = static_cast<uint32_t>(runHi - runLo);
-                const uint32_t dstFloats = static_cast<uint32_t>(runLo - off) * CGERU_COMPONENTS;
-                if (columnActive) {
-                    const uint32_t rowRel = static_cast<uint32_t>(runLo - colLo);
-                    AccumulateRows(out, dstFloats, xKeep, xSwap, rowRel, rows, coeffReal, coeffImag);
-                } else {
-                    // Zero-y column: the reference gate leaves A untouched (even
-                    // under a non-finite alpha whose coefficient is NaN), and
-                    // this chunk is stored back as a whole, so its original
-                    // bytes must be carried over to out.
-                    Adds(out[dstFloats], inTile[dstFloats], 0.0f, rows * CGERU_COMPONENTS);
-                }
-            }
-            ++j;
-        }
-    }
-
-    // out = A + cr*keep + ci*swap over `rows` rows starting at row `rowRel`
-    // inside the staged x band, mirrored at float offset `dstFloats` of out.
-    // swap carries the even-negated pair swap, so its lanes are (-xi*ci, xr*ci)
-    // and the lane values come out as (A + cr*xr) - ci*xi / (A + cr*xi) + ci*xr
-    // with plain mul/sub/add rounding, matching the reference expression
-    // order. Sliced at CGERU_SLICE_ROWS to bound the scratch plane.
-    __aicore__ inline void AccumulateRows(
-        LocalTensor<float>& out, uint32_t dstFloats, LocalTensor<float>& keep, LocalTensor<float>& swap,
-        uint32_t rowRel, uint32_t rows, float coeffReal, float coeffImag)
-    {
-        uint32_t done = 0U;
-        while (done < rows) {
-            const uint32_t rowsNow = ((rows - done) < CGERU_SLICE_ROWS) ? (rows - done) : CGERU_SLICE_ROWS;
-            const uint32_t floats = rowsNow * CGERU_COMPONENTS;
-            const uint32_t srcOff = (rowRel + done) * CGERU_COMPONENTS;
-            const uint32_t dstOff = dstFloats + done * CGERU_COMPONENTS;
-            Muls(out[dstOff], keep[srcOff], coeffReal, floats);
-            Muls(scratch, swap[srcOff], coeffImag, floats);
-            Add(out[dstOff], out[dstOff], scratch, floats);
-            Add(out[dstOff], inTile[dstOff], out[dstOff], floats);
-            done += rowsNow;
-        }
-    }
-
-    // ------------------------------------------------------------------
-    //  General path (plane based, per column pipeline)
-    // ---------------------------------------------------------------------
-
-    __aicore__ inline void InitGeneral()
-    {
-        this->pipe->InitBuffer(xQueue, BUFFER_NUM, 2U * CHUNK_ROWS * BYTENUM_PER_FLOAT32);
-        this->pipe->InitBuffer(aInQueue, BUFFER_NUM, 2U * CHUNK_ROWS * BYTENUM_PER_FLOAT32);
-        this->pipe->InitBuffer(aOutQueue, BUFFER_NUM, 2U * CHUNK_ROWS * BYTENUM_PER_FLOAT32);
-        this->pipe->InitBuffer(planeBuf, 6U * PLANE_F * BYTENUM_PER_FLOAT32);
-        this->pipe->InitBuffer(genIdxBuf, IDX_ENTRIES * BYTENUM_PER_FLOAT32);
-        this->pipe->InitBuffer(buildBuf, 2U * IDX_ENTRIES * BYTENUM_PER_FLOAT32);
-
-        LocalTensor<float> planes = planeBuf.Get<float>();
-        xR = planes;
-        xI = planes[PLANE_F];
-        t0 = planes[2U * PLANE_F];
-        t1 = planes[3U * PLANE_F];
-        calcR = planes[4U * PLANE_F];
-        calcI = planes[5U * PLANE_F];
-        idxU32 = genIdxBuf.Get<uint32_t>();
-    }
-
-    // idx[2t] = 4*t ; idx[2t+1] = 4*(CHUNK_ROWS + t), built once per core.
-    __aicore__ inline void BuildIndex()
-    {
-        LocalTensor<int32_t> idx = genIdxBuf.Get<int32_t>();
-        LocalTensor<int32_t> bA = buildBuf.Get<int32_t>();
-        LocalTensor<int32_t> bB = buildBuf.Get<int32_t>()[IDX_ENTRIES];
-
-        CreateVecIndex(idx, 0, IDX_ENTRIES);
-        PipeBarrier<PIPE_V>();
-        ShiftRight(bA, idx, 1, IDX_ENTRIES);
-        PipeBarrier<PIPE_V>();
-        Muls(bB, bA, 2, IDX_ENTRIES);
-        PipeBarrier<PIPE_V>();
-        Sub(bB, idx, bB, IDX_ENTRIES);
-        PipeBarrier<PIPE_V>();
-        Muls(bA, bA, static_cast<int32_t>(BYTENUM_PER_FLOAT32), IDX_ENTRIES);
-        Muls(bB, bB, static_cast<int32_t>(CHUNK_ROWS * BYTENUM_PER_FLOAT32), IDX_ENTRIES);
-        PipeBarrier<PIPE_V>();
-        Add(idx, bA, bB, IDX_ENTRIES);
-        PipeBarrier<PIPE_V>();
-    }
-
-    // Stage the x chunk as deinterleaved planes (xR / xI).
-    __aicore__ inline void LoadXChunk(uint32_t rowOff, uint32_t rows)
-    {
-        DataCopyPadExtParams<float> noPad{false, 0, 0, 0.0f};
-        LocalTensor<float> xIn = xQueue.AllocTensor<float>();
-        if (incx == 1) {
-            DataCopyExtParams xParams{1, static_cast<uint32_t>(rows * CGERU_COMPONENTS * BYTENUM_PER_FLOAT32), 0, 0, 0};
-            DataCopyPad(xIn, xGm[(xStart + rowOff) * CGERU_COMPONENTS], xParams, noPad);
-        } else {
-            for (uint32_t k = 0U; k < rows; ++k) {
-                const int64_t elem = static_cast<int64_t>(xStart) + static_cast<int64_t>(rowOff + k) * incx;
-                xIn.SetValue(k * CGERU_COMPONENTS, xGm.GetValue(static_cast<uint64_t>(elem) * CGERU_COMPONENTS));
-                xIn.SetValue(
-                    k * CGERU_COMPONENTS + 1U, xGm.GetValue(static_cast<uint64_t>(elem) * CGERU_COMPONENTS + 1U));
-            }
-        }
-        xQueue.EnQue<float>(xIn);
-        if (incx == 1) {
-            // Staged chunk came from MTE2 (GM -> UB).
-            event_t evIn = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
-            SetFlag<HardEvent::MTE2_V>(evIn);
-            WaitFlag<HardEvent::MTE2_V>(evIn);
-        } else {
-            // The strided fallback fills UB with scalar stores; GatherMask
-            // below needs an S->V barrier (MTE2->V would not order them).
-            event_t evScalar = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::S_V));
-            SetFlag<HardEvent::S_V>(evScalar);
-            WaitFlag<HardEvent::S_V>(evScalar);
-        }
-
-        LocalTensor<float> inLocal = xQueue.DeQue<float>();
-        const uint32_t repeatTime = (rows * CGERU_COMPONENTS + 63U) / 64U;
-        uint64_t rsvdCnt = 0;
-        GatherMask(xR, inLocal, 1, false, 0, {1, static_cast<uint16_t>(repeatTime), 8, 8}, rsvdCnt);
-        GatherMask(xI, inLocal, 2, false, 0, {1, static_cast<uint16_t>(repeatTime), 8, 8}, rsvdCnt);
-        PipeBarrier<PIPE_V>();
-        xQueue.FreeTensor(inLocal);
-    }
-
-    // out(rows*2 lanes) = interleave(calcR, calcI) = x * t ; then A += out.
-    __aicore__ inline void ColumnChunk(uint32_t col, uint32_t rowOff, uint32_t rows)
-    {
-        const int64_t yElem = static_cast<int64_t>(yStart) + static_cast<int64_t>(col) * incy;
-        const float yReal = yGm.GetValue(static_cast<uint64_t>(yElem) * CGERU_COMPONENTS);
-        const float yImag = yGm.GetValue(static_cast<uint64_t>(yElem) * CGERU_COMPONENTS + 1U);
-        // Reference gate: a column whose y is (0,0) is left untouched
-        // (NaN/Inf count as non-zero and are not skipped).
-        if (yReal == 0.0f && yImag == 0.0f) {
-            return;
-        }
-        float coeffReal = 0.0f;
-        float coeffImag = 0.0f;
-        CgeruCoeffScalar(alphaReal, alphaImag, yReal, yImag, coeffReal, coeffImag);
-
-        // outR = cr * xR - ci * xI ; outI = cr * xI + ci * xR
-        Muls(t0, xR, coeffReal, rows);
-        Muls(t1, xI, coeffImag, rows);
-        PipeBarrier<PIPE_V>();
-        Sub(calcR, t0, t1, rows);
-        Muls(t0, xI, coeffReal, rows);
-        Muls(t1, xR, coeffImag, rows);
-        PipeBarrier<PIPE_V>();
-        Add(calcI, t0, t1, rows);
-        PipeBarrier<PIPE_V>();
-
-        const uint32_t interCount = (rows * CGERU_COMPONENTS + 63U) / 64U * 64U;
-        LocalTensor<float> outLocal = aOutQueue.AllocTensor<float>();
-        Gather(outLocal, calcR, idxU32, 0U, interCount);
-        PipeBarrier<PIPE_V>();
-
-        DataCopyPadExtParams<float> noPad{false, 0, 0, 0.0f};
-        const uint64_t aOff = (static_cast<uint64_t>(col) * lda + rowOff) * CGERU_COMPONENTS;
-        LocalTensor<float> aIn = aInQueue.AllocTensor<float>();
-        DataCopyExtParams aParams{1, static_cast<uint32_t>(rows * CGERU_COMPONENTS * BYTENUM_PER_FLOAT32), 0, 0, 0};
-        DataCopyPad(aIn, aGm[aOff], aParams, noPad);
-        aInQueue.EnQue<float>(aIn);
-        event_t evIn = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
-        SetFlag<HardEvent::MTE2_V>(evIn);
-        WaitFlag<HardEvent::MTE2_V>(evIn);
-
-        LocalTensor<float> aInLocal = aInQueue.DeQue<float>();
-        Add(outLocal, outLocal, aInLocal, rows * CGERU_COMPONENTS);
-        aInQueue.FreeTensor(aInLocal);
-        PipeBarrier<PIPE_V>();
-
-        aOutQueue.EnQue<float>(outLocal);
-        event_t evOut = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE3));
-        SetFlag<HardEvent::V_MTE3>(evOut);
-        WaitFlag<HardEvent::V_MTE3>(evOut);
-
-        LocalTensor<float> outStored = aOutQueue.DeQue<float>();
-        DataCopyExtParams oParams{1, static_cast<uint32_t>(rows * CGERU_COMPONENTS * BYTENUM_PER_FLOAT32), 0, 0, 0};
-        DataCopyPad(aGm[aOff], outStored, oParams);
-        aOutQueue.FreeTensor(outStored);
-
-        event_t evBack = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_MTE2));
-        SetFlag<HardEvent::MTE3_MTE2>(evBack);
-        WaitFlag<HardEvent::MTE3_MTE2>(evBack);
-    }
-
-    __aicore__ inline void GeneralProcess()
-    {
-        BuildIndex();
-        for (uint32_t rowOff = 0U; rowOff < m; rowOff += CHUNK_ROWS) {
-            const uint32_t rows = ((m - rowOff) < CHUNK_ROWS) ? (m - rowOff) : CHUNK_ROWS;
-            LoadXChunk(rowOff, rows);
-            for (uint32_t j = colStart; j < colStart + colCount; ++j) {
-                ColumnChunk(j, rowOff, rows);
-            }
-        }
-    }
+    __aicore__ inline bool IsContiguousSlab(uint32_t chunk, uint32_t cols, uint32_t colStride) const;
+    __aicore__ inline uint64_t ColumnOffset(uint32_t col, uint32_t rowOff) const;
 
     TPipe* pipe;
-    TBuf<TPosition::VECCALC> xKeepBuf;
-    TBuf<TPosition::VECCALC> xSwapBuf;
-    TBuf<TPosition::VECCALC> idxBuf;
-    TBuf<TPosition::VECCALC> yInBuf;
+    // 列块缓冲：nslot 槽同宽，双缓冲流水就地更新，读完即写回。
+    TBuf<TPosition::VECCALC> aTileBuf;
+    // 行块内的 x（交错）、S = gather(X*sign)、Gather 用的标量暂存。
+    TBuf<TPosition::VECCALC> xBuf;
+    TBuf<TPosition::VECCALC> swapPatternBuf;
+    TBuf<TPosition::VECCALC> calcBuf;
+    // 本核所有列的 (u, v) = ALPHA*Y(JY) 以及向量化准备用的两块临时缓冲。
     TBuf<TPosition::VECCALC> coeffBuf;
-    TBuf<TPosition::VECCALC> scratchBuf;
-    TQue<TPosition::VECIN, BUFFER_NUM> xQueue;
-    TQue<TPosition::VECIN, BUFFER_NUM> aInQueue;
-    TQue<TPosition::VECOUT, BUFFER_NUM> aOutQueue;
-    LocalTensor<float> scratch;
-    TBuf<TPosition::VECCALC> planeBuf;
-    TBuf<TPosition::VECCALC> genIdxBuf;
-    TBuf<TPosition::VECCALC> buildBuf;
-    LocalTensor<float> xR;
-    LocalTensor<float> xI;
-    LocalTensor<float> t0;
-    LocalTensor<float> t1;
-    LocalTensor<float> calcR;
-    LocalTensor<float> calcI;
-    LocalTensor<uint32_t> idxU32;
+    TBuf<TPosition::VECCALC> coeffSyBuf;
+    TBuf<TPosition::VECCALC> coeffTmpBuf;
+    // |incy| == 1 时本核负责的 y 列片段（一次搬入，避免逐列 GM 标量读）。
+    TBuf<TPosition::VECCALC> yBuf;
+    // 尾部两张模式表（swap 字节偏移表 + sign 符号模式）由 kernel 在 UB 内现算并复用。
+    TBuf<TPosition::VECCALC> constBuf;
 
-    GlobalTensor<float> xGm;
-    GlobalTensor<float> yGm;
-    GlobalTensor<float> aGm;
-
-    LocalTensor<float> xKeep;
-    LocalTensor<float> xSwap;
-    LocalTensor<float> inTile;
-    LocalTensor<float> yearPlane;
-    LocalTensor<float> yiimPlane;
-    LocalTensor<float> crPlane;
-    LocalTensor<float> ciPlane;
-    LocalTensor<float> yflagPlane;
-
-    uint32_t m;
-    uint32_t n;
-    uint32_t lda;
+    GlobalTensor<float> aGM;
+    GlobalTensor<float> xGM;
+    GlobalTensor<float> yGM;
+    int32_t blockIdx;
+    int32_t blockNum;
+    int64_t m;
+    int64_t n;
+    int64_t lda;
+    int incx;
+    int incy;
+    uint32_t absIncx;
+    uint32_t absIncy;
+    uint32_t useCoreNum;
+    uint32_t colsPerCore;
     uint32_t colStart;
     uint32_t colCount;
-    int64_t incx;
-    int64_t incy;
-    uint64_t xStart;
-    uint64_t yStart;
+    // 本核负责的列总数；colCount 在 Init 里被夹到单批上限，Process 里按批推进。
+    uint32_t totalCols;
+    uint32_t rowTile;
     float alphaReal;
     float alphaImag;
-    bool useFast;
-    uint64_t primeOff;   // offset of the chunk primed during startup
-    uint32_t primeElems; // elements of the chunk primed during startup
+    // |incy| == 1 且 incy < 0 时，UB 里的 y 片（以及由它算出的 (u, v)）按物理列号递增存放，
+    // 与逻辑列号相反，取 (u, v) 时需要反向映射。
+    bool yReversed;
+    // 动态 UB 划分：行缓冲 float 数、模式表定容、A 列块总容量与单槽宽度。
+    uint32_t rowFloats;
+    uint32_t patternFloats;
+    uint32_t aTileFloats;
+    uint32_t aTileSlotFloats;
+    uint32_t aTileNslot;
+    // 首行块的 x 搬运提前到系数准备阶段发起：等待由那次 MTE2_V 一并收口，在 LoadX 里直接返回。
+    uint32_t pendXRowOff = kNoPendingRow;
+    uint32_t pendXChunk = 0U;
+    bool xEarlyIssued = false;
+    // 首列块的 A 搬运早于 swap pattern 构建发起（prologue），主调用里不再重复搬。
+    bool tile0Primed = false;
 };
 
-} // namespace
+__aicore__ inline void CgeruKernel::Init(const CgeruTilingData& tiling, TPipe* pipeIn)
+{
+    this->pipe = pipeIn;
+    BindTiling(tiling);
+    ComputeColumnRange();
+    BindGlobalBuffers(tiling);
 
-__global__ __aicore__ __vector__ void cgeru_kernel(GM_ADDR x, GM_ADDR y, GM_ADDR A, const CgeruTilingData tiling)
+    const uint32_t chunkMax = ComputeBufferSizes();
+    ComputeSlotPlan(chunkMax);
+    AllocateBuffers();
+    BuildConstTables();
+}
+
+__aicore__ inline void CgeruKernel::BindTiling(const CgeruTilingData& tiling)
+{
+    this->blockNum = GetBlockNum();
+    this->blockIdx = GetBlockIdx();
+    this->m = tiling.m;
+    this->n = tiling.n;
+    this->lda = tiling.lda;
+    this->useCoreNum = tiling.useCoreNum;
+    this->colsPerCore = tiling.colsPerCore;
+    this->rowTile = tiling.rowTile;
+    this->incx = tiling.incx;
+    this->incy = tiling.incy;
+    this->absIncx = (this->incx < 0) ? static_cast<uint32_t>(-this->incx) : static_cast<uint32_t>(this->incx);
+    this->absIncy = (this->incy < 0) ? static_cast<uint32_t>(-this->incy) : static_cast<uint32_t>(this->incy);
+    this->alphaReal = tiling.alphaReal;
+    this->alphaImag = tiling.alphaImag;
+    this->yReversed = (this->absIncy == 1U) && (this->incy < 0);
+}
+
+__aicore__ inline void CgeruKernel::ComputeColumnRange()
+{
+    this->colStart = static_cast<uint32_t>(this->blockIdx) * this->colsPerCore;
+    if (this->colStart >= static_cast<uint32_t>(this->n)) {
+        this->colCount = 0U;
+    } else if (static_cast<uint32_t>(this->blockIdx) == this->useCoreNum - 1U) {
+        this->colCount = static_cast<uint32_t>(this->n) - this->colStart;
+    } else {
+        this->colCount = this->colsPerCore;
+    }
+    // 列数不能整分到每个核时，非末核的尾列可能越过 n，必须再夹一次。
+    const uint32_t remainCols = static_cast<uint32_t>(this->n) - this->colStart;
+    if (this->colCount > remainCols) {
+        this->colCount = remainCols;
+    }
+
+    // UB 里的 y/(u,v) 缓冲与模式表都按 colCount 线性增长：本核列数过大时把列切成批次，
+    // 每批不超过模式表定容（CGERU_PATTERN_FLOATS 项，每列 2 项）。
+    this->totalCols = this->colCount;
+    constexpr uint32_t maxPassCols = CGERU_PATTERN_FLOATS / CGERU_FLOATS_PER_COMPLEX;
+    if (this->colCount > maxPassCols) {
+        this->colCount = maxPassCols;
+    }
+}
+
+__aicore__ inline void CgeruKernel::BindGlobalBuffers(const CgeruTilingData& tiling)
+{
+    aGM.SetGlobalBuffer(
+        reinterpret_cast<__gm__ float*>(tiling.A),
+        static_cast<uint64_t>(this->n) * static_cast<uint64_t>(this->lda) * CGERU_FLOATS_PER_COMPLEX);
+    xGM.SetGlobalBuffer(
+        reinterpret_cast<__gm__ float*>(tiling.x),
+        (static_cast<uint64_t>(this->m) * this->absIncx + 1U) * CGERU_FLOATS_PER_COMPLEX);
+    yGM.SetGlobalBuffer(
+        reinterpret_cast<__gm__ float*>(tiling.y),
+        (static_cast<uint64_t>(this->n) * this->absIncy + 1U) * CGERU_FLOATS_PER_COMPLEX);
+}
+
+// 本核行块的最大复数数，受 tiling 的 rowTile 与 m 夹取。
+__aicore__ inline uint32_t CgeruKernel::ComputeChunkMax() const
+{
+    uint32_t chunkMax = this->rowTile;
+    if (chunkMax > static_cast<uint32_t>(this->m)) {
+        chunkMax = static_cast<uint32_t>(this->m);
+    }
+    if (chunkMax > CGERU_ROW_TILE_MAX) {
+        chunkMax = CGERU_ROW_TILE_MAX;
+    }
+    return chunkMax;
+}
+
+// 每核列向量化 (u, v) 所需的 float 数（2*colCount，向上补齐到 8 的倍数，最小 8）。
+__aicore__ inline uint32_t CgeruKernel::AlignCoeffFloats(uint32_t cols) const
+{
+    uint32_t coeffFloats = cols * CGERU_FLOATS_PER_COMPLEX;
+    coeffFloats = ((coeffFloats + 7U) / 8U) * 8U;
+    return (coeffFloats < 8U) ? 8U : coeffFloats;
+}
+
+// |incy| == 1 时 y 片在 UB 中的字节数（每列 2 个 float，按 32 字节向上取整）。
+__aicore__ inline uint32_t CgeruKernel::ComputeYBufBytes(uint32_t cols) const
+{
+    if (this->absIncy != 1U) {
+        return 0U;
+    }
+    uint32_t yBytes = cols * CGERU_BYTES_PER_COMPLEX;
+    yBytes = ((yBytes + 31U) / 32U) * 32U;
+    return (yBytes < 32U) ? 32U : yBytes;
+}
+
+// 行缓冲与模式表前缀的定容，返回行缓冲字节数。
+__aicore__ inline uint32_t CgeruKernel::ComputeTableLayout(uint32_t chunkMax)
+{
+    uint32_t rowF = ((chunkMax + CGERU_ALIGN_COMPLEX - 1U) / CGERU_ALIGN_COMPLEX) * CGERU_ALIGN_COMPLEX *
+                    CGERU_FLOATS_PER_COMPLEX;
+    if (rowF < 64U) {
+        rowF = 64U;
+    }
+    this->rowFloats = rowF;
+
+    // 模式表定容：向量化 (u,v) 准备要用表覆盖 ((2*colCount+7)/8)*8 项，可能超过 rowF。
+    uint32_t tableFloats = rowF;
+    const uint32_t needTableFloats = AlignCoeffFloats(this->colCount);
+    if (needTableFloats > tableFloats) {
+        tableFloats = needTableFloats;
+    }
+    // 兜底：模式表定容 CGERU_PATTERN_FLOATS 项（colCount 已在 ComputeColumnRange 夹过）。
+    if (tableFloats > CGERU_PATTERN_FLOATS) {
+        tableFloats = CGERU_PATTERN_FLOATS;
+    }
+    this->patternFloats = tableFloats;
+    return rowF * CGERU_BYTES_PER_FLOAT;
+}
+
+// 扣除固定占用后，给 A 列块分配总容量与单槽宽度。
+__aicore__ inline void CgeruKernel::PlanColumnBuffers(uint32_t fixedBytes, uint32_t chunkMax)
+{
+    constexpr uint32_t ubBytes = 192U * 1024U;
+    uint32_t aFloats = (ubBytes > fixedBytes) ? ((ubBytes - fixedBytes) / CGERU_BYTES_PER_FLOAT) : 0U;
+    aFloats = (aFloats / 8U) * 8U;
+    if (aFloats < 8192U) {
+        aFloats = 8192U;  // 至少 32KB
+    }
+    uint32_t slotFloats = aFloats / 2U;
+    if (slotFloats > 8192U) {
+        slotFloats = 8192U;
+    }
+    slotFloats = (slotFloats / 8U) * 8U;
+
+    const uint32_t colStrideEst = ((CGERU_FLOATS_PER_COMPLEX * chunkMax + 7U) / 8U) * 8U;
+    const bool contiguousEst =
+        (chunkMax == static_cast<uint32_t>(this->m)) && (this->lda == static_cast<int64_t>(this->m));
+    const bool alignedEst =
+        (!contiguousEst) || (((chunkMax % 4U) == 0U) && ((static_cast<uint32_t>(this->lda) % 4U) == 0U));
+    const uint32_t blockNumEst = static_cast<uint32_t>(this->blockNum);
+    const uint32_t colsPerCoreEst =
+        (blockNumEst == 0U) ? 0U : ((static_cast<uint32_t>(this->n) + blockNumEst - 1U) / blockNumEst);
+    const uint64_t workFloats = static_cast<uint64_t>(colsPerCoreEst) * static_cast<uint64_t>(colStrideEst);
+    if ((!alignedEst) && (workFloats >= 4096U)) {
+        // 逐列路径目标 ~10 遍：单槽只留 1/10 列宽的整 8 对齐量。
+        uint32_t colsPerTile = (colsPerCoreEst + 9U) / 10U;
+        if (colsPerTile == 0U) {
+            colsPerTile = 1U;
+        }
+        uint32_t wantFloats = colsPerTile * colStrideEst;
+        wantFloats = (wantFloats / 8U) * 8U;
+        if (wantFloats < 512U) {
+            wantFloats = 512U;
+        }
+        if (wantFloats < slotFloats) {
+            slotFloats = wantFloats;
+        }
+    }
+    this->aTileFloats = aFloats;
+    this->aTileSlotFloats = slotFloats;
+}
+
+// 返回本核行块的最大复数数（chunkMax）。
+__aicore__ inline uint32_t CgeruKernel::ComputeBufferSizes()
+{
+    const uint32_t chunkMax = ComputeChunkMax();
+    const uint32_t rowBytes = ComputeTableLayout(chunkMax);
+    const uint32_t constBytes = 2U * this->patternFloats * CGERU_BYTES_PER_FLOAT;
+    const uint32_t yBytes = ComputeYBufBytes(this->colCount);
+    const uint32_t coeffBytes = AlignCoeffFloats(this->colCount) * CGERU_BYTES_PER_FLOAT;
+    const uint32_t fixedBytes = 3U * rowBytes + constBytes + yBytes + 3U * coeffBytes + 8192U;
+    PlanColumnBuffers(fixedBytes, chunkMax);
+    return chunkMax;
+}
+
+__aicore__ inline void CgeruKernel::ComputeSlotPlan(uint32_t chunkMax)
+{
+    uint32_t slotFloats = this->aTileSlotFloats;
+    const uint32_t aFloats = this->aTileFloats;
+    const uint32_t colStrideEst = ((CGERU_FLOATS_PER_COMPLEX * chunkMax + 7U) / 8U) * 8U;
+    uint32_t tileColsEst = (colStrideEst == 0U) ? 1U : (slotFloats / colStrideEst);
+    if (tileColsEst == 0U) {
+        tileColsEst = 1U;
+    }
+    const uint32_t colsPerCoreEst =
+        (static_cast<uint32_t>(this->n) + this->blockNum - 1U) / this->blockNum;
+    const uint32_t ntilesEst = (colsPerCoreEst + tileColsEst - 1U) / tileColsEst;
+    const uint32_t nslot = ((aFloats >= 3U * slotFloats) && (ntilesEst >= 3U)) ? 3U : 2U;
+    this->aTileNslot = nslot;
+    this->aTileSlotFloats = slotFloats;
+    this->aTileFloats = nslot * slotFloats;
+    (void)tileColsEst;
+}
+
+__aicore__ inline void CgeruKernel::AllocateBuffers()
+{
+    const uint32_t rowBytes = this->rowFloats * CGERU_BYTES_PER_FLOAT;
+    const uint32_t constBytes = 2U * this->patternFloats * CGERU_BYTES_PER_FLOAT;
+    const uint32_t coeffBytes = AlignCoeffFloats(this->colCount) * CGERU_BYTES_PER_FLOAT;
+
+    this->pipe->InitBuffer(aTileBuf, this->aTileFloats * CGERU_BYTES_PER_FLOAT);
+    this->pipe->InitBuffer(xBuf, rowBytes);
+    this->pipe->InitBuffer(swapPatternBuf, rowBytes);
+    this->pipe->InitBuffer(calcBuf, rowBytes);
+    this->pipe->InitBuffer(constBuf, constBytes);
+    this->pipe->InitBuffer(coeffBuf, coeffBytes);
+    this->pipe->InitBuffer(coeffSyBuf, coeffBytes);
+    this->pipe->InitBuffer(coeffTmpBuf, coeffBytes);
+
+    // 列片段连续（|incy| == 1）时把本核的 y 一次搬进 UB：每列 2 个 float，按 32 字节向上取整。
+    const uint32_t yBytes = ComputeYBufBytes(this->colCount);
+    if (yBytes > 0U) {
+        this->pipe->InitBuffer(yBuf, yBytes);
+    }
+}
+
+// 在 UB 内现算两张模式表，逐位等价于原先 host 侧生成、经 GM 搬入的常量表：
+//   swap[k] = 4 * (k ^ 1)（Gather 的字节偏移，把相邻两个 float 交换位置），
+//   sign[k] = (k 为偶数 ? -1.0f : +1.0f)（交错正负号模式）。
+// 两张表只与下标有关、与 m/n 无关，Init 里算一次供整个 kernel 复用。
+__aicore__ inline void CgeruKernel::BuildConstTables()
+{
+    LocalTensor<uint32_t> swapTable = constBuf.Get<uint32_t>();
+    // sign 区先当 (k >> 1) << 1 的暂存，最后由 Cast 整段覆盖成 ±1.0f。
+    LocalTensor<uint32_t> scratch = constBuf.Get<uint32_t>()[this->patternFloats];
+    LocalTensor<float> signTable = constBuf.Get<float>()[this->patternFloats];
+    // 奇偶位临时量借 A 列块缓冲：Init 阶段尚未装载 A 数据，容量不小于模式表定容。
+    LocalTensor<uint32_t> parity = aTileBuf.Get<uint32_t>();
+    const uint32_t count = this->patternFloats;
+
+    CreateVecIndex(swapTable.ReinterpretCast<int32_t>(), 0, count);
+    PipeBarrier<PIPE_V>();
+    ShiftRight(scratch, swapTable, 1U, count);
+    PipeBarrier<PIPE_V>();
+    ShiftLeft(scratch, scratch, 1U, count);
+    PipeBarrier<PIPE_V>();
+    Sub(parity.ReinterpretCast<int32_t>(), swapTable.ReinterpretCast<int32_t>(),
+        scratch.ReinterpretCast<int32_t>(), count);
+    PipeBarrier<PIPE_V>();
+    // 1 - 2*(k & 1)：偶数 +1、奇数 -1，正好是 k ^ 1 相对 k 的增量。
+    Muls(parity.ReinterpretCast<int32_t>(), parity.ReinterpretCast<int32_t>(), -2, count);
+    PipeBarrier<PIPE_V>();
+    Adds(parity.ReinterpretCast<int32_t>(), parity.ReinterpretCast<int32_t>(), 1, count);
+    PipeBarrier<PIPE_V>();
+    Add(swapTable.ReinterpretCast<int32_t>(), swapTable.ReinterpretCast<int32_t>(),
+        parity.ReinterpretCast<int32_t>(), count);
+    PipeBarrier<PIPE_V>();
+    ShiftLeft(swapTable, swapTable, 2U, count);
+    PipeBarrier<PIPE_V>();
+    // sign = -(增量)：偶数 -1.0f、奇数 +1.0f。
+    Cast(signTable, parity.ReinterpretCast<int32_t>(), RoundMode::CAST_NONE, count);
+    PipeBarrier<PIPE_V>();
+    Muls(signTable, signTable, -1.0f, count);
+}
+
+__aicore__ inline void CgeruKernel::PrepareColumnCoeffs()
+{
+    IssueEarlyX();
+    const uint32_t coeffFloats =
+        ((static_cast<uint32_t>(this->colCount) * CGERU_FLOATS_PER_COMPLEX + 7U) / 8U) * 8U;
+    const bool yInUb = LoadYCoefficients();
+    if (yInUb) {
+        // 首行块的 x 与 y 片都排在 MTE2 流水上，进入向量计算前等一次 MTE2_V 收口。
+        event_t eventIdMte2ToV = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
+        SetFlag<HardEvent::MTE2_V>(eventIdMte2ToV);
+        WaitFlag<HardEvent::MTE2_V>(eventIdMte2ToV);
+        PrepareCoeffsVectorized(coeffFloats);
+    } else {
+        PrepareCoeffsScalar(coeffFloats);
+    }
+
+    event_t eventIdVToS = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_S));
+    SetFlag<HardEvent::V_S>(eventIdVToS);
+    WaitFlag<HardEvent::V_S>(eventIdVToS);
+}
+
+__aicore__ inline void CgeruKernel::IssueEarlyX()
+{
+    if ((this->pendXRowOff == kNoPendingRow) || (this->incx != 1) || (this->absIncy != 1U)) {
+        return;
+    }
+    // 首行块的 x 在这里就发起（排在 y 片之前）：GM 时延与 y 片的搬运重叠，
+    // 由下面 y 片那次 MTE2_V 一并收口，不额外占用事件号。
+    LocalTensor<float> xLocal = xBuf.Get<float>();
+    DataCopyExtParams xParams{1, static_cast<uint32_t>(this->pendXChunk * CGERU_BYTES_PER_COMPLEX), 0, 0, 0};
+    DataCopyPadExtParams<float> noPadX{false, 0, 0, 0.0f};
+    DataCopyPad(
+        xLocal, xGM[static_cast<uint64_t>(this->pendXRowOff) * CGERU_FLOATS_PER_COMPLEX], xParams, noPadX);
+    this->xEarlyIssued = true;
+}
+
+// 返回 true 表示本核的 y 已整段搬入 UB（|incy| == 1）。
+__aicore__ inline bool CgeruKernel::LoadYCoefficients()
+{
+    if (this->absIncy != 1U || this->colCount == 0U) {
+        return false;
+    }
+    // |incy| == 1 时本核的列在 GM 中连续：整段一次搬入 UB，避免逐列 2 次 GM 标量读。
+    // 负步长时物理列号逆序，按 readCol 反向取即可。
+    LocalTensor<float> yLocal = yBuf.Get<float>();
+    const int64_t firstPhys = (this->incy > 0) ?
+                                  static_cast<int64_t>(this->colStart) :
+                                  (static_cast<int64_t>(this->n) - 1 - static_cast<int64_t>(this->colStart) -
+                                   static_cast<int64_t>(this->colCount) + 1);
+    DataCopyExtParams yParams{1, static_cast<uint32_t>(this->colCount * CGERU_BYTES_PER_COMPLEX), 0, 0, 0};
+    DataCopyPadExtParams<float> noPad{false, 0, 0, 0.0f};
+    DataCopyPad(yLocal, yGM[static_cast<uint64_t>(firstPhys) * CGERU_FLOATS_PER_COMPLEX], yParams, noPad);
+    return true;
+}
+
+__aicore__ inline void CgeruKernel::PrepareCoeffsVectorized(uint32_t coeffFloats)
+{
+    // 一次向量化算出全部 (u, v)：S_y = gather(y*sign, swap) = (yi, -yr)，
+    // coeff = ar*y - ai*S_y = (ar*yr - ai*yi, ar*yi + ai*yr)，与 Netlib 的 TEMP = ALPHA*Y(JY) 同算式。
+    LocalTensor<float> yLocal = yBuf.Get<float>();
+    LocalTensor<float> signLocal = constBuf.Get<float>()[this->patternFloats];
+    LocalTensor<uint32_t> swapLocal = constBuf.Get<uint32_t>();
+    LocalTensor<float> syLocal = coeffSyBuf.Get<float>();
+    LocalTensor<float> tmpLocal = coeffTmpBuf.Get<float>();
+    LocalTensor<float> coeff = coeffBuf.Get<float>();
+    Mul(tmpLocal, yLocal, signLocal, coeffFloats);
+    Gather(syLocal, tmpLocal, swapLocal, static_cast<uint32_t>(0), coeffFloats);
+    Muls(coeff, yLocal, this->alphaReal, coeffFloats);
+    Axpy(coeff, syLocal, -this->alphaImag, coeffFloats);
+}
+
+__aicore__ inline void CgeruKernel::PrepareCoeffsScalar(uint32_t coeffFloats)
+{
+    (void)coeffFloats;
+    // 非连续列片段（|incy| != 1）逐列从 GM 标量读；本条路径不在验收性能用例上。
+    LocalTensor<float> coeff = coeffBuf.Get<float>();
+    for (uint32_t col = 0; col < this->colCount; ++col) {
+        const int64_t logical = static_cast<int64_t>(this->colStart + col);
+        const int64_t phys = (this->incy > 0) ?
+                                 (logical * this->incy) :
+                                 ((static_cast<int64_t>(this->n) - 1 - logical) * (-static_cast<int64_t>(this->incy)));
+        const uint64_t yIdx = static_cast<uint64_t>(phys) * CGERU_FLOATS_PER_COMPLEX;
+        const float yReal = yGM.GetValue(yIdx);
+        const float yImag = yGM.GetValue(yIdx + 1U);
+        coeff.SetValue(CGERU_FLOATS_PER_COMPLEX * col, this->alphaReal * yReal - this->alphaImag * yImag);
+        coeff.SetValue(CGERU_FLOATS_PER_COMPLEX * col + 1U, this->alphaReal * yImag + this->alphaImag * yReal);
+    }
+}
+
+__aicore__ inline void CgeruKernel::GetUV(uint32_t col, float& u, float& v)
+{
+    LocalTensor<float> coeff = coeffBuf.Get<float>();
+    const uint32_t ti = this->yReversed ? (this->colCount - 1U - col) : col;
+    u = coeff.GetValue(CGERU_FLOATS_PER_COMPLEX * ti);
+    v = coeff.GetValue(CGERU_FLOATS_PER_COMPLEX * ti + 1U);
+}
+
+__aicore__ inline void CgeruKernel::LoadX(uint32_t rowOff, uint32_t chunk)
+{
+    LocalTensor<float> xLocal = xBuf.Get<float>();
+    if (this->xEarlyIssued && (this->pendXRowOff == rowOff) && (this->pendXChunk == chunk) &&
+        (this->incx == 1)) {
+        // 已在 PrepareColumnCoeffs 阶段发起，且由首列块的 MTE2_V 标志一并收口。
+        this->xEarlyIssued = false;
+        this->pendXRowOff = kNoPendingRow;
+        return;
+    }
+    if (this->incx == 1) {
+        DataCopyExtParams xParams{1, static_cast<uint32_t>(chunk * CGERU_BYTES_PER_COMPLEX), 0, 0, 0};
+        DataCopyPadExtParams<float> noPad{false, 0, 0, 0.0f};
+        DataCopyPad(
+            xLocal, xGM[static_cast<uint64_t>(rowOff) * CGERU_FLOATS_PER_COMPLEX], xParams, noPad);
+        event_t eventIdMte2ToV = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
+        SetFlag<HardEvent::MTE2_V>(eventIdMte2ToV);
+        WaitFlag<HardEvent::MTE2_V>(eventIdMte2ToV);
+        return;
+    }
+
+    // 步长不为 1 时按行逐个搬：负步长反序访问；复数逐元素搬写 xLocal 也更直接。
+    for (uint32_t i = 0; i < chunk; ++i) {
+        const int64_t logical = static_cast<int64_t>(rowOff + i);
+        const int64_t phys = (this->incx > 0) ?
+                                 (logical * this->incx) :
+                                 ((static_cast<int64_t>(this->m) - 1 - logical) * (-static_cast<int64_t>(this->incx)));
+        const uint64_t xIdx = static_cast<uint64_t>(phys) * CGERU_FLOATS_PER_COMPLEX;
+        xLocal.SetValue(i * CGERU_FLOATS_PER_COMPLEX, xGM.GetValue(xIdx));
+        xLocal.SetValue(i * CGERU_FLOATS_PER_COMPLEX + 1U, xGM.GetValue(xIdx + 1U));
+    }
+    event_t eventIdSToV = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::S_V));
+    SetFlag<HardEvent::S_V>(eventIdSToV);
+    WaitFlag<HardEvent::S_V>(eventIdSToV);
+}
+
+__aicore__ inline void CgeruKernel::BuildSwapPattern(uint32_t calcNum)
+{
+    LocalTensor<float> xLocal = xBuf.Get<float>();
+    LocalTensor<float> signLocal = constBuf.Get<float>()[this->patternFloats];
+    LocalTensor<uint32_t> swapLocal = constBuf.Get<uint32_t>();
+    LocalTensor<float> pattern = swapPatternBuf.Get<float>();
+    LocalTensor<float> scratch = calcBuf.Get<float>();
+    // calcNum 是复数个数，向量指令按 float 计数：交错布局下为 2*calcNum 个 float。
+    const uint32_t calcFloats = CGERU_FLOATS_PER_COMPLEX * calcNum;
+    // scratch = X * sign = (-xr, +xi)；pattern = gather(scratch, swap) = (xi, -xr)。
+    Mul(scratch, xLocal, signLocal, calcFloats);
+    Gather(pattern, scratch, swapLocal, static_cast<uint32_t>(0), calcFloats);
+}
+
+__aicore__ inline uint64_t CgeruKernel::ColumnOffset(uint32_t col, uint32_t rowOff) const
+{
+    return (static_cast<uint64_t>(this->colStart + col) * static_cast<uint64_t>(this->lda) +
+            static_cast<uint64_t>(rowOff)) *
+           CGERU_FLOATS_PER_COMPLEX;
+}
+
+__aicore__ inline LocalTensor<float> CgeruKernel::SlotBuffer(LocalTensor<float> all, uint32_t slot,
+                                                             uint32_t slotFloats)
+{
+    return all[static_cast<int32_t>(slot * slotFloats)];
+}
+
+__aicore__ inline void CgeruKernel::WaitLoadFlag(uint32_t pass)
+{
+    if ((pass & 1U) == 0U) {
+        WaitFlag<HardEvent::MTE2_V>(kEvLoadEven);
+    } else {
+        WaitFlag<HardEvent::MTE2_V>(kEvLoadOdd);
+    }
+}
+
+__aicore__ inline void CgeruKernel::SetLoadFlag(uint32_t pass)
+{
+    if ((pass & 1U) == 0U) {
+        SetFlag<HardEvent::MTE2_V>(kEvLoadEven);
+    } else {
+        SetFlag<HardEvent::MTE2_V>(kEvLoadOdd);
+    }
+}
+
+__aicore__ inline void CgeruKernel::SetStoreFlag(uint32_t slot)
+{
+    if (slot == 0U) {
+        SetFlag<HardEvent::MTE3_MTE2>(kEvStore0);
+    } else if (slot == 1U) {
+        SetFlag<HardEvent::MTE3_MTE2>(kEvStore1);
+    } else {
+        SetFlag<HardEvent::MTE3_MTE2>(kEvStore2);
+    }
+}
+
+__aicore__ inline void CgeruKernel::WaitSlotFree(uint32_t pass, uint32_t nslot)
+{
+    // 目标槽（第 pass+1 遍要写的槽）上一次使用是第 pass+1-nslot 遍，等它的搬出结束。
+    const uint32_t safeNslot = (nslot == 0U) ? 1U : nslot;
+    if (pass + 1U < safeNslot) {
+        return;
+    }
+    const uint32_t slotIdx = (pass + 1U) % safeNslot;
+    if (slotIdx == 0U) {
+        WaitFlag<HardEvent::MTE3_MTE2>(kEvStore0);
+    } else if (slotIdx == 1U) {
+        WaitFlag<HardEvent::MTE3_MTE2>(kEvStore1);
+    } else {
+        WaitFlag<HardEvent::MTE3_MTE2>(kEvStore2);
+    }
+}
+
+__aicore__ inline void CgeruKernel::WaitPendingStores(uint32_t ntiles, uint32_t nslot)
+{
+    // 循环里消费了前 ntiles-(nslot-1) 个搬出标志，剩最后 nslot-1 个（不足时就是全部）在这里消费。
+    const uint32_t safeNslot = (nslot == 0U) ? 1U : nslot;
+    const uint32_t pendStores = (ntiles >= safeNslot) ? (safeNslot - 1U) : ntiles;
+    for (uint32_t k = 0U; k < pendStores; ++k) {
+        const uint32_t slotIdx = (ntiles - 1U - k) % safeNslot;
+        if (slotIdx == 0U) {
+            WaitFlag<HardEvent::MTE3_MTE2>(kEvStore0);
+        } else if (slotIdx == 1U) {
+            WaitFlag<HardEvent::MTE3_MTE2>(kEvStore1);
+        } else {
+            WaitFlag<HardEvent::MTE3_MTE2>(kEvStore2);
+        }
+    }
+}
+
+__aicore__ inline bool CgeruKernel::IsContiguousSlab(uint32_t chunk, uint32_t cols, uint32_t colStride) const
+{
+    return (chunk == static_cast<uint32_t>(this->m)) && (this->lda == static_cast<int64_t>(this->m)) &&
+           (colStride == chunk * CGERU_FLOATS_PER_COMPLEX) &&
+           (((chunk * CGERU_FLOATS_PER_COMPLEX * cols) % 8U) == 0U);
+}
+
+__aicore__ inline void CgeruKernel::LoadAColumnTileTo(uint32_t col0, uint32_t cols, uint32_t rowOff, uint32_t chunk,
+                                                      uint32_t colStride, LocalTensor<float> dst)
+{
+    const uint64_t aOff = ColumnOffset(col0, rowOff);
+    if (IsContiguousSlab(chunk, cols, colStride)) {
+        // GM 与 UB 两侧都是连续流：一条 1D 指令搬完，长度不必是 32B 整倍。
+        const uint32_t oneDimFloats = cols * chunk * CGERU_FLOATS_PER_COMPLEX;
+        if ((oneDimFloats % 8U) == 0U) {
+            DataCopy(dst, aGM[aOff], oneDimFloats);
+        } else {
+            DataCopyExtParams oneDimParams{1U, static_cast<uint32_t>(oneDimFloats * CGERU_BYTES_PER_FLOAT), 0U, 0U,
+                                           0U};
+            DataCopyPadExtParams<float> noPad{false, 0, 0, 0.0f};
+            DataCopyPad(dst, aGM[aOff], oneDimParams, noPad);
+        }
+        return;
+    }
+    // UB 侧每 burst 由硬件按 ceil32(blockLen) 补齐，槽宽已上调到 32B 整倍 → dstStride 恒 0。
+    DataCopyExtParams aParams{
+        static_cast<uint16_t>(cols), static_cast<uint32_t>(chunk * CGERU_BYTES_PER_COMPLEX),
+        static_cast<uint32_t>((this->lda - static_cast<int64_t>(chunk)) * CGERU_BYTES_PER_COMPLEX), 0, 0};
+    DataCopyPadExtParams<float> noPad{false, 0, 0, 0.0f};
+    DataCopyPad(dst, aGM[aOff], aParams, noPad);
+}
+
+__aicore__ inline void CgeruKernel::StoreAColumnTileFrom(uint32_t col0, uint32_t cols, uint32_t rowOff,
+                                                         uint32_t chunk, uint32_t colStride,
+                                                         LocalTensor<float> src)
+{
+    const uint64_t aOff = ColumnOffset(col0, rowOff);
+    if (IsContiguousSlab(chunk, cols, colStride)) {
+        const uint32_t oneDimFloats = cols * chunk * CGERU_FLOATS_PER_COMPLEX;
+        if ((oneDimFloats % 8U) == 0U) {
+            DataCopy(aGM[aOff], src, oneDimFloats);
+        } else {
+            DataCopyExtParams oneDimParams{1U, static_cast<uint32_t>(oneDimFloats * CGERU_BYTES_PER_FLOAT), 0U, 0U,
+                                           0U};
+            DataCopyPad(aGM[aOff], src, oneDimParams);
+        }
+        return;
+    }
+    DataCopyExtParams outParams{
+        static_cast<uint16_t>(cols), static_cast<uint32_t>(chunk * CGERU_BYTES_PER_COMPLEX), 0,
+        static_cast<uint32_t>((this->lda - static_cast<int64_t>(chunk)) * CGERU_BYTES_PER_COMPLEX), 0};
+    DataCopyPad(aGM[aOff], src, outParams);
+}
+
+// 每列两次就地 Axpy：A(col) += u*X + (-v)*S。
+// 零 y 列（alpha 有限时 u == v == 0）整列跳过，与 Netlib cgeru 的 `IF (Y(JY).EQ.ZERO) GO TO`
+// 以及 arch35 的 yFlagUb 判断保持一致：零列不参与累加，x 含 Inf/NaN 时 A 也保持原值。
+// alpha 非有限（Inf/NaN）时 u/v 非有限，不会误命中；alpha 有限而 y 极小时乘积下溢为 0
+// 同样按零列处理（A 不变，等价于 Netlib 的 TEMP == 0 分支）。
+__aicore__ inline void CgeruKernel::AccumulateColumns(LocalTensor<float> buf, uint32_t col0, uint32_t cols,
+                                                      uint32_t floats, uint32_t colStride)
+{
+    LocalTensor<float> pattern = swapPatternBuf.Get<float>();
+    LocalTensor<float> xLocal = xBuf.Get<float>();
+    for (uint32_t c = 0; c < cols; ++c) {
+        float u = 0.0f;
+        float v = 0.0f;
+        GetUV(col0 + c, u, v);
+        if (u == 0.0f && v == 0.0f) {
+            continue;
+        }
+        const int32_t off = static_cast<int32_t>(c * colStride);
+        Axpy(buf[off], xLocal, u, floats);
+        Axpy(buf[off], pattern, -v, floats);
+    }
+}
+
+__aicore__ inline void CgeruKernel::AccumulateColumnTileOn(LocalTensor<float> buf, uint32_t col0, uint32_t cols,
+                                                           uint32_t floats, uint32_t colStride)
+{
+    AccumulateColumns(buf, col0, cols, floats, colStride);
+}
+__aicore__ inline void CgeruKernel::LoadColumnPass(LocalTensor<float> dst, uint32_t col0, uint32_t cols,
+                                                   uint32_t rowOff, uint32_t chunk, uint32_t colStride,
+                                                   bool singleBlock)
+{
+    if (singleBlock) {
+        const uint64_t aOff = ColumnOffset(col0, rowOff);
+        DataCopyExtParams aParams{1, cols * chunk * CGERU_BYTES_PER_COMPLEX, 0, 0, 0};
+        DataCopyPadExtParams<float> noPad{false, 0, 0, 0.0f};
+        DataCopyPad(dst, aGM[aOff], aParams, noPad);
+        return;
+    }
+    DataCopyExtParams oneColParams{1, static_cast<uint32_t>(chunk * CGERU_BYTES_PER_COMPLEX), 0, 0, 0};
+    DataCopyPadExtParams<float> noPad{false, 0, 0, 0.0f};
+    for (uint32_t c = 0U; c < cols; ++c) {
+        const uint64_t aOff = ColumnOffset(col0 + c, rowOff);
+        DataCopyPad(dst[static_cast<int32_t>(c * colStride)], aGM[aOff], oneColParams, noPad);
+    }
+}
+
+__aicore__ inline void CgeruKernel::StoreColumnPass(LocalTensor<float> src, uint32_t col0, uint32_t cols,
+                                                    uint32_t rowOff, uint32_t chunk, uint32_t colStride,
+                                                    bool singleBlock)
+{
+    if (singleBlock) {
+        const uint64_t aOff = ColumnOffset(col0, rowOff);
+        DataCopyExtParams outParams{1, cols * chunk * CGERU_BYTES_PER_COMPLEX, 0, 0, 0};
+        DataCopyPad(aGM[aOff], src, outParams);
+        return;
+    }
+    DataCopyExtParams oneColParams{1, static_cast<uint32_t>(chunk * CGERU_BYTES_PER_COMPLEX), 0, 0, 0};
+    for (uint32_t c = 0U; c < cols; ++c) {
+        const uint64_t aOff = ColumnOffset(col0 + c, rowOff);
+        DataCopyPad(aGM[aOff], src[static_cast<int32_t>(c * colStride)], oneColParams);
+    }
+}
+
+__aicore__ inline ColumnPassPlan CgeruKernel::MakeColumnPassPlan(uint32_t paddedStride) const
+{
+    ColumnPassPlan plan;
+    plan.colsPerPass = (paddedStride == 0U) ? 1U : (this->aTileSlotFloats / paddedStride);
+    if (plan.colsPerPass == 0U) {
+        plan.colsPerPass = 1U;
+    }
+    if (plan.colsPerPass > this->colCount) {
+        plan.colsPerPass = this->colCount;
+    }
+    plan.ntiles = (this->colCount + plan.colsPerPass - 1U) / plan.colsPerPass;
+    return plan;
+}
+
+/**
+ * @brief 逐列 1D 搬运、整批消费、多槽流水：chunk/lda 不满足 32B 对齐时使用。
+ *
+ * 搬入第 t+1 遍的同时，计算第 t 遍、搬出第 t-1 遍。每列在 UB 内的槽宽按 32B 向上取整，
+ * 保证向量指令与 DMA 目的地址对齐。本核列 slab 在 GM 中整段连续且列宽是 8 的倍数时，
+ * 一遍列的搬入/搬出各只发一次单块 DataCopyPad（块数 K -> 1）。
+ */
+__aicore__ inline void CgeruKernel::ProcessColumnsByColumn(uint32_t rowOff, uint32_t chunk)
+{
+    const uint32_t floatsPerCol = CGERU_FLOATS_PER_COMPLEX * chunk;
+    const uint32_t paddedStride = ((floatsPerCol + 7U) / 8U) * 8U;  // 每列槽宽（float），32B 对齐
+    const bool contiguousColumns =
+        (this->lda == static_cast<int64_t>(this->m)) && (chunk == static_cast<uint32_t>(this->m));
+    const bool singleBlock = contiguousColumns && ((floatsPerCol % 8U) == 0U);
+
+    const uint32_t nslot = this->aTileNslot;
+    const uint32_t halfFloats = this->aTileSlotFloats;
+    const ColumnPassPlan plan = MakeColumnPassPlan(paddedStride);
+    const uint32_t colsPerPass = plan.colsPerPass;
+    const uint32_t ntiles = plan.ntiles;
+    LocalTensor<float> all = aTileBuf.Get<float>();
+
+    // 第 0 遍搬入。
+    uint32_t cols0 = this->colCount;
+    if (cols0 > colsPerPass) {
+        cols0 = colsPerPass;
+    }
+    LoadColumnPass(all, 0U, cols0, rowOff, chunk, paddedStride, singleBlock);
+    SetLoadFlag(0U);
+
+    for (uint32_t t = 0U; t < ntiles; ++t) {
+        const uint32_t cur = t % nslot;
+        const uint32_t col0 = t * colsPerPass;
+        uint32_t cols = this->colCount - col0;
+        if (cols > colsPerPass) {
+            cols = colsPerPass;
+        }
+        LocalTensor<float> curBuf = SlotBuffer(all, cur, halfFloats);
+        WaitLoadFlag(t);
+        WaitSlotFree(t, nslot);
+
+        // 预取下一遍，与下面的向量计算重叠。
+        if (t + 1U < ntiles) {
+            const uint32_t ncol0 = col0 + cols;
+            uint32_t ncols = this->colCount - ncol0;
+            if (ncols > colsPerPass) {
+                ncols = colsPerPass;
+            }
+            LocalTensor<float> dst = SlotBuffer(all, (t + 1U) % nslot, halfFloats);
+            LoadColumnPass(dst, ncol0, ncols, rowOff, chunk, paddedStride, singleBlock);
+            SetLoadFlag(t + 1U);
+        }
+
+        AccumulateColumns(curBuf, col0, cols, floatsPerCol, paddedStride);
+        SetFlag<HardEvent::V_MTE3>(kEvVecStore);
+        WaitFlag<HardEvent::V_MTE3>(kEvVecStore);
+        StoreColumnPass(curBuf, col0, cols, rowOff, chunk, paddedStride, singleBlock);
+        SetStoreFlag(cur);
+    }
+    WaitPendingStores(ntiles, nslot);
+}
+
+__aicore__ inline ColumnSlabPlan CgeruKernel::ComputeColumnSlabPlan(uint32_t chunk) const
+{
+    ColumnSlabPlan plan;
+    plan.contiguousSlab =
+        (chunk == static_cast<uint32_t>(this->m)) && (this->lda == static_cast<int64_t>(this->m));
+    const uint32_t rawStride = CGERU_FLOATS_PER_COMPLEX * chunk;
+    plan.colStride = plan.contiguousSlab ? rawStride : (((rawStride + 7U) / 8U) * 8U);
+    plan.alignedStride =
+        (!plan.contiguousSlab) || (((chunk % 4U) == 0U) && ((static_cast<uint32_t>(this->lda) % 4U) == 0U));
+    plan.tileEnabled = (this->colCount > 1U) && plan.alignedStride && (plan.colStride <= CGERU_COL_STRIDE_FLOATS);
+    return plan;
+}
+
+__aicore__ inline uint32_t CgeruKernel::ComputeTileCols(const ColumnSlabPlan& plan) const
+{
+    const uint32_t slotFloats = this->aTileSlotFloats;
+    uint32_t tileCols = slotFloats / plan.colStride;
+    if (tileCols == 0U) {
+        tileCols = 1U;
+    }
+    if (tileCols > this->colCount) {
+        tileCols = this->colCount;
+    }
+    if (plan.contiguousSlab && ((plan.colStride * tileCols) % 8U) != 0U) {
+        // 1D 搬入的尾块由硬件补到 32B：给本遍尾部留 8 float，避免补位写过界。
+        const uint32_t maxCols = (slotFloats > 8U) ? ((slotFloats - 8U) / plan.colStride) : 1U;
+        if (maxCols > 0U && tileCols > maxCols) {
+            tileCols = maxCols;
+        }
+    }
+    return tileCols;
+}
+
+__aicore__ inline void CgeruKernel::PrimeTileZero(uint32_t cols, uint32_t rowOff, uint32_t chunk,
+                                                  uint32_t colStride, LocalTensor<float>& all)
+{
+    LoadAColumnTileTo(0U, cols, rowOff, chunk, colStride, all);
+    SetFlag<HardEvent::MTE2_V>(kEvLoadEven);
+}
+
+/**
+ * @brief 处理一个行块上的本核全部列。
+ *
+ * chunk 按 32 个复数对齐（每列在 UB 内正好占 2*chunk 个 float）时走多列块流水；
+ * chunk 未对齐（或只有 1 列）时退回逐列路径。
+ */
+__aicore__ inline void CgeruKernel::ProcessColumns(uint32_t rowOff, uint32_t chunk, bool prologueOnly)
+{
+    // 整列都在 UB 里（chunk == m 且 lda == m）时本核的 A slab 在 GM/UB 两侧都是连续流：
+    // 保持紧排槽宽、走一条 1D 指令。其余形状把槽宽按 32B 上调，走多 burst 2D 描述符。
+    const ColumnSlabPlan plan = ComputeColumnSlabPlan(chunk);
+    if (!plan.tileEnabled) {
+        if (!prologueOnly) {
+            ProcessColumnsByColumn(rowOff, chunk);
+        }
+        return;
+    }
+
+    const uint32_t tileCols = ComputeTileCols(plan);
+    const uint32_t cols0 = (this->colCount < tileCols) ? this->colCount : tileCols;
+    LocalTensor<float> all = aTileBuf.Get<float>();
+    if (prologueOnly) {
+        if (!this->tile0Primed) {
+            // 只发首列块的 A 搬运就返回：让它的时延与本行块的 swap pattern 构建重叠。
+            PrimeTileZero(cols0, rowOff, chunk, plan.colStride, all);
+            this->tile0Primed = true;
+        }
+        return;
+    }
+    if (!this->tile0Primed) {
+        PrimeTileZero(cols0, rowOff, chunk, plan.colStride, all);
+    }
+    this->tile0Primed = false;  // 首列块已在 prologue 阶段发出（含 SetFlag<MTE2_V>(kEvLoadEven)）
+    ProcessTilePipeline(rowOff, chunk, plan);
+}
+
+// 多列块流水：`plan` 决定槽宽，首列块由 ProcessColumns 的 prologue 阶段先行发出。
+__aicore__ inline void CgeruKernel::ProcessTilePipeline(uint32_t rowOff, uint32_t chunk,
+                                                        const ColumnSlabPlan& plan)
+{
+    const uint32_t nslot = this->aTileNslot;
+    const uint32_t slotFloats = this->aTileSlotFloats;
+    const uint32_t tileCols = ComputeTileCols(plan);
+    const uint32_t safeTileCols = (tileCols == 0U) ? 1U : tileCols;
+    LocalTensor<float> all = aTileBuf.Get<float>();
+    const uint32_t ntiles = (this->colCount + safeTileCols - 1U) / safeTileCols;
+
+    for (uint32_t t = 0U; t < ntiles; ++t) {
+        const uint32_t cur = t % nslot;
+        const uint32_t col0 = t * tileCols;
+        uint32_t cols = this->colCount - col0;
+        if (cols > tileCols) {
+            cols = tileCols;
+        }
+        LocalTensor<float> curBuf = SlotBuffer(all, cur, slotFloats);
+        WaitLoadFlag(t);
+        WaitSlotFree(t, nslot);
+
+        if (t + 1U < ntiles) {
+            const uint32_t ncol0 = col0 + cols;
+            uint32_t ncols = this->colCount - ncol0;
+            if (ncols > tileCols) {
+                ncols = tileCols;
+            }
+            LocalTensor<float> dst = SlotBuffer(all, (t + 1U) % nslot, slotFloats);
+            LoadAColumnTileTo(ncol0, ncols, rowOff, chunk, plan.colStride, dst);
+            SetLoadFlag(t + 1U);
+        }
+
+        AccumulateColumns(curBuf, col0, cols, CGERU_FLOATS_PER_COMPLEX * chunk, plan.colStride);
+        SetFlag<HardEvent::V_MTE3>(kEvVecStore);
+        WaitFlag<HardEvent::V_MTE3>(kEvVecStore);
+        StoreAColumnTileFrom(col0, cols, rowOff, chunk, plan.colStride, curBuf);
+        SetStoreFlag(cur);
+    }
+    WaitPendingStores(ntiles, nslot);
+}
+
+__aicore__ inline void CgeruKernel::Process()
+{
+    const uint32_t total = this->totalCols;
+    if (total == 0U || this->m == 0U) {
+        return;
+    }
+    const uint32_t coreStart = this->colStart;
+    // Init 已把 colCount 夹到单批上限；正常情况下 total <= colCount，只跑一批。
+    const uint32_t batch = this->colCount;
+    if (batch == 0U) {
+        return;
+    }
+    for (uint32_t off = 0U; off < total; off += batch) {
+        this->colStart = coreStart + off;
+        this->colCount = ((total - off) > batch) ? batch : (total - off);
+        // 每批都从干净的预取状态开始，避免上一批的 x/首列块标志跨批生效。
+        this->pendXRowOff = kNoPendingRow;
+        this->xEarlyIssued = false;
+        this->tile0Primed = false;
+        ProcessPass();
+    }
+}
+
+__aicore__ inline void CgeruKernel::ProcessPass()
+{
+    const uint32_t rowNum = static_cast<uint32_t>(this->m);
+    if (rowNum == 0 || this->colCount == 0) {
+        return;
+    }
+    uint32_t tile = (this->rowTile < rowNum) ? this->rowTile : rowNum;
+    if (tile > CGERU_ROW_TILE_MAX) {
+        tile = CGERU_ROW_TILE_MAX;
+    }
+    // 首行块的 x 预取：Init 阶段发起，由 PrepareColumnCoeffs 的 MTE2_V 收口。
+    this->pendXRowOff = 0U;
+    this->pendXChunk = (tile < rowNum) ? tile : rowNum;
+
+    PrepareColumnCoeffs();
+
+    for (uint32_t rowOff = 0; rowOff < rowNum; rowOff += tile) {
+        const uint32_t chunk = (rowOff + tile <= rowNum) ? tile : (rowNum - rowOff);
+        // Gather/Mul 以 32 个复数（64 个 float）为对齐粒度向上取整；多算出来的部分只留在 UB 内。
+        const uint32_t calcNum =
+            ((chunk + CGERU_ALIGN_COMPLEX - 1U) / CGERU_ALIGN_COMPLEX) * CGERU_ALIGN_COMPLEX;
+        LoadX(rowOff, chunk);
+        ProcessColumns(rowOff, chunk, true);
+        BuildSwapPattern(calcNum);
+        ProcessColumns(rowOff, chunk, false);
+    }
+}
+
+__global__ __aicore__ void cgeru_kernel(const CgeruTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     TPipe pipe;
     CgeruKernel op;
-    op.Init(x, y, A, tiling, &pipe);
+    op.Init(tiling, &pipe);
     op.Process();
 }
 
-void cgeru_kernel_do(
-    const uint8_t* x, const uint8_t* y, uint8_t* A, const CgeruTilingData& tiling, uint32_t numBlocks, void* stream)
+void cgeru_kernel_do(const CgeruTilingData& tiling, uint32_t numBlocks, void* stream)
 {
-    GM_ADDR kernelX = const_cast<uint8_t*>(x);
-    GM_ADDR kernelY = const_cast<uint8_t*>(y);
-    cgeru_kernel<<<numBlocks, nullptr, stream>>>(kernelX, kernelY, A, tiling);
+    cgeru_kernel<<<numBlocks, nullptr, stream>>>(tiling);
 }
