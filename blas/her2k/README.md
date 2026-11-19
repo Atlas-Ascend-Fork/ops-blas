@@ -11,7 +11,7 @@ trans='N': C = alpha * A * B^H + conj(alpha) * B * A^H + beta * C
 trans='C': C = alpha * A^H * B + conj(alpha) * B^H * A + beta * C
 ```
 
-其中 A^H 为 A 的共轭转置（conjugate transpose），即 A^H[i][j] = conj(A[j][i])；A、B 同为 N×K（trans='N'）或 K×N（trans='C'）复矩阵，C 为 N×N Hermitian 复矩阵。uplo='U' 时仅更新上三角区域，uplo='L' 时仅更新下三角区域，另一半保持不变。两项互为共轭转置，故结果恒为 Hermitian：C[i][j] = conj(C[j][i])，对角线元素虚部为零。
+其中 A^H 为 A 的共轭转置（conjugate transpose），即 A^H[i][j] = conj(A[j][i])；A、B 同为 N×K（trans='N'）或 K×N（trans='C'）复矩阵，C 为 N×N Hermitian 复矩阵。uplo='U' 时仅更新上三角区域，uplo='L' 时仅更新下三角区域，另一半在设备缓冲区中保持原值，不会自动镜像。两项互为共轭转置，故按指定三角解释的数学结果为 Hermitian：C[i][j] = conj(C[j][i])，对角线元素虚部为零。若调用后需要完整密集矩阵，应在读回后按共轭关系补齐另一半。
 
 beta 之所以限定为实数，是因为复数 beta 会破坏 C 的 Hermitian 性质，这一点与 BLAS 标准一致。
 
@@ -91,7 +91,7 @@ arch35（Ascend 950）实现：
 - n <= 8 走 K4 SIMT 融合直算路径（无 workspace）；n > 8 走 Cube+AIV 三阶段通用管线
 - 通用管线（n > 8）需约 16·n·k + 16·n² 字节库工作区（A/B 实/虚拆分缓存 4×4·n·k 与 4 份 GEMM 中间结果 4×4·n²；n 按 16 元素向上对齐、总量按 512 字节取整；skipTemp 即 alpha=0 或 k=0 时为 0）；当超出 `ACLBLAS_MAX_WORKSPACE_SIZE`（2 GiB）时返回 ACLBLAS_STATUS_ALLOC_FAILED
 - 通用管线的 K2f 融合核在 fallback 形状（baseM=32，即 n<64 或 CHER2K_L1_SHAPE 强制 32×16 档）且 k > tileKChunk 时启用 SEG 分段累加（StreamK 式）：每个 k-chunk 为一段（S=ceil(k/tileKChunk)），段内 L0C 累加、段尾折出至 UB 乒乓槽，AIV 以 fp32 UB 累加器做段间顺序归约后执行既有折叠输出——将 k 深度单链 fp32 顺序舍入链截短为段级短链，收敛大 k 深度累加的舍入噪声（2^-13 精度标准下 TC_EX_0604 类小 n 深 k 用例达标：ratio 98.69% → 100%，maxAbsErr 2.63e-3 → 3.55e-4）；n≥64 主形状（baseM=64）与 k≤tileKChunk（S=1）不启用，n≥64 主路径输出与启用前逐位一致；环境变量 `CHER2K_SEG_K` 默认开，置 0 回退单链旧行为（A/B 对照与现场回退，无需重编）
-- 输出 C 满足 Hermitian 性质：C[i][j] = conj(C[j][i])，对角线元素虚部精确为零（代数相消），非 uplo 三角与 ldc padding 字节保持不变
+- 仅 uplo 指定三角表示 Hermitian 数学结果；非 uplo 三角与 ldc padding 字节保持 C 的旧值，不会自动镜像，调用方读回后如需完整密集矩阵应按共轭关系补齐；指定三角对角线元素虚部精确为零（代数相消）
 - 异步执行：多个 kernel 全部下发至 handle 绑定的同一 stream，按流语义自动排序，算子内部无需显式同步；调用方读回结果前须自行同步所绑定的 stream（如 `aclrtSynchronizeStream(stream)`，见下方调用示例第 5 步）
 
 测试 CSV 口径：arch22 侧默认 CSV 含前 50 条用例，`CHER2K_FULL_REGRESSION=1` 读取全量 1214 条；arch35 侧主 CSV 为 1000 条精度/接口用例，200 条 TC_PF 性能用例与 3 条 TC_WB K4 路径锁定用例拆分至独立的 `cher2k_perf.csv` / `cher2k_wb.csv`（`CHER2K_FULL_REGRESSION=1` 时追加加载），ST 默认仅执行主 CSV。
@@ -294,9 +294,9 @@ int aclblasCher2kTest(AclContext& ctx)
     // B^H = [[1+0i, 1+0i], [0+0i, 1+0i]]
     // A * B^H = [[1+1i, 3+1i], [3+0i, 7+0i]]
     // B * A^H = (A * B^H)^H = [[1-1i, 3+0i], [3-1i, 7+0i]]
-    // 两项之和 = [[2+0i, 6+1i], [6-1i, 14+0i]]
-    // 结果为 Hermitian: C[0][1] = conj(C[1][0])，对角线虚部为零
-    // uplo=LOWER: 仅更新下三角 (C[0][0], C[1][0], C[1][1])
+    // 两项之和的完整数学结果 = [[2+0i, 6+1i], [6-1i, 14+0i]]
+    // uplo=LOWER 仅更新下三角 (C[0][0], C[1][0], C[1][1])；缓冲区 C[1][0]=6-1i，C[0][1] 仍为初始值 0
+    // 若需要完整密集矩阵，应在 Host 侧补齐 C[0][1]=conj(C[1][0])；对角线虚部为零
     blasRet = aclblasCher2k(
         handlePtr.get(), ACLBLAS_LOWER, ACLBLAS_OP_N,
         n, k,

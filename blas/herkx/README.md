@@ -11,7 +11,7 @@ trans='N': C = alpha * A * B^H + beta * C
 trans='C': C = alpha * A^H * B + beta * C
 ```
 
-其中 A^H / B^H 为共轭转置（conjugate transpose），即 A^H[i][j] = conj(A[j][i])；A、B 为 N×K（trans='N'）或 K×N（trans='C'）复矩阵，C 为 N×N Hermitian 复矩阵。uplo='U' 时仅更新上三角区域，uplo='L' 时仅更新下三角区域，另一半保持 C 旧值不变。C 满足 Hermitian 性质：C[i][j] = conj(C[j][i])，对角线元素虚部被强制清零。
+其中 A^H / B^H 为共轭转置（conjugate transpose），即 A^H[i][j] = conj(A[j][i])；A、B 为 N×K（trans='N'）或 K×N（trans='C'）复矩阵，C 为 N×N Hermitian 复矩阵。HERKX 是 Hermitian 更新变体，调用方应选择 A、B 与 alpha，使 alpha * op(A) * op(B)^H 为 Hermitian；beta != 0 时，输入 C 也须为 Hermitian，beta == 0 时不需要有效的 C 旧值。uplo='U' 时仅更新上三角区域，uplo='L' 时仅更新下三角区域，另一半在设备缓冲区中保持 C 旧值，不会自动镜像；完整 Hermitian 矩阵由指定三角表示，调用后若需要密集矩阵，应在读回后补齐另一半。
 
 复数 alpha 展开式（设 alpha = alpha_r + i·alpha_i，乘积 P = op(A)·op(B)^H = P_r + i·P_i）：
 
@@ -22,7 +22,7 @@ C_i = alpha_r * P_i + alpha_i * P_r + beta * C_i    （对角线元素 C_i 强�
 
 alpha==0 的判定为复数零：**实部==0 且 虚部==0** 同时成立。纯虚数 alpha（如 (0, 1)）不视为 0，正常参与复数交叉缩放计算。
 
-> **与 HERK 的关键区别**：HERKX 中 A≠B，导致乘积结果 P = A·B^H 一般不具备 Hermitian 对称性（P_r 非对称、P_i 非反对称），对角线虚部理论非零，必须由算子显式强制清零以满足 Hermitian 约束。当 A=B 时，HERKX 退化为 HERK。
+> **与 HERK 的关键区别**：HERKX 允许 A 与 B 不同，且 alpha 为复数；调用方仍须保证 alpha * op(A) * op(B)^H 为 Hermitian，算子只更新 uplo 指定三角并清零其对角线虚部，不会对非对角元素做对称化。当 A=B 且 alpha 为实数时，HERKX 的更新式才退化为 HERK；alpha 含非零虚部时一般不等价于 HERK。
 
 包含以下接口：
 
@@ -113,9 +113,7 @@ aclblasCherkx(handle, uplo, trans, n, k, &alpha, A, lda, B, ldb, &beta, C, ldc);
 - beta!=0 时 C 不可为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE；beta==0 时 C 可为 nullptr（本算子放宽口径，见下方注），此时直接成功返回、不更新任何内存；Device beta 先读回真值再判断，两种指针模式下 beta==0 判定一致。同族 syrkx（ssyrkx）为有意更严的口径：n > 0 时一律要求 C 非空——其实现对 C 无条件读取（beta = 0 时非 uplo 段仍按 C_old 恒等回写），放行空指针会触发空指针访问（差异根因与依据见 syrkx README，两入口的该维度差异为各自文档化的有意口径）
 - alpha==0（复数零）或 k==0 时，跳过矩阵分解与 GEMM 计算，仅执行 C = beta * C 的缩放更新（对角线虚部仍强制清零）。含 beta=1 的组合亦不快返回：与 cherk/cher2k「快返回、C 字节不动（含对角线虚部）」不同，本算子无快返回，uplo 三角恒重写且对角虚部恒清零，有意贴合 cuBLAS "assumed and set to zero" 的字面承诺（族内三分叉为各自文档化的有意差异，见 cherk/cher2k README）
 - 当 beta == 0 时，不读取 C 旧值做缩放，uplo 段直接写入计算结果；但 uplo='L' 时对角列的非 uplo 段仍从 C 旧值恢复
-- 输出 C 满足 Hermitian 性质：C[i][j] = conj(C[j][i])，对角线元素虚部强制为零
-  - 由于 A≠B，乘积对角线虚部理论非零，算子通过 `ZeroDiagonal` 显式强制清零，不依赖数学对称性
-- 仅 uplo 指定的三角区域被更新，另一半保持 C 旧值不变
+- 为保持 Hermitian 更新，调用方应保证 alpha * op(A) * op(B)^H 为 Hermitian；beta != 0 时，输入 C 也须为 Hermitian（beta == 0 时不需要有效的 C 旧值）。算子仅更新 uplo 指定三角，另一半保持 C 旧值且不会自动镜像。`ZeroDiagonal` 会强制清零对角线虚部，但不会使非 Hermitian 的非对角结果变为 Hermitian
 - 矩阵 A、B、C 均按列主序（column-major）存储，复数元素 (row, col) 存储于 col*ld + row 位置，实部在前、虚部在后
 - 计算为异步执行，依赖 handle 绑定的 stream；读回 Device 结果前需要同步 stream
 - 算子内部会申请库工作区暂存 4 个实矩阵（A/B 的实部/虚部平面）与 4 个 GEMM 临时矩阵：最大 shape（n=k=8192, lda=ldb=8192）时约需 2GB，触及 `ACLBLAS_MAX_WORKSPACE_SIZE`（2 GiB）上限，超出时返回 `ACLBLAS_STATUS_ALLOC_FAILED` 并在日志中给出所需字节数；n=k<=4096 时约 512MB，无风险
@@ -241,15 +239,15 @@ int aclblasCherkxTest(AclContext& ctx)
     // 2. 准备 Host 数据
     // A 为 N×K 列主序复矩阵 (trans='N'): A = [[1+1i, 2+0i], [3+0i, 4+0i]]
     // 列主序存储: col0 = [1+1i, 3+0i], col1 = [2+0i, 4+0i]
-    // B 为 N×K 列主序复矩阵 (trans='N'): B = [[1+0i, 1+1i], [2+0i, 3+0i]]
-    // 列主序存储: col0 = [1+0i, 2+0i], col1 = [1+1i, 3+0i]
+    // B = A*diag(1, 2) 为 N×K 列主序复矩阵，确保 A*B^H 为 Hermitian
+    // B = [[1+1i, 4+0i], [3+0i, 8+0i]]；列主序存储: col0 = [1+1i, 3+0i], col1 = [4+0i, 8+0i]
     constexpr int n = 2;
     constexpr int k = 2;
     constexpr int lda = n;
     constexpr int ldb = n;
     constexpr int ldc = n;
     std::vector<aclblasComplex> hA = {{1.0f, 1.0f}, {3.0f, 0.0f}, {2.0f, 0.0f}, {4.0f, 0.0f}};
-    std::vector<aclblasComplex> hB = {{1.0f, 0.0f}, {2.0f, 0.0f}, {1.0f, 1.0f}, {3.0f, 0.0f}};
+    std::vector<aclblasComplex> hB = {{1.0f, 1.0f}, {3.0f, 0.0f}, {4.0f, 0.0f}, {8.0f, 0.0f}};
     std::vector<aclblasComplex> hC(n * n, {0.0f, 0.0f});
     // alpha 为复数标量（对齐 cuBLAS cublasCherkx），beta 为实数标量。
     // Host 指针模式：alpha/beta 直接传 Host 地址（两者必须同为 Host 或同为 Device），
@@ -286,10 +284,10 @@ int aclblasCherkxTest(AclContext& ctx)
 
     // 4. 调用 aclblasCherkx
     // 计算 C = (1+0i) * A * B^H + 0.0 * C (trans='N', uplo=LOWER)
-    // B^H = [[1+0i, 2+0i], [1-1i, 3+0i]]
-    // A * B^H = [[3-1i, 8+2i], [7-4i, 18+0i]]
+    // B^H = [[1-1i, 3+0i], [4+0i, 8+0i]]
+    // A * B^H = [[10+0i, 19+3i], [19-3i, 41+0i]]，为 Hermitian
     // uplo=LOWER: 仅更新下三角 (C[0][0], C[1][0], C[1][1])
-    // 对角线虚部强制清零: C[0][0] = 3+0i, C[1][1] = 18+0i
+    // 对角线虚部强制清零: C[0][0] = 10+0i, C[1][1] = 41+0i
     // 上三角 C[0][1] 保持 C 旧值 = 0+0i
     blasRet = aclblasCherkx(
         handlePtr.get(), ACLBLAS_LOWER, ACLBLAS_OP_N,
@@ -317,10 +315,10 @@ int aclblasCherkxTest(AclContext& ctx)
         }
     }
     // 预期输出 (列主序):
-    // C[0][0] = 3.0000 + 0.0000i   (下三角, 对角线虚部清零)
+    // C[0][0] = 10.0000 + 0.0000i  (下三角, 对角线虚部清零)
     // C[0][1] = 0.0000 + 0.0000i   (上三角, 未更新, 保持 C 旧值)
-    // C[1][0] = 7.0000 + -4.0000i  (下三角)
-    // C[1][1] = 18.0000 + 0.0000i  (下三角, 对角线虚部清零)
+    // C[1][0] = 19.0000 + -3.0000i (下三角)
+    // C[1][1] = 41.0000 + 0.0000i  (下三角, 对角线虚部清零)
 
     LOG_PRINT("aclblasCherkx test passed\n");
     return ACL_SUCCESS;
@@ -341,16 +339,20 @@ int main()
 **纯虚数 alpha 示例**（复数 alpha 虚部非 0 时触发交叉缩放；alpha==0 的判定要求实部与虚部同时为 0，纯虚数 alpha 不会被当作 0 处理）：
 
 ```cpp
-// 计算 C = (0+1i) * A * B^H + 0.0 * C (trans='N', uplo=LOWER)，A/B 取上例数据
+// 计算 C = (0+1i) * A * B^H + 0.0 * C (trans='N', uplo=LOWER)，令 B=(-i)A
+// 先将 B 构造成 -iA（列主序：[[1-1i, 0-2i], [0-3i, 0-4i]]），再传入 dB。
+std::vector<aclblasComplex> hBPure = {{1.0f, -1.0f}, {0.0f, -3.0f}, {0.0f, -2.0f}, {0.0f, -4.0f}};
+aclRet = aclrtMemcpy(dB, bSize, hBPure.data(), bSize, ACL_MEMCPY_HOST_TO_DEVICE);
+CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy for B=(-i)A failed. ERROR: %d\n", aclRet); return aclRet);
 aclblasComplex alphaPureImag = {0.0f, 1.0f};
 blasRet = aclblasCherkx(handle, ACLBLAS_LOWER, ACLBLAS_OP_N, n, k,
     &alphaPureImag, dA, lda, dB, ldb, &beta, dC, ldc);
-// A * B^H = [[3-1i, 8+2i], [7-4i, 18+0i]]
-// (0+1i) * (A * B^H) = [[1+3i, -2+8i], [4+7i, 0+18i]]
+// A * B^H = i * A * A^H = [[0+6i, -3+11i], [3+11i, 0+25i]]
+// (0+1i) * (A * B^H) = -A * A^H = [[-6+0i, -11-3i], [-11+3i, -25+0i]]
 // uplo=LOWER 且对角线虚部强制清零后:
-// C[0][0] = 1.0000 + 0.0000i   (下三角, 对角线虚部清零)
-// C[1][0] = 4.0000 + 7.0000i   (下三角)
-// C[1][1] = 0.0000 + 0.0000i   (下三角, 对角线虚部清零)
+// C[0][0] = -6.0000 + 0.0000i  (下三角, 对角线虚部清零)
+// C[1][0] = -11.0000 + 3.0000i (下三角)
+// C[1][1] = -25.0000 + 0.0000i (下三角, 对角线虚部清零)
 // 上三角 C[0][1] 保持 C 旧值
 ```
 
