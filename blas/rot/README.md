@@ -280,7 +280,7 @@ aclblasStatus_t aclblasSrot(
 - n > 0 时 x、y 不能为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 - incx、incy 为整数，可为正、负、零，均不拦截：
   - incx == 1 且 incy == 1 时走连续路径
-  - 其余 stride 组合（含正非 1、负、零及其混合）走 stride 路径；零 stride 时按参考实现语义对同一元素反复旋转，负 stride 时从向量尾端起算沿负方向步进
+  - 其余 stride 组合（正非 1、负及其混合）走 stride 路径；任一步长为 0 时走独立的零步长串行路径（恒单核），按参考实现语义对同一元素反复旋转；负 stride 时从向量尾端起算沿负方向步进
 - 当 (n-1) * stride 的乘积超出 int32 表示范围时，返回 ACLBLAS_STATUS_INVALID_VALUE，避免 kernel 侧地址偏移溢出
 - c、s 可为 host 内存指针或 device 内存指针，指向 cos/sin 标量值，由算子运行时通过 aclrtPointerGetAttributes 自动判定内存位置；c 或 s 为 nullptr 时返回 ACLBLAS_STATUS_INVALID_VALUE
 - c、s 指向的标量值可取任意 FP32 值（包括 c == 1 且 s == 0 的单位旋转，不做短路，正常执行旋转公式）
@@ -295,7 +295,7 @@ aclblasStatus_t aclblasSrot(
 - 任一步长为 0 时，与 arch35 一致按 Netlib 顺序逐次更新：该向量反复访问首元素，后一次旋转使用前一次写回的结果；两个步长均为 0 时，对同一对元素连续旋转 n 次。
 - c/s 可各自独立为 Host 或 Device 指针。Device 标量直接在 handle stream 上由 kernel 读取，不做 D2H 同步。返回成功表示已提交，读取结果前需要同步 stream。
 - 不对标量值做特殊短路，Inf/NaN 按公式自然传播。精度按任务 mixed tolerance：atol=rtol=2^-13、matched ratio >=0.99，最大绝对误差上限为 `max(1e-2, 32 * ULP(golden_at_max_error))`；非有限值单独判定。
-- 连续路径为多核双缓冲向量流水；非零跨步路径使用精确4字节burst和负步长Gather；零步长路径使用单核顺序计算以保持重复更新依赖。尾部不超读写，无GM workspace。
+- 连续路径（incx == incy == 1）在 n > 4096 时按 4096 元素 tile 多核执行，n <= 4096 时为单核；非零跨步路径（n > 256 时多核）使用精确4字节burst和负步长Gather；任一步长为 0 时走独立串行 kernel，恒单核顺序计算以保持重复更新依赖。尾部不超读写，无GM workspace。
 - A2/A3 的负n、INT_MIN返回码与arch35已有行为不同，保持各架构已声明契约。
 
 功能测试位于 `test/rot/srot/arch22/`，通过仓库 GTest 入口运行。`TC_PF_*` 提供性能采集的执行入口，GTest 成功只表示调用成功；社区任务的性能门槛由指定设备上的外部 `msprof op` 验收验证，结果见代码 PR 描述。
