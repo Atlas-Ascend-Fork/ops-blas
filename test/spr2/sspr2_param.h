@@ -11,8 +11,6 @@
 #ifndef SSPR2_PARAM_H
 #define SSPR2_PARAM_H
 
-#include <string>
-
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "csv_loader.h"
