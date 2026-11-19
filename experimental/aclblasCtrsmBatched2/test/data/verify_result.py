@@ -24,6 +24,7 @@ CtrsmBatched 精度验证脚本。
 """
 
 import logging
+from pathlib import Path
 import sys
 
 import numpy as np
@@ -33,6 +34,14 @@ logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
 RTOL = 2**-13 * 10
 ATOL = 1e-3
 ERROR_RATIO_TOL = 1e-4
+
+
+def read_result(path, m, n):
+    data = Path(path).read_bytes()
+    expected = m * n * np.dtype(np.complex64).itemsize
+    if len(data) != expected:
+        raise ValueError(f"{path}: expected {expected} bytes, got {len(data)}")
+    return np.frombuffer(data, dtype=np.complex64).reshape(m, n)
 
 
 def verify_result(m, n, batch):
@@ -47,8 +56,8 @@ def verify_result(m, n, batch):
         golden_path = f"./test/data/output/golden_{b}.bin"
         output_path = f"./test/data/output/output_b_{b}.bin"
 
-        golden = np.fromfile(golden_path, dtype=np.float32).view(np.complex64).reshape(m, n)
-        output = np.fromfile(output_path, dtype=np.float32).view(np.complex64).reshape(m, n)
+        golden = read_result(golden_path, m, n)
+        output = read_result(output_path, m, n)
 
         ref_abs = np.maximum(np.abs(golden.real), np.abs(golden.imag))
         ref_abs = np.maximum(ref_abs, ATOL)

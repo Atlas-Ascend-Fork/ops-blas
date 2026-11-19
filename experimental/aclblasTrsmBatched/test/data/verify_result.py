@@ -8,6 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 import logging
+from pathlib import Path
 import sys
 
 import numpy as np
@@ -25,6 +26,14 @@ def parse_dimensions():
     return m, n, batch_count
 
 
+def read_result(path, m, n):
+    data = Path(path).read_bytes()
+    expected = m * n * np.dtype(np.float32).itemsize
+    if len(data) != expected:
+        raise ValueError(f"{path}: expected {expected} bytes, got {len(data)}")
+    return np.frombuffer(data, dtype=np.float32).reshape(m, n)
+
+
 def main(m, n, batch_count):
 
     # FLOAT32 community standard
@@ -35,8 +44,8 @@ def main(m, n, batch_count):
     all_pass = True
 
     for batch in range(batch_count):
-        output = np.fromfile(f"output/output_b_{batch}.bin", dtype=np.float32).reshape(m, n)
-        golden = np.fromfile(f"output/golden_b_{batch}.bin", dtype=np.float32).reshape(m, n)
+        output = read_result(f"output/output_b_{batch}.bin", m, n)
+        golden = read_result(f"output/golden_b_{batch}.bin", m, n)
 
         diff = np.abs(output - golden)
         abs_golden = np.abs(golden)
@@ -81,8 +90,7 @@ def main(m, n, batch_count):
 
 if __name__ == "__main__":
     try:
-        dimensions = parse_dimensions()
-    except ValueError as exc:
+        main(*parse_dimensions())
+    except (OSError, ValueError) as exc:
         logging.error("%s", exc)
         sys.exit(1)
-    main(*dimensions)
