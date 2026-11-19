@@ -359,12 +359,12 @@ aclblasStatus_t aclblasCgemm(aclblasHandle_t handle, aclblasOperation_t transa, 
 | n | 输入 | int | op(B) 和 C 的列数，N >= 0，Host 内存 |
 | k | 输入 | int | op(A) 的列数和 op(B) 的行数，K >= 0，Host 内存 |
 | alpha | 输入 | const aclblasComplex* | 标量 alpha 指针，不可为 nullptr，Host 内存 |
-| A | 输入 | const aclblasComplex* | 矩阵 A 的设备内存指针，COMPLEX64，列主序；当 K > 0 且 alpha != 0 时不可为 nullptr，Device 内存 |
+| A | 输入 | const aclblasComplex* | 矩阵 A 的设备内存指针，COMPLEX64，列主序；当 M > 0、N > 0 且 K > 0 时不可为 nullptr，Device 内存 |
 | lda | 输入 | int | 矩阵 A 的主维度（列主序），transA=N 时 lda >= max(1, M)，transA=T/C 时 lda >= max(1, K)，Host 内存 |
-| B | 输入 | const aclblasComplex* | 矩阵 B 的设备内存指针，COMPLEX64，列主序；当 K > 0 且 alpha != 0 时不可为 nullptr，Device 内存 |
+| B | 输入 | const aclblasComplex* | 矩阵 B 的设备内存指针，COMPLEX64，列主序；当 M > 0、N > 0 且 K > 0 时不可为 nullptr，Device 内存 |
 | ldb | 输入 | int | 矩阵 B 的主维度（列主序），transB=N 时 ldb >= max(1, K)，transB=T/C 时 ldb >= max(1, N)，Host 内存 |
 | beta | 输入 | const aclblasComplex* | 标量 beta 指针，不可为 nullptr，Host 内存 |
-| C | 输入/输出 | aclblasComplex* | 矩阵 C 的设备内存指针，COMPLEX64，列主序；当 K > 0 或 beta != 0 时不可为 nullptr，Device 内存 |
+| C | 输入/输出 | aclblasComplex* | 矩阵 C 的设备内存指针，COMPLEX64，列主序；当 M > 0 且 N > 0 时不可为 nullptr，Device 内存 |
 | ldc | 输入 | int | 矩阵 C 的主维度（列主序），ldc >= max(1, M)，Host 内存 |
 
 #### 约束说明
@@ -379,9 +379,9 @@ aclblasStatus_t aclblasCgemm(aclblasHandle_t handle, aclblasOperation_t transa, 
 - ldc >= max(1, m)
 - alpha 不可为 nullptr
 - beta 不可为 nullptr
-- k > 0 时 A 不可为 nullptr
-- k > 0 时 B 不可为 nullptr
-- k > 0 或 beta != 0 时 C 不可为 nullptr
+- m > 0、n > 0 且 k > 0 时 A 不可为 nullptr
+- m > 0、n > 0 且 k > 0 时 B 不可为 nullptr
+- m > 0 且 n > 0 时 C 不可为 nullptr
 
 边界情况处理：
 - m == 0 或 n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS，不执行计算
