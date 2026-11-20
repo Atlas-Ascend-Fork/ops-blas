@@ -75,7 +75,7 @@ while IFS= read -r filepath || [ -n "$filepath" ]; do
     checked=$((checked + 1))
 
     # 检查是否使用 #pragma once
-    if grep -q '^#pragma once' "$filepath"; then
+    if grep -Eq '^[[:blank:]]*#[[:blank:]]*pragma[[:blank:]]+once([[:blank:]]|/[/*]|[[:space:]]?$)' "$filepath"; then
         continue
     fi
 
