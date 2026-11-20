@@ -46,8 +46,7 @@ struct CtrmvTilingData {
 // Tiling calculation - migrated from sip ctrmv_tiling.cpp
 CtrmvTilingData CalCtrmvTilingData(int64_t mode, int64_t trans, int64_t diag, int64_t n, int64_t lda, int64_t incx)
 {
-    CtrmvTilingData tilingData;
-    memset(&tilingData, 0, sizeof(CtrmvTilingData));
+    CtrmvTilingData tilingData{};
 
     tilingData.mode = mode;
     tilingData.trans = trans;

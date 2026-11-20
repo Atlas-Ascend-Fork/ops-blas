@@ -52,8 +52,7 @@ CgercTilingData CalCgercTilingData(
     uint32_t m, uint32_t n, float alphaReal, float alphaImag, uint32_t vecCoreNum, int64_t incx, int64_t incy,
     int64_t lda)
 {
-    CgercTilingData tilingData;
-    memset(&tilingData, 0, sizeof(CgercTilingData));
+    CgercTilingData tilingData{};
 
     if (vecCoreNum == 0) {
         vecCoreNum = 1;
