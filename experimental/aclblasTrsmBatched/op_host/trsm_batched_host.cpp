@@ -349,7 +349,7 @@ extern "C" aclblasStatus_t aclblasStrsmBatchedEx(
     auto* h = reinterpret_cast<_aclblas_handle*>(handle);
     aclrtStream stream = h->stream;
 
-    TrsmBatchedTilingData tiling;
+    TrsmBatchedTilingData tiling{};
     int32_t maxMN;
     uint32_t numBlocks;
     FillTrsmTiling(side, uplo, transa, diag, m, n, lda, ldb, batchCount, *alpha, tiling, maxMN, numBlocks);

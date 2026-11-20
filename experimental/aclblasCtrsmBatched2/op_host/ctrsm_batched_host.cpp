@@ -325,7 +325,7 @@ aclblasStatus_t aclblasCtrsmBatched(
     auto* h = reinterpret_cast<_aclblas_handle*>(handle);
     aclrtStream stream = h->stream;
 
-    CtrsmBatchedTilingData td;
+    CtrsmBatchedTilingData td{};
     int32_t maxMN;
     uint32_t numBlocks;
     int32_t effectiveBatch;
