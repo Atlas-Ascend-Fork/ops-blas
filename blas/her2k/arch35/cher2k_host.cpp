@@ -747,7 +747,7 @@ static void Cher2kPairEnumBalance(
     uint32_t qc, bool upper, bool hasTail, uint32_t cores, uint32_t numPairs, uint32_t& loadSum, uint32_t& loadMax,
     uint32_t& loadMin, uint32_t& maxPairW)
 {
-    Cher2kPairCursor cur;
+    Cher2kPairCursor cur{};
     Cher2kPairCursorInit(cur, cores);
     loadMax = 0;
     loadMin = 0xFFFFFFFFU;

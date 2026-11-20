@@ -386,7 +386,7 @@ CHER2K_PAIR_HOSTDEV uint32_t Cher2kPairOwner(uint32_t qc, uint32_t p, bool upper
     if (numCores == 0U) {
         return 0U;
     }
-    Cher2kPairCursor cur;
+    Cher2kPairCursor cur{};
     Cher2kPairCursorInit(cur, numCores);
     uint32_t owner = 0U;
     Cher2kTilePair pr{0, 0, 0, 0};
@@ -402,7 +402,7 @@ CHER2K_PAIR_HOSTDEV uint32_t Cher2kPairCoreLoad(uint32_t qc, bool upper, bool ha
     if (numCores == 0U) {
         return 0U;
     }
-    Cher2kPairCursor cur;
+    Cher2kPairCursor cur{};
     Cher2kPairCursorInit(cur, numCores);
     const uint32_t numPairs = Cher2kPairCount(qc);
     uint32_t load = 0U;
