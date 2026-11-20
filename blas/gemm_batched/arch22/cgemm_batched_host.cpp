@@ -659,7 +659,7 @@ inline aclblasStatus_t CgbtRunGeneral(const CgbtCall& call)
 {
     const bool isTransA = (call.transa != ACLBLAS_OP_N);
     const bool isTransB = (call.transb != ACLBLAS_OP_N);
-    CgbtWsPlan plan;
+    CgbtWsPlan plan{};
     const aclblasStatus_t planRet = CgbtPlanWorkspace(
         call.h, static_cast<uint32_t>(call.m), static_cast<uint32_t>(call.n), static_cast<uint32_t>(call.k), isTransA,
         isTransB, call.batchCount, plan);
