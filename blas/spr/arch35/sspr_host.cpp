@@ -46,7 +46,7 @@ static SsprTilingData CalSsprTilingData(uint32_t useNumBlocks, int n, aclblasFil
 aclblasStatus_t aclblasSspr(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* alpha, const float* x, int incx, float* ap)
 {
-    SsprEntryCtx ctx;
+    SsprEntryCtx ctx{};
     if (!SsprEntryProceed(handle, uplo, n, incx, alpha, ValidateSsprParams, &ctx)) {
         return ctx.st;
     }
