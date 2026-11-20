@@ -21,6 +21,18 @@ void gemm_cgemm_products_do(
     uint32_t numBlocks, void* stream, GM_ADDR ar, GM_ADDR ai, GM_ADDR br, GM_ADDR bi, GM_ADDR auxiliaryA,
     GM_ADDR auxiliaryB, GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, const GemmTilingData& tilingData);
 
+// Compute only triangular product tiles using the ordinary product planes and
+// K-partition layout. Requires m == n and equal baseM/baseN supported square tiles.
+// upper selects tile row <= tile column in the kernel's ROW-MAJOR coordinates,
+// after ApplyGemmColMajorSwap; callers selecting a column-major triangle must flip
+// its orientation when that swap transposes the output. Diagonal tiles are fully
+// computed; the epilogue must still mask their unwanted half. Other tiles are not
+// written, and each partition retains ldc * RoundUp(m, CGEMM_CUBE_FRACTAL) floats
+// per product plane, exactly as gemm_cgemm_products_do (no workspace compaction).
+void gemm_cgemm_triangular_products_do(
+    uint32_t numBlocks, void* stream, GM_ADDR ar, GM_ADDR ai, GM_ADDR br, GM_ADDR bi, GM_ADDR auxiliaryA,
+    GM_ADDR auxiliaryB, GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, const GemmTilingData& tilingData, bool upper);
+
 void gemm_cgemm_epilogue_do(
     uint32_t numBlocks, void* stream, GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, GM_ADDR cInOut,
     const CgemmEpilogueTilingData& tilingData, GM_ADDR originalA = nullptr, GM_ADDR originalB = nullptr);

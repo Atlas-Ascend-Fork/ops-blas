@@ -24,6 +24,7 @@ C = alpha * op(A) * op(B)^T + beta * C
 | 接口名 | 功能简述 |
 |--------|---------|
 | aclblasSsyrkx | 单精度浮点对称秩k更新（A/B 独立矩阵） |
+| aclblasCsyrkx | 单精度复数对称秩k更新（A/B 独立矩阵） |
 
 ## 算子执行接口
 
@@ -308,3 +309,38 @@ int main()
     return 0;
 }
 ```
+
+
+### aclblasCsyrkx
+
+#### 产品支持情况
+
+- Ascend 950PR：支持。
+- Atlas A2/A3 系列产品：不支持。
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasCsyrkx(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k,
+    const aclblasComplex* alpha, const aclblasComplex* A, int lda,
+    const aclblasComplex* B, int ldb, const aclblasComplex* beta, aclblasComplex* C, int ldc);
+```
+
+#### 参数与约束
+
+矩阵为列主序复数 FP32，`A`、`B`、`C` 位于 Device；`alpha`、`beta` 是 Host 标量指针，计算在 handle 的 stream 上异步提交。`uplo` 为 `ACLBLAS_UPPER` 或 `ACLBLAS_LOWER`，仅更新 C 的相应三角（包含对角线），另一三角及列填充保持原值。
+
+- `trans=ACLBLAS_OP_N` 时计算 `C = alpha * A * B^T + beta * C`；`A` 和 `B` 为 n×k，`lda`、`ldb` 不小于 `max(1,n)`。
+- `trans=ACLBLAS_OP_T` 或 `ACLBLAS_OP_C` 时计算 `C = alpha * A^T * B + beta * C`；`A` 和 `B` 为 k×n，`lda`、`ldb` 不小于 `max(1,k)`。该对称运算中 `OP_C` 等价于 `OP_T`，不取共轭。
+- `n`、`k` 非负；`ldc >= max(1,n)`；`alpha`、`beta` 及 handle 必须非空。`n=0` 时校验参数后直接返回。
+- `n>0` 时 `C` 必须非空；`k=0` 或 `alpha=0` 时不引用 A/B，仅缩放 C，此时 `beta=1` 为 no-op。其他情况 A/B 必须非空。
+- `beta=0` 时不读取被更新三角的 C 原值；实际输入和输出内存仍须由调用方保证充足有效。
+
+#### 实现与工作区
+
+极小矩阵和纯缩放采用直接计算，小规模矩阵采用有序向量计算，其余情况先拆分复数输入，再通过四个实数矩阵乘和向量收尾计算。快速路径对输入幅度进行检查；当输入或原始 C 不满足安全范围时，使用按 K 升序的复数运算，避免重排掩盖中间溢出。工作区按 handle 管理，大小通过受限的整数运算检查；超出工作区上限时返回分配失败。输入矩阵不被修改。
+
+#### 返回值
+
+成功时返回 `ACLBLAS_STATUS_SUCCESS`；空 handle、无效参数、工作区分配失败及设备资源错误分别返回对应状态码。

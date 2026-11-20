@@ -281,21 +281,54 @@ __aicore__ inline void RunCgemmProductTask(
     AscendC::SetFlag<AscendC::HardEvent::FIX_M>(outputSlot);
 }
 
-template <uint32_t BS, bool IsTransA, bool IsTransB>
-__aicore__ inline void CgemmProductsImpl(
-    GM_ADDR ar, GM_ADDR ai, GM_ADDR br, GM_ADDR bi, GM_ADDR auxiliaryA, GM_ADDR auxiliaryB, GM_ADDR t1, GM_ADDR t2,
-    GM_ADDR t3, GM_ADDR t4, GemmTilingData& tiling)
+// Invert dense triangular indices without floating-point sqrt. Lower rows have
+// lengths 1, 2, ..., nTiles; swapping their coordinates enumerates upper columns.
+// Coordinates refer to the row-major product after ApplyGemmColMajorSwap.
+__aicore__ inline uint32_t CgemmTriangularProductTile(uint32_t index, uint32_t nTiles, uint32_t triangleMode)
+{
+    uint32_t low = 0;
+    uint32_t high = nTiles;
+    while (low + 1 < high) {
+        const uint32_t mid = low + (high - low) / 2;
+        const uint64_t first = static_cast<uint64_t>(mid) * (static_cast<uint64_t>(mid) + 1) / 2;
+        if (first <= index) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    const uint64_t first = static_cast<uint64_t>(low) * (static_cast<uint64_t>(low) + 1) / 2;
+    const uint32_t inner = index - static_cast<uint32_t>(first);
+    const uint32_t row = triangleMode == 1 ? inner : low;
+    const uint32_t col = triangleMode == 1 ? low : inner;
+    return row * nTiles + col;
+}
+
+template <uint32_t BS>
+__aicore__ inline void ValidateCgemmProductBuffers()
 {
     constexpr uint32_t K_L1 = CGEMM_L1_OPERAND_STAGE_ELEMENTS / BS;
     constexpr uint32_t K_L0 = CGEMM_HALF_L0_FLOAT_ELEMENTS / BS;
     static_assert(4 * BS * K_L1 * sizeof(float) <= CGEMM_L1_BYTES, "Cgemm product L1 overflow");
     static_assert(2 * BS * K_L0 * sizeof(float) <= CGEMM_L0_OPERAND_BYTES, "Cgemm product L0 overflow");
     static_assert(CGEMM_OUTPUT_STAGES * BS * BS * sizeof(float) <= CGEMM_L0C_BYTES, "Cgemm product L0C overflow");
+}
+
+template <uint32_t BS, bool IsTransA, bool IsTransB>
+__aicore__ inline void CgemmProductsImpl(
+    GM_ADDR ar, GM_ADDR ai, GM_ADDR br, GM_ADDR bi, GM_ADDR auxiliaryA, GM_ADDR auxiliaryB, GM_ADDR t1, GM_ADDR t2,
+    GM_ADDR t3, GM_ADDR t4, GemmTilingData& tiling, uint32_t triangleMode)
+{
+    ValidateCgemmProductBuffers<BS>();
     const uint32_t block = AscendC::GetBlockIdx();
     const uint32_t blocks = AscendC::GetBlockNum();
     const uint32_t tileN = Min<uint32_t>(BS, static_cast<uint32_t>(tiling.baseN));
     const uint32_t nTiles = CeilDiv(static_cast<uint32_t>(tiling.n), tileN);
-    const uint64_t tileCountWide = static_cast<uint64_t>(CeilDiv(static_cast<uint32_t>(tiling.m), BS)) * nTiles;
+    // Triangular launches require m == n and baseM == baseN == BS. Enumerate
+    // only live tiles before distributing tasks, rather than skipping a full grid.
+    const uint64_t tileCountWide = triangleMode == 0 ?
+                                       static_cast<uint64_t>(CeilDiv(static_cast<uint32_t>(tiling.m), BS)) * nTiles :
+                                       static_cast<uint64_t>(nTiles) * (static_cast<uint64_t>(nTiles) + 1) / 2;
     const uint32_t partitions = tiling.cgemmKPartitions > 0 ? tiling.cgemmKPartitions : 1;
     const uint32_t products = tiling.cgemmThreeProducts ? CGEMM_THREE_PRODUCTS : CGEMM_FOUR_PRODUCTS;
     const uint64_t taskCountWide = products * tileCountWide * partitions;
@@ -311,7 +344,9 @@ __aicore__ inline void CgemmProductsImpl(
     for (uint32_t task = block; task < taskCount; task += blocks) {
         const uint32_t partition = task / (products * tileCount);
         const uint32_t product = (task / tileCount) % products;
-        const uint32_t tile = task % tileCount;
+        const uint32_t tileIndex = task % tileCount;
+        const uint32_t tile =
+            triangleMode == 0 ? tileIndex : CgemmTriangularProductTile(tileIndex, nTiles, triangleMode);
         const uint32_t kStart = partition * tiling.cgemmKSpan;
         GemmTilingData partTiling = tiling;
         if (partitions > 1) {
@@ -336,32 +371,35 @@ __aicore__ inline void CgemmProductsImpl(
 template <bool TransA, bool TransB, uint32_t Tile = CGEMM_MAX_SQUARE_TILE>
 __aicore__ inline void DispatchProducts(
     GM_ADDR ar, GM_ADDR ai, GM_ADDR br, GM_ADDR bi, GM_ADDR auxiliaryA, GM_ADDR auxiliaryB, GM_ADDR t1, GM_ADDR t2,
-    GM_ADDR t3, GM_ADDR t4, GemmTilingData& tiling)
+    GM_ADDR t3, GM_ADDR t4, GemmTilingData& tiling, uint32_t triangleMode)
 {
     if constexpr (Tile > CGEMM_CUBE_FRACTAL) {
         if (tiling.baseM < Tile) {
-            DispatchProducts<TransA, TransB, Tile / 2>(ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling);
+            DispatchProducts<TransA, TransB, Tile / 2>(
+                ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling, triangleMode);
             return;
         }
     }
-    CgemmProductsImpl<Tile, TransA, TransB>(ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling);
+    CgemmProductsImpl<Tile, TransA, TransB>(
+        ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling, triangleMode);
 }
 
+// Keep the kernel symbol shared: mode 0 is full-grid, 1 is upper, 2 is lower.
 extern "C" __global__ __cube__ void gemm_cgemm_products_kernel(
     GM_ADDR ar, GM_ADDR ai, GM_ADDR br, GM_ADDR bi, GM_ADDR auxiliaryA, GM_ADDR auxiliaryB, GM_ADDR t1, GM_ADDR t2,
-    GM_ADDR t3, GM_ADDR t4, GemmTilingData tiling)
+    GM_ADDR t3, GM_ADDR t4, GemmTilingData tiling, uint32_t triangleMode)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIC_ONLY);
     AscendC::InitSocState();
     AscendC::SetHF32Mode(AscendC::HF32Mode::DISABLE);
     if (tiling.isTransA != 0 && tiling.isTransB != 0) {
-        DispatchProducts<true, true>(ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling);
+        DispatchProducts<true, true>(ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling, triangleMode);
     } else if (tiling.isTransA != 0) {
-        DispatchProducts<true, false>(ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling);
+        DispatchProducts<true, false>(ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling, triangleMode);
     } else if (tiling.isTransB != 0) {
-        DispatchProducts<false, true>(ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling);
+        DispatchProducts<false, true>(ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling, triangleMode);
     } else {
-        DispatchProducts<false, false>(ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling);
+        DispatchProducts<false, false>(ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling, triangleMode);
     }
 }
 
@@ -370,8 +408,17 @@ void gemm_cgemm_products_do(
     GM_ADDR auxiliaryB, GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, const GemmTilingData& tiling)
 {
     gemm_cgemm_products_kernel<<<numBlocks, nullptr, stream>>>(
-        ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling);
+        ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling, 0);
 }
+
+void gemm_cgemm_triangular_products_do(
+    uint32_t numBlocks, void* stream, GM_ADDR ar, GM_ADDR ai, GM_ADDR br, GM_ADDR bi, GM_ADDR auxiliaryA,
+    GM_ADDR auxiliaryB, GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, const GemmTilingData& tiling, bool upper)
+{
+    gemm_cgemm_products_kernel<<<numBlocks, nullptr, stream>>>(
+        ar, ai, br, bi, auxiliaryA, auxiliaryB, t1, t2, t3, t4, tiling, upper ? 1U : 2U);
+}
+
 namespace cgemm_fused {
 using namespace AscendC;
 constexpr uint16_t FREE_FLAG = 6;

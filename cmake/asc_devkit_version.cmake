@@ -43,6 +43,7 @@ function(ops_blas_detect_asc_devkit_version)
       "SSYR2K|/syr2k/arch35/ssyr2k|ssyr2k"
       "CSYR2K|/syr2k/arch35/csyr2k|csyr2k"
       "SSYRKX|/syrkx/arch35/ssyrkx|ssyrkx"
+      "CSYRKX|/syrkx/arch35/csyrkx|csyrkx"
       "CHERK|/herk/arch35/cherk|cherk"
       "CHER2K|/her2k/arch35/cher2k|cher2k"
       "CHERKX|/herkx/arch35/cherkx|cherkx"

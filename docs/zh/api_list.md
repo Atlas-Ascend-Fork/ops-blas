@@ -1012,6 +1012,7 @@ Level 3 接口在矩阵之间进行运算，典型操作包括对称矩阵乘法
 | [aclblasSsyr2k](../../blas/syr2k/README.md) | 单精度浮点对称秩-2k 更新 |
 | [aclblasCsyr2k](../../blas/syr2k/README.md) | 单精度复数对称秩-2k 更新 |
 | [aclblasSsyrkx](../../blas/syrkx/README.md) | 单精度浮点对称秩-k 更新扩展（A≠B） |
+| [aclblasCsyrkx](../../blas/syrkx/README.md) | 单精度复数对称秩-k 更新扩展（A≠B） |
 | [aclblasCherk](../../blas/herk/README.md) | 单精度复数 Hermitian 秩-k 更新 |
 | [aclblasCherkx](../../blas/herkx/README.md) | 单精度复数 Hermitian 秩-k 更新扩展（A≠B） |
 | [aclblasCher2k](../../blas/her2k/README.md) | 单精度复数 Hermitian 秩-2k 更新 |

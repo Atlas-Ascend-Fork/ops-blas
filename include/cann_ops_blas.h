@@ -755,6 +755,14 @@ aclblasStatus_t aclblasSsyrkx(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const float* alpha,
     const float* A, int lda, const float* B, int ldb, const float* beta, float* C, int ldc);
 
+/** Column-major complex symmetric rank-k cross update of the selected triangle.
+ * OP_C is equivalent to OP_T (no conjugation). Scalars reside on the host.
+ */
+aclblasStatus_t aclblasCsyrkx(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const aclblasComplex* alpha,
+    const aclblasComplex* A, int lda, const aclblasComplex* B, int ldb, const aclblasComplex* beta, aclblasComplex* C,
+    int ldc);
+
 aclblasStatus_t aclblasCherk(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const float* alpha,
     const aclblasComplex* A, int lda, const float* beta, aclblasComplex* C, int ldc);
