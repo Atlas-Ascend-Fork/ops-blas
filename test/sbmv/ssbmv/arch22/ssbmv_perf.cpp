@@ -12,7 +12,7 @@
  * \file ssbmv_perf.cpp
  * \brief aclblasSsbmv arch22 的性能门禁：事件计时的暖平均，对照任务书 §3.3 的 GPU 基线。
  *
- * 口径：同一流上 warmup 10 次后连续下发 64 次，用一对 event 卡住整段再除以次数。窗口含
+ * 口径：同一流上 warmup 10 次后连续下发 100 次，用一对 event 卡住整段再除以次数。窗口含
  * 每次下发的 host 入队开销，是暖平均的可复现上界（msprof 的 kernel Task Duration 不含这部分，
  * 小 shape 上两者差距明显）。基线 ssbmv_perf_baseline.csv 由任务包的 gpu_baseline.csv 与
  * TC_PF 用例逐条配对生成，限值 = gpu_ms * 1000 / 0.8（任务书 §3.3「不高于标杆耗时」）。
@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -39,7 +40,7 @@
 namespace {
 
 constexpr int SSBMV_PERF_WARMUP = 10;
-constexpr int SSBMV_PERF_REPEATS = 64;
+constexpr int SSBMV_PERF_REPEATS = 100;
 constexpr size_t SSBMV_PERF_CASES = 200;
 constexpr double SSBMV_PERF_THRESHOLD = 0.8; /* 任务书 §3.3：gpu_ms / 0.8 = 标杆耗时 */
 
@@ -59,6 +60,7 @@ struct SsbmvPerfCase {
     int incx = 1;
     int incy = 1;
     double gpuMs = 0.0;
+    uint32_t seed = 0;
 
     explicit SsbmvPerfCase(const csv_map& map)
     {
@@ -71,6 +73,7 @@ struct SsbmvPerfCase {
         incx = parseInt(ReadMap(map, "incx", "1"));
         incy = parseInt(ReadMap(map, "incy", "1"));
         gpuMs = parseDouble(ReadMap(map, "gpu_ms", "0"));
+        seed = static_cast<uint32_t>(parseInt(ReadMap(map, "random_seed")));
     }
 };
 
@@ -162,13 +165,15 @@ bool MeasureAverageUs(aclrtStream stream, Launch&& launch, float& averageUs)
     return averageUs > 0.0F;
 }
 
-void PrintPerformance(const SsbmvPerfCase& testCase, float averageUs, double limitUs)
+void PrintPerformance(const SsbmvPerfCase& testCase, float averageUs, double limitUs, bool profiling)
 {
     const double ratio = (averageUs > 0.0F) ? (limitUs / averageUs) : 0.0;
     std::cout << "[SSBMV_PERF] case=" << testCase.caseName << " n=" << testCase.n << " k=" << testCase.k
-              << " avg_us=" << std::fixed << std::setprecision(3) << averageUs << " limit_us=" << std::setprecision(3)
+              << " avg_us=" << std::fixed << std::setprecision(6) << averageUs << " limit_us=" << std::setprecision(3)
               << limitUs << " ratio=" << ratio;
-    if (IsTaskBookCase(testCase.caseName)) {
+    if (profiling) {
+        std::cout << " verdict=PROFILE";
+    } else if (IsTaskBookCase(testCase.caseName)) {
         std::cout << " verdict=" << ((averageUs <= limitUs) ? "PASS" : "FAIL");
     } else {
         std::cout << " verdict=INFO";
@@ -185,17 +190,27 @@ bool MeasureCase(const SsbmvPerfCase& testCase, aclblasHandle_t handle, aclrtStr
     const uint64_t yCount = (static_cast<uint64_t>(testCase.n) - 1U) * AbsStride(testCase.incy) + 1U;
     const size_t xBytes = static_cast<size_t>(xCount) * sizeof(float);
     const size_t yBytes = static_cast<size_t>(yCount) * sizeof(float);
+    std::mt19937 generator(testCase.seed);
+    std::uniform_real_distribution<float> uniform(-5.0f, 5.0f);
+    std::vector<float> hostA(aBytes / sizeof(float));
+    std::vector<float> hostX(xCount);
+    for (float& value : hostA) {
+        value = uniform(generator);
+    }
+    for (float& value : hostX) {
+        value = uniform(generator);
+    }
     if (aclrtMalloc(&buffers.a, aBytes, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
         aclrtMalloc(&buffers.x, xBytes, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
         aclrtMalloc(&buffers.y, yBytes, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS ||
-        aclrtMemset(buffers.a, aBytes, 0, aBytes) != ACL_SUCCESS ||
-        aclrtMemset(buffers.x, xBytes, 0, xBytes) != ACL_SUCCESS ||
+        aclrtMemcpy(buffers.a, aBytes, hostA.data(), aBytes, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS ||
+        aclrtMemcpy(buffers.x, xBytes, hostX.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS ||
         aclrtMemset(buffers.y, yBytes, 0, yBytes) != ACL_SUCCESS) {
         return false;
     }
 
     float alpha = 1.0f;
-    float beta = 1.0f;
+    float beta = 0.0f;
     return MeasureAverageUs(
         stream,
         [&]() {
@@ -229,6 +244,7 @@ TEST_F(SsbmvPerf, TaskBookAcceptance)
     size_t measured = 0;
     size_t gated = 0;
     size_t gateFailed = 0;
+    const bool profiling = std::getenv("SSBMV_PERF_CASE") != nullptr && std::getenv("SSBMV_PERF_PROFILE") != nullptr;
     for (const auto& testCase : cases) {
         if (!MatchesCaseFilter(testCase.caseName)) {
             continue;
@@ -241,8 +257,8 @@ TEST_F(SsbmvPerf, TaskBookAcceptance)
         ASSERT_TRUE(MeasureCase(testCase, SsbmvPerf::handle_, SsbmvPerf::stream_, averageUs)) << testCase.caseName;
 
         const double limitUs = testCase.gpuMs * 1000.0 / SSBMV_PERF_THRESHOLD;
-        PrintPerformance(testCase, averageUs, limitUs);
-        if (IsTaskBookCase(testCase.caseName)) {
+        PrintPerformance(testCase, averageUs, limitUs, profiling);
+        if (!profiling && IsTaskBookCase(testCase.caseName)) {
             ++gated;
             if (averageUs > limitUs) {
                 ++gateFailed;

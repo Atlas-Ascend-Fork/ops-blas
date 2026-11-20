@@ -64,6 +64,10 @@ constexpr uint32_t SSBMV_CHUNK_ROWS_CAP = 2048;
  *   those. 8192 leaves room for the row buffers and the scatter queue inside the 192KB UB. */
 constexpr uint32_t SSBMV_MIRROR_TILE = 8192;
 
+// Small enough for eight A/x slots to fit alongside the row and scatter buffers.
+constexpr uint32_t SSBMV_MIRROR_BATCH_LDA_LIMIT = 2048;
+constexpr uint32_t SSBMV_BAND_BATCH = 8;
+
 /** \brief Bytes of one float32 element. */
 constexpr uint32_t SSBMV_BYTES_PER_FLOAT32 = 4;
 
@@ -94,6 +98,15 @@ inline uint32_t SsbmvSegSlotFloats(uint32_t k)
 /** \brief 相位副本个数 = 向量对齐宽度：把 x 窗口按 0..7 的错位各存一份，
  *   使任意错位的连续切片都能以 32B 对齐的下标被向量指令直接读取（免掉每 pass 一次 Gather）。 */
 constexpr uint32_t SSBMV_PHASE_COUNT = SSBMV_ALIGN_ELEMS;
+
+// Each UB block holds eight consecutive diagonal terms of one output row.
+constexpr uint32_t SSBMV_DIAG_GROUP_WIDTH = SSBMV_ALIGN_ELEMS;
+constexpr uint32_t SSBMV_DIAG_GROUP_MAX_ROWS = 256;
+constexpr uint32_t SSBMV_DIAG_GROUP_BUFFERS = 6;
+constexpr uint32_t SSBMV_ROW_DOT_MAX_ROWS = 2U * SSBMV_ALIGN_ELEMS;
+constexpr uint32_t SSBMV_ROW_DOT_MAX_BAND_ELEMENTS = 64U * SSBMV_ALIGN_ELEMS;
+
+enum class SsbmvRowDotMode : uint32_t { Disabled, AllRows, Edges };
 
 struct SsbmvTilingData {
     uint32_t n;          /**< order of A / logical length of x and y */
@@ -130,7 +143,12 @@ struct SsbmvTilingData {
      *   Gather（Gather 的开销显著高于普通向量指令）。副本的头部（x 下标为负的部分）与尾部
      *   预清零，无效 lane 因此读到 0，与 A 侧清零相乘仍是 0，不会把 NaN 带进结果。 */
     uint32_t phaseForm;
+    uint32_t groupedDiag;    /**< Full interior chunks may gather diagonal terms in groups. */
+    uint32_t groupedXReuse;  /**< Reuse expanded x windows across complete diagonal groups. */
+    uint32_t leftEdgeRows;   /**< Aligned boundary between the left edge and the interior. */
+    uint32_t rightEdgeStart; /**< Aligned boundary between the interior and the right edge. */
     /*!< 1: 本 tiling 的每个 UB 项都按 host 的精确公式验证过，能装进设备 UB；0: 装不下。
      *   kernel 不使用该字段；host 在它之上直接拒绝下发，避免把越界的 UB 分配带进核里。 */
     uint32_t ubFit;
+    SsbmvRowDotMode rowDotMode;
 };

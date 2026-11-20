@@ -17,6 +17,7 @@
 
 #include <cstdint>
 
+#include "acl/acl.h"
 #include "ssbmv_tiling_data.h"
 
 /*!
@@ -30,6 +31,10 @@
  * \param tiling    tiling data, passed by value into the launch parameter buffer
  * \param stream    runtime stream the handle carries
  */
-void ssbmv_kernel_do(
+aclError ssbmv_kernel_do(
     uint8_t* a, uint8_t* x, uint8_t* y, uint8_t* workSpace, uint32_t numBlocks, const SsbmvTilingData& tiling,
     void* stream);
+
+void ssbmv_diagonal_do(
+    uint8_t* a, uint8_t* x, uint8_t* y, uint32_t n, uint32_t lda, uint32_t diagonal, float alpha, float beta,
+    uint32_t blockRows, uint32_t numBlocks, void* stream);

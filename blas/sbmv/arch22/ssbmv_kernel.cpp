@@ -48,18 +48,13 @@
 
 #include "kernel_operator.h"
 #include "cann_ops_blas_common.h"
-#include "ssbmv_tiling_data.h"
+#include "ssbmv_kernel_internal.h"
 
 using namespace AscendC;
+using namespace ssbmv;
 
 namespace {
 constexpr uint32_t SSBMV_BUFFER_NUM = 2;
-/*!< Local spelling of the shared element size; the value itself lives in ssbmv_tiling_data.h so
- *   the host sizes its UB budget with the same number. */
-constexpr uint32_t BYTES_PER_FLOAT32 = SSBMV_BYTES_PER_FLOAT32;
-/*!< Upper bound, in elements, of one contiguous A load. The pieces are kept a multiple of the
- *   vector alignment so that every piece starts on a 32B boundary in UB. */
-constexpr uint32_t SSBMV_SPAN_CHUNK = 4096;
 /*!< 有限性探测的基准值：对任意 v，v - v 只在 v 为有限值时为 0，用它与探针结果比较即可识别
  *   Inf/NaN。命名出来是为了让「这里在检测特殊值」在调用处自明，而不是散落的 0.0f。 */
 constexpr float SSBMV_FINITE_PROBE = 0.0f;
@@ -77,49 +72,6 @@ struct SsbmvScatterSlot {
     float mult = 0.0f;   /**< 该列的乘数 x[j] */
 };
 
-/*! \brief Round val up to the next multiple of SSBMV_ALIGN_ELEMS. */
-__aicore__ inline uint32_t AlignUp(uint32_t val)
-{
-    return (val + SSBMV_ALIGN_ELEMS - 1U) / SSBMV_ALIGN_ELEMS * SSBMV_ALIGN_ELEMS;
-}
-
-/*! \brief 与 AlignUp 同义，独立命名是为了在 host/kernel 两侧的预算公式里逐字对应。 */
-__aicore__ inline uint32_t CeilAlignU32(uint32_t val)
-{
-    return (val + SSBMV_ALIGN_ELEMS - 1U) / SSBMV_ALIGN_ELEMS * SSBMV_ALIGN_ELEMS;
-}
-
-/*!< 偏移表递推的步长（lanes）。取 64 是因为一次 Adds 正好覆盖一个 repeat（4 字节元素、
- *   8 个 block × 8 lane），既不让标量头部变长，也让大表只需要几十条指令。 */
-constexpr uint32_t SSBMV_OFFSET_BLOCK = 64;
-
-/*!
- * \brief 生成 Gather 用的字节偏移表：table[i] = i * strideBytes。
- *
- * 不用库里的 CreateVecIndex / ArithProgression —— 无 TPipe 的入口里它们必崩：两者的实现
- * （kernel_operator_vec_createvecindex_impl.h 的 CreateVecIndexOneBlk、arithprogression_
- * common_impl.h）内部都会调用 GetTPipePtr()->FetchEventID()，而没有构造过 TPipe 时那个
- * 全局指针是 null，设备侧解引用就是 507035（vector core exception）。
- *
- * 头部一个 64 lane 的块用标量写（随后补一次 S_V 同步，因为后面要用向量指令读它），
- * 其余每 64 lane 用一次 Adds 从前一块递推 —— 这样 accRows 再大也只有几十条向量指令。
- */
-__aicore__ inline void BuildOffsetTable(const LocalTensor<uint32_t>& table, uint32_t strideBytes, uint32_t count)
-{
-    LocalTensor<int32_t> tbl = table.ReinterpretCast<int32_t>();
-    const uint32_t head = (count < SSBMV_OFFSET_BLOCK) ? count : SSBMV_OFFSET_BLOCK;
-    for (uint32_t i = 0; i < head; i++) {
-        tbl.SetValue(i, static_cast<int32_t>(i * strideBytes));
-    }
-    SetFlag<HardEvent::S_V>(EVENT_ID4);
-    WaitFlag<HardEvent::S_V>(EVENT_ID4);
-    for (uint32_t off = head; off < count; off += SSBMV_OFFSET_BLOCK) {
-        const uint32_t lanes = (count - off < SSBMV_OFFSET_BLOCK) ? (count - off) : SSBMV_OFFSET_BLOCK;
-        Adds(
-            tbl[off], tbl[off - SSBMV_OFFSET_BLOCK], static_cast<int32_t>(SSBMV_OFFSET_BLOCK * strideBytes),
-            static_cast<int32_t>(lanes));
-    }
-}
 } // namespace
 
 class SsbmvKernel {
@@ -152,6 +104,7 @@ private:
     __aicore__ inline void ProcessDiag();
     __aicore__ inline void FetchEvents();
     __aicore__ inline void InitXGatherOffsets(uint32_t accRows);
+    __aicore__ inline bool CanStageBandScatterX() const;
     __aicore__ inline bool StageScatterColumn(
         uint32_t column, uint32_t c0, uint32_t c1, const LocalTensor<float>& seg, const LocalTensor<float>& xWin,
         uint32_t slot, uint32_t slotFloats, SsbmvScatterSlot& out);
@@ -166,12 +119,20 @@ private:
     __aicore__ inline void BuildSpanOffsets(uint32_t rows, uint32_t rowsAligned);
     __aicore__ inline void LoadXWindow(uint32_t c0, uint32_t c1);
     __aicore__ inline void ScatterChunk(uint32_t c0, uint32_t c1);
+    __aicore__ inline LocalTensor<float> StageBandScatterWindow(
+        uint32_t c0, uint32_t c1, uint32_t jLo, uint32_t jHi, uint32_t& fullBegin, uint32_t& fullEnd);
+    __aicore__ inline void ScatterBandRectangle(
+        uint32_t first, uint32_t count, uint32_t c0, uint32_t rows, const LocalTensor<float>& xWin, uint32_t xStart);
     __aicore__ inline void LoadSpan(const LocalTensor<float>& span, uint32_t sc, uint32_t cols);
     __aicore__ inline void LoadChunkBand(uint32_t c0, uint32_t c1);
     __aicore__ inline void ScatterChunkFromSpan(uint32_t c0, uint32_t c1);
     __aicore__ inline void ScatterChunkFromSpanPerColumn(uint32_t c0, uint32_t c1);
     __aicore__ inline void MirrorChunk(uint32_t c0, uint32_t c1);
     __aicore__ inline void ReduceBandColumn(uint32_t j, uint32_t tLo, uint32_t tHi, uint32_t redLane);
+    __aicore__ inline uint32_t LoadBandMirrorXPhases(uint32_t first, uint32_t count, uint32_t slab);
+    __aicore__ inline bool LoadFullBandBatch(
+        uint32_t first, uint32_t count, uint32_t slab, bool upper, const LocalTensor<float>& prod);
+    __aicore__ inline void ReduceBandBatch(uint32_t first, uint32_t count, bool reuseX, uint32_t phaseStart);
     __aicore__ inline void MirrorChunkByColumn(uint32_t c0, uint32_t c1);
     __aicore__ inline void FinalizeChunk(uint32_t c0, uint32_t c1);
     __aicore__ inline void StoreStridedChunk(uint32_t c0, uint32_t c1, bool useAcc);
@@ -381,8 +342,10 @@ __aicore__ inline void SsbmvKernel::InitBandFormBuffers()
 {
     const uint32_t tile = (lda < SSBMV_MIRROR_TILE) ? lda : SSBMV_MIRROR_TILE;
     const uint32_t slab = AlignUp(tile) + SSBMV_UB_SLACK;
-    pipe.InitBuffer(prodBuf, slab * BYTES_PER_FLOAT32);
-    pipe.InitBuffer(xSlBuf, slab * BYTES_PER_FLOAT32);
+    const uint32_t mirrorBatch = lda <= SSBMV_MIRROR_BATCH_LDA_LIMIT ? SSBMV_BAND_BATCH : 1U;
+    const uint32_t xSlab = slab + (mirrorBatch != 1U ? AlignUp(chunkRows) : 0U);
+    pipe.InitBuffer(prodBuf, slab * mirrorBatch * BYTES_PER_FLOAT32);
+    pipe.InitBuffer(xSlBuf, xSlab * mirrorBatch * BYTES_PER_FLOAT32);
     pipe.InitBuffer(redTmpBuf, slab * BYTES_PER_FLOAT32);
     pipe.InitBuffer(redBuf, 64U * BYTES_PER_FLOAT32);
     pipe.InitBuffer(redAccBuf, SSBMV_ALIGN_ELEMS * BYTES_PER_FLOAT32);
@@ -399,7 +362,7 @@ __aicore__ inline void SsbmvKernel::InitBandFormStaging()
     if (bandForm == 0U) {
         return;
     }
-    segBatch = 1U;
+    segBatch = SSBMV_BAND_BATCH;
     segSlot = AlignUp(chunkRows + SSBMV_ALIGN_ELEMS);
 }
 
@@ -527,24 +490,6 @@ __aicore__ inline void SsbmvKernel::Init(GM_ADDR a, GM_ADDR x, GM_ADDR y, const 
 }
 
 /*!
- * \brief x 窗口片段的 32B 对齐搬运（三个窗口装载路径共用的尾巴）。
- *
- * 目的地址落在「lead 向下取整到 8 的倍数」处（32B 对齐），错位 lead % 8 由 leftPadding 吸收；
- * 尾部不足一个 32B 块的部分由 rightPadding 清零。lead = vLo - winLo，为该片段相对窗口起点的元素数。
- */
-__aicore__ inline void CopyXWindowAligned(
-    const LocalTensor<float>& xWin, const GlobalTensor<float>& xGM, int64_t vLo, uint32_t lead, uint32_t payload)
-{
-    const uint32_t leadAligned = lead - (lead % SSBMV_ALIGN_ELEMS);
-    const uint8_t leftPad = static_cast<uint8_t>(lead - leadAligned);
-    const uint32_t used = leftPad + payload;
-    const uint8_t rightPad = static_cast<uint8_t>(AlignUp(used) - used);
-    DataCopyExtParams copyParams(1, payload * BYTES_PER_FLOAT32, 0, 0, 0);
-    DataCopyPadExtParams<float> padParams(true, leftPad, rightPad, 0.0f);
-    DataCopyPad(xWin[leadAligned], xGM[vLo], copyParams, padParams);
-}
-
-/*!
  * \brief Pulls the slice of x both halves of the chunk work from into UB once.
  *
  * The window spans [c0 - k, c1 + k): the scatter reaches k columns ahead of the block and the
@@ -661,9 +606,16 @@ __aicore__ inline bool SsbmvKernel::StageScatterColumn(
     out.offset = offsetInRow - headPad;
     out.span = span;
     out.headPad = headPad;
-    /* 列形式没有 x 窗口，乘数直接从 GM 按物理下标取（bandForm 下 incx 任意）。 */
-    out.mult = (bandForm != 0U) ? xGM.GetValue(XPhysicalPos(column)) :
-                                  xWin.GetValue(static_cast<uint32_t>(static_cast<int64_t>(column) - winLo));
+    if (bandForm != 0U) {
+        if (CanStageBandScatterX()) {
+            const uint32_t first = uplo == ACLBLAS_UPPER ? c0 : (c0 > k ? c0 - k : 0U);
+            out.mult = xWin.GetValue(column - first);
+        } else {
+            out.mult = xGM.GetValue(XPhysicalPos(column));
+        }
+    } else {
+        out.mult = xWin.GetValue(static_cast<uint32_t>(static_cast<int64_t>(column) - winLo));
+    }
 
     DataCopyExtParams copyParams(1, static_cast<uint32_t>(count * BYTES_PER_FLOAT32), 0, 0, 0);
     DataCopyPadExtParams<float> padParams(true, headPad, tailPad, 0.0f);
@@ -692,11 +644,64 @@ __aicore__ inline void SsbmvKernel::ApplyScatterBatch(
     }
 }
 
+__aicore__ inline bool SsbmvKernel::CanStageBandScatterX() const
+{
+    return bandForm != 0U && incx == 1 && lda <= SSBMV_MIRROR_BATCH_LDA_LIMIT &&
+           chunkRows + k <= SSBMV_BAND_BATCH * AlignUp(lda);
+}
+
+// All these columns cover the entire output tile. A advances by lda - 1
+// elements after each column because the first output row stays fixed.
+__aicore__ inline void SsbmvKernel::ScatterBandRectangle(
+    uint32_t first, uint32_t count, uint32_t c0, uint32_t rows, const LocalTensor<float>& xWin, uint32_t xStart)
+{
+    const uint32_t bandRow = (uplo == ACLBLAS_UPPER) ? k + c0 - first : c0 - first;
+    const uint64_t src = static_cast<uint64_t>(lda) * first + bandRow;
+    const uint32_t alignedRows = AlignUp(rows);
+    const DataCopyExtParams copy(
+        static_cast<uint16_t>(count), rows * BYTES_PER_FLOAT32, (lda - 1U - rows) * BYTES_PER_FLOAT32, 0, 0);
+    const DataCopyPadExtParams<float> padding(true, 0, static_cast<uint8_t>(alignedRows - rows), 0.0f);
+    LocalTensor<float> seg = segQueue.AllocTensor<float>();
+    DataCopyPad(seg, aGM[src], copy, padding);
+    segQueue.EnQue(seg);
+    seg = segQueue.DeQue<float>();
+    LocalTensor<float> yUb = yBuf.Get<float>();
+    for (uint32_t c = 0; c < count; ++c) {
+        Axpy(yUb, seg[c * alignedRows], xWin.GetValue(first + c - xStart), rows);
+    }
+    segQueue.FreeTensor(seg);
+}
+
+__aicore__ inline LocalTensor<float> SsbmvKernel::StageBandScatterWindow(
+    uint32_t c0, uint32_t c1, uint32_t jLo, uint32_t jHi, uint32_t& fullBegin, uint32_t& fullEnd)
+{
+    if (!CanStageBandScatterX()) {
+        return xBuf.Get<float>();
+    }
+    // The mirror's x buffer is idle until scatter finishes, so it can hold this contiguous x span.
+    LocalTensor<float> xWin = xSlBuf.Get<float>();
+    const DataCopyExtParams copy(1, (jHi - jLo) * BYTES_PER_FLOAT32, 0, 0, 0);
+    DataCopyPad(xWin, xGM[jLo], copy, DataCopyPadExtParams<float>());
+    SyncMte2ToScalar();
+    // At least two full columns are needed for a nonnegative source gap and a multi-block DMA.
+    if (c1 - c0 <= k) {
+        const bool upper = uplo == ACLBLAS_UPPER;
+        const uint32_t lowerBegin = c1 - 1U > k ? c1 - 1U - k : 0U;
+        const uint32_t begin = upper ? c1 - 1U : lowerBegin;
+        const uint32_t end = upper ? c0 + k + 1U : c0 + 1U;
+        fullBegin = begin > jLo ? begin : jLo;
+        fullEnd = end < jHi ? end : jHi;
+    }
+    return xWin;
+}
+
 __aicore__ inline void SsbmvKernel::ScatterChunk(uint32_t c0, uint32_t c1)
 {
-    LocalTensor<float> xWin = xBuf.Get<float>();
     const uint32_t jLo = (uplo == ACLBLAS_UPPER) ? c0 : ((c0 > k) ? (c0 - k) : 0U);
     const uint32_t jHi = (uplo == ACLBLAS_UPPER) ? ((c1 + k < n) ? (c1 + k) : n) : c1;
+    uint32_t fullBegin = jHi;
+    uint32_t fullEnd = jHi;
+    const LocalTensor<float> xWin = StageBandScatterWindow(c0, c1, jLo, jHi, fullBegin, fullEnd);
     const uint32_t slotFloats = segSlot;
     SsbmvScatterSlot slots[SSBMV_SEG_BATCH_MAX];
 
@@ -704,9 +709,15 @@ __aicore__ inline void SsbmvKernel::ScatterChunk(uint32_t c0, uint32_t c1)
      * costs; so the columns are staged segBatch at a time and the flags are amortised over them. */
     uint32_t j = jLo;
     while (j < jHi) {
+        if (j >= fullBegin && j < fullEnd && fullEnd - j >= 2U) {
+            const uint32_t count = fullEnd - j < segBatch ? fullEnd - j : segBatch;
+            ScatterBandRectangle(j, count, c0, c1 - c0, xWin, jLo);
+            j += count;
+            continue;
+        }
         uint32_t staged = 0;
         LocalTensor<float> seg = segQueue.AllocTensor<float>();
-        while (j < jHi && staged < segBatch) {
+        while (j < jHi && staged < segBatch && (j != fullBegin || staged == 0U)) {
             if (StageScatterColumn(j++, c0, c1, seg, xWin, staged, slotFloats, slots[staged])) {
                 staged++;
             }
@@ -1003,6 +1014,92 @@ __aicore__ inline void SsbmvKernel::ReduceBandColumn(uint32_t j, uint32_t tLo, u
     }
 }
 
+// Each phase holds an aligned view of the full x window for this chunk.
+__aicore__ inline uint32_t SsbmvKernel::LoadBandMirrorXPhases(uint32_t first, uint32_t count, uint32_t slab)
+{
+    const bool upper = uplo == ACLBLAS_UPPER;
+    const uint32_t start = upper ? (first > k ? first - k : 0U) : first + 1U;
+    const uint32_t end = upper ? first + count - 1U : (first + count + k < n ? first + count + k : n);
+    const auto xsl = xSlBuf.Get<float>();
+    for (uint32_t phase = 0U; phase < SSBMV_ALIGN_ELEMS && phase < end - start; ++phase) {
+        const uint32_t payload = end - start - phase;
+        const DataCopyExtParams copy(1U, payload * BYTES_PER_FLOAT32, 0U, 0U, 0U);
+        DataCopyPad(xsl[phase * slab], xGM[start + phase], copy, DataCopyPadExtParams<float>());
+    }
+    return start;
+}
+
+__aicore__ inline bool SsbmvKernel::LoadFullBandBatch(
+    uint32_t first, uint32_t count, uint32_t slab, bool upper, const LocalTensor<float>& prod)
+{
+    const bool fullBand = upper ? first >= k : k <= n - first - count;
+    if (!fullBand) {
+        return false;
+    }
+    // Each full column has the same valid span and feeds one padded UB slot.
+    const uint64_t source = static_cast<uint64_t>(first) * lda + (upper ? 0U : 1U);
+    const uint32_t aligned = AlignUp(k);
+    const DataCopyExtParams copy(
+        static_cast<uint16_t>(count), k * BYTES_PER_FLOAT32, (lda - k) * BYTES_PER_FLOAT32,
+        (slab - aligned) / SSBMV_ALIGN_ELEMS, 0U);
+    const DataCopyPadExtParams<float> pad(true, 0U, static_cast<uint8_t>(aligned - k), 0.0f);
+    DataCopyPad(prod, aGM[source], copy, pad);
+    return true;
+}
+
+// For short contiguous columns, issue all the independent copies before the
+// first wait. One synchronization pair protects all slots in this batch.
+__aicore__ inline void SsbmvKernel::ReduceBandBatch(uint32_t first, uint32_t count, bool reuseX, uint32_t phaseStart)
+{
+    const uint32_t slab = AlignUp(lda) + SSBMV_UB_SLACK;
+    const uint32_t xSlab = slab + AlignUp(chunkRows);
+    LocalTensor<float> prod = prodBuf.Get<float>();
+    LocalTensor<float> xsl = xSlBuf.Get<float>();
+    LocalTensor<float> red = redBuf.Get<float>();
+    LocalTensor<float> tmp = redTmpBuf.Get<float>();
+    uint32_t lengths[SSBMV_BAND_BATCH];
+    uint32_t xStarts[SSBMV_BAND_BATCH];
+    const bool upper = uplo == ACLBLAS_UPPER;
+    const bool fullBand = LoadFullBandBatch(first, count, slab, upper, prod);
+    for (uint32_t c = 0; c < count; ++c) {
+        const uint32_t j = first + c;
+        const uint32_t available = upper ? j : n - 1U - j;
+        const uint32_t len = available < k ? available : k;
+        lengths[c] = len;
+        if (len == 0U) {
+            continue;
+        }
+        const uint32_t aStart = upper ? k - len : 1U;
+        const uint32_t xStart = upper ? j - len : j + 1U;
+        xStarts[c] = xStart;
+        const DataCopyExtParams copy(1, len * BYTES_PER_FLOAT32, 0, 0, 0);
+        const DataCopyPadExtParams<float> padding(true, 0, static_cast<uint8_t>(AlignUp(len) - len), 0.0f);
+        if (!fullBand) {
+            DataCopyPad(prod[c * slab], aGM[static_cast<uint64_t>(j) * lda + aStart], copy, padding);
+        }
+        if (!reuseX) {
+            DataCopyPad(xsl[c * xSlab], xGM[xStart], copy, padding);
+        }
+    }
+    SyncMte2ToVector();
+    for (uint32_t c = 0; c < count; ++c) {
+        if (lengths[c] == 0U) {
+            Duplicate(red[c * SSBMV_ALIGN_ELEMS], 0.0f, SSBMV_ALIGN_ELEMS);
+        } else {
+            auto slot = prod[c * slab];
+            uint32_t xOffset = c * xSlab;
+            if (reuseX) {
+                const uint32_t rel = xStarts[c] - phaseStart;
+                const uint32_t phase = rel % SSBMV_ALIGN_ELEMS;
+                xOffset = phase * xSlab + rel - phase;
+            }
+            Mul(slot, slot, xsl[xOffset], lengths[c]);
+            ReduceSum(red[c * SSBMV_ALIGN_ELEMS], slot, tmp, lengths[c]);
+        }
+    }
+    SyncVectorToMte2();
+}
+
 __aicore__ inline void SsbmvKernel::MirrorChunkByColumn(uint32_t c0, uint32_t c1)
 {
     if (k == 0U) {
@@ -1013,10 +1110,21 @@ __aicore__ inline void SsbmvKernel::MirrorChunkByColumn(uint32_t c0, uint32_t c1
     LocalTensor<float> yUb = yBuf.Get<float>();
     LocalTensor<float> compact = aVecBuf.Get<float>();
     LocalTensor<uint32_t> off8 = off8Buf.Get<uint32_t>();
+    const bool batched = incx == 1 && lda <= SSBMV_MIRROR_BATCH_LDA_LIMIT;
+    // Consecutive columns overlap by k-1 elements. Stage their x views once.
+    const bool reuseX = batched && k >= 2U * SSBMV_ROWS_PER_CORE && rows > SSBMV_BAND_BATCH;
+    const uint32_t xSlab = AlignUp(lda) + SSBMV_UB_SLACK + AlignUp(chunkRows);
+    const uint32_t phaseStart = reuseX ? LoadBandMirrorXPhases(c0, rows, xSlab) : 0U;
 
     for (uint32_t base = 0; base < rows; base += SSBMV_ALIGN_ELEMS) {
         const uint32_t left = rows - base;
         const uint32_t cnt = (left < SSBMV_ALIGN_ELEMS) ? left : SSBMV_ALIGN_ELEMS;
+        if (batched) {
+            ReduceBandBatch(c0 + base, cnt, reuseX, phaseStart);
+            Gather(compact, red, off8, 0U, cnt);
+            Add(yUb[base], yUb[base], compact, cnt);
+            continue;
+        }
         for (uint32_t c = 0; c < cnt; c++) {
             const uint32_t j = c0 + base + c;
             uint32_t tLo = 0;
@@ -1217,30 +1325,7 @@ __aicore__ inline void SsbmvKernel::HandleAlphaZero()
     }
 }
 
-/*!
- * \brief 行-对角形式需要的 band span 元素个数（与 host 的预算公式必须逐字一致）。
- *
- * span 覆盖本 chunk 的行块加上 k 列延伸：UPPER 向右（列 [c0, c1+k)），LOWER 向左（[c0-k, c1)）。
- * 最宽的一段是 lda * (chunkRows + k) + k + 1（最后一行再往前 k 个元素的尾巴）。
- */
-/*! \brief 行-对角形式所需的 span 元素个数（含前置零哨兵）。两个 kernel 共用，故做成自由函数。
- *
- * 全程用 32 位算术：AI Core 的标量单元没有 64 位乘法指令，`uint64_t` 乘法要调软件例程，
- * 而这里是在每次下发的 Init 路径上（小 shape 的固定开销里这一项可观）。
- * issue #841 修正安全依据：host 的 ValidateSsbmvArgs 并不存在 n/lda <= 8192 的
- * 规格约束（n=3e8、k=7、lda=8 的形状可合法进入 diag-only 入口）；32 位不回绕的
- * 真实依据是准入链自身的乘积上界——本函数返回的 span 必须完整装入 UB
- * （与 host 的 SsbmvDiagSpanFloats 逐字一致、按 UB 容量装箱准入），即
- * lda * (chunkRows + k) + k + 1 连同 guard/对齐/余量以 UB 量级（约 50K floats）
- * 为上界，远小于 2^32；后续放宽准入或改 UB 容量时须同步复核此处的 32 位域。 */
-__aicore__ inline uint32_t DiagSpanFloats(uint32_t chunkRows, uint32_t k, uint32_t lda)
-{
-    const uint32_t spanMax = lda * (chunkRows + k) + k + 1U;
-    const uint32_t guard = SSBMV_ALIGN_ELEMS * lda;
-    return guard + CeilAlignU32(spanMax) + SSBMV_UB_SLACK;
-}
-
-__aicore__ inline uint32_t SsbmvKernel::DiagSpanFloats() const { return ::DiagSpanFloats(chunkRows, k, lda); }
+__aicore__ inline uint32_t SsbmvKernel::DiagSpanFloats() const { return ssbmv::DiagSpanFloats(chunkRows, k, lda); }
 
 /*!
  * \brief 行-对角形式的 x 窗口：只搬 payload，不做前置清零、不等待。
@@ -1432,6 +1517,9 @@ __aicore__ inline void SsbmvKernel::Process()
         } else {
             ScatterChunk(c0, c1);
         }
+        if (CanStageBandScatterX()) {
+            SyncScalarToMte2();
+        }
         MirrorChunk(c0, c1);
         FinalizeChunk(c0, c1);
     }
@@ -1449,460 +1537,12 @@ extern "C" __global__ __aicore__ void ssbmv_kernel(
     op.Process();
 }
 
-/* ==========================================================================================
- * 小 n / 窄带专用入口的 kernel 对象：**只含行-对角形式走得到的成员与代码**。
- *
- * 动机：设备侧取指是固定开销的一项，代码体越大开销越高。通用 kernel 把宽带 column 形式、
- * 逐列 scatter、任意步长的 strided 存取等全部回退路径装进同一个函数，入口虽小但代码体大。
- * 这里把行-对角形式单独拆成第三个入口，让 n<=8192 窄带（即绝大多数形状）的设备侧代码体最小。
- * UB 用一个 TBuf 手工切分（InitBuffer 次数是每核固定开销的一部分），事件只取 2 个。
- * ========================================================================================== */
-template <bool kPhase>
-class SsbmvDiagOnly {
-public:
-    __aicore__ inline void Init(GM_ADDR a, GM_ADDR x, GM_ADDR y, const SsbmvTilingData& tiling);
-    __aicore__ inline void Process();
-
-private:
-    __aicore__ inline void InitUbTensors();
-    __aicore__ inline void InitOffsetTables();
-    __aicore__ inline void LoadXWindow(uint32_t c0, uint32_t c1);
-    __aicore__ inline void LoadPhases(uint32_t c0, uint32_t c1);
-    __aicore__ inline void LoadSpan(uint32_t c0, uint32_t c1);
-    __aicore__ inline void Pass(uint32_t c0, uint32_t c1, int32_t e, bool accumulate);
-    __aicore__ inline void ApplyPassPhase(uint32_t loL, uint32_t cnt, int32_t xRel, uint32_t inval, bool accumulate);
-    __aicore__ inline void ApplyPassGather(uint32_t loL, uint32_t cnt, uint32_t xBase, uint32_t inval, bool accumulate);
-    __aicore__ inline void Finalize(uint32_t c0, uint32_t c1);
-
-    LocalTensor<float> yT;
-    LocalTensor<float> yOldT;
-    LocalTensor<float> aVecT;
-    LocalTensor<float> xvT;
-    LocalTensor<float> xT;
-    LocalTensor<float> spanT;
-    /*!< phaseForm 时：8 份错位 x 窗口副本拼在一块缓冲里，第 p 份的下标 0 对应窗口下标 p。 */
-    LocalTensor<float> phaseT;
-    LocalTensor<uint32_t> offAT;
-    LocalTensor<uint32_t> offXT;
-    GlobalTensor<float> aGM;
-    GlobalTensor<float> xGM;
-    GlobalTensor<float> yGM;
-    event_t evMte2V;
-    event_t evVToMte3;
-    event_t evMte3V;
-    event_t evVtoMte2;
-
-    uint32_t n = 0;
-    uint32_t k = 0;
-    uint32_t lda = 0;
-    uint32_t uplo = ACLBLAS_UPPER;
-    uint32_t chunkRows = 0;
-    uint32_t blockRows = 0;
-    uint32_t spanCol0 = 0;
-    uint32_t spanOff = 0;
-    uint32_t r0 = 0;
-    uint32_t r1 = 0;
-    int32_t winLo = 0;
-    uint32_t phaseForm = 0;
-    uint32_t phaseLen = 0;
-    bool active = false;
-    float alpha = 1.0f;
-    float beta = 0.0f;
-};
-
-template <bool kPhase>
-__aicore__ inline void SsbmvDiagOnly<kPhase>::Init(GM_ADDR a, GM_ADDR x, GM_ADDR y, const SsbmvTilingData& tiling)
-{
-    n = tiling.n;
-    k = tiling.k;
-    lda = tiling.lda;
-    uplo = tiling.uplo;
-    chunkRows = tiling.chunkRows;
-    blockRows = tiling.blockRows;
-    alpha = tiling.alpha;
-    beta = tiling.beta;
-    phaseForm = kPhase ? 1U : 0U;
-    InitUbTensors();
-
-    r0 = GetBlockIdx() * blockRows;
-    active = (r0 < n);
-    if (!active) {
-        return;
-    }
-    r1 = ((r0 + blockRows) < n) ? (r0 + blockRows) : n;
-    aGM.SetGlobalBuffer((__gm__ float*)a, static_cast<uint64_t>(n) * lda);
-    xGM.SetGlobalBuffer((__gm__ float*)x, n);
-    yGM.SetGlobalBuffer((__gm__ float*)y, n);
-
-    /* 首个 chunk 的两次搬运**在这里就发出去**：搬运走 MTE2、与后面建偏移表/清零哨兵的
-     * 标量+向量工作互不依赖，早点发出去就能把 DMA 的固定延迟（这两笔数据只有几百字节，
-     * 耗时全是启动开销）藏在 Init 后面。等 MTE2 的位置在 Process 里，那里才是真正要用数据的时候。 */
-    spanOff = SSBMV_ALIGN_ELEMS * lda; /* LoadSpan 往哨兵之后落数据，先用上它 */
-    /* 哨兵（前置零区）只在 LOWER 下会被读到：LOWER 的 cE = e*(lda-1) 可为负，最坏 -7*lda 由哨兵吸收；
-     * UPPER 的 cE 恒 >= 0（e>=0 时 e*(lda-1)+k，e<0 时 k+e），且 row0 >= spanCol0 = c0，故 aRel >= 0，
-     * 哨兵永远不会被读 —— 省掉这次清零（1004 上是 520 个 lane）。 */
-    if (uplo == ACLBLAS_LOWER) {
-        Duplicate(spanT, 0.0f, spanOff);
-    }
-    winLo = static_cast<int32_t>(r0) - static_cast<int32_t>(k);
-    const uint32_t firstC1 = ((r0 + chunkRows) < r1) ? (r0 + chunkRows) : r1;
-    if constexpr (kPhase) {
-        LoadPhases(r0, firstC1);
-    } else {
-        LoadXWindow(r0, firstC1);
-    }
-    LoadSpan(r0, firstC1);
-
-    /* 事件号直接取常量：FetchEventID 要走 TPipe 的登记表，而这条路径没有任何需要登记的东西。 */
-    evMte2V = EVENT_ID0;
-    evVToMte3 = EVENT_ID1;
-    evMte3V = EVENT_ID2;
-    evVtoMte2 = EVENT_ID3;
-    InitOffsetTables();
-    if (uplo == ACLBLAS_LOWER) {
-        Duplicate(spanT, 0.0f, spanOff);
-    }
-}
-
-/*!
- * \brief UB 缓冲的手工切分（Init 的前半段）。
- *
- * UB 手工切分：**不用 TPipe/InitBuffer**。TBuf 的构造与 InitBuffer 的登记是每核固定开销的
- * 一部分，而这一段切分对 TPipe 没有任何依赖 —— 每个缓冲的起点都是 32B 的倍数，直接用 UB
- * 字节地址构造张量即可。
- * 偏移与 host 的预算公式（SsbmvDiagUbFloats）逐项对应，改动这里必须同步改那里。 */
-template <bool kPhase>
-__aicore__ inline void SsbmvDiagOnly<kPhase>::InitUbTensors()
-{
-    const uint32_t accRows = AlignUp(chunkRows) + SSBMV_UB_SLACK;
-    const uint32_t xCnt = AlignUp(chunkRows + 2U * k) + SSBMV_UB_SLACK;
-    const uint32_t spanCnt = DiagSpanFloats(chunkRows, k, lda);
-    const uint32_t accBytes = accRows * BYTES_PER_FLOAT32;
-    const uint32_t xBytes = xCnt * BYTES_PER_FLOAT32;
-    yT = LocalTensor<float>(TPosition::VECCALC, 0U, accRows);
-    aVecT = LocalTensor<float>(TPosition::VECCALC, 2U * accBytes, accRows);
-    xvT = LocalTensor<float>(TPosition::VECCALC, 3U * accBytes, accRows);
-    /* 偏移表直接按 uint32 构造（Gather 的偏移就是 uint32 字节数），省掉一次 float→uint32 的重解释。 */
-    offAT = LocalTensor<uint32_t>(TPosition::VECCALC, 4U * accBytes, accRows);
-    offXT = LocalTensor<uint32_t>(TPosition::VECCALC, 5U * accBytes, accRows);
-    xT = LocalTensor<float>(TPosition::VECCALC, 6U * accBytes, xCnt);
-    spanT = LocalTensor<float>(TPosition::VECCALC, 6U * accBytes + xBytes, spanCnt);
-    if constexpr (kPhase) {
-        phaseLen = AlignUp(xCnt);
-        phaseT = LocalTensor<float>(
-            TPosition::VECCALC, 6U * accBytes + xBytes + spanCnt * BYTES_PER_FLOAT32, SSBMV_PHASE_COUNT * phaseLen);
-    }
-    /* beta == 0 时 Finalize 不会碰 beta*y 那块缓冲，构造它纯属每次调用的固定开销。 */
-    if (beta != 0.0f) {
-        yOldT = LocalTensor<float>(TPosition::VECCALC, accBytes, accRows);
-    }
-}
-
-/*!
- * \brief Gather 偏移表构建（Init 的后半段）。
- *
- * 偏移表只需覆盖一次 chunk 的行数 + 1（Gather 的 lane 数不会超过它），末尾补到 32B 对齐。
- * A 侧那张表直接由 X 侧乘 lda 得到（两侧都是字节偏移），省掉一整次「64 lane 标量播种」——
- * 标量写在这条路径上是可观成本，小 shape 上尤其明显。 */
-template <bool kPhase>
-__aicore__ inline void SsbmvDiagOnly<kPhase>::InitOffsetTables()
-{
-    const uint32_t tableRows = AlignUp(chunkRows + 1U);
-    if constexpr (kPhase) {
-        /* 相位副本路径只有 A 侧需要 Gather（x 侧是对齐直读），所以只建 offAT，
-         * 省掉 offXT 的播种与一次 Muls。 */
-        BuildOffsetTable(offAT, lda * BYTES_PER_FLOAT32, tableRows);
-    } else {
-        BuildOffsetTable(offXT, BYTES_PER_FLOAT32, tableRows);
-        /* Muls 只支持 half/float/int16/int32，偏移表按 int32 视图参与计算（字节数都 < 2^31）。 */
-        Muls(
-            offAT.ReinterpretCast<int32_t>(), offXT.ReinterpretCast<int32_t>(), static_cast<int32_t>(lda),
-            static_cast<int32_t>(tableRows));
-    }
-}
-
-template <bool kPhase>
-__aicore__ inline void SsbmvDiagOnly<kPhase>::LoadXWindow(uint32_t c0, uint32_t c1)
-{
-    /* 32 位算术，理由同 Pass()：winLo ∈ [-k, n)、n <= 8192，全在 int32 内。 */
-    const uint32_t vLo = (winLo > 0) ? static_cast<uint32_t>(winLo) : 0U;
-    const uint32_t hi = c1 + k;
-    const uint32_t vHi = (n < hi) ? n : hi;
-    if (vHi <= vLo) {
-        return;
-    }
-    const uint32_t lead = vLo - static_cast<uint32_t>(winLo);
-    const uint32_t payload = vHi - vLo;
-    CopyXWindowAligned(xT, xGM, vLo, lead, payload);
-}
-
-/*!
- * \brief phaseForm 的 x 窗口装载：把窗口按 0..7 的错位各存一份。
- *
- * 第 p 份副本的「下标 0」对应窗口下标 p（即 x 下标 winLo + p），于是任何一条对角线要用的
- * 连续切片 x[row0+e .. ) 都能在 δ = (row0+e-winLo) & 7 那份副本里以**下标 (xRel - δ)** 读到，
- * 而 xRel - δ 必为 SSBMV_ALIGN_ELEMS 的倍数 ⇒ 32B 对齐 ⇒ 向量指令可以直接用它当操作数，
- * 不再需要每 pass 一次 Gather（Gather 的开销显著高于普通向量指令）。
- *
- * 头部（x 下标为负的部分）与整块先清零：无效 lane 对应的 x 下标必为负（见 Pass 的注释），
- * 因此它们读到 0；与 A 侧的显式清零相乘仍是 0，不会把 Inf/NaN 带进结果。
- */
-template <bool kPhase>
-__aicore__ inline void SsbmvDiagOnly<kPhase>::LoadPhases(uint32_t c0, uint32_t c1)
-{
-    const uint32_t hi = c1 + k;
-    const uint32_t vHi = (n < hi) ? n : hi;
-    for (uint32_t p = 0U; p < SSBMV_PHASE_COUNT; p++) {
-        /* 副本 p 的「下标 0」对应 x 下标 Gp = winLo + p（可为负）。x[0] 因此落在副本下标 -Gp，
-         * 它不一定 32B 对齐，于是用 DataCopyPad 的 leftPadding 把有效数据放到「≤ -Gp 的最大 8 倍数」
-         * 之后：目的张量的基址对齐、leftPadding 是元素个数（0..7）不要求对齐。
-         * 副本下标 0..-Gp 这一段（Gp<0 时）对应负的 x 下标，保持预清零的 0 —— 无效 lane 正好读到这里。 */
-        const int32_t gp = winLo + static_cast<int32_t>(p);
-        if (gp >= static_cast<int32_t>(vHi)) {
-            continue;
-        }
-        const uint32_t gs = (gp >= 0) ? static_cast<uint32_t>(gp) : 0U; /* GM 读起点 */
-        const uint32_t payloadStart = (gp >= 0) ? 0U : static_cast<uint32_t>(-gp);
-        if (gs >= vHi || payloadStart >= phaseLen) {
-            continue;
-        }
-        uint32_t payload = vHi - gs;
-        if ((payloadStart + payload) > phaseLen) {
-            payload = phaseLen - payloadStart; /* 理论上不会发生，保险起见截断 */
-        }
-        const uint32_t base8 = payloadStart & ~(SSBMV_ALIGN_ELEMS - 1U);
-        const uint8_t leftPad = static_cast<uint8_t>(payloadStart - base8);
-        const uint32_t used = payloadStart + payload;
-        const uint8_t rightPad = static_cast<uint8_t>(AlignUp(used) - used);
-        DataCopyExtParams copyParams(1, payload * BYTES_PER_FLOAT32, 0, 0, 0);
-        DataCopyPad(
-            phaseT[p * phaseLen + base8], xGM[gs], copyParams,
-            DataCopyPadExtParams<float>(true, leftPad, rightPad, 0.0f));
-        /* 副本下标 < payloadStart 的那一段对应负的 x 下标，必须显式清零（否则无效 lane 会读到上一次的
-         * 残留）。只需清这一段（<= 8 个 lane）：pass 的读下标从 (xRel - delta) 起、lane 数 cnt，
-         * 最高只到 x 下标 (hiRaw-1+e) <= n-1，永远不会越过 payload 末尾，尾部不需要清。 */
-        if (payloadStart > 0U) {
-            Duplicate(phaseT[p * phaseLen], 0.0f, payloadStart);
-        }
-    }
-}
-
-template <bool kPhase>
-__aicore__ inline void SsbmvDiagOnly<kPhase>::LoadSpan(uint32_t c0, uint32_t c1)
-{
-    uint32_t sc = c0;
-    uint32_t se = c1;
-    if (uplo == ACLBLAS_UPPER) {
-        se = ((c1 + k) < n) ? (c1 + k) : n;
-    } else {
-        sc = (c0 > k) ? (c0 - k) : 0U;
-    }
-    spanCol0 = sc;
-    const uint32_t spanLen = lda * (se - sc - 1U) + k + 1U;
-    uint32_t done = 0;
-    while (done < spanLen) {
-        uint32_t piece = spanLen - done;
-        if (piece > SSBMV_SPAN_CHUNK) {
-            piece = SSBMV_SPAN_CHUNK;
-        }
-        DataCopyExtParams copyParams(1, piece * BYTES_PER_FLOAT32, 0, 0, 0);
-        DataCopyPad(
-            spanT[spanOff + done], aGM[static_cast<uint64_t>(lda) * sc + done], copyParams,
-            DataCopyPadExtParams<float>());
-        done += piece;
-    }
-}
-
-template <bool kPhase>
-__aicore__ inline void SsbmvDiagOnly<kPhase>::Pass(uint32_t c0, uint32_t c1, int32_t e, bool accumulate)
-{
-    /* 这里全部用 32 位算术：AI Core 标量单元没有 64 位乘法指令，int64_t 的乘要调软件例程，
-     * 而这段代码每条对角线都要跑一遍（小 shape 上 pass 数占比不低）。
-     * issue #841 修正安全依据：host 并未校验 n <= 8192（n 可达 3e8 量级）。本函数
-     * 的乘法项均以 span 窗口内的局部量为界——cE 的 e*(ldaI-1) 与 aRel 的
-     * (row0 - spanCol0)*lda 都以准入 span（lda*(chunkRows+k) 级、必须完整装入
-     * UB，见 DiagSpanFloats 注释）为上界；row0 本身虽为全局行号（int32 域内），
-     * 但只作差参与局部下标；nI 仅参与与 c1i 的 min 截断。GM 侧全局地址换算在
-     * 拷贝点用 uint64（见 aGM[static_cast<uint64_t>(lda) * sc]）。后续放宽准入
-     * 或改 UB 容量时须同步复核此处。 */
-    const int32_t c0i = static_cast<int32_t>(c0);
-    const int32_t eAbs = (e >= 0) ? e : -e;
-    const int32_t loRaw = (e >= 0) ? c0i : ((eAbs > c0i) ? eAbs : c0i);
-    const int32_t nI = static_cast<int32_t>(n);
-    const int32_t c1i = static_cast<int32_t>(c1);
-    const int32_t hiRaw = (e >= 0) ? (((nI - e) < c1i) ? (nI - e) : c1i) : c1i;
-    if (hiRaw <= loRaw) {
-        return;
-    }
-    const uint32_t localRaw = static_cast<uint32_t>(loRaw - c0i);
-    const uint32_t loL = localRaw & ~(SSBMV_ALIGN_ELEMS - 1U);
-    const uint32_t row0 = c0 + loL;
-    const uint32_t cnt = static_cast<uint32_t>(hiRaw) - row0;
-    const int32_t ldaI = static_cast<int32_t>(lda);
-    const int32_t kI = static_cast<int32_t>(k);
-    int32_t cE = 0;
-    if (uplo == ACLBLAS_UPPER) {
-        cE = (e >= 0) ? (e * (ldaI - 1) + kI) : (kI + e);
-    } else {
-        cE = (e >= 0) ? e : (e * (ldaI - 1));
-    }
-    const int32_t row0I = static_cast<int32_t>(row0);
-    const int32_t aRel = cE + (row0I - static_cast<int32_t>(spanCol0)) * ldaI;
-    const int32_t xRel = row0I + e - static_cast<int32_t>(winLo);
-    const int32_t aPhys = aRel + static_cast<int32_t>(spanOff);
-    const uint32_t aBase = (aPhys > 0) ? static_cast<uint32_t>(aPhys) : 0U;
-    const uint32_t xBase = (xRel > 0) ? static_cast<uint32_t>(xRel) : 0U;
-    const uint32_t inval = static_cast<uint32_t>(loRaw - row0I);
-    Gather(aVecT, spanT, offAT, aBase * BYTES_PER_FLOAT32, cnt);
-    if constexpr (kPhase) {
-        ApplyPassPhase(loL, cnt, xRel, inval, accumulate);
-    } else {
-        ApplyPassGather(loL, cnt, xBase, inval, accumulate);
-    }
-}
-
-/*!
- * \brief 相位副本路径的取值与累加（Pass 的尾部，kPhase 专用）。
- *
- * x 操作数在 δ = xRel & 7 那份副本里，下标 (xRel - δ) 恒为 32B 对齐。
- * 无效 lane（行 < loRaw）的 x 下标必为负（e<0 时 loRaw = max(|e|,c0)，行 < loRaw ⇒ r+e < 0；
- * e>=0 时 loRaw = c0、inval 恒为 0），副本头部是 0，因此只需清 A 侧即可保证乘积为 0。 */
-template <bool kPhase>
-__aicore__ inline void SsbmvDiagOnly<kPhase>::ApplyPassPhase(
-    uint32_t loL, uint32_t cnt, int32_t xRel, uint32_t inval, bool accumulate)
-{
-    const uint32_t delta = static_cast<uint32_t>(xRel) & (SSBMV_ALIGN_ELEMS - 1U);
-    if (inval > 0U) {
-        Duplicate(aVecT, 0.0f, inval);
-    }
-    /* 副本 δ 的下标 0 对应 x 下标 Gδ = floor8(winLo + δ)，故本 pass 要读的下标是
-     * (row0 + e) - Gδ；由 Gδ ≡ winLo + δ (mod 8) 与 (row0+e) ≡ winLo + δ (mod 8) 可知它是 8 的倍数。*/
-    const uint32_t xIdx = delta * phaseLen + (static_cast<uint32_t>(xRel) - delta);
-    if (accumulate) {
-        MulAddDst(yT[loL], aVecT, phaseT[xIdx], cnt);
-    } else {
-        Mul(yT[loL], aVecT, phaseT[xIdx], cnt);
-    }
-}
-
-/*! \brief 逐 pass Gather 路径的取值与累加（Pass 的尾部，非相位副本路径）。 */
-template <bool kPhase>
-__aicore__ inline void SsbmvDiagOnly<kPhase>::ApplyPassGather(
-    uint32_t loL, uint32_t cnt, uint32_t xBase, uint32_t inval, bool accumulate)
-{
-    Gather(xvT, xT, offXT, xBase * BYTES_PER_FLOAT32, cnt);
-    if (inval > 0U) {
-        Duplicate(aVecT, 0.0f, inval);
-        Duplicate(xvT, 0.0f, inval);
-    }
-    if (accumulate) {
-        MulAddDst(yT[loL], aVecT, xvT, cnt);
-    } else {
-        Mul(yT[loL], aVecT, xvT, cnt);
-    }
-}
-
-template <bool kPhase>
-__aicore__ inline void SsbmvDiagOnly<kPhase>::Finalize(uint32_t c0, uint32_t c1)
-{
-    const uint32_t rowCount = c1 - c0;
-    const uint32_t rowCountAligned = AlignUp(rowCount);
-    Muls(yT, yT, alpha, rowCountAligned);
-    if (beta != 0.0f) {
-        DataCopyExtParams copyParams(1, static_cast<uint32_t>(rowCount * BYTES_PER_FLOAT32), 0, 0, 0);
-        DataCopyPad(
-            yOldT, yGM[c0], copyParams,
-            DataCopyPadExtParams<float>(true, 0, static_cast<uint8_t>(rowCountAligned - rowCount), 0.0f));
-        SetFlag<HardEvent::MTE2_V>(evMte2V);
-        WaitFlag<HardEvent::MTE2_V>(evMte2V);
-        Muls(yOldT, yOldT, beta, rowCountAligned);
-        Add(yT, yT, yOldT, rowCountAligned);
-    }
-    SetFlag<HardEvent::V_MTE3>(evVToMte3);
-    WaitFlag<HardEvent::V_MTE3>(evVToMte3);
-    DataCopyExtParams outParams(1, static_cast<uint32_t>(rowCount * BYTES_PER_FLOAT32), 0, 0, 0);
-    DataCopyPad(yGM[c0], yT, outParams);
-}
-
-template <bool kPhase>
-__aicore__ inline void SsbmvDiagOnly<kPhase>::Process()
-{
-    if (!active) {
-        return;
-    }
-    bool firstChunk = true;
-    for (uint32_t c0 = r0; c0 < r1; c0 += chunkRows) {
-        const uint32_t c1 = ((c0 + chunkRows) < r1) ? (c0 + chunkRows) : r1;
-        if (!firstChunk) {
-            /* 缓冲要复用：先等上一轮的计算与写回读完 xT/spanT，再覆盖它们。 */
-            SetFlag<HardEvent::MTE3_V>(evMte3V);
-            WaitFlag<HardEvent::MTE3_V>(evMte3V);
-            SetFlag<HardEvent::V_MTE2>(evVtoMte2);
-            WaitFlag<HardEvent::V_MTE2>(evVtoMte2);
-            winLo = static_cast<int32_t>(c0) - static_cast<int32_t>(k);
-            if constexpr (kPhase) {
-                LoadPhases(c0, c1);
-            } else {
-                LoadXWindow(c0, c1);
-            }
-            LoadSpan(c0, c1);
-        }
-        firstChunk = false;
-        /* 首 chunk 的搬运已在 Init 里发出，这里只做等待。 */
-        SetFlag<HardEvent::MTE2_V>(evMte2V);
-        WaitFlag<HardEvent::MTE2_V>(evMte2V);
-        Pass(c0, c1, 0, false);
-        for (int32_t e = 1; e <= static_cast<int32_t>(k); e++) {
-            Pass(c0, c1, e, true);
-            Pass(c0, c1, -e, true);
-        }
-        Finalize(c0, c1);
-    }
-}
-
-extern "C" __global__ __aicore__ void ssbmv_kernel_diag_only(
-    GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, SsbmvTilingData tiling)
-{
-    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
-    (void)workSpace;
-    SsbmvDiagOnly<false> op; /* 非相位：设备侧代码里没有相位副本那一段 */
-    op.Init(a, x, y, tiling);
-    op.Process();
-}
-
-extern "C" __global__ __aicore__ void ssbmv_kernel_diag_only(
-    GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, SsbmvTilingData tiling);
-
-/* 相位副本单独一个入口：设备侧代码体积是固定开销的一项。 */
-extern "C" __global__ __aicore__ void ssbmv_kernel_diag_phase(
-    GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, SsbmvTilingData tiling)
-{
-    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
-    (void)workSpace;
-    SsbmvDiagOnly<true> op;
-    op.Init(a, x, y, tiling);
-    op.Process();
-}
-
-extern "C" __global__ __aicore__ void ssbmv_kernel_diag_phase(
-    GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, SsbmvTilingData tiling);
-
-void ssbmv_kernel_do(
+aclError ssbmv_kernel_do(
     uint8_t* a, uint8_t* x, uint8_t* y, uint8_t* workSpace, uint32_t numBlocks, const SsbmvTilingData& tiling,
     void* stream)
 {
-    /* 行-对角形式走专用入口：它的设备侧代码只含这条路径（通用入口里还装着宽带 column 形式、
-     * 逐列 scatter、任意步长的 strided 存取等全部回退路径）。设备侧取指是固定开销的一项，
-     * 代码体越小越省。其余形状仍走通用入口。 */
     if (tiling.diagForm != 0U && tiling.alpha != 0.0f && tiling.incy == 1) {
-        /* 只接「alpha != 0 且 incy == 1」：alpha == 0 的位精确路径与任意步长的 strided 存回
-         * 都留在通用入口里，这里不重复实现。相位副本与非相位各走一个入口，代码体积最小。 */
-        if (tiling.phaseForm != 0U) {
-            ssbmv_kernel_diag_phase<<<numBlocks, nullptr, stream>>>(a, x, y, workSpace, tiling);
-        } else {
-            ssbmv_kernel_diag_only<<<numBlocks, nullptr, stream>>>(a, x, y, workSpace, tiling);
-        }
-        return;
+        return ssbmv_diag_kernel_do(a, x, y, workSpace, numBlocks, tiling, stream);
     }
-    ssbmv_kernel<<<numBlocks, nullptr, stream>>>(a, x, y, workSpace, tiling);
+    return LaunchKernel(reinterpret_cast<const void*>(ssbmv_kernel), a, x, y, workSpace, numBlocks, tiling, stream);
 }

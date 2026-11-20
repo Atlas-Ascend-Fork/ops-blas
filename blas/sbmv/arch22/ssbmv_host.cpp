@@ -33,6 +33,11 @@
 #include "ssbmv_kernel.h"
 
 namespace {
+struct SsbmvDeviceLimits {
+    uint32_t aivCores;
+    uint64_t ubSize;
+};
+
 /*!
  * \brief 行-对角形式的核数：按「每 block 固定开销 + 每核迭代成本 + 带宽」的成本模型取最优。
  *
@@ -41,20 +46,13 @@ namespace {
  * 工作量按 (2k+1) × ceil(行/64) 个迭代计：c 太小时每核迭代数线性增长，c 太大时每 block 的
  * 固定开销线性堆叠，中间存在最优；窄带大 n 时最优远小于「每核 64 行」的经验规则。
  */
-uint32_t CalSsbmvDiagCoreNum(uint32_t n, uint32_t k, uint32_t lda)
+uint32_t CalSsbmvDiagCoreNum(uint32_t n, uint32_t k, uint32_t lda, uint32_t aivCores)
 {
-    uint32_t aivCoreNum = GetAivCoreCount();
-    if (aivCoreNum == 0) {
-        return 0;
-    }
-    if (aivCoreNum > SSBMV_MAX_CORE_NUM) {
-        aivCoreNum = SSBMV_MAX_CORE_NUM;
-    }
     constexpr double CORE_FIXED_US = 0.40;
     constexpr double PASS_ITER_US = 0.067;
     constexpr double BW_PER_CORE = 74.0e9; /* bytes/s */
     constexpr double BW_CAP = 2367.0e9;
-    const uint32_t cap = std::min(aivCoreNum, CeilDiv<uint32_t>(n, SSBMV_ALIGN_ELEMS));
+    const uint32_t cap = std::min(aivCores, CeilDiv<uint32_t>(n, SSBMV_ALIGN_ELEMS));
     const double bytes = static_cast<double>(n) * lda * 4.0 + static_cast<double>(n) * 8.0;
     double best = -1.0;
     uint32_t bestCore = 1;
@@ -77,15 +75,8 @@ uint32_t CalSsbmvDiagCoreNum(uint32_t n, uint32_t k, uint32_t lda)
     return std::min(n, bestCore);
 }
 
-uint32_t CalSsbmvCoreNum(uint32_t n)
+uint32_t CalSsbmvCoreNum(uint32_t n, uint32_t aivCores)
 {
-    uint32_t aivCoreNum = GetAivCoreCount();
-    if (aivCoreNum == 0) {
-        return 0;
-    }
-    if (aivCoreNum > SSBMV_MAX_CORE_NUM) {
-        aivCoreNum = SSBMV_MAX_CORE_NUM;
-    }
     /* 每个 block 的派发成本是固定的，而每核的工作量在行数不超过一个向量宽度（64 lane）时
      * 并不随行数增长，所以核数不该按设备上限取。取「每核至少 SSBMV_ROWS_PER_CORE 行」与
      * 设备上限的较小者，n 很大时退化为原策略。 */
@@ -93,7 +84,7 @@ uint32_t CalSsbmvCoreNum(uint32_t n)
     if (byRows < 1U) {
         byRows = 1U;
     }
-    return std::min(n, std::min(aivCoreNum, byRows));
+    return std::min(n, std::min(aivCores, byRows));
 }
 
 /*!
@@ -167,7 +158,7 @@ uint64_t SsbmvUbFloats(
  * \brief 列形式（bandForm）的 UB 占用（float 数）。
  *
  * **必须与 kernel InitBuffers 的 bandForm 分支逐项一致**，否则 host 少算的 UB 会在 kernel 里溢出：
- *   6 个行大小缓冲 + x/span 两个最小占位 + seg 队列双缓冲（kernel 固定单列一轮）
+ *   6 个行大小缓冲 + x/span 两个最小占位 + seg 队列双缓冲
  *   + A/x/归约临时三块 tile 缓冲 + red/off8/redAcc，incy != 1 时再加 strided-y 暂存。
  * 这里不含 2k 的 x 窗口、也不含 segBatch * (k+8) 的槽位 —— 列形式两半都从 GM 按段读，
  * 这两项原本是宽带撑爆 UB 的来源。
@@ -180,8 +171,13 @@ uint64_t SsbmvBandUbFloats(uint32_t chunkRows, uint32_t lda, int64_t incy, uint3
     const uint64_t segSlot = CeilAlign<uint64_t>(chunkRows + SSBMV_ALIGN_ELEMS, SSBMV_ALIGN_ELEMS);
     uint64_t total = acc * SSBMV_ROW_BUFFER_COUNT;
     total += 2U * (SSBMV_ALIGN_ELEMS + SSBMV_UB_SLACK); /* xBuf / spanBuf 占位 */
-    total += 2U * segSlot;                              /* segQueue 双缓冲 */
-    total += slab * 3U + 64U + 8U + SSBMV_ALIGN_ELEMS;  /* prod / xSl / tmp + red + off8 + redAcc */
+    total += 2U * SSBMV_BAND_BATCH * segSlot;
+    const uint64_t mirrorBatch = lda <= SSBMV_MIRROR_BATCH_LDA_LIMIT ? SSBMV_BAND_BATCH : 1U;
+    total += slab * (2U * mirrorBatch + 1U) + 64U + 8U + SSBMV_ALIGN_ELEMS;
+    // Each batched x phase spans the band plus a full output chunk.
+    if (mirrorBatch != 1U) {
+        total += mirrorBatch * (acc - SSBMV_UB_SLACK);
+    }
     if (incy != 1) {
         const uint32_t absIncy = static_cast<uint32_t>(incy > 0 ? incy : -incy);
         total += CeilAlign<uint64_t>((static_cast<uint64_t>(yStageRows) - 1U) * absIncy + 1U, SSBMV_ALIGN_ELEMS) +
@@ -238,6 +234,22 @@ uint64_t SsbmvDiagPhaseFloats(uint32_t chunkRows, uint32_t k)
     return static_cast<uint64_t>(SSBMV_PHASE_COUNT) * CeilAlign<uint64_t>(xCnt, SSBMV_ALIGN_ELEMS);
 }
 
+uint64_t SsbmvGroupedDiagFloats(uint32_t chunkRows, uint32_t k, bool reuseX)
+{
+    const uint64_t width = SSBMV_DIAG_GROUP_WIDTH;
+    // The expanded values and their Gather index table both need one slot
+    // per window position, including the extra positions in the halo.
+    const uint64_t haloFloats = reuseX ? 2ULL * (2ULL * k + 1U - width) * width : 0U;
+    return haloFloats +
+           CeilAlign<uint64_t>(chunkRows, SSBMV_ALIGN_ELEMS) * SSBMV_DIAG_GROUP_WIDTH * SSBMV_DIAG_GROUP_BUFFERS;
+}
+
+uint64_t SsbmvDiagRowDotFloats(uint32_t chunkRows, uint32_t k)
+{
+    const uint64_t lanes = CeilAlign<uint64_t>(static_cast<uint64_t>(k) + 1U, SSBMV_ALIGN_ELEMS) + SSBMV_UB_SLACK;
+    return 5U * lanes + (chunkRows + 1U) * SSBMV_ALIGN_ELEMS;
+}
+
 uint64_t SsbmvDiagUbFloats(uint32_t chunkRows, uint32_t k, uint32_t lda, int64_t incy, uint32_t yStageRows)
 {
     const uint64_t acc = CeilAlign<uint64_t>(chunkRows, SSBMV_ALIGN_ELEMS) + SSBMV_UB_SLACK;
@@ -282,16 +294,12 @@ uint32_t CalSsbmvDiagChunkRows(
 }
 
 uint32_t CalSsbmvChunkRows(
-    uint32_t n, uint32_t k, uint32_t lda, uint32_t blockRows, int64_t incy, uint64_t segFloats, uint32_t spanExtraCols)
+    uint32_t k, uint32_t lda, uint32_t blockRows, int64_t incy, uint64_t segFloats, uint32_t spanExtraCols,
+    uint64_t ubSize)
 {
     constexpr uint64_t SAFETY_MARGIN = 1024;
     constexpr uint64_t ROW_BUFFER_COUNT = SSBMV_ROW_BUFFER_COUNT;
     constexpr uint64_t OVERHEAD = SSBMV_ALIGN_ELEMS + SSBMV_UB_SLACK;
-    uint64_t ubSize = 192U * 1024U;
-    auto* platform = platform_ascendc::PlatformAscendCManager::GetInstance();
-    if (platform != nullptr) {
-        platform->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubSize);
-    }
     uint64_t budget = ((ubSize > SAFETY_MARGIN) ? (ubSize - SAFETY_MARGIN) : 0) / SSBMV_BYTES_PER_FLOAT32;
     /* 段缓冲按 segBatch * slot 计，替换掉原先「两行」的固定项 */
     budget = (budget > (2U * segFloats)) ? (budget - 2U * segFloats + 2U * OVERHEAD) : 0;
@@ -386,10 +394,10 @@ void SelectSsbmvPhaseForm(
  * span is affordable for narrow bands (the failing shapes) and hopeless for wide ones, so pick it
  * where it fits and keep the per-column GM path otherwise. */
 void SelectSsbmvGeneralForm(
-    SsbmvTilingData& tilingData, uint32_t n, uint32_t k, uint32_t lda, int64_t incy, uint64_t segFloats,
-    uint32_t stageRows, uint64_t ubBytes)
+    SsbmvTilingData& tilingData, uint32_t k, uint32_t lda, int64_t incy, uint64_t segFloats, uint32_t stageRows,
+    uint64_t ubBytes, uint64_t ubSize)
 {
-    const uint32_t diagRows = CalSsbmvChunkRows(n, k, lda, tilingData.blockRows, incy, segFloats, 0U);
+    const uint32_t diagRows = CalSsbmvChunkRows(k, lda, tilingData.blockRows, incy, segFloats, 0U, ubSize);
     /* 列形式的成本是每列 4 次调用；对角形式是每 chunk 3(k+1) 次。宽带（k 远大于每块行数）时
      * 后者会顶到 3(k+1)×chunks 而每次只覆盖 chunkRows 个 lane，改用列形式。
      * 列形式不建 x 窗口、seg 槽按行数开、段缓冲按 tile 分块，因此对 k 与 incx 都没有额外
@@ -403,7 +411,7 @@ void SelectSsbmvGeneralForm(
         }
     }
     if (tilingData.bandForm == 0U) {
-        const uint32_t probe = CalSsbmvChunkRows(n, k, lda, tilingData.blockRows, incy, segFloats, k);
+        const uint32_t probe = CalSsbmvChunkRows(k, lda, tilingData.blockRows, incy, segFloats, k, ubSize);
         const uint32_t stage = (stageRows > probe) ? probe : stageRows;
         if (SsbmvUbFloats(probe, k, lda, k, incy, segFloats, stage) * 4U <= ubBytes) {
             tilingData.spanExt = 1U;
@@ -439,9 +447,13 @@ bool SsbmvTilingFitsUb(
     uint64_t needFloats = 0U;
     if (tilingData.diagForm != 0U) {
         needFloats = SsbmvDiagUbFloats(tilingData.chunkRows, k, tilingData.lda, incy, tilingData.yStageRows);
-        if (tilingData.phaseForm != 0U) {
-            needFloats += SsbmvDiagPhaseFloats(tilingData.chunkRows, k);
-        }
+        const uint64_t phaseFloats = tilingData.phaseForm ? SsbmvDiagPhaseFloats(tilingData.chunkRows, k) : 0U;
+        const uint64_t groupedFloats =
+            tilingData.groupedDiag ? SsbmvGroupedDiagFloats(tilingData.chunkRows, k, tilingData.groupedXReuse != 0U) :
+                                     0U;
+        needFloats += tilingData.rowDotMode == SsbmvRowDotMode::AllRows ?
+                          SsbmvDiagRowDotFloats(tilingData.chunkRows, k) :
+                          std::max(phaseFloats, groupedFloats);
     } else if (tilingData.bandForm != 0U) {
         needFloats = SsbmvBandUbFloats(tilingData.chunkRows, tilingData.lda, incy, tilingData.yStageRows);
     } else {
@@ -452,9 +464,42 @@ bool SsbmvTilingFitsUb(
     return needFloats <= (ubBytes / SSBMV_BYTES_PER_FLOAT32);
 }
 
+void SelectSsbmvDiagExecution(SsbmvTilingData& tiling, uint32_t stageRows, uint64_t ubBytes)
+{
+    const uint32_t k = tiling.k;
+    SelectSsbmvDiagForm(tiling, k, tiling.lda, tiling.incy, stageRows, ubBytes);
+    const uint32_t rows = tiling.chunkRows;
+    if (tiling.diagForm != 0U && tiling.incy == 1 && tiling.alpha != 0.0f && rows == tiling.blockRows &&
+        rows <= SSBMV_ROW_DOT_MAX_ROWS && k >= 4U * rows && k < SSBMV_ROW_DOT_MAX_BAND_ELEMENTS) {
+        const uint64_t diagFloats = SsbmvDiagUbFloats(rows, k, tiling.lda, tiling.incy, stageRows);
+        if (diagFloats + SsbmvDiagRowDotFloats(rows, k) <= ubBytes / SSBMV_BYTES_PER_FLOAT32) {
+            tiling.rowDotMode = SsbmvRowDotMode::AllRows;
+            return;
+        }
+    }
+    SelectSsbmvPhaseForm(tiling, k, tiling.lda, tiling.incy, stageRows, ubBytes);
+}
+
+void SelectSsbmvGroupedDiag(SsbmvTilingData& tiling, uint64_t ubBytes)
+{
+    const uint32_t k = tiling.k;
+    const uint32_t rows = tiling.chunkRows;
+    if (tiling.diagForm == 0U || tiling.rowDotMode != SsbmvRowDotMode::Disabled || tiling.incx != 1 ||
+        tiling.incy != 1 || tiling.alpha == 0.0f || k < 2U * SSBMV_DIAG_GROUP_WIDTH ||
+        rows > SSBMV_DIAG_GROUP_MAX_ROWS || rows % SSBMV_DIAG_GROUP_WIDTH != 0U ||
+        static_cast<uint64_t>(tiling.n) < 2ULL * k + rows) {
+        return;
+    }
+    const uint64_t phaseFloats = tiling.phaseForm ? SsbmvDiagPhaseFloats(rows, k) : 0U;
+    const uint64_t baseFloats = SsbmvDiagUbFloats(rows, k, tiling.lda, tiling.incy, tiling.yStageRows);
+    const uint64_t budget = ubBytes / SSBMV_BYTES_PER_FLOAT32;
+    tiling.groupedDiag = baseFloats + std::max(phaseFloats, SsbmvGroupedDiagFloats(rows, k, false)) <= budget;
+    tiling.groupedXReuse = baseFloats + std::max(phaseFloats, SsbmvGroupedDiagFloats(rows, k, true)) <= budget;
+}
+
 SsbmvTilingData CalSsbmvTilingData(
     uint32_t useCoreNum, uint32_t n, uint32_t k, uint32_t lda, uint32_t uplo, float alpha, float beta, int64_t incx,
-    int64_t incy)
+    int64_t incy, uint64_t ubSize, uint32_t fixedBlockRows = 0U)
 {
     const uint32_t absIncy = static_cast<uint32_t>(incy > 0 ? incy : -incy);
     SsbmvTilingData tilingData{};
@@ -467,13 +512,10 @@ SsbmvTilingData CalSsbmvTilingData(
     tilingData.incx = incx;
     tilingData.incy = incy;
     tilingData.useCoreNum = useCoreNum;
-    tilingData.blockRows = CeilAlign<uint32_t>(CeilDiv<uint32_t>(n, useCoreNum), SSBMV_ALIGN_ELEMS);
-    uint64_t ubBudget = 192U * 1024U;
-    auto* platform = platform_ascendc::PlatformAscendCManager::GetInstance();
-    if (platform != nullptr) {
-        platform->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubBudget);
-    }
-    const uint64_t budgetFloats = ubBudget / SSBMV_BYTES_PER_FLOAT32;
+    tilingData.blockRows = fixedBlockRows != 0U ?
+                               fixedBlockRows :
+                               CeilAlign<uint32_t>(CeilDiv<uint32_t>(n, useCoreNum), SSBMV_ALIGN_ELEMS);
+    const uint64_t budgetFloats = ubSize / SSBMV_BYTES_PER_FLOAT32;
     tilingData.segSlot = SsbmvSegSlotFloats(k);
     tilingData.segBatch = CalSsbmvSegBatch(k, budgetFloats);
     const uint32_t slotFloats = tilingData.segSlot;
@@ -485,23 +527,43 @@ SsbmvTilingData CalSsbmvTilingData(
     tilingData.diagForm = 0U;
     tilingData.phaseForm = 0U;
     constexpr uint64_t SAFETY = 4096U; /* bytes */
-    const uint64_t ubBytes = (ubBudget > SAFETY) ? (ubBudget - SAFETY) : 0U;
+    const uint64_t ubBytes = (ubSize > SAFETY) ? (ubSize - SAFETY) : 0U;
     if (incx == 1) {
-        SelectSsbmvDiagForm(tilingData, k, lda, incy, stageRows, ubBytes);
-        SelectSsbmvPhaseForm(tilingData, k, lda, incy, stageRows, ubBytes);
+        SelectSsbmvDiagExecution(tilingData, stageRows, ubBytes);
     }
     if (tilingData.diagForm == 0U) {
-        SelectSsbmvGeneralForm(tilingData, n, k, lda, incy, segFloats, stageRows, ubBytes);
+        SelectSsbmvGeneralForm(tilingData, k, lda, incy, segFloats, stageRows, ubBytes, ubSize);
     }
     /* A single staging pass covers a whole chunk when it can, so the run never has to be sized
      * larger than the chunk it serves. */
-    if (stageRows > tilingData.chunkRows) {
-        stageRows = tilingData.chunkRows;
-    }
-    tilingData.yStageRows = (stageRows < 1U) ? 1U : stageRows;
+    tilingData.yStageRows = std::max(1U, std::min(stageRows, tilingData.chunkRows));
+    SelectSsbmvGroupedDiag(tilingData, ubBytes);
     tilingData.ubFit = SsbmvTilingFitsUb(tilingData, k, incy, segFloats, ubBytes) ? 1U : 0U;
     return tilingData;
 }
+
+void MaybeRetileForBandColumns(SsbmvTilingData& tiling, const SsbmvDeviceLimits& limits)
+{
+    if (tiling.bandForm == 0U || tiling.alpha == 0.0f || tiling.incx != 1 || tiling.incy != 1 ||
+        tiling.k < 2U * SSBMV_ROWS_PER_CORE) {
+        return;
+    }
+    // The mirror serializes one column reduction per owned output. Give
+    // that work to idle AIVs while each block still holds several batches.
+    constexpr uint32_t rowsPerCore = SSBMV_ROWS_PER_CORE / 2U;
+    const uint32_t cores = std::min(limits.aivCores, CeilDiv<uint32_t>(tiling.n, rowsPerCore));
+    if (cores <= tiling.useCoreNum) {
+        return;
+    }
+    const auto candidate = CalSsbmvTilingData(
+        cores, tiling.n, tiling.k, tiling.lda, tiling.uplo, tiling.alpha, tiling.beta, tiling.incx, tiling.incy,
+        limits.ubSize);
+    if (candidate.bandForm != 0U && candidate.ubFit != 0U) {
+        tiling = candidate;
+    }
+}
+
+uint32_t PlanSsbmvDiagBlocks(SsbmvTilingData& tiling, uint32_t aivCores);
 
 /*!
  * \brief 行-对角形式下按成本模型重选核数并重算 tiling；准入不过则保持原核数。
@@ -512,21 +574,124 @@ SsbmvTilingData CalSsbmvTilingData(
  *
  * 调用方不得在「就地（x == y）且没有私有副本」时进入本函数：多核写回会覆盖别的核还要当 x 读的
  * 元素（见 aclblasSsbmv 入口处的兜底判断）。 */
-void MaybeRetileForDiagForm(
-    SsbmvTilingData& tiling, uint32_t& useCoreNum, uint32_t n, uint32_t k, uint32_t lda, uint32_t uplo, float alpha,
-    float beta, int64_t incx, int64_t incy)
+void MaybeRetileForDiagForm(SsbmvTilingData& tiling, const SsbmvDeviceLimits& limits)
 {
-    if (tiling.diagForm == 0U || tiling.alpha == 0.0f || tiling.incy != 1) {
+    if (tiling.alpha == 0.0f || tiling.incy != 1 || tiling.rowDotMode == SsbmvRowDotMode::AllRows) {
         return;
     }
-    const uint32_t optCore = CalSsbmvDiagCoreNum(n, k, lda);
-    if (optCore < 1U || optCore == useCoreNum) {
+    const uint32_t n = tiling.n;
+    const uint32_t k = tiling.k;
+    if (tiling.incx == 1 && n <= limits.aivCores * SSBMV_ROW_DOT_MAX_ROWS) {
+        const uint32_t dotCores = std::min(limits.aivCores, CeilDiv<uint32_t>(n, SSBMV_ALIGN_ELEMS));
+        const uint32_t dotRows = CeilAlign<uint32_t>(CeilDiv<uint32_t>(n, dotCores), SSBMV_ALIGN_ELEMS);
+        if (k >= 4U * dotRows) {
+            const auto retiled = CalSsbmvTilingData(
+                dotCores, n, k, tiling.lda, tiling.uplo, tiling.alpha, tiling.beta, tiling.incx, tiling.incy,
+                limits.ubSize);
+            if (retiled.rowDotMode == SsbmvRowDotMode::AllRows && retiled.ubFit != 0U) {
+                tiling = retiled;
+                return;
+            }
+        }
+    }
+    if (tiling.diagForm == 0U) {
         return;
     }
-    const SsbmvTilingData retiled = CalSsbmvTilingData(optCore, n, k, lda, uplo, alpha, beta, incx, incy);
+    if (tiling.groupedXReuse != 0U && tiling.phaseForm == 0U) {
+        PlanSsbmvDiagBlocks(tiling, limits.aivCores);
+        if (tiling.leftEdgeRows != 0U) {
+            // The old cost model counts row-vector iterations. Grouped tiles
+            // instead process eight adjacent terms per row. Keep the shorter
+            // initial block if it needs no phase replicas and both clipped
+            // edges can use separate cores.
+            return;
+        }
+    }
+    const uint32_t optCore = CalSsbmvDiagCoreNum(n, k, tiling.lda, limits.aivCores);
+    if (optCore < 1U || optCore == tiling.useCoreNum) {
+        return;
+    }
+    const auto retiled = CalSsbmvTilingData(
+        optCore, n, k, tiling.lda, tiling.uplo, tiling.alpha, tiling.beta, tiling.incx, tiling.incy, limits.ubSize);
     if (retiled.diagForm != 0U && retiled.ubFit != 0U) {
-        useCoreNum = optCore;
         tiling = retiled;
+    }
+}
+
+uint32_t PlanSsbmvDiagBlocks(SsbmvTilingData& tiling, uint32_t aivCores)
+{
+    const uint32_t regular = CeilDiv<uint32_t>(tiling.n, tiling.blockRows);
+    if (tiling.groupedDiag == 0U || tiling.chunkRows != tiling.blockRows) {
+        return regular;
+    }
+    const uint32_t left = CeilAlign<uint32_t>(tiling.k, SSBMV_ALIGN_ELEMS);
+    const uint32_t right = (tiling.n - tiling.k) / SSBMV_ALIGN_ELEMS * SSBMV_ALIGN_ELEMS;
+    if (left >= right) {
+        return regular;
+    }
+    const uint32_t interiorBlocks = CeilDiv<uint32_t>(right - left, tiling.blockRows);
+    // Short edge owner blocks amortize the row-reduction setup when the
+    // clipped diagonal path would issue many passes for each output row.
+    constexpr uint32_t edgeRows = SSBMV_ROW_DOT_MAX_ROWS;
+    const bool edgeDotShape =
+        tiling.k >= 5U * edgeRows && edgeRows <= tiling.chunkRows && tiling.k < SSBMV_ROW_DOT_MAX_BAND_ELEMENTS;
+    if (edgeDotShape && SsbmvGroupedDiagFloats(tiling.chunkRows, tiling.k, tiling.groupedXReuse != 0U) >=
+                            SsbmvDiagRowDotFloats(edgeRows, tiling.k)) {
+        const uint32_t blocks =
+            interiorBlocks + CeilDiv<uint32_t>(left, edgeRows) + CeilDiv<uint32_t>(tiling.n - right, edgeRows);
+        if (blocks <= aivCores) {
+            tiling.leftEdgeRows = left;
+            tiling.rightEdgeStart = right;
+            tiling.rowDotMode = SsbmvRowDotMode::Edges;
+            return blocks;
+        }
+    }
+    if (left >= tiling.chunkRows || tiling.n - right >= tiling.chunkRows) {
+        return regular;
+    }
+    // Keep clipped work in two small owner blocks and let the grouped
+    // kernels handle the aligned interior between them.
+    const uint32_t blocks = interiorBlocks + 2U;
+    if (blocks > aivCores) {
+        return regular;
+    }
+    tiling.leftEdgeRows = left;
+    tiling.rightEdgeStart = right;
+    return blocks;
+}
+
+void TryRetileSsbmvEdgeDots(SsbmvTilingData& tiling, const SsbmvDeviceLimits& limits)
+{
+    constexpr uint32_t edgeRows = SSBMV_ROW_DOT_MAX_ROWS;
+    const uint32_t k = tiling.k;
+    if (tiling.diagForm == 0U || tiling.alpha == 0.0f || tiling.incx != 1 || tiling.incy != 1 ||
+        tiling.rowDotMode != SsbmvRowDotMode::Disabled || k < 5U * edgeRows || k >= SSBMV_ROW_DOT_MAX_BAND_ELEMENTS ||
+        tiling.n <= 2U * k) {
+        return;
+    }
+
+    PlanSsbmvDiagBlocks(tiling, limits.aivCores);
+    if (tiling.rowDotMode == SsbmvRowDotMode::Edges) {
+        return;
+    }
+    const uint32_t left = CeilAlign<uint32_t>(k, SSBMV_ALIGN_ELEMS);
+    const uint32_t right = (tiling.n - k) / SSBMV_ALIGN_ELEMS * SSBMV_ALIGN_ELEMS;
+    const uint32_t edgeBlocks = CeilDiv<uint32_t>(left, edgeRows) + CeilDiv<uint32_t>(tiling.n - right, edgeRows);
+    if (left >= right || edgeBlocks >= limits.aivCores) {
+        return;
+    }
+    const uint32_t bodyRows =
+        CeilAlign<uint32_t>(CeilDiv<uint32_t>(right - left, limits.aivCores - edgeBlocks), SSBMV_ALIGN_ELEMS);
+    if (bodyRows == tiling.blockRows) {
+        return;
+    }
+    SsbmvTilingData candidate = CalSsbmvTilingData(
+        limits.aivCores, tiling.n, k, tiling.lda, tiling.uplo, tiling.alpha, tiling.beta, tiling.incx, tiling.incy,
+        limits.ubSize, bodyRows);
+    const uint32_t blocks = PlanSsbmvDiagBlocks(candidate, limits.aivCores);
+    if (candidate.rowDotMode == SsbmvRowDotMode::Edges && candidate.ubFit != 0U) {
+        candidate.useCoreNum = blocks;
+        tiling = candidate;
     }
 }
 
@@ -633,6 +798,40 @@ aclblasStatus_t CopyInPlaceX(
     copied = true;
     return ACLBLAS_STATUS_SUCCESS;
 }
+
+bool ReadSsbmvDeviceLimits(SsbmvDeviceLimits& limits)
+{
+    auto* platform = platform_ascendc::PlatformAscendCManager::GetInstance();
+    limits.aivCores = platform == nullptr ? 0U : std::min(platform->GetCoreNumAiv(), SSBMV_MAX_CORE_NUM);
+    if (limits.aivCores == 0U) {
+        OP_LOGE("aclblasSsbmv", "GetAivCoreCount failed");
+        return false;
+    }
+    limits.ubSize = 192U * 1024U;
+    platform->GetCoreMemSize(platform_ascendc::CoreMemType::UB, limits.ubSize);
+    return true;
+}
+
+bool IsSsbmvSmallShape(int n, int k, int lda)
+{
+    return n <= static_cast<int>(SSBMV_ROWS_PER_CORE) && lda <= static_cast<int>(SSBMV_ROWS_PER_CORE) &&
+           k < static_cast<int>(4U * SSBMV_ALIGN_ELEMS);
+}
+
+void LaunchSsbmvContiguousDiagonal(
+    aclblasFillMode_t uplo, int n, int k, int lda, float alpha, float beta, const float* a, const float* x, float* y,
+    aclrtStream stream)
+{
+    constexpr uint32_t ROWS_PER_BLOCK = 256U;
+    const uint32_t rows = static_cast<uint32_t>(n);
+    const uint32_t cores = std::max(1U, std::min(16U, CeilDiv<uint32_t>(rows, ROWS_PER_BLOCK)));
+    const uint32_t blockRows = CeilAlign<uint32_t>(CeilDiv<uint32_t>(rows, cores), SSBMV_ALIGN_ELEMS);
+    const uint32_t diagonal = uplo == ACLBLAS_UPPER ? static_cast<uint32_t>(k) : 0U;
+    ssbmv_diagonal_do(
+        reinterpret_cast<uint8_t*>(const_cast<float*>(a)), reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
+        reinterpret_cast<uint8_t*>(y), rows, static_cast<uint32_t>(lda), diagonal, alpha, beta, blockRows,
+        CeilDiv<uint32_t>(rows, blockRows), stream);
+}
 } // namespace
 
 /*!
@@ -652,6 +851,30 @@ aclblasStatus_t CheckSsbmvTilingFitsUb(const SsbmvTilingData& tiling, int n, int
     return ACLBLAS_STATUS_NOT_SUPPORTED;
 }
 
+namespace {
+aclblasStatus_t LaunchSsbmvTiled(
+    SsbmvTilingData& tiling, uint32_t aivCores, const float* a, const float* x, float* y, aclrtStream stream)
+{
+    const aclblasStatus_t fitStatus =
+        CheckSsbmvTilingFitsUb(tiling, tiling.n, tiling.k, tiling.lda, tiling.incx, tiling.incy);
+    if (fitStatus != ACLBLAS_STATUS_SUCCESS) {
+        return fitStatus;
+    }
+    const uint32_t numBlocks = PlanSsbmvDiagBlocks(tiling, aivCores);
+    OP_LOGD(
+        "aclblasSsbmv", "tiling: n=%u k=%u lda=%u uplo=%u coreNum=%u blockRows=%u chunkRows=%u blocks=%u", tiling.n,
+        tiling.k, tiling.lda, tiling.uplo, tiling.useCoreNum, tiling.blockRows, tiling.chunkRows, numBlocks);
+    const aclError launch = ssbmv_kernel_do(
+        reinterpret_cast<uint8_t*>(const_cast<float*>(a)), reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
+        reinterpret_cast<uint8_t*>(y), nullptr, numBlocks, tiling, stream);
+    if (launch != ACL_SUCCESS) {
+        OP_LOGE("aclblasSsbmv", "kernel launch failed, ret=%d", static_cast<int>(launch));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+} // namespace
+
 aclblasStatus_t aclblasSsbmv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, int k, const float* alpha, const float* A, int lda,
     const float* x, int incx, const float* beta, float* y, int incy)
@@ -670,11 +893,25 @@ aclblasStatus_t aclblasSsbmv(
 
     aclrtStream useStream = handle->stream;
 
-    uint32_t useCoreNum = CalSsbmvCoreNum(static_cast<uint32_t>(n));
-    if (useCoreNum == 0) {
-        OP_LOGE("aclblasSsbmv", "GetAivCoreCount failed");
+    if (*alpha == 0.0f && *beta == 1.0f) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    const bool contiguousOutOfPlace = incx == 1 && incy == 1 && x != y && *alpha != 0.0f;
+    // A diagonal matrix needs no band window or indexed gather when columns
+    // are tightly packed. Order one also has a single contiguous coefficient.
+    if (contiguousOutOfPlace && ((k == 0 && lda == 1) || n == 1)) {
+        LaunchSsbmvContiguousDiagonal(uplo, n, k, lda, *alpha, *beta, A, x, y, useStream);
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+
+    const bool singleSmallBlock = contiguousOutOfPlace && IsSsbmvSmallShape(n, k, lda);
+    // With at most 64 rows and a 64-element leading dimension, the exact
+    // diagonal UB check fits in this conservative one-block budget.
+    SsbmvDeviceLimits limits{1U, 64U * 1024U};
+    if (!singleSmallBlock && !ReadSsbmvDeviceLimits(limits)) {
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
+    const uint32_t useCoreNum = CalSsbmvCoreNum(static_cast<uint32_t>(n), limits.aivCores);
 
     const uint64_t xSpan = static_cast<uint64_t>(n - 1) * AbsInc(incx) + 1U;
     const float* xUsed = x;
@@ -687,28 +924,15 @@ aclblasStatus_t aclblasSsbmv(
 
     SsbmvTilingData tiling = CalSsbmvTilingData(
         useCoreNum, static_cast<uint32_t>(n), static_cast<uint32_t>(k), static_cast<uint32_t>(lda),
-        static_cast<uint32_t>(uplo), *alpha, *beta, static_cast<int64_t>(incx), static_cast<int64_t>(incy));
+        static_cast<uint32_t>(uplo), *alpha, *beta, static_cast<int64_t>(incx), static_cast<int64_t>(incy),
+        limits.ubSize);
     /* 就地且没有副本时禁止重选核数：多核下每个核写回的 y 都可能覆盖别的核还要当 x 读的元素。
      * CopyInPlaceX 在备份不出来时已经直接返回错误，所以这一支恒不成立，是结构性兜底。 */
     const bool inPlaceWithoutCopy = (x == y) && (*alpha != 0.0f) && !copied;
-    if (!inPlaceWithoutCopy) {
-        MaybeRetileForDiagForm(
-            tiling, useCoreNum, static_cast<uint32_t>(n), static_cast<uint32_t>(k), static_cast<uint32_t>(lda),
-            static_cast<uint32_t>(uplo), *alpha, *beta, static_cast<int64_t>(incx), static_cast<int64_t>(incy));
+    if (!singleSmallBlock && !inPlaceWithoutCopy) {
+        MaybeRetileForDiagForm(tiling, limits);
+        TryRetileSsbmvEdgeDots(tiling, limits);
+        MaybeRetileForBandColumns(tiling, limits);
     }
-    const aclblasStatus_t fitStatus = CheckSsbmvTilingFitsUb(tiling, n, k, lda, incx, incy);
-    if (fitStatus != ACLBLAS_STATUS_SUCCESS) {
-        return fitStatus;
-    }
-    uint32_t numBlocks = CeilDiv<uint32_t>(static_cast<uint32_t>(n), tiling.blockRows);
-
-    OP_LOGD(
-        "aclblasSsbmv", "tiling: n=%u k=%u lda=%u uplo=%u coreNum=%u blockRows=%u chunkRows=%u blocks=%u", tiling.n,
-        tiling.k, tiling.lda, tiling.uplo, tiling.useCoreNum, tiling.blockRows, tiling.chunkRows, numBlocks);
-
-    ssbmv_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<float*>(A)), reinterpret_cast<uint8_t*>(const_cast<float*>(xUsed)),
-        reinterpret_cast<uint8_t*>(y), nullptr, numBlocks, tiling, useStream);
-
-    return ACLBLAS_STATUS_SUCCESS;
+    return LaunchSsbmvTiled(tiling, limits.aivCores, A, xUsed, y, useStream);
 }

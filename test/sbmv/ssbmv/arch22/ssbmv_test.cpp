@@ -13,8 +13,8 @@
  * \brief CSV driven accuracy test of aclblasSsbmv on Atlas A2/A3 (arch22).
  *
  * The golden is the ecosystem reference implementation, cblas_ssbmv (Netlib BLAS), see
- * ssbmv_golden.h. Tolerance is the FLOAT32 mixed tolerance of verify.h
- * (rtol = 2^-10, atol = 2^-16, matchedRatio >= 0.99, per element limit max(1e-2, 32 * ULP)).
+ * ssbmv_golden.h. The default uses the repository's FLOAT32 mixed tolerance.
+ * Set SSBMV_TASK_TOLERANCE=1 to also run the CSV suite with the task-book tolerances.
  *
  * Cases whose golden is not finite (Inf/NaN fills) are not compared numerically - the mixed
  * tolerance strategy cannot express them - and are checked for IEEE behaviour consistency with the
@@ -26,14 +26,19 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "verify.h"
 #include "blas_test.h"
 #include "csv_loader.h"
+#include "securec.h"
 #include "ssbmv_param.h"
 #include "ssbmv_golden.h"
 #include "ssbmv_npu_wrapper.h"
@@ -230,6 +235,195 @@ void CheckExtremeStrideY(aclblasHandle_t handle, aclrtStream stream, DeviceBuffe
         EXPECT_FLOAT_EQ(SsbmvReadDeviceFloat(strideBuf, far), 14.0f) << "incy=" << incy;
         EXPECT_FLOAT_EQ(SsbmvReadDeviceFloat(strideBuf, other), 7.0f) << "incy=" << incy;
     }
+}
+struct SsbmvAccuracyShape {
+    int n;
+    int k;
+    int padding;
+    int incx;
+    int incy;
+};
+
+enum class SsbmvAccuracyInput { Uniform, Normal, Cancellation };
+
+size_t SsbmvPhysicalIndex(int logical, int n, int inc)
+{
+    const int index = inc > 0 ? logical : n - 1 - logical;
+    return static_cast<size_t>(index) * ssbmvAbsStride(inc);
+}
+
+uint32_t SsbmvOrderedFloatBits(float value)
+{
+    uint32_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value));
+    EXPECT_EQ(memcpy_s(&bits, sizeof(bits), &value, sizeof(value)), EOK);
+    constexpr uint32_t SIGN_BIT = uint32_t{1} << 31;
+    // Both zeros map to the same rank. Each representable step costs one ULP.
+    return (bits & SIGN_BIT) != 0 ? SIGN_BIT - (bits & ~SIGN_BIT) : SIGN_BIT + bits;
+}
+
+struct SsbmvAccuracyMetrics {
+    long double maxAbs = 0.0L;
+    long double normalizedMax = 0.0L;
+    std::vector<uint32_t> ulps;
+};
+
+// Direct row-dot reference accumulated in long double from the float32 inputs.
+SsbmvAccuracyMetrics SsbmvMeasureAccuracy(
+    const SsbmvAccuracyShape& shape, aclblasFillMode_t uplo, float alpha, float beta, const std::vector<float>& a,
+    const std::vector<float>& x, const std::vector<float>& y, const std::vector<float>& output)
+{
+    constexpr long double MIN_SCALE = 0x1p-16L;
+    SsbmvAccuracyMetrics metrics;
+    metrics.ulps.reserve(shape.n);
+    const int lda = shape.k + 1 + shape.padding;
+    for (int row = 0; row < shape.n; ++row) {
+        long double sum = 0.0L;
+        long double sumAbs = 0.0L;
+        const int first = std::max(0, row - shape.k);
+        const int end = std::min(shape.n, row + shape.k + 1);
+        for (int col = first; col < end; ++col) {
+            // Reflect the unstored half of the band into the stored triangle.
+            const int low = std::min(row, col);
+            const int high = std::max(row, col);
+            const int bandCol = uplo == ACLBLAS_UPPER ? high : low;
+            const int bandRow = uplo == ACLBLAS_UPPER ? shape.k - (high - low) : high - low;
+            const long double aij = a[static_cast<size_t>(bandCol) * lda + bandRow];
+            const long double xi = x[SsbmvPhysicalIndex(col, shape.n, shape.incx)];
+            const long double product = aij * xi;
+            sum += product;
+            sumAbs += std::abs(product);
+        }
+        const size_t pos = SsbmvPhysicalIndex(row, shape.n, shape.incy);
+        const long double prior = beta == 0.0f ? 0.0L : static_cast<long double>(beta) * y[pos];
+        const long double golden = static_cast<long double>(alpha) * sum + prior;
+        const long double scale = std::abs(static_cast<long double>(alpha)) * sumAbs + std::abs(prior);
+        if (!std::isfinite(output[pos])) {
+            metrics.maxAbs = std::numeric_limits<long double>::infinity();
+            metrics.normalizedMax = metrics.maxAbs;
+            metrics.ulps.push_back(std::numeric_limits<uint32_t>::max());
+            continue;
+        }
+        const long double diff = std::abs(static_cast<long double>(output[pos]) - golden);
+        metrics.maxAbs = std::max(metrics.maxAbs, diff);
+        const long double normalized = scale > MIN_SCALE ? diff / scale : diff / MIN_SCALE;
+        metrics.normalizedMax = std::max(metrics.normalizedMax, normalized);
+        const uint32_t actualBits = SsbmvOrderedFloatBits(output[pos]);
+        const uint32_t goldenBits = SsbmvOrderedFloatBits(static_cast<float>(golden));
+        metrics.ulps.push_back(std::max(actualBits, goldenBits) - std::min(actualBits, goldenBits));
+    }
+    std::sort(metrics.ulps.begin(), metrics.ulps.end());
+    return metrics;
+}
+
+constexpr float SSBMV_ACCURACY_HOLE = -989.125f;
+
+struct SsbmvAccuracyInputs {
+    std::vector<float> a;
+    std::vector<float> x;
+    std::vector<float> y;
+    float alpha;
+    float beta;
+};
+
+SsbmvAccuracyInputs MakeSsbmvAccuracyInputs(
+    const SsbmvAccuracyShape& shape, aclblasFillMode_t uplo, SsbmvAccuracyInput input, uint32_t seed)
+{
+    const int lda = shape.k + 1 + shape.padding;
+    const float poison = std::numeric_limits<float>::quiet_NaN();
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> uniform(-5.0f, 5.0f);
+    const float mean = uniform(rng);
+    const float stddev = std::uniform_real_distribution<float>(0.1f, 2.0f)(rng);
+    std::normal_distribution<float> normal(mean, stddev);
+    const auto sample = [&] { return input == SsbmvAccuracyInput::Normal ? normal(rng) : uniform(rng); };
+    const bool cancellation = input == SsbmvAccuracyInput::Cancellation;
+    SsbmvAccuracyInputs inputs{
+        std::vector<float>(static_cast<size_t>(shape.n) * lda, poison),
+        std::vector<float>(static_cast<size_t>(shape.n - 1) * ssbmvAbsStride(shape.incx) + 1, poison),
+        std::vector<float>(static_cast<size_t>(shape.n - 1) * ssbmvAbsStride(shape.incy) + 1, SSBMV_ACCURACY_HOLE),
+        cancellation ? 0.5f : sample(),
+        cancellation ? 0.0f : sample(),
+    };
+
+    for (int low = 0; low < shape.n; ++low) {
+        const int end = std::min(shape.n, low + shape.k + 1);
+        for (int high = low; high < end; ++high) {
+            const int distance = high - low;
+            const size_t index = uplo == ACLBLAS_UPPER ? static_cast<size_t>(high) * lda + shape.k - distance :
+                                                         static_cast<size_t>(low) * lda + distance;
+            // Opposite signs on adjacent diagonals cancel. Dyadic perturbations
+            // preserve a measurable contribution in the low bits of the output.
+            const float sign = distance % 2 == 0 ? 1.0f : -1.0f;
+            inputs.a[index] = cancellation ? sign * (1.0f + sample() * 0x1p-16f) : sample();
+        }
+        inputs.x[SsbmvPhysicalIndex(low, shape.n, shape.incx)] = cancellation ? 1.0f + sample() * 0x1p-16f : sample();
+        inputs.y[SsbmvPhysicalIndex(low, shape.n, shape.incy)] = cancellation ? poison : sample();
+    }
+    return inputs;
+}
+
+void CheckSsbmvAccuracy(
+    aclblasHandle_t handle, const std::string& caseName, const SsbmvAccuracyShape& shape, aclblasFillMode_t uplo,
+    SsbmvAccuracyInput input, uint32_t seed)
+{
+    SCOPED_TRACE(caseName);
+    const int lda = shape.k + 1 + shape.padding;
+    const auto [a, x, y, alpha, beta] = MakeSsbmvAccuracyInputs(shape, uplo, input, seed);
+    std::vector<float> output = y;
+    ASSERT_EQ(
+        aclblasSsbmv_npu(
+            handle, uplo, shape.n, shape.k, &alpha, a.data(), lda, x.data(), shape.incx, &beta, output.data(),
+            shape.incy),
+        ACLBLAS_STATUS_SUCCESS);
+    std::vector<float> netlib = y;
+    ASSERT_EQ(
+        aclblasSsbmv_cpu(
+            handle, uplo, shape.n, shape.k, &alpha, a.data(), lda, x.data(), shape.incx, &beta, netlib.data(),
+            shape.incy),
+        ACLBLAS_STATUS_SUCCESS);
+
+    for (size_t i = 0; i < output.size(); ++i) {
+        if (i % ssbmvAbsStride(shape.incy) != 0) {
+            EXPECT_EQ(output[i], SSBMV_ACCURACY_HOLE);
+        }
+    }
+    VerifyConfig cfg;
+    applyMixedTolerance(cfg, ACL_FLOAT, netlib.data(), shape.n);
+    EXPECT_TRUE(
+        Verifier::verifyVector(output.data(), netlib.data(), shape.n, ssbmvAbsStride(shape.incy), cfg, caseName));
+
+    const auto metrics = SsbmvMeasureAccuracy(shape, uplo, alpha, beta, a, x, y, output);
+    const size_t p95 = (95 * metrics.ulps.size() + 99) / 100 - 1;
+    std::ostringstream record;
+    record << std::scientific << std::setprecision(12) << "SSBMV_ACCURACY," << caseName << ',' << metrics.maxAbs << ','
+           << metrics.normalizedMax << ',' << metrics.ulps[p95] << ',' << metrics.ulps.back();
+    std::cout << record.str() << '\n';
+}
+
+void VerifySsbmvCsvOutput(const SsbmvParam& p, const std::vector<float>& yNpu, const std::vector<float>& yCpu)
+{
+    std::vector<float> npuLogical(p.n);
+    std::vector<float> cpuLogical(p.n);
+    for (int i = 0; i < p.n; i++) {
+        const size_t idx = SsbmvPhysicalIndex(i, p.n, p.incy);
+        npuLogical[i] = yNpu[idx];
+        cpuLogical[i] = yCpu[idx];
+    }
+
+    VerifyConfig cfg;
+    applyMixedTolerance(cfg, ACL_FLOAT, cpuLogical.data(), static_cast<size_t>(p.n));
+    const char* taskTolerance = std::getenv("SSBMV_TASK_TOLERANCE");
+    if (taskTolerance != nullptr && std::strcmp(taskTolerance, "1") == 0) {
+        cfg.mixedAtol = 0x1p-16;
+        cfg.mixedRtol = 0x1p-10;
+    }
+    if (SsbmvHasNonFinite(cpuLogical)) {
+        EXPECT_TRUE(SsbmvVerifyNonFinite(npuLogical, cpuLogical, p.caseName, cfg));
+        return;
+    }
+    EXPECT_TRUE(
+        Verifier::verifyVector(npuLogical.data(), cpuLogical.data(), static_cast<size_t>(p.n), 1, cfg, p.caseName));
 }
 } // namespace
 
@@ -609,6 +803,43 @@ TEST_F(SsbmvTest, WideBandMatchesReference)
     }
 }
 
+TEST_F(SsbmvTest, SupplementalMixedAccuracy)
+{
+    const SsbmvAccuracyShape shapes[] = {
+        {1, 0, 0, 1, 1},      {4, 1, 0, 1, 1},     {8, 2, 1, 1, 1},     {17, 4, 0, 1, 1},
+        {31, 9, 0, 1, 1},     {32, 8, 0, 1, 1},    {33, 9, 0, 1, 1},    {63, 16, 0, 1, 1},
+        {64, 16, 0, 1, 1},    {65, 16, 0, 1, 1},   {65, 67, 2, -2, 3},  {129, 31, 17, 2, -3},
+        {257, 67, 4, -1, -2}, {769, 192, 0, 1, 1}, {1031, 17, 0, 1, 1}, {4093, 64, 0, 1, 1},
+    };
+    uint32_t seed = 40202601;
+    for (const auto& shape : shapes) {
+        for (auto uplo : {ACLBLAS_UPPER, ACLBLAS_LOWER}) {
+            const std::string id = std::to_string(seed) + (uplo == ACLBLAS_UPPER ? "_upper" : "_lower");
+            CheckSsbmvAccuracy(handle_, "uniform_" + id, shape, uplo, SsbmvAccuracyInput::Uniform, seed);
+            CheckSsbmvAccuracy(handle_, "normal_" + id, shape, uplo, SsbmvAccuracyInput::Normal, seed);
+        }
+        ++seed;
+    }
+}
+
+TEST_F(SsbmvTest, SupplementalCancellationAccuracy)
+{
+    const SsbmvAccuracyShape shapes[] = {
+        {63, 16, 0, 1, 1},
+        {1031, 17, 0, 1, 1},
+        {1153, 127, 0, 1, 1},
+        {2049, 1024, 1, 1, 1},
+    };
+    uint32_t seed = 40202701;
+    for (const auto& shape : shapes) {
+        for (auto uplo : {ACLBLAS_UPPER, ACLBLAS_LOWER}) {
+            const std::string id = std::to_string(seed) + (uplo == ACLBLAS_UPPER ? "_upper" : "_lower");
+            CheckSsbmvAccuracy(handle_, "cancellation_" + id, shape, uplo, SsbmvAccuracyInput::Cancellation, seed);
+        }
+        ++seed;
+    }
+}
+
 INSTANTIATE_TEST_SUITE_P(
     Ssbmv, SsbmvTest, ::testing::ValuesIn(GetCasesFromCsv<SsbmvParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<SsbmvParam>);
@@ -659,23 +890,6 @@ TEST_P(SsbmvTest, CsvDriven)
         SsbmvTest::handle_, p.uplo, p.n, p.k, alphaPtr, aHost.data(), p.lda, xHost.data(), p.incx, betaPtr, yCpu.data(),
         p.incy);
 
-    const int64_t absIncy = ssbmvAbsStride(p.incy);
-    std::vector<float> npuLogical(p.n), cpuLogical(p.n);
-    for (int i = 0; i < p.n; i++) {
-        const int64_t idx =
-            (p.incy > 0) ? (static_cast<int64_t>(i) * p.incy) : ((static_cast<int64_t>(p.n) - 1 - i) * absIncy);
-        npuLogical[i] = yNpu[static_cast<size_t>(idx)];
-        cpuLogical[i] = yCpu[static_cast<size_t>(idx)];
-    }
-
     DumpSsbmvInputs(p, aHost, xHost, yHost);
-
-    VerifyConfig cfg;
-    applyMixedTolerance(cfg, ACL_FLOAT, cpuLogical.data(), static_cast<size_t>(p.n));
-    if (SsbmvHasNonFinite(cpuLogical)) {
-        EXPECT_TRUE(SsbmvVerifyNonFinite(npuLogical, cpuLogical, p.caseName, cfg));
-        return;
-    }
-    EXPECT_TRUE(
-        Verifier::verifyVector(npuLogical.data(), cpuLogical.data(), static_cast<size_t>(p.n), 1, cfg, p.caseName));
+    VerifySsbmvCsvOutput(p, yNpu, yCpu);
 }
