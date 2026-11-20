@@ -478,7 +478,7 @@ static void CombineChemmCubeProducts(
 static aclblasStatus_t ChemmCubeLaunch(
     aclblasHandle_t h, const void* a, const void* b, void* c, ChemmTiling t, uint32_t cores)
 {
-    ChemmCubeExecution execution;
+    ChemmCubeExecution execution{};
     auto ret = PrepareChemmCubeExecution(h, a, b, c, t, cores, execution);
     if (ret != ACLBLAS_STATUS_SUCCESS)
         return ret;
