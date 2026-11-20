@@ -30,9 +30,9 @@ constexpr int64_t VEC_MIN_SIZE = 256 / sizeof(float);
 constexpr int64_t NUM_ELE_PERBLOCK = 32 / sizeof(float);
 constexpr int64_t UINT16_STRIDE_LIMIT = 65536;
 
-#define MIN(a, b) a > b ? b : a
-#define MAXALIGN_WITH(a, b) (((a) + (b)-1) / (b)) * (b)
-#define ROUND(num, paddingNum) ((num + paddingNum - 1) / paddingNum * paddingNum)
+#define MIN(a, b) (((a) > (b)) ? (b) : (a))
+#define MAXALIGN_WITH(a, b) ((((a) + (b) - 1) / (b)) * (b))
+#define ROUND(num, paddingNum) ((((num) + (paddingNum) - 1) / (paddingNum) * (paddingNum)))
 
 #if __DAV_C220_VEC__
 __aicore__ __inline__ __attribute__((always_inline)) void matrix_gm2ubuf(
