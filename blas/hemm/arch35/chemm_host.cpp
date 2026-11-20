@@ -364,7 +364,7 @@ static ChemmCubePolicy SelectChemmCubePolicy(
 
 struct ChemmCubeExecution {
     uint32_t cubeCores;
-    ChemmTiling t;
+    ChemmTiling t{};
     ChemmWorkloadClass workload;
     ChemmCubePolicy policy;
     uint32_t mp;

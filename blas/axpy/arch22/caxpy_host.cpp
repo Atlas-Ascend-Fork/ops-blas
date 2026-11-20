@@ -271,7 +271,7 @@ struct CaxpyExecution {
     aclrtStream stream;
     uint8_t* tilingDevice;
     uint8_t* maskDevice;
-    CaxpyTilingData tiling;
+    CaxpyTilingData tiling{};
 };
 
 struct CaxpyPackedBuffers {

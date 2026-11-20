@@ -120,10 +120,10 @@ static aclblasStatus_t CheckAndPartitionWorkspace(
 }
 
 struct MatinvTilingBundle {
-    SmatinvBatchedTilingData base;
-    SmatinvBatchedTilingData step3;
-    SgetrfBatchedTilingData getrf;
-    SgetriBatchedTilingData getri;
+SmatinvBatchedTilingData base{};
+SmatinvBatchedTilingData step3{};
+SgetrfBatchedTilingData getrf{};
+SgetriBatchedTilingData getri{};
 };
 
 static void BuildAllTiling(

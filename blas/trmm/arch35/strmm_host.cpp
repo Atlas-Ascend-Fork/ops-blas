@@ -254,9 +254,9 @@ static aclblasStatus_t LaunchStrmmPipeline(
 }
 
 struct StrmmTilings {
-    StrmmMirrorTilingData mirror;
-    StrmmGemmTilingData gemm;
-    StrmmScaleTilingData scale;
+StrmmMirrorTilingData mirror{};
+StrmmGemmTilingData gemm{};
+StrmmScaleTilingData scale{};
     uint32_t usedAivCoreNum;
     uint32_t usedAicCoreNum;
     uint32_t usedAivCoreNumScale;
