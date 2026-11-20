@@ -128,7 +128,7 @@ static aclblasStatus_t LaunchSsyrkKernel(
     _aclblas_handle* h, aclblasFillMode_t uplo, aclblasOperation_t trans, uint32_t n, uint32_t k, const float* alpha,
     const float* A, uint32_t lda, const float* beta, float* C, uint32_t ldc)
 {
-    SyrkLaunchCtx ctx;
+    SyrkLaunchCtx ctx{};
     aclblasStatus_t prepRet = PrepareSyrkLaunch(
         h->stream, n, k, trans, alpha, beta, SYRK_ARCH35_BASE_M, SYRK_ARCH35_FIXPIPE_N_ALIGN, "aclblasSsyrk", ctx);
     if (prepRet != ACLBLAS_STATUS_SUCCESS) {

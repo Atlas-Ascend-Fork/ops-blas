@@ -162,7 +162,7 @@ static aclblasStatus_t LaunchSsyr2kKernel(
     _aclblas_handle* h, aclblasFillMode_t uplo, aclblasOperation_t trans, uint32_t n, uint32_t k, const float* alpha,
     const float* A, uint32_t lda, const float* B, uint32_t ldb, const float* beta, float* C, uint32_t ldc)
 {
-    SyrkLaunchCtx ctx;
+    SyrkLaunchCtx ctx{};
     aclblasStatus_t prepRet = PrepareSyrkLaunch(
         h->stream, n, k, trans, alpha, beta, SSYR2K_ARCH35_BASE_M, SSYR2K_ARCH35_FIXPIPE_N_ALIGN, "aclblasSsyr2k", ctx);
     if (prepRet != ACLBLAS_STATUS_SUCCESS) {
