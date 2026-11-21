@@ -146,10 +146,14 @@ inline aclblasStatus_t aclblasGemmEx_cpu(
         return ACLBLAS_STATUS_SUCCESS;
 
     // issue #1091: alpha=0 不读取 A/B（README 契约），C=beta*C（A/B 可为空指针或含 NaN）
+    // issue #1154: 只缩放逻辑 m×n 区域，行区间 [m, ldc) 的 padding 保持原值
+    // （与 README 契约和 arch35 实现口径一致）
     if (alphaVal == 0.0f) {
-        const size_t cCount = static_cast<size_t>(ldc) * n;
-        for (size_t idx = 0; idx < cCount; idx++) {
-            cData[idx] = (betaVal == 0.0f) ? 0.0f : QuantizeGoldenOutput(cData[idx] * betaVal, Atype, Btype, Ctype);
+        for (int j = 0; j < n; j++) {
+            for (int i = 0; i < m; i++) {
+                const size_t idx = static_cast<size_t>(j) * ldc + i;
+                cData[idx] = (betaVal == 0.0f) ? 0.0f : QuantizeGoldenOutput(cData[idx] * betaVal, Atype, Btype, Ctype);
+            }
         }
         return ACLBLAS_STATUS_SUCCESS;
     }

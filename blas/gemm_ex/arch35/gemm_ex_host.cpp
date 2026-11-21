@@ -295,64 +295,106 @@ static GemmExTilingData CalcBlockMmadTiling(
 // Kernel launch sub-functions (P0-3: split aclblasGemmEx)
 // ============================================================================
 
-// issue #1091: alpha=0 与 k=0 共用的 C=beta*C 原地缩放路径（不读取 A/B，README 契约）：
-// beta=0 置零、beta=1 原样保留、其余 beta 逐元素缩放；
-// k=0 或 beta==0 时契约允许 C 为 nullptr：此时无需写 C，直接成功返回，
-// 避免对空指针执行 aclrtMemset/aclrtMemcpy（issue #355）
-static aclblasStatus_t ScaleCWithBeta(void* C, int ldc, int n, aclDataType Ctype, float betaVal)
+// issue #1154: 对单列 host 缓冲执行 beta 缩放（按 Ctype 分派，FP16/BF16 经 float 中转）
+static void ScaleColumnBuffer(uint8_t* colHost, size_t rowCount, aclDataType Ctype, float betaVal)
 {
-    if (C == nullptr) {
-        return ACLBLAS_STATUS_SUCCESS;
+    if (Ctype == ACL_FLOAT) {
+        float* cData = reinterpret_cast<float*>(colHost);
+        for (size_t i = 0; i < rowCount; i++) {
+            cData[i] *= betaVal;
+        }
+        return;
     }
-    if (betaVal == 0.0f) {
-        size_t elemSizeC = (Ctype == ACL_FLOAT) ? 4 : 2;
-        size_t cBytes = static_cast<size_t>(ldc) * n * elemSizeC;
+    uint16_t* cData = reinterpret_cast<uint16_t*>(colHost);
+    for (size_t i = 0; i < rowCount; i++) {
+        float cVal = (Ctype == ACL_FLOAT16) ? blas_common::HalfToFloat(cData[i]) : blas_common::Bf16ToFloat(cData[i]);
+        cVal *= betaVal;
+        cData[i] = (Ctype == ACL_FLOAT16) ? blas_common::FloatToHalf(cVal) : blas_common::FloatToBf16(cVal);
+    }
+}
+
+// issue #1154: beta=0 清零——ldc==m 时整块 memset，否则逐列只清逻辑 m 行，
+// 行区间 [m, ldc) 是调用方 C 缓冲的 padding 数据，按 README 契约保持原值
+// （对齐 gemm_strided_batched ZeroAllBatch 口径）
+static aclblasStatus_t ZeroColumnRegion(void* C, int m, int ldc, int n, aclDataType Ctype)
+{
+    size_t elemSizeC = (Ctype == ACL_FLOAT) ? 4 : 2;
+    auto* cBase = reinterpret_cast<uint8_t*>(C);
+    const size_t colStrideBytes = static_cast<size_t>(ldc) * elemSizeC;
+    if (ldc == m) {
+        size_t cBytes = colStrideBytes * n;
         aclError aclRet = aclrtMemset(C, cBytes, 0, cBytes);
         if (aclRet != ACL_SUCCESS) {
             OP_LOGE("aclblasGemmEx", "aclrtMemset failed for C, ret=%d", aclRet);
             return ACLBLAS_STATUS_INTERNAL_ERROR;
         }
-    } else if (betaVal != 1.0f) {
-        size_t elemSizeC = (Ctype == ACL_FLOAT) ? 4 : 2;
-        size_t cBytes = static_cast<size_t>(ldc) * n * elemSizeC;
-        size_t cCount = static_cast<size_t>(ldc) * n;
-        std::vector<uint8_t> cHost(cBytes);
-        aclError aclRet = aclrtMemcpy(cHost.data(), cBytes, C, cBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    const size_t rowBytes = static_cast<size_t>(m) * elemSizeC;
+    for (int col = 0; col < n; col++) {
+        uint8_t* colPtr = cBase + static_cast<size_t>(col) * colStrideBytes;
+        aclError aclRet = aclrtMemset(colPtr, rowBytes, 0, rowBytes);
         if (aclRet != ACL_SUCCESS) {
-            OP_LOGE("aclblasGemmEx", "aclrtMemcpy failed for C, ret=%d", aclRet);
-            return ACLBLAS_STATUS_INTERNAL_ERROR;
-        }
-        if (Ctype == ACL_FLOAT) {
-            float* cData = reinterpret_cast<float*>(cHost.data());
-            for (size_t i = 0; i < cCount; i++) {
-                cData[i] *= betaVal;
-            }
-        } else {
-            uint16_t* cData = reinterpret_cast<uint16_t*>(cHost.data());
-            for (size_t i = 0; i < cCount; i++) {
-                float cVal =
-                    (Ctype == ACL_FLOAT16) ? blas_common::HalfToFloat(cData[i]) : blas_common::Bf16ToFloat(cData[i]);
-                cVal *= betaVal;
-                cData[i] = (Ctype == ACL_FLOAT16) ? blas_common::FloatToHalf(cVal) : blas_common::FloatToBf16(cVal);
-            }
-        }
-        aclRet = aclrtMemcpy(C, cBytes, cHost.data(), cBytes, ACL_MEMCPY_HOST_TO_DEVICE);
-        if (aclRet != ACL_SUCCESS) {
-            OP_LOGE("aclblasGemmEx", "aclrtMemcpy H2D failed for C, ret=%d", aclRet);
+            OP_LOGE("aclblasGemmEx", "aclrtMemset failed for C, col=%d, ret=%d", col, aclRet);
             return ACLBLAS_STATUS_INTERNAL_ERROR;
         }
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static bool HandleAlphaZero(void* C, int ldc, int n, aclDataType Ctype, float betaVal, aclblasStatus_t& outStatus)
+// issue #1154: beta 非 0/1——逐列 D2H 缩放 H2D，只处理逻辑 m 行，padding 不触碰
+static aclblasStatus_t ScaleColumnsWithBeta(void* C, int m, int ldc, int n, aclDataType Ctype, float betaVal)
 {
-    // issue #1091: alpha=0 时不读取 A/B（README 契约），全部 beta 值只走 C=beta*C
-    // 缩放路径，不再回落完整 GEMM 读取空指针/含 NaN 的 A/B（空指针设备访问、
-    // 0*NaN=NaN 污染 C）
+    size_t elemSizeC = (Ctype == ACL_FLOAT) ? 4 : 2;
+    auto* cBase = reinterpret_cast<uint8_t*>(C);
+    const size_t colStrideBytes = static_cast<size_t>(ldc) * elemSizeC;
+    const size_t rowBytes = static_cast<size_t>(m) * elemSizeC;
+    std::vector<uint8_t> colHost(rowBytes);
+    for (int col = 0; col < n; col++) {
+        uint8_t* colPtr = cBase + static_cast<size_t>(col) * colStrideBytes;
+        aclError aclRet = aclrtMemcpy(colHost.data(), rowBytes, colPtr, rowBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+        if (aclRet != ACL_SUCCESS) {
+            OP_LOGE("aclblasGemmEx", "aclrtMemcpy failed for C, col=%d, ret=%d", col, aclRet);
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+        ScaleColumnBuffer(colHost.data(), static_cast<size_t>(m), Ctype, betaVal);
+        aclRet = aclrtMemcpy(colPtr, rowBytes, colHost.data(), rowBytes, ACL_MEMCPY_HOST_TO_DEVICE);
+        if (aclRet != ACL_SUCCESS) {
+            OP_LOGE("aclblasGemmEx", "aclrtMemcpy H2D failed for C, col=%d, ret=%d", col, aclRet);
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+// issue #1091: alpha=0 与 k=0 共用的 C=beta*C 原地缩放路径（不读取 A/B，README 契约）：
+// beta=0 置零、beta=1 原样保留、其余 beta 逐元素缩放；
+// k=0 或 beta==0 时契约允许 C 为 nullptr：此时无需写 C，直接成功返回，
+// 避免对空指针执行 aclrtMemset/aclrtMemcpy（issue #355）
+static aclblasStatus_t ScaleCWithBeta(void* C, int m, int ldc, int n, aclDataType Ctype, float betaVal)
+{
+    if (C == nullptr) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (betaVal == 0.0f) {
+        return ZeroColumnRegion(C, m, ldc, n, Ctype);
+    }
+    if (betaVal == 1.0f) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    return ScaleColumnsWithBeta(C, m, ldc, n, Ctype, betaVal);
+}
+
+// issue #1091: alpha=0 时不读取 A/B（README 契约），全部 beta 值只走 C=beta*C
+// 缩放路径，不再回落完整 GEMM 读取空指针/含 NaN 的 A/B（空指针设备访问、
+// 0*NaN=NaN 污染 C）。
+// issue #1156: 直接返回状态码——bool 返回值恒真 + outStatus 出参 + 调用点恒真
+// if 判断是 #1091 修复前"返回 false 回落完整 GEMM"设计的残留骨架，按 #1108
+// 对 her2k readAlpha 死分支的清理口径移除。
+static aclblasStatus_t HandleAlphaZero(void* C, int m, int ldc, int n, aclDataType Ctype, float betaVal)
+{
     OP_LOGI("aclblasGemmEx", "alpha=0, beta=%.3f, skipping matmul with C=beta*C only", betaVal);
-    outStatus = ScaleCWithBeta(C, ldc, n, Ctype, betaVal);
-    return true;
+    return ScaleCWithBeta(C, m, ldc, n, Ctype, betaVal);
 }
 
 static aclblasStatus_t CheckWorkspaceSize(bool useFP32Output, aclDataType Ctype, int m, int n, _aclblas_handle* h)
@@ -406,10 +448,14 @@ static aclblasStatus_t PrepareGemmExTilings(
     dtypeCase = GetDtypeCase(Atype, Btype, Ctype);
     useFP32Output = needPostProcess && (dtypeCase == GEMM_DTYPE_FP16 || dtypeCase == GEMM_DTYPE_BF16);
     needTempBuffer = needPostProcess;
+    // issue #1153: 先拷贝 abTilingData 再覆盖 tilingData.ldc——alpha/beta 后处理
+    // kernel 以 tiling.ldc 寻址用户 C（cOrig/cOut 偏移 = col*ldc+row）、以 tiling.m
+    // 寻址临时缓冲，必须携带用户的原始 ldc（对齐 gemm_batched_ex 先拷贝后覆盖的
+    // 正确顺序；覆盖后的 tilingData.ldc = m 仅作主 kernel 写临时缓冲的行距）。
+    abTilingData = tilingData;
     if (needTempBuffer) {
         tilingData.ldc = m;
     }
-    abTilingData = tilingData;
     // Column-major trick: swap A↔B, M↔N
     std::swap(tilingData.m, tilingData.n);
     std::swap(tilingData.lda, tilingData.ldb);
@@ -479,7 +525,7 @@ static aclblasStatus_t DispatchGemmEx(
     aclblasOperation_t transb, int lda, int ldb, int ldc)
 {
     if (k == 0) {
-        return ScaleCWithBeta(C, ldc, n, Ctype, *static_cast<const float*>(beta));
+        return ScaleCWithBeta(C, m, ldc, n, Ctype, *static_cast<const float*>(beta));
     }
     if (C == nullptr) {
         return ACLBLAS_STATUS_SUCCESS;
@@ -494,10 +540,7 @@ static aclblasStatus_t DispatchGemmEx(
     const float alphaVal = *static_cast<const float*>(alpha);
     const float betaVal = *static_cast<const float*>(beta);
     if (alphaVal == 0.0f) {
-        aclblasStatus_t alphaSt;
-        if (HandleAlphaZero(C, ldc, n, Ctype, betaVal, alphaSt)) {
-            return alphaSt;
-        }
+        return HandleAlphaZero(C, m, ldc, n, Ctype, betaVal);
     }
     return AllocateAndLaunchKernel(
         handle, A, B, C, Atype, Btype, Ctype, isTransA, isTransB, alphaVal, betaVal, m, n, k, lda, ldb, ldc,

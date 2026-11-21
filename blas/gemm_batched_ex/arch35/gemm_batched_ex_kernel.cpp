@@ -98,8 +98,12 @@ __aicore__ inline void ComputeBatched2DBlocking(GemmBatchedCubeState& st)
         }
     }
     // R8: mBlockSize/nBlockSize >= 1 guaranteed (mLoopCount/nLoopCount >= 1 when actualM/N > 0)
-    if (st.nBlockSize == 0) { st.nBlockSize = 1; }
-    if (st.mBlockSize == 0) { st.mBlockSize = 1; }
+    if (st.nBlockSize == 0) {
+        st.nBlockSize = 1;
+    }
+    if (st.mBlockSize == 0) {
+        st.mBlockSize = 1;
+    }
     st.mBlockCount = CeilDiv(st.mLoopCount, st.mBlockSize);
     st.nBlockCount = CeilDiv(st.nLoopCount, st.nBlockSize);
 }
@@ -135,11 +139,8 @@ __aicore__ inline void InitBatchedTaskState(GemmBatchedCubeState& st, uint32_t t
 
 template <typename A_TYPE, uint32_t BASE_M, uint32_t BASE_K, uint32_t C0_VAL>
 __aicore__ inline void LoadABatchedTile(
-    const GemmBatchedCubeState& st,
-    AscendC::GlobalTensor<A_TYPE>& aGM,
-    AscendC::LocalTensor<A_TYPE>& a1,
-    AscendC::LocalTensor<A_TYPE>& a2,
-    uint32_t mi, uint32_t kIdx, uint32_t curM, uint32_t curK, uint32_t curMAlign)
+    const GemmBatchedCubeState& st, AscendC::GlobalTensor<A_TYPE>& aGM, AscendC::LocalTensor<A_TYPE>& a1,
+    AscendC::LocalTensor<A_TYPE>& a2, uint32_t mi, uint32_t kIdx, uint32_t curM, uint32_t curK, uint32_t curMAlign)
 {
     constexpr uint32_t CUBE_BLOCK = HardwareInfo<ArchType::ASCEND_V350>::l1l0BlockSize;
     uint64_t aOffset;
@@ -148,16 +149,16 @@ __aicore__ inline void LoadABatchedTile(
     ndA.dstNzNStride = 1;
     ndA.dstNzMatrixStride = 0;
     if (!st.tiling.isTransA) {
-        aOffset = st.aBaseOffset + static_cast<uint64_t>(mi) * BASE_M * st.tiling.lda +
-                  static_cast<uint64_t>(kIdx) * BASE_K;
+        aOffset =
+            st.aBaseOffset + static_cast<uint64_t>(mi) * BASE_M * st.tiling.lda + static_cast<uint64_t>(kIdx) * BASE_K;
         ndA.nValue = curM;
         ndA.dValue = curK;
         ndA.srcNdMatrixStride = 0;
         ndA.srcDValue = static_cast<uint32_t>(st.tiling.lda);
         ndA.dstNzC0Stride = RoundUp(curM, CUBE_BLOCK);
     } else {
-        aOffset = st.aBaseOffset + static_cast<uint64_t>(kIdx) * BASE_K * st.tiling.lda +
-                  static_cast<uint64_t>(mi) * BASE_M;
+        aOffset =
+            st.aBaseOffset + static_cast<uint64_t>(kIdx) * BASE_K * st.tiling.lda + static_cast<uint64_t>(mi) * BASE_M;
         ndA.nValue = curK;
         ndA.dValue = curM;
         ndA.srcNdMatrixStride = 0;
@@ -189,11 +190,8 @@ __aicore__ inline void LoadABatchedTile(
 
 template <typename B_TYPE, uint32_t BASE_K, uint32_t BASE_N, uint32_t C0_VAL>
 __aicore__ inline void LoadBBatchedTile(
-    const GemmBatchedCubeState& st,
-    AscendC::GlobalTensor<B_TYPE>& bGM,
-    AscendC::LocalTensor<B_TYPE>& b1,
-    AscendC::LocalTensor<B_TYPE>& b2,
-    uint32_t ni, uint32_t kIdx, uint32_t curK, uint32_t curN, uint32_t curNAlign)
+    const GemmBatchedCubeState& st, AscendC::GlobalTensor<B_TYPE>& bGM, AscendC::LocalTensor<B_TYPE>& b1,
+    AscendC::LocalTensor<B_TYPE>& b2, uint32_t ni, uint32_t kIdx, uint32_t curK, uint32_t curN, uint32_t curNAlign)
 {
     constexpr uint32_t CUBE_BLOCK = HardwareInfo<ArchType::ASCEND_V350>::l1l0BlockSize;
     uint64_t bOffset;
@@ -202,16 +200,16 @@ __aicore__ inline void LoadBBatchedTile(
     ndB.dstNzNStride = 1;
     ndB.dstNzMatrixStride = 0;
     if (!st.tiling.isTransB) {
-        bOffset = st.bBaseOffset + static_cast<uint64_t>(kIdx) * BASE_K * st.tiling.ldb +
-                  static_cast<uint64_t>(ni) * BASE_N;
+        bOffset =
+            st.bBaseOffset + static_cast<uint64_t>(kIdx) * BASE_K * st.tiling.ldb + static_cast<uint64_t>(ni) * BASE_N;
         ndB.nValue = curK;
         ndB.dValue = curN;
         ndB.srcNdMatrixStride = 0;
         ndB.srcDValue = static_cast<uint32_t>(st.tiling.ldb);
         ndB.dstNzC0Stride = RoundUp(curK, CUBE_BLOCK);
     } else {
-        bOffset = st.bBaseOffset + static_cast<uint64_t>(ni) * BASE_N * st.tiling.ldb +
-                  static_cast<uint64_t>(kIdx) * BASE_K;
+        bOffset =
+            st.bBaseOffset + static_cast<uint64_t>(ni) * BASE_N * st.tiling.ldb + static_cast<uint64_t>(kIdx) * BASE_K;
         ndB.nValue = curN;
         ndB.dValue = curK;
         ndB.srcNdMatrixStride = 0;
@@ -243,14 +241,9 @@ __aicore__ inline void LoadBBatchedTile(
 
 template <typename A_TYPE, typename B_TYPE, uint32_t BASE_M, uint32_t BASE_K, uint32_t BASE_N, uint32_t C0_VAL>
 __aicore__ inline void ProcessBatchedNTile(
-    const GemmBatchedCubeState& st,
-    AscendC::GlobalTensor<B_TYPE>& bGM,
-    AscendC::LocalTensor<A_TYPE>& a2,
-    AscendC::LocalTensor<B_TYPE>& b1,
-    AscendC::LocalTensor<B_TYPE>& b2,
-    uint32_t mi, uint32_t ni, uint32_t kIdx,
-    uint32_t mStart, uint32_t nStart,
-    uint32_t curM, uint32_t curK)
+    const GemmBatchedCubeState& st, AscendC::GlobalTensor<B_TYPE>& bGM, AscendC::LocalTensor<A_TYPE>& a2,
+    AscendC::LocalTensor<B_TYPE>& b1, AscendC::LocalTensor<B_TYPE>& b2, uint32_t mi, uint32_t ni, uint32_t kIdx,
+    uint32_t mStart, uint32_t nStart, uint32_t curM, uint32_t curK)
 {
     constexpr uint32_t C0_TILE_BYTES = BASE_M * BASE_N * sizeof(float);
     if (ni != nStart) {
@@ -272,9 +265,8 @@ __aicore__ inline void ProcessBatchedNTile(
 
 template <typename C_GM_TYPE, uint32_t BASE_M, uint32_t BASE_N, QuantMode_t QUANT_MODE>
 __aicore__ inline void WriteBatchedFixpipe(
-    const GemmBatchedCubeState& st,
-    AscendC::GlobalTensor<C_GM_TYPE>& cGM,
-    uint32_t mStart, uint32_t mEnd, uint32_t nStart, uint32_t nEnd)
+    const GemmBatchedCubeState& st, AscendC::GlobalTensor<C_GM_TYPE>& cGM, uint32_t mStart, uint32_t mEnd,
+    uint32_t nStart, uint32_t nEnd)
 {
     constexpr uint32_t C0_TILE_BYTES = BASE_M * BASE_N * sizeof(float);
     for (uint32_t mi = mStart; mi < mEnd; mi++) {
@@ -283,11 +275,9 @@ __aicore__ inline void WriteBatchedFixpipe(
         for (uint32_t ni = nStart; ni < nEnd; ni++) {
             uint32_t curN = (ni != st.baseNCount) ? BASE_N : st.tailN;
             uint32_t cTileIdx = (mi - mStart) * st.nBlockSize + (ni - nStart);
-            AscendC::LocalTensor<float> c0(AscendC::TPosition::CO1,
-                cTileIdx * C0_TILE_BYTES, BASE_M * BASE_N);
-            uint64_t cOffset = st.cBaseOffset +
-                static_cast<uint64_t>(mi) * BASE_M * st.tiling.ldc +
-                static_cast<uint64_t>(ni) * BASE_N;
+            AscendC::LocalTensor<float> c0(AscendC::TPosition::CO1, cTileIdx * C0_TILE_BYTES, BASE_M * BASE_N);
+            uint64_t cOffset = st.cBaseOffset + static_cast<uint64_t>(mi) * BASE_M * st.tiling.ldc +
+                               static_cast<uint64_t>(ni) * BASE_N;
             AscendC::FixpipeParamsArch3510<AscendC::CO2Layout::ROW_MAJOR> fp;
             fp.mSize = curM;
             fp.nSize = curN;
@@ -304,23 +294,17 @@ __aicore__ inline void WriteBatchedFixpipe(
 // ============================================================================
 // RunKSlice — Process one K slice across M×N tiles (depth 2: mi→ni)
 // ============================================================================
-template <typename A_TYPE, typename B_TYPE,
-          uint32_t BASE_M, uint32_t BASE_K, uint32_t BASE_N, uint32_t C0_VAL>
+template <typename A_TYPE, typename B_TYPE, uint32_t BASE_M, uint32_t BASE_K, uint32_t BASE_N, uint32_t C0_VAL>
 __aicore__ inline void RunKSlice(
-    GemmBatchedCubeState& st,
-    AscendC::GlobalTensor<A_TYPE>& aGM,
-    AscendC::GlobalTensor<B_TYPE>& bGM,
-    AscendC::LocalTensor<A_TYPE>& a1,
-    AscendC::LocalTensor<B_TYPE>& b1,
-    AscendC::LocalTensor<A_TYPE>& a2,
-    AscendC::LocalTensor<B_TYPE>& b2,
-    uint32_t mStart, uint32_t mEnd,
-    uint32_t nStart, uint32_t nEnd,
-    uint32_t kIdx, uint32_t curK,
-    bool& firstMmad)
+    GemmBatchedCubeState& st, AscendC::GlobalTensor<A_TYPE>& aGM, AscendC::GlobalTensor<B_TYPE>& bGM,
+    AscendC::LocalTensor<A_TYPE>& a1, AscendC::LocalTensor<B_TYPE>& b1, AscendC::LocalTensor<A_TYPE>& a2,
+    AscendC::LocalTensor<B_TYPE>& b2, uint32_t mStart, uint32_t mEnd, uint32_t nStart, uint32_t nEnd, uint32_t kIdx,
+    uint32_t curK, bool& firstMmad)
 {
     for (uint32_t mi = mStart; mi < mEnd; mi++) {
-        if (!firstMmad) { AscendC::WaitFlag<AscendC::HardEvent::M_FIX>(EVENT_ID0); }
+        if (!firstMmad) {
+            AscendC::WaitFlag<AscendC::HardEvent::M_FIX>(EVENT_ID0);
+        }
         firstMmad = false;
         uint32_t curM = (mi != st.baseMCount) ? BASE_M : st.tailM;
         uint32_t curMAlign = (mi != st.baseMCount) ? BASE_M : st.tailMAlign;
@@ -335,17 +319,13 @@ __aicore__ inline void RunKSlice(
 // ============================================================================
 // RunBatchedTask — Inner computation for one task (depth 3: mb→nb→kIdx)
 // ============================================================================
-template <typename A_TYPE, typename B_TYPE, typename C_GM_TYPE,
-          uint32_t BASE_M, uint32_t BASE_K, uint32_t BASE_N, uint32_t C0_VAL, QuantMode_t QMODE>
+template <
+    typename A_TYPE, typename B_TYPE, typename C_GM_TYPE, uint32_t BASE_M, uint32_t BASE_K, uint32_t BASE_N,
+    uint32_t C0_VAL, QuantMode_t QMODE>
 __aicore__ inline void RunBatchedTask(
-    GemmBatchedCubeState& st,
-    AscendC::GlobalTensor<A_TYPE>& aGM,
-    AscendC::GlobalTensor<B_TYPE>& bGM,
-    AscendC::GlobalTensor<C_GM_TYPE>& cGM,
-    AscendC::LocalTensor<A_TYPE>& a1,
-    AscendC::LocalTensor<B_TYPE>& b1,
-    AscendC::LocalTensor<A_TYPE>& a2,
-    AscendC::LocalTensor<B_TYPE>& b2)
+    GemmBatchedCubeState& st, AscendC::GlobalTensor<A_TYPE>& aGM, AscendC::GlobalTensor<B_TYPE>& bGM,
+    AscendC::GlobalTensor<C_GM_TYPE>& cGM, AscendC::LocalTensor<A_TYPE>& a1, AscendC::LocalTensor<B_TYPE>& b1,
+    AscendC::LocalTensor<A_TYPE>& a2, AscendC::LocalTensor<B_TYPE>& b2)
 {
     bool firstMmad = true;
     for (uint32_t mb = 0; mb < st.mBlockCount; mb++) {
@@ -355,11 +335,10 @@ __aicore__ inline void RunBatchedTask(
             uint32_t nStart = nb * st.nBlockSize;
             uint32_t nEnd = (nStart + st.nBlockSize < st.nLoopCount) ? nStart + st.nBlockSize : st.nLoopCount;
             for (uint32_t kIdx = 0; kIdx < st.kLoopCount; kIdx++) {
-                uint32_t curK = (kIdx == st.kLoopCount - 1)
-                    ? (static_cast<uint32_t>(st.tiling.k) - kIdx * BASE_K) : BASE_K;
+                uint32_t curK =
+                    (kIdx == st.kLoopCount - 1) ? (static_cast<uint32_t>(st.tiling.k) - kIdx * BASE_K) : BASE_K;
                 RunKSlice<A_TYPE, B_TYPE, BASE_M, BASE_K, BASE_N, C0_VAL>(
-                    st, aGM, bGM, a1, b1, a2, b2,
-                    mStart, mEnd, nStart, nEnd, kIdx, curK, firstMmad);
+                    st, aGM, bGM, a1, b1, a2, b2, mStart, mEnd, nStart, nEnd, kIdx, curK, firstMmad);
             }
             AscendC::WaitFlag<AscendC::HardEvent::M_FIX>(EVENT_ID0);
             WriteBatchedFixpipe<C_GM_TYPE, BASE_M, BASE_N, QMODE>(st, cGM, mStart, mEnd, nStart, nEnd);
@@ -383,111 +362,102 @@ __aicore__ inline void RunBatchedTask(
 //   C0_VAL     - C0 parameter for LoadData
 //   QUANT_MODE - Fixpipe quantization mode
 // ============================================================================
-#define GEMM_BATCHED_CUBE_KERNEL(FUNC_NAME, A_TYPE, B_TYPE, C_GM_TYPE, \
-    BM, BK, BN, C0_VAL, QUANT_MODE) \
-__cube__ __global__ void FUNC_NAME(__gm__ uint8_t* aarray, __gm__ uint8_t* barray, \
-    __gm__ uint8_t* carray, GemmBatchedExTilingData tiling) \
-{ \
-    AscendC::InitSocState(); \
-    GemmBatchedCubeState st{}; \
-    if (!InitBatchedTilingBase(st, tiling)) { return; } \
-    constexpr uint32_t L1_SIZE = HardwareInfo<ArchType::ASCEND_V350>::l1Size; \
-    AscendC::LocalTensor<A_TYPE> a1(AscendC::TPosition::A1, 0, L1_SIZE); \
-    AscendC::LocalTensor<B_TYPE> b1(AscendC::TPosition::B1, L1_SIZE, L1_SIZE); \
-    AscendC::LocalTensor<A_TYPE> a2(AscendC::TPosition::A2, 0, (BM) * (BK)); \
-    AscendC::LocalTensor<B_TYPE> b2(AscendC::TPosition::B2, 0, (BK) * (BN)); \
-    uint32_t blockIdxVal = AscendC::GetBlockIdx(); \
-    uint32_t gridDim = AscendC::GetBlockNum(); \
-    for (uint32_t taskId = blockIdxVal; taskId < static_cast<uint32_t>(st.tiling.totalTasks); taskId += gridDim) { \
-        InitBatchedTaskState<(BM), (BK), (BN), (C0_VAL)>(st, taskId); \
-        uint32_t batchIdx = taskId / st.mnTasks; \
-        __gm__ uint64_t* aPtrArray = reinterpret_cast<__gm__ uint64_t*>(aarray); \
-        __gm__ uint64_t* bPtrArray = reinterpret_cast<__gm__ uint64_t*>(barray); \
-        __gm__ uint64_t* cPtrArray = reinterpret_cast<__gm__ uint64_t*>(carray); \
-        AscendC::GlobalTensor<A_TYPE> aGM; \
-        AscendC::GlobalTensor<B_TYPE> bGM; \
-        AscendC::GlobalTensor<C_GM_TYPE> cGM; \
-        aGM.SetGlobalBuffer(reinterpret_cast<__gm__ A_TYPE*>(aPtrArray[batchIdx])); \
-        bGM.SetGlobalBuffer(reinterpret_cast<__gm__ B_TYPE*>(bPtrArray[batchIdx])); \
-        cGM.SetGlobalBuffer(reinterpret_cast<__gm__ C_GM_TYPE*>(cPtrArray[batchIdx])); \
-        RunBatchedTask<A_TYPE, B_TYPE, C_GM_TYPE, (BM), (BK), (BN), (C0_VAL), QUANT_MODE>( \
-            st, aGM, bGM, cGM, a1, b1, a2, b2); \
-    } \
-    AscendC::PipeBarrier<PIPE_ALL>(); \
-}
+#define GEMM_BATCHED_CUBE_KERNEL(FUNC_NAME, A_TYPE, B_TYPE, C_GM_TYPE, BM, BK, BN, C0_VAL, QUANT_MODE)                 \
+    __cube__ __global__ void FUNC_NAME(                                                                                \
+        __gm__ uint8_t* aarray, __gm__ uint8_t* barray, __gm__ uint8_t* carray, GemmBatchedExTilingData tiling)        \
+    {                                                                                                                  \
+        AscendC::InitSocState();                                                                                       \
+        GemmBatchedCubeState st{};                                                                                     \
+        if (!InitBatchedTilingBase(st, tiling)) {                                                                      \
+            return;                                                                                                    \
+        }                                                                                                              \
+        constexpr uint32_t L1_SIZE = HardwareInfo<ArchType::ASCEND_V350>::l1Size;                                      \
+        AscendC::LocalTensor<A_TYPE> a1(AscendC::TPosition::A1, 0, L1_SIZE);                                           \
+        AscendC::LocalTensor<B_TYPE> b1(AscendC::TPosition::B1, L1_SIZE, L1_SIZE);                                     \
+        AscendC::LocalTensor<A_TYPE> a2(AscendC::TPosition::A2, 0, (BM) * (BK));                                       \
+        AscendC::LocalTensor<B_TYPE> b2(AscendC::TPosition::B2, 0, (BK) * (BN));                                       \
+        uint32_t blockIdxVal = AscendC::GetBlockIdx();                                                                 \
+        uint32_t gridDim = AscendC::GetBlockNum();                                                                     \
+        for (uint32_t taskId = blockIdxVal; taskId < static_cast<uint32_t>(st.tiling.totalTasks); taskId += gridDim) { \
+            InitBatchedTaskState<(BM), (BK), (BN), (C0_VAL)>(st, taskId);                                              \
+            uint32_t batchIdx = taskId / st.mnTasks;                                                                   \
+            __gm__ uint64_t* aPtrArray = reinterpret_cast<__gm__ uint64_t*>(aarray);                                   \
+            __gm__ uint64_t* bPtrArray = reinterpret_cast<__gm__ uint64_t*>(barray);                                   \
+            __gm__ uint64_t* cPtrArray = reinterpret_cast<__gm__ uint64_t*>(carray);                                   \
+            AscendC::GlobalTensor<A_TYPE> aGM;                                                                         \
+            AscendC::GlobalTensor<B_TYPE> bGM;                                                                         \
+            AscendC::GlobalTensor<C_GM_TYPE> cGM;                                                                      \
+            aGM.SetGlobalBuffer(reinterpret_cast<__gm__ A_TYPE*>(aPtrArray[batchIdx]));                                \
+            bGM.SetGlobalBuffer(reinterpret_cast<__gm__ B_TYPE*>(bPtrArray[batchIdx]));                                \
+            cGM.SetGlobalBuffer(reinterpret_cast<__gm__ C_GM_TYPE*>(cPtrArray[batchIdx]));                             \
+            RunBatchedTask<A_TYPE, B_TYPE, C_GM_TYPE, (BM), (BK), (BN), (C0_VAL), QUANT_MODE>(                         \
+                st, aGM, bGM, cGM, a1, b1, a2, b2);                                                                    \
+        }                                                                                                              \
+        AscendC::PipeBarrier<PIPE_ALL>();                                                                              \
+    }
 
 // ── Kernel instantiations ──
 // FP16: BASE_M=128, BASE_K=16, BASE_N=128, C0=16, F322F16
-GEMM_BATCHED_CUBE_KERNEL(gemm_batched_ex_kernel_fp16, half, half, half,
-    128, 16, 128, 16, QuantMode_t::F322F16)
+GEMM_BATCHED_CUBE_KERNEL(gemm_batched_ex_kernel_fp16, half, half, half, 128, 16, 128, 16, QuantMode_t::F322F16)
 
 // BF16: same tiles as FP16, F322BF16
-GEMM_BATCHED_CUBE_KERNEL(gemm_batched_ex_kernel_bf16, bfloat16_t, bfloat16_t, bfloat16_t,
-    128, 16, 128, 16, QuantMode_t::F322BF16)
+GEMM_BATCHED_CUBE_KERNEL(
+    gemm_batched_ex_kernel_bf16, bfloat16_t, bfloat16_t, bfloat16_t, 128, 16, 128, 16, QuantMode_t::F322BF16)
 
 // FP8 E4M3: BASE_M=32, BASE_K=32, BASE_N=16, C0=32, F322F16
-GEMM_BATCHED_CUBE_KERNEL(gemm_batched_ex_kernel_fp8_e4m3, fp8_e4m3fn_t, fp8_e4m3fn_t, half,
-    32, 32, 16, 32, QuantMode_t::F322F16)
+GEMM_BATCHED_CUBE_KERNEL(
+    gemm_batched_ex_kernel_fp8_e4m3, fp8_e4m3fn_t, fp8_e4m3fn_t, half, 32, 32, 16, 32, QuantMode_t::F322F16)
 
 // FP8 E5M2: same tiles as E4M3
-GEMM_BATCHED_CUBE_KERNEL(gemm_batched_ex_kernel_fp8_e5m2, fp8_e5m2_t, fp8_e5m2_t, half,
-    32, 32, 16, 32, QuantMode_t::F322F16)
+GEMM_BATCHED_CUBE_KERNEL(
+    gemm_batched_ex_kernel_fp8_e5m2, fp8_e5m2_t, fp8_e5m2_t, half, 32, 32, 16, 32, QuantMode_t::F322F16)
 
 // FP8 mixed: A=E5M2, B=E4M3 (unified via separate A_TYPE/B_TYPE template params)
-GEMM_BATCHED_CUBE_KERNEL(gemm_batched_ex_kernel_fp8_e5m2_e4m3, fp8_e5m2_t, fp8_e4m3fn_t, half,
-    32, 32, 16, 32, QuantMode_t::F322F16)
+GEMM_BATCHED_CUBE_KERNEL(
+    gemm_batched_ex_kernel_fp8_e5m2_e4m3, fp8_e5m2_t, fp8_e4m3fn_t, half, 32, 32, 16, 32, QuantMode_t::F322F16)
 
 // FP8 mixed: A=E4M3, B=E5M2
-GEMM_BATCHED_CUBE_KERNEL(gemm_batched_ex_kernel_fp8_e4m3_e5m2, fp8_e4m3fn_t, fp8_e5m2_t, half,
-    32, 32, 16, 32, QuantMode_t::F322F16)
+GEMM_BATCHED_CUBE_KERNEL(
+    gemm_batched_ex_kernel_fp8_e4m3_e5m2, fp8_e4m3fn_t, fp8_e5m2_t, half, 32, 32, 16, 32, QuantMode_t::F322F16)
 
 // FP16 input, FP32 output (for alpha/beta precision preservation)
-GEMM_BATCHED_CUBE_KERNEL(gemm_batched_ex_kernel_fp16_out_f32, half, half, float,
-    128, 16, 128, 16, QuantMode_t::NoQuant)
+GEMM_BATCHED_CUBE_KERNEL(gemm_batched_ex_kernel_fp16_out_f32, half, half, float, 128, 16, 128, 16, QuantMode_t::NoQuant)
 
 // BF16 input, FP32 output (for alpha/beta precision preservation)
-GEMM_BATCHED_CUBE_KERNEL(gemm_batched_ex_kernel_bf16_out_f32, bfloat16_t, bfloat16_t, float,
-    128, 16, 128, 16, QuantMode_t::NoQuant)
+GEMM_BATCHED_CUBE_KERNEL(
+    gemm_batched_ex_kernel_bf16_out_f32, bfloat16_t, bfloat16_t, float, 128, 16, 128, 16, QuantMode_t::NoQuant)
 
 // ── Kernel launcher ──
-void gemm_batched_ex_kernel_do(uint32_t numBlocks, void* stream,
-    uint8_t* aarray, uint8_t* barray, uint8_t* carray,
+void gemm_batched_ex_kernel_do(
+    uint32_t numBlocks, void* stream, uint8_t* aarray, uint8_t* barray, uint8_t* carray,
     const GemmBatchedExTilingData& tilingData, bool isTransA, bool isTransB, GemmBatchedDTypeCase dtypeCase)
 {
     (void)isTransA;
     (void)isTransB;
     switch (dtypeCase) {
         case GEMM_BATCHED_DTYPE_FP16:
-            gemm_batched_ex_kernel_fp16<<<numBlocks, nullptr, stream>>>(
-                aarray, barray, carray, tilingData);
+            gemm_batched_ex_kernel_fp16<<<numBlocks, nullptr, stream>>>(aarray, barray, carray, tilingData);
             break;
         case GEMM_BATCHED_DTYPE_BF16:
-            gemm_batched_ex_kernel_bf16<<<numBlocks, nullptr, stream>>>(
-                aarray, barray, carray, tilingData);
+            gemm_batched_ex_kernel_bf16<<<numBlocks, nullptr, stream>>>(aarray, barray, carray, tilingData);
             break;
         case GEMM_BATCHED_DTYPE_FP8_E4M3:
-            gemm_batched_ex_kernel_fp8_e4m3<<<numBlocks, nullptr, stream>>>(
-                aarray, barray, carray, tilingData);
+            gemm_batched_ex_kernel_fp8_e4m3<<<numBlocks, nullptr, stream>>>(aarray, barray, carray, tilingData);
             break;
         case GEMM_BATCHED_DTYPE_FP8_E5M2:
-            gemm_batched_ex_kernel_fp8_e5m2<<<numBlocks, nullptr, stream>>>(
-                aarray, barray, carray, tilingData);
+            gemm_batched_ex_kernel_fp8_e5m2<<<numBlocks, nullptr, stream>>>(aarray, barray, carray, tilingData);
             break;
         case GEMM_BATCHED_DTYPE_FP8_E5M2_E4M3:
-            gemm_batched_ex_kernel_fp8_e5m2_e4m3<<<numBlocks, nullptr, stream>>>(
-                aarray, barray, carray, tilingData);
+            gemm_batched_ex_kernel_fp8_e5m2_e4m3<<<numBlocks, nullptr, stream>>>(aarray, barray, carray, tilingData);
             break;
         case GEMM_BATCHED_DTYPE_FP8_E4M3_E5M2:
-            gemm_batched_ex_kernel_fp8_e4m3_e5m2<<<numBlocks, nullptr, stream>>>(
-                aarray, barray, carray, tilingData);
+            gemm_batched_ex_kernel_fp8_e4m3_e5m2<<<numBlocks, nullptr, stream>>>(aarray, barray, carray, tilingData);
             break;
         case GEMM_BATCHED_DTYPE_FP16_OUT_F32:
-            gemm_batched_ex_kernel_fp16_out_f32<<<numBlocks, nullptr, stream>>>(
-                aarray, barray, carray, tilingData);
+            gemm_batched_ex_kernel_fp16_out_f32<<<numBlocks, nullptr, stream>>>(aarray, barray, carray, tilingData);
             break;
         case GEMM_BATCHED_DTYPE_BF16_OUT_F32:
-            gemm_batched_ex_kernel_bf16_out_f32<<<numBlocks, nullptr, stream>>>(
-                aarray, barray, carray, tilingData);
+            gemm_batched_ex_kernel_bf16_out_f32<<<numBlocks, nullptr, stream>>>(aarray, barray, carray, tilingData);
             break;
         default:
             break;
@@ -504,9 +474,13 @@ constexpr int32_t AB_TILE_SIZE = 256;
 constexpr int32_t AB_BUF_NUM = 1;
 
 template <typename T, typename U>
-struct IsSameType { static constexpr bool value = false; };
+struct IsSameType {
+    static constexpr bool value = false;
+};
 template <typename T>
-struct IsSameType<T, T> { static constexpr bool value = true; };
+struct IsSameType<T, T> {
+    static constexpr bool value = true;
+};
 
 template <typename TEMP_TYPE, typename C_TYPE, RoundMode OUTPUT_ROUND>
 class BatchedAlphaBetaKernel {
@@ -550,8 +524,13 @@ public:
             int32_t colsPerCore = (totalCols + blockNum - 1) / blockNum;
             startCol_ = blockIdx * colsPerCore;
             endCol_ = startCol_ + colsPerCore;
-            if (endCol_ > totalCols) { endCol_ = totalCols; }
-            if (startCol_ >= totalCols) { startCol_ = 0; endCol_ = 0; }
+            if (endCol_ > totalCols) {
+                endCol_ = totalCols;
+            }
+            if (startCol_ >= totalCols) {
+                startCol_ = 0;
+                endCol_ = 0;
+            }
         } else {
             startCol_ = 0;
             endCol_ = totalCols;
@@ -571,15 +550,14 @@ public:
                 }
                 __gm__ uint64_t* cPtrArray = reinterpret_cast<__gm__ uint64_t*>(carray_);
                 __gm__ uint8_t* cBatchPtr = reinterpret_cast<__gm__ uint8_t*>(cPtrArray[batchIdx]);
-                cOrigGlobal_.SetGlobalBuffer(reinterpret_cast<__gm__ C_TYPE*>(cBatchPtr),
-                    static_cast<uint64_t>(ldc_) * n_);
-                cOutGlobal_.SetGlobalBuffer(reinterpret_cast<__gm__ C_TYPE*>(cBatchPtr),
-                    static_cast<uint64_t>(ldc_) * n_);
+                cOrigGlobal_.SetGlobalBuffer(
+                    reinterpret_cast<__gm__ C_TYPE*>(cBatchPtr), static_cast<uint64_t>(ldc_) * n_);
+                cOutGlobal_.SetGlobalBuffer(
+                    reinterpret_cast<__gm__ C_TYPE*>(cBatchPtr), static_cast<uint64_t>(ldc_) * n_);
 
                 uint64_t tempBatchOffset = static_cast<uint64_t>(batchIdx) * m_ * n_;
                 tempGlobal_.SetGlobalBuffer(
-                    reinterpret_cast<__gm__ TEMP_TYPE*>(tempAB_) + tempBatchOffset,
-                    static_cast<uint64_t>(m_) * n_);
+                    reinterpret_cast<__gm__ TEMP_TYPE*>(tempAB_) + tempBatchOffset, static_cast<uint64_t>(m_) * n_);
 
                 prevBatchIdx = batchIdx;
             }
@@ -587,7 +565,9 @@ public:
             int32_t rowOffset = 0;
             while (rowOffset < m_) {
                 int32_t count = m_ - rowOffset;
-                if (count > AB_TILE_SIZE) { count = AB_TILE_SIZE; }
+                if (count > AB_TILE_SIZE) {
+                    count = AB_TILE_SIZE;
+                }
                 ProcessTile(col, rowOffset, count);
                 rowOffset += count;
             }
@@ -757,8 +737,8 @@ extern "C" __global__ __aicore__ void gemm_batched_ex_alpha_beta_kernel_f32_to_b
 } // namespace batched_ab_kernel
 
 void gemm_batched_ex_alpha_beta_do(
-    uint32_t numBlocks, void* stream, uint8_t* tempAB, uint8_t* carray,
-    const GemmBatchedExTilingData& tilingData, GemmBatchedDTypeCase dtypeCase, bool useFP32Temp)
+    uint32_t numBlocks, void* stream, uint8_t* tempAB, uint8_t* carray, const GemmBatchedExTilingData& tilingData,
+    GemmBatchedDTypeCase dtypeCase, bool useFP32Temp)
 {
     if (useFP32Temp) {
         switch (dtypeCase) {
@@ -803,9 +783,13 @@ using namespace AscendC;
 constexpr int32_t EE_TILE_SIZE = 256;
 
 template <typename T, typename U>
-struct EESameType { static constexpr bool value = false; };
+struct EESameType {
+    static constexpr bool value = false;
+};
 template <typename T>
-struct EESameType<T, T> { static constexpr bool value = true; };
+struct EESameType<T, T> {
+    static constexpr bool value = true;
+};
 
 template <typename C_TYPE, RoundMode OUTPUT_ROUND>
 class EarlyExitKernel {
@@ -815,6 +799,7 @@ public:
     __aicore__ inline void Init(__gm__ uint8_t* carray, GemmBatchedExTilingData tiling, TPipe* pipe)
     {
         pipe_ = pipe;
+        m_ = tiling.m;
         n_ = tiling.n;
         ldc_ = tiling.ldc;
         beta_ = tiling.beta;
@@ -835,8 +820,13 @@ public:
             int32_t colsPerCore = (totalCols + blockNum - 1) / blockNum;
             startCol_ = blockIdx * colsPerCore;
             endCol_ = startCol_ + colsPerCore;
-            if (endCol_ > totalCols) { endCol_ = totalCols; }
-            if (startCol_ >= totalCols) { startCol_ = 0; endCol_ = 0; }
+            if (endCol_ > totalCols) {
+                endCol_ = totalCols;
+            }
+            if (startCol_ >= totalCols) {
+                startCol_ = 0;
+                endCol_ = 0;
+            }
         } else {
             startCol_ = 0;
             endCol_ = totalCols;
@@ -856,15 +846,18 @@ public:
                 }
                 __gm__ uint64_t* cPtrArray = reinterpret_cast<__gm__ uint64_t*>(carray_);
                 __gm__ uint8_t* cBatchPtr = reinterpret_cast<__gm__ uint8_t*>(cPtrArray[batchIdx]);
-                cGlobal_.SetGlobalBuffer(reinterpret_cast<__gm__ C_TYPE*>(cBatchPtr),
-                    static_cast<uint64_t>(ldc_) * n_);
+                cGlobal_.SetGlobalBuffer(reinterpret_cast<__gm__ C_TYPE*>(cBatchPtr), static_cast<uint64_t>(ldc_) * n_);
                 prevBatchIdx = batchIdx;
             }
 
+            // issue #1154: 只处理逻辑 m 行（BLAS 语义仅定义 op(C) 的 m×n 区域），
+            // 行区间 [m, ldc) 是调用方的 padding 数据，必须保持原值。
             int32_t rowOffset = 0;
-            while (rowOffset < ldc_) {
-                int32_t count = ldc_ - rowOffset;
-                if (count > EE_TILE_SIZE) { count = EE_TILE_SIZE; }
+            while (rowOffset < m_) {
+                int32_t count = m_ - rowOffset;
+                if (count > EE_TILE_SIZE) {
+                    count = EE_TILE_SIZE;
+                }
                 ProcessTile(col, rowOffset, count);
                 rowOffset += count;
             }
@@ -911,6 +904,7 @@ private:
     TQue<QuePosition::VECCALC, 1> calcQue_;
     GlobalTensor<C_TYPE> cGlobal_;
     __gm__ uint8_t* carray_ = nullptr;
+    int32_t m_ = 0;
     int32_t n_ = 0;
     int32_t ldc_ = 0;
     float beta_ = 0.0f;
@@ -921,8 +915,7 @@ private:
 };
 
 // Early-exit kernel entry points (one per C dtype)
-extern "C" __aicore__ __global__ void early_exit_fp32(
-    __gm__ uint8_t* carray, GemmBatchedExTilingData tiling)
+extern "C" __aicore__ __global__ void early_exit_fp32(__gm__ uint8_t* carray, GemmBatchedExTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     TPipe pipe;
@@ -931,8 +924,7 @@ extern "C" __aicore__ __global__ void early_exit_fp32(
     op.Process();
 }
 
-extern "C" __aicore__ __global__ void early_exit_fp16(
-    __gm__ uint8_t* carray, GemmBatchedExTilingData tiling)
+extern "C" __aicore__ __global__ void early_exit_fp16(__gm__ uint8_t* carray, GemmBatchedExTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     TPipe pipe;
@@ -941,8 +933,7 @@ extern "C" __aicore__ __global__ void early_exit_fp16(
     op.Process();
 }
 
-extern "C" __aicore__ __global__ void early_exit_bf16(
-    __gm__ uint8_t* carray, GemmBatchedExTilingData tiling)
+extern "C" __aicore__ __global__ void early_exit_bf16(__gm__ uint8_t* carray, GemmBatchedExTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     TPipe pipe;
@@ -953,8 +944,9 @@ extern "C" __aicore__ __global__ void early_exit_bf16(
 
 } // namespace early_exit_ns
 
-void gemm_batched_ex_early_exit_do(uint32_t numBlocks, void* stream, uint8_t* carray,
-    const GemmBatchedExTilingData& tilingData, GemmBatchedDTypeCase dtypeCase)
+void gemm_batched_ex_early_exit_do(
+    uint32_t numBlocks, void* stream, uint8_t* carray, const GemmBatchedExTilingData& tilingData,
+    GemmBatchedDTypeCase dtypeCase)
 {
     switch (dtypeCase) {
         case GEMM_BATCHED_DTYPE_FP16:

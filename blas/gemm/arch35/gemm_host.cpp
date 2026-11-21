@@ -112,11 +112,28 @@ static aclblasStatus_t HandleSgemmAlphaZero(aclblasHandle_t handle, int m, int n
         return ACLBLAS_STATUS_SUCCESS;
     }
     if (betaVal == 0.0f) {
-        size_t cBytes = static_cast<size_t>(ldc) * n * sizeof(float);
-        aclError ret = aclrtMemset(C, cBytes, 0, cBytes);
-        if (ret != ACL_SUCCESS) {
-            OP_LOGE("aclblasSgemm", "aclrtMemset failed, ret=%d", ret);
-            return ACLBLAS_STATUS_EXECUTION_FAILED;
+        // issue #1154: 只清零逻辑 m 行（BLAS 语义仅定义 op(C) 的 m×n 区域），
+        // 行区间 [m, ldc) 是调用方 C 缓冲的 padding 数据，必须保持原值
+        // （对齐 gemm_strided_batched ZeroAllBatch 口径）。
+        auto* cBase = reinterpret_cast<uint8_t*>(C);
+        const size_t colStrideBytes = static_cast<size_t>(ldc) * sizeof(float);
+        if (ldc == m) {
+            size_t cBytes = colStrideBytes * n;
+            aclError ret = aclrtMemset(C, cBytes, 0, cBytes);
+            if (ret != ACL_SUCCESS) {
+                OP_LOGE("aclblasSgemm", "aclrtMemset failed, ret=%d", ret);
+                return ACLBLAS_STATUS_EXECUTION_FAILED;
+            }
+            return ACLBLAS_STATUS_SUCCESS;
+        }
+        const size_t rowBytes = static_cast<size_t>(m) * sizeof(float);
+        for (int col = 0; col < n; col++) {
+            uint8_t* colPtr = cBase + static_cast<size_t>(col) * colStrideBytes;
+            aclError ret = aclrtMemset(colPtr, rowBytes, 0, rowBytes);
+            if (ret != ACL_SUCCESS) {
+                OP_LOGE("aclblasSgemm", "aclrtMemset failed, col=%d, ret=%d", col, ret);
+                return ACLBLAS_STATUS_EXECUTION_FAILED;
+            }
         }
         return ACLBLAS_STATUS_SUCCESS;
     }
