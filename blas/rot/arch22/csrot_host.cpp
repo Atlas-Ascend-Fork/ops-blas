@@ -65,6 +65,24 @@ static aclblasStatus_t ValidateCsrotInputs(
         LOG_PRINT("aclblasCsrot: incx and incy must be non-zero and not INT_MIN, got incx=%d, incy=%d\n", incx, incy);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    // issue #1151: 对齐同族 crot 的 #866 口径 —— (n-1)*|inc| 必须落在 int32 内，
+    // 在 host 侧以 int64 检查，避免 kernel 侧地址偏移回绕越界。
+    const int64_t absIncX = (incx < 0) ? -static_cast<int64_t>(incx) : static_cast<int64_t>(incx);
+    const int64_t absIncY = (incy < 0) ? -static_cast<int64_t>(incy) : static_cast<int64_t>(incy);
+    const int64_t lastX = static_cast<int64_t>(n - 1) * absIncX;
+    const int64_t lastY = static_cast<int64_t>(n - 1) * absIncY;
+    if (lastX > INT32_MAX || lastY > INT32_MAX) {
+        LOG_PRINT(
+            "aclblasCsrot: strided offset overflow, n=%d, incx=%d, incy=%d, lastX=%lld, lastY=%lld\n", n, incx, incy,
+            static_cast<long long>(lastX), static_cast<long long>(lastY));
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    // kernel 按 float 分量寻址，elementCount 为 2*n；n 超过 INT32_MAX/2 时 2*n
+    // 回绕为负，kernel 静默跳过全部计算仍返回成功，必须在此显式拒绝（同 crot）。
+    if (n > INT32_MAX / 2) {
+        LOG_PRINT("aclblasCsrot: n too large, n=%d exceeds INT32_MAX/2\n", n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 

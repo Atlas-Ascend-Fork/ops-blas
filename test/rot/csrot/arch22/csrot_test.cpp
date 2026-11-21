@@ -115,6 +115,17 @@ static int32_t RunCsrotNegativeChecks(aclblasHandle_t handle)
         std::cout << "[Failed] [arch22] csrot zero stride not rejected (arch35 allows, see rot README)" << std::endl;
         return 1;
     }
+    // issue #1151: 同族 crot 的 #866 防护移植 —— (n-1)*|inc| 跨度溢出与 n 超过
+    // INT32_MAX/2（2*n 元素数回绕为负）必须在 host 侧拒绝，kernel 不再收到
+    // 负 elementCount 静默跳过全部旋转仍返回成功。
+    if (aclblasCsrot(handle, 4, &sx, INT32_MAX / 2, &sy, 1, &cs, &sn) != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[Failed] [arch22] csrot stride span overflow not rejected" << std::endl;
+        return 1;
+    }
+    if (aclblasCsrot(handle, INT32_MAX / 2 + 1, &sx, 1, &sy, 1, &cs, &sn) != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[Failed] [arch22] csrot n beyond INT32_MAX/2 not rejected" << std::endl;
+        return 1;
+    }
     std::cout << "[Success] csrot negative checks passed." << std::endl;
     return 0;
 }

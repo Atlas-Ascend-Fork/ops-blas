@@ -60,6 +60,8 @@ aclblasStatus_t aclblasCsrot(
 | n == 0 | ACLBLAS_STATUS_SUCCESS（no-op，快速返回） | ACLBLAS_STATUS_SUCCESS（no-op，快速返回） |
 | incx/incy == 0 | 放行（零步长对同一元素反复旋转） | ACLBLAS_STATUS_INVALID_VALUE |
 | incx/incy == INT_MIN | 放行（int32 域守卫范围内执行） | ACLBLAS_STATUS_INVALID_VALUE |
+| (n-1)*\|incx\| 或 (n-1)*\|incy\| > INT32_MAX | ACLBLAS_STATUS_INVALID_VALUE | ACLBLAS_STATUS_INVALID_VALUE（issue #1151 同步同族 #866 口径） |
+| n > INT32_MAX/2 | 放行（kernel 以 uint32 lane 寻址，2n 不回绕） | ACLBLAS_STATUS_INVALID_VALUE（issue #1151：kernel 元素数为 int32 的 2*n，回绕为负会静默跳过计算） |
 
 两侧测试分别固化各自 arch 的契约：arch22 的负向检查用例（`csrot negative n not rejected` / `csrot zero stride not rejected`）与 arch35 的 `QuickReturnSkipsDataPointerValidation` 用例互为相反预期，**属已声明的 per-arch 差异而非缺陷**；两侧行为的对齐属公共 API 语义决策，需维护者单独评审，不在本仓单侧修改范围内。
 
@@ -83,6 +85,7 @@ aclblasStatus_t aclblasCsrot(
 
 - 支持（arch22 既有实现，行为保持既有语义不变）：n == 0 快速返回 ACLBLAS_STATUS_SUCCESS；n < 0 返回 ACLBLAS_STATUS_INVALID_VALUE；n > 0 时 x、y、c、s 不能为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 - 步长语义：非零正/负步长生效（负步长自向量尾端起算，见 stride 回归用例）；incx/incy 为 0 或 INT_MIN 时返回 ACLBLAS_STATUS_INVALID_VALUE（与 arch35 的放行口径不同，属已声明的 per-arch 差异，见上方跨 arch 入参返回码对照表）
+- 溢出防护（issue #1151，对齐同族 crot 的 #866 口径）：(n-1)*|incx| 或 (n-1)*|incy| 超出 int32 表示范围时返回 ACLBLAS_STATUS_INVALID_VALUE；n > INT32_MAX/2 时返回 ACLBLAS_STATUS_INVALID_VALUE（kernel 元素数为 int32 的 2*n，回绕为负会导致旋转计算被静默跳过仍返回成功）
 
 #### 调用示例
 
