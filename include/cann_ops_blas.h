@@ -371,6 +371,13 @@ aclblasStatus_t aclblasCaxpy(
     aclblasHandle_t handle, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx, aclblasComplex* y,
     int incy);
 
+/**
+ * Cgemv scalar pointer and completion semantics differ by architecture:
+ * arch22 (Atlas A2/A3) accepts Host or Device alpha/beta; Device scalars are
+ * read through the handle stream and the stream is synchronized before return.
+ * arch35 (Ascend 950PR/950DT) accepts Host alpha/beta and enqueues work on the
+ * handle stream; synchronize that stream before reading or reusing Device y.
+ */
 aclblasStatus_t aclblasCgemv(
     aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, const aclblasComplex* alpha,
     const aclblasComplex* A, int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y,

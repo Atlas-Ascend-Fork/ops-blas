@@ -241,12 +241,12 @@ aclblasStatus_t aclblasCgemv(aclblasHandle_t handle, aclblasOperation_t trans, i
 | trans | 输入 | aclblasOperation_t | 矩阵操作类型：ACLBLAS_OP_N（不转置）、ACLBLAS_OP_T（转置）、ACLBLAS_OP_C（共轭转置，先转置再逐元素取共轭），Host 内存 |
 | m | 输入 | int | 矩阵 A 的行数，m >= 0，Host 内存 |
 | n | 输入 | int | 矩阵 A 的列数，n >= 0，Host 内存 |
-| alpha | 输入 | const aclblasComplex*（COMPLEX64） | 复数标量 alpha，不可为 nullptr，Host 内存 |
+| alpha | 输入 | const aclblasComplex*（COMPLEX64） | 复数标量 alpha，不可为 nullptr；arch22（Atlas A2/A3）可位于 Host 或 Device 内存，arch35（Ascend 950PR/950DT）须位于 Host 内存 |
 | A | 输入 | const aclblasComplex*（COMPLEX64） | 列主序复数矩阵，数组维度 lda x n，前 m x n 部分为有效系数矩阵，Device 内存 |
 | lda | 输入 | int | 矩阵 A 的主维，lda >= max(1, m)，Host 内存 |
 | x | 输入 | const aclblasComplex*（COMPLEX64） | 输入向量，trans=N 时逻辑长度 n，trans=T/C 时逻辑长度 m，Device 内存 |
 | incx | 输入 | int | 向量 x 的元素步长，incx != 0，Host 内存 |
-| beta | 输入 | const aclblasComplex*（COMPLEX64） | 复数标量 beta，不可为 nullptr。若 beta == (0,0)，则 y 的输入值不被使用，Host 内存 |
+| beta | 输入 | const aclblasComplex*（COMPLEX64） | 复数标量 beta，不可为 nullptr。若 beta == (0,0)，则 y 的输入值不被使用；arch22（Atlas A2/A3）可位于 Host 或 Device 内存，arch35（Ascend 950PR/950DT）须位于 Host 内存 |
 | y | 输入/输出 | aclblasComplex*（COMPLEX64） | 输入/输出向量，原地覆写，trans=N 时逻辑长度 m，trans=T/C 时逻辑长度 n，Device 内存 |
 | incy | 输入 | int | 向量 y 的元素步长，incy != 0，Host 内存 |
 
@@ -256,6 +256,8 @@ aclblasStatus_t aclblasCgemv(aclblasHandle_t handle, aclblasOperation_t trans, i
 - lda >= max(1, m)
 - incx != 0, incy != 0
 - alpha、beta 不可为 nullptr
+- Atlas A2/A3（arch22）支持 Host 或 Device 标量；Device 标量由 handle 绑定的 stream 执行 D2H 读取并同步，函数返回时该次计算已完成。
+- Ascend 950PR/950DT（arch35）仅支持 Host 标量；计算任务异步下发到 handle 绑定的 stream，函数返回后读取或复用 Device y 前须同步该 stream。
 - Ascend 950PR 支持正负步长，负步长按 Netlib 语义反向遍历
 - Ascend 950PR 上，trans 取值不在 {ACLBLAS_OP_N, ACLBLAS_OP_T, ACLBLAS_OP_C} 时返回 ACLBLAS_STATUS_INVALID_ENUM
 - Ascend 950PR 上，m == 0 或 n == 0 为合法 quick return；alpha == (0,0) 且 beta == (1,0) 时不写 y；alpha == (0,0) 且 beta != (1,0) 时只计算 y = beta * y，不读 A、x；beta == (0,0) 时不读取 y 的输入值
