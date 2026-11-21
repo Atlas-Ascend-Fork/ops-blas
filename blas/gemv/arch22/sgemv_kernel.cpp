@@ -629,8 +629,12 @@ private:
     {
         LocalTensor<float> sums = rowBuf_.Get<float>();
         constexpr uint32_t lanes = 64;
+        // Output slot offset of the second-pass reduce: 2 * lanes keeps the two
+        // partial results (the first pass starts at slot 0) from overlapping.
+        constexpr uint32_t splitSlot = 2U * lanes;
         const uint32_t segments = rowTileRows / lanes;
         const uint32_t repeats = cols * segments;
+        // A single WholeReduceSum supports at most 248 repeat times, so cap each call.
         for (uint32_t done = 0; done < repeats; done += 248U) {
             const uint32_t count = repeats - done < 248U ? repeats - done : 248U;
             WholeReduceSum(sums[done], aTile[done * lanes], lanes, count, 1, 1, lanes / SGEMMV_ALIGN);
@@ -640,9 +644,9 @@ private:
             WholeReduceSum(output, sums, segments, cols, 1, 1, segments / SGEMMV_ALIGN);
         } else {
             WholeReduceSum(output, sums, lanes, cols, 1, 1, segments / SGEMMV_ALIGN);
-            WholeReduceSum(output[128], sums[lanes], segments - lanes, cols, 1, 1, segments / SGEMMV_ALIGN);
+            WholeReduceSum(output[splitSlot], sums[lanes], segments - lanes, cols, 1, 1, segments / SGEMMV_ALIGN);
             PIPE_BARRIER(V);
-            Add(output, output, output[128], cols);
+            Add(output, output, output[splitSlot], cols);
         }
     }
 
