@@ -15,7 +15,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <exception>
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -169,41 +168,37 @@ static aclblasStatus_t CopyCgercBuffersToDevice(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-// issue #1028: 资源分配与 kernel 下发段（offset 表构造、设备缓冲分配拷贝、kernel
-// 下发与同步）。从 aclblasCgerc 拆出独立函数：该段在入口侧由 try/catch 包裹，
-// 拆分同时保证两个函数都不触碰单函数规模门禁。
-static aclblasStatus_t AllocateAndDispatchCgerc(
-    aclrtStream useStream, const CgercTilingData& tiling, uint32_t numBlocks, const aclblasComplex* x,
-    const aclblasComplex* y, aclblasComplex* A)
+// issue #1102: 异常路径释放已获取的设备缓冲（未分配的为 nullptr，aclrtFree 可安全跳过），
+// 对齐 ctrmv_host.cpp 的 catch 清理口径；抽出为独立函数控制入口函数圈复杂度
+static aclblasStatus_t DispatchCgercKernel(
+    const aclblasComplex* x, const aclblasComplex* y, aclblasComplex* A, aclrtStream useStream, uint32_t numBlocks,
+    uint8_t* offsetDevice, uint8_t* workspaceDevice, uint8_t* tilingDevice)
 {
-    std::vector<uint32_t> offset = CreateCgercOffset();
-    size_t offsetByteSize = offset.size() * sizeof(uint32_t);
-    size_t workspaceSize = 1024;
-
-    uint8_t* offsetDevice = nullptr;
-    uint8_t* workspaceDevice = nullptr;
-    uint8_t* tilingDevice = nullptr;
-
-    const aclblasStatus_t allocStatus = CopyCgercBuffersToDevice(
-        offset.data(), offsetByteSize, tiling, workspaceSize, offsetDevice, workspaceDevice, tilingDevice);
-    if (allocStatus != ACLBLAS_STATUS_SUCCESS) {
-        return allocStatus;
+    aclblasStatus_t dispatchStatus = ACLBLAS_STATUS_SUCCESS;
+    try {
+        cgerc_kernel_do(
+            reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)),
+            reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(y)), offsetDevice, reinterpret_cast<uint8_t*>(A),
+            workspaceDevice, tilingDevice, numBlocks, useStream);
+        aclError aclRet = aclrtSynchronizeStream(useStream);
+        CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+                  dispatchStatus = ACLBLAS_STATUS_INTERNAL_ERROR);
+        if (dispatchStatus == ACLBLAS_STATUS_SUCCESS) {
+            aclrtFree(offsetDevice);
+            aclrtFree(workspaceDevice);
+            aclrtFree(tilingDevice);
+            return ACLBLAS_STATUS_SUCCESS;
+        }
+    } catch (const std::exception&) {
+        LOG_PRINT("aclblasCgerc: host exception in kernel dispatch path\n");
+        dispatchStatus = ACLBLAS_STATUS_EXECUTION_FAILED;
     }
 
-    cgerc_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)),
-        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(y)), offsetDevice, reinterpret_cast<uint8_t*>(A),
-        workspaceDevice, tilingDevice, numBlocks, useStream);
-    aclError aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
-              aclrtFree(tilingDevice); aclrtFree(workspaceDevice); aclrtFree(offsetDevice);
-              return ACLBLAS_STATUS_INTERNAL_ERROR);
-
-    aclrtFree(offsetDevice);
-    aclrtFree(workspaceDevice);
     aclrtFree(tilingDevice);
+    aclrtFree(workspaceDevice);
+    aclrtFree(offsetDevice);
 
-    return ACLBLAS_STATUS_SUCCESS;
+    return dispatchStatus;
 }
 
 aclblasStatus_t aclblasCgerc(
@@ -217,6 +212,11 @@ aclblasStatus_t aclblasCgerc(
     const aclblasStatus_t argsStatus = ValidateCgercArgs(m, n, alpha, x, y, A, incx, lda);
     if (argsStatus != ACLBLAS_STATUS_SUCCESS) {
         return argsStatus;
+    }
+    // issue #1101: m==0||n==0 的快速返回只终止了校验器，主流程需补偿早退，
+    // 零工作量调用不应执行设备分配/拷贝/launch（对齐 gemm_ex/gemm_batched 口径）
+    if (m == 0 || n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
     }
     // issue #732: kernel 向量化路径按连续列块消费 y，incy!=1 的步进访问需要专用
     // 数据通路；在未实现前显式拒绝，消除静默错算（对齐 caxpy #692 口径）
@@ -234,13 +234,21 @@ aclblasStatus_t aclblasCgerc(
 
     CgercTilingData tiling = CalCgercTilingData(m, n, alphaReal, alphaImag, numBlocks, incx, incy, lda);
 
-    // Kernel dispatch allocates via std::vector/aclrt; a std::exception here
-    // must not cross the extern "C" boundary (sgemm_grouped_batched contract).
-    // Parameter validation stays outside the guard.
-    try {
-        return AllocateAndDispatchCgerc(useStream, tiling, numBlocks, x, y, A);
-    } catch (const std::exception&) {
-        LOG_PRINT("aclblasCgerc: host exception in kernel dispatch path\n");
-        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    std::vector<uint32_t> offset = CreateCgercOffset();
+    size_t offsetByteSize = offset.size() * sizeof(uint32_t);
+    size_t workspaceSize = 1024;
+
+    uint8_t* offsetDevice = nullptr;
+    uint8_t* workspaceDevice = nullptr;
+    uint8_t* tilingDevice = nullptr;
+
+    const aclblasStatus_t allocStatus = CopyCgercBuffersToDevice(
+        offset.data(), offsetByteSize, tiling, workspaceSize, offsetDevice, workspaceDevice, tilingDevice);
+    if (allocStatus != ACLBLAS_STATUS_SUCCESS) {
+        return allocStatus;
     }
+
+    // issue #1102: 异常路径在 DispatchCgercKernel 中释放已获取的设备缓冲，
+    // 对齐 ctrmv_host.cpp 的 catch 清理口径
+    return DispatchCgercKernel(x, y, A, useStream, numBlocks, offsetDevice, workspaceDevice, tilingDevice);
 }
