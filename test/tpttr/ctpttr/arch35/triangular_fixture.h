@@ -33,11 +33,9 @@ inline void CheckAcl(aclError status)
     }
 }
 
-template <bool Pack>
 inline aclblasStatus_t Invoke(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const void* input, void* output, int lda)
 {
-    static_assert(!Pack, "This fixture tests Ctpttr unpacked output");
     return aclblasCtpttr(
         handle, uplo, n, static_cast<const aclblasComplex*>(input), static_cast<aclblasComplex*>(output), lda);
 }
@@ -92,12 +90,11 @@ inline void InitializeOutput(DeviceBuffer& device, uint64_t elements, const std:
     }
 }
 
-template <bool Pack>
 inline bool VerifyOutput(
     const DeviceBuffer& device, const std::vector<ComplexBits>& source, const TriangularCase& testCase,
     uint64_t elements, const std::string& fillName, bool print)
 {
-    GoldenCursor<Pack> reference(source.data(), testCase.n, testCase.lda, testCase.uplo == ACLBLAS_UPPER);
+    GoldenCursor reference(source.data(), testCase.n, testCase.lda, testCase.uplo == ACLBLAS_UPPER);
     ComplexFill original(fillName, testCase.seed + 1U);
     const uint64_t total = elements + GUARD_ELEMENTS;
     std::vector<ComplexBits> scratch(static_cast<size_t>(std::min<uint64_t>(CHUNK_ELEMENTS, total)));
@@ -132,14 +129,13 @@ inline bool VerifyOutput(
     return realFailures == 0U && imagFailures == 0U && protectedFailures == 0U;
 }
 
-template <bool Pack>
 class TriangularFixture : public BlasTest<TriangularCase> {
 protected:
     void Run(const TriangularCase& testCase, const std::vector<ComplexBits>* custom = nullptr)
     {
         SCOPED_TRACE(testCase.caseName);
-        const std::string& inputFill = Pack ? testCase.aFill : testCase.apFill;
-        const std::string& outputFill = Pack ? testCase.apFill : testCase.aFill;
+        const std::string& inputFill = testCase.apFill;
+        const std::string& outputFill = testCase.aFill;
         ComplexBits inputDummy{};
         ComplexBits outputDummy{};
         const void* sourcePointer = inputFill == "NULLPTR" ? nullptr : &inputDummy;
@@ -148,7 +144,7 @@ protected:
         ASSERT_EQ(expected, testCase.expected);
         if (expected != ACLBLAS_STATUS_SUCCESS || testCase.n == 0) {
             EXPECT_EQ(
-                Invoke<Pack>(this->handle_, testCase.uplo, testCase.n, sourcePointer, destinationPointer, testCase.lda),
+                Invoke(this->handle_, testCase.uplo, testCase.n, sourcePointer, destinationPointer, testCase.lda),
                 testCase.expected);
             return;
         }
@@ -163,8 +159,8 @@ protected:
         const uint64_t n = static_cast<uint64_t>(testCase.n);
         const uint64_t packed = n * (n + 1U) / 2U;
         const uint64_t matrix = n * static_cast<uint64_t>(testCase.lda);
-        const uint64_t inputElements = Pack ? matrix : packed;
-        const uint64_t outputElements = Pack ? packed : matrix;
+        const uint64_t inputElements = packed;
+        const uint64_t outputElements = matrix;
         std::vector<ComplexBits> input(inputElements + GUARD_ELEMENTS);
         ComplexFill fill(inputFill, testCase.seed);
         for (uint64_t index = 0; index < inputElements; ++index) {
@@ -184,17 +180,17 @@ protected:
             return;
         }
         EXPECT_TRUE(InputUnchanged(deviceInput, input)) << "input or trailing guard was changed";
-        EXPECT_TRUE(VerifyOutput<Pack>(deviceOutput, input, testCase, outputElements, outputFill, true));
+        EXPECT_TRUE(VerifyOutput(deviceOutput, input, testCase, outputElements, outputFill, true));
         InitializeOutput(deviceOutput, outputElements, outputFill, testCase.seed + 1U);
         ASSERT_EQ(Launch(testCase, deviceInput, deviceOutput), ACLBLAS_STATUS_SUCCESS);
         CheckAcl(aclrtSynchronizeStream(this->stream_));
         EXPECT_TRUE(InputUnchanged(deviceInput, input)) << "repeat call changed input or trailing guard";
-        EXPECT_TRUE(VerifyOutput<Pack>(deviceOutput, input, testCase, outputElements, outputFill, false));
+        EXPECT_TRUE(VerifyOutput(deviceOutput, input, testCase, outputElements, outputFill, false));
     }
 
     aclblasStatus_t Launch(const TriangularCase& testCase, const DeviceBuffer& input, DeviceBuffer& output)
     {
-        return Invoke<Pack>(this->handle_, testCase.uplo, testCase.n, input.ptr(), output.ptr(), testCase.lda);
+        return Invoke(this->handle_, testCase.uplo, testCase.n, input.ptr(), output.ptr(), testCase.lda);
     }
 
     void CollectProfile(const TriangularCase& testCase, const DeviceBuffer& input, DeviceBuffer& output)
@@ -224,7 +220,7 @@ protected:
         for (const auto uplo : {ACLBLAS_UPPER, ACLBLAS_LOWER}) {
             for (const int lda : {0, 1}) {
                 EXPECT_EQ(
-                    Invoke<Pack>(this->handle_, uplo, 0, deviceInput.ptr(), deviceOutput.ptr(), lda),
+                    Invoke(this->handle_, uplo, 0, deviceInput.ptr(), deviceOutput.ptr(), lda),
                     lda == 0 ? ACLBLAS_STATUS_INVALID_VALUE : ACLBLAS_STATUS_SUCCESS);
                 CheckAcl(aclrtSynchronizeStream(this->stream_));
                 EXPECT_TRUE(InputUnchanged(deviceInput, source));
@@ -250,7 +246,7 @@ protected:
         DeviceBuffer shared(static_cast<size_t>(elements) * sizeof(ComplexBits));
         shared.copyFromHost(init.data(), shared.size());
         for (const auto uplo : {ACLBLAS_UPPER, ACLBLAS_LOWER}) {
-            const aclblasStatus_t status = Invoke<Pack>(this->handle_, uplo, n, shared.ptr(), shared.ptr(), lda);
+            const aclblasStatus_t status = Invoke(this->handle_, uplo, n, shared.ptr(), shared.ptr(), lda);
             CheckAcl(aclrtSynchronizeStream(this->stream_));
             EXPECT_TRUE(status == ACLBLAS_STATUS_SUCCESS || status == ACLBLAS_STATUS_INVALID_VALUE)
                 << "overlapping A/AP must still return a valid status, got " << static_cast<int>(status);
@@ -264,7 +260,7 @@ protected:
         std::vector<ComplexBits>& expected)
     {
         ComplexFill fill("VALUE_NORM_N999", testCase.seed + 1U);
-        GoldenCursor<Pack> reference(source.data(), testCase.n, testCase.lda, testCase.uplo == ACLBLAS_UPPER);
+        GoldenCursor reference(source.data(), testCase.n, testCase.lda, testCase.uplo == ACLBLAS_UPPER);
         size_t nanPosition = 0;
         for (size_t index = 0; index < expected.size(); ++index) {
             if (index >= outputElements) {
@@ -290,8 +286,8 @@ protected:
             testCase.apFill = "VALUE_NORM_N999";
             constexpr uint64_t PACKED = 6U;
             constexpr uint64_t MATRIX = 21U;
-            const uint64_t outputElements = Pack ? PACKED : MATRIX;
-            std::vector<ComplexBits> source(Pack ? MATRIX : PACKED);
+            const uint64_t outputElements = MATRIX;
+            std::vector<ComplexBits> source(PACKED);
             for (size_t index = 0; index < source.size(); ++index) {
                 source[index] = Guard(index);
             }
@@ -300,7 +296,7 @@ protected:
             const size_t nanPosition = FillComparatorExpected(testCase, source, outputElements, expected);
             DeviceBuffer output(expected.size() * sizeof(ComplexBits));
             auto verify = [&]() {
-                return VerifyOutput<Pack>(output, source, testCase, outputElements, "VALUE_NORM_N999", false);
+                return VerifyOutput(output, source, testCase, outputElements, "VALUE_NORM_N999", false);
             };
             output.copyFromHost(expected.data(), output.size());
             ASSERT_TRUE(verify());
@@ -316,10 +312,8 @@ protected:
             rejectChange(nanPosition, 1U, 0U);
             rejectChange(nanPosition, 0U, 1U);
             rejectChange(outputElements, 1U, 0U);
-            if constexpr (!Pack) {
-                rejectChange(static_cast<size_t>(testCase.n), 1U, 0U);
-                rejectChange(uplo == ACLBLAS_UPPER ? 1U : static_cast<size_t>(testCase.lda), 0U, 1U);
-            }
+            rejectChange(static_cast<size_t>(testCase.n), 1U, 0U);
+            rejectChange(uplo == ACLBLAS_UPPER ? 1U : static_cast<size_t>(testCase.lda), 0U, 1U);
         }
     }
 
@@ -332,8 +326,7 @@ protected:
         for (const int n : {1, 2, 3, 5, 17}) {
             for (const auto uplo : {ACLBLAS_UPPER, ACLBLAS_LOWER}) {
                 auto testCase = ManualCase(n, n + 3, uplo);
-                const size_t count =
-                    Pack ? static_cast<size_t>(testCase.lda) * n : static_cast<size_t>(n) * (n + 1U) / 2U;
+                const size_t count = static_cast<size_t>(n) * (n + 1U) / 2U;
                 std::vector<ComplexBits> input(count);
                 for (size_t index = 0; index < count; ++index) {
                     input[index] = patterns[index % patterns.size()];

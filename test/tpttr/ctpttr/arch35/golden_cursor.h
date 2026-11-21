@@ -31,7 +31,6 @@ inline uint32_t FloatBits(float value)
 
 // Independent CPU reference: traverse columns and increment a packed cursor.
 // It does not call production packed-offset or partitioning functions.
-template <bool Pack>
 class GoldenCursor {
 public:
     GoldenCursor(const ComplexBits* input, uint64_t n, uint64_t lda, bool upper)
@@ -40,27 +39,12 @@ public:
 
     bool Selected(uint64_t position) const
     {
-        if constexpr (Pack) {
-            return position < n_ * (n_ + 1U) / 2U;
-        }
         const uint64_t row = position % lda_;
         const uint64_t column = position / lda_;
         return column < n_ && row < n_ && (upper_ ? row <= column : row >= column);
     }
 
-    ComplexBits Next()
-    {
-        if constexpr (!Pack) {
-            return input_[packedCursor_++];
-        }
-        const ComplexBits value = input_[column_ * lda_ + row_];
-        ++row_;
-        if (upper_ ? row_ > column_ : row_ == n_) {
-            ++column_;
-            row_ = upper_ ? 0U : column_;
-        }
-        return value;
-    }
+    ComplexBits Next() { return input_[packedCursor_++]; }
 
 private:
     const ComplexBits* input_;
@@ -68,8 +52,6 @@ private:
     uint64_t lda_;
     bool upper_;
     uint64_t packedCursor_ = 0;
-    uint64_t column_ = 0;
-    uint64_t row_ = 0;
 };
 
 } // namespace complex_triangular_test
