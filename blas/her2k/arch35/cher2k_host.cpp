@@ -305,19 +305,46 @@ static aclblasStatus_t ReadCher2kScalars(
     // staging read sits inside the caller's timed window, so the extra copy is
     // pure fixed per-call overhead that dominates small-n cases.
     (void)stream; // kept for signature stability; the copy below is synchronous
+    // issue #1099: 标量指针支持 host/device 双位置（PrepareCher2kParams 的
+    // CheckPtrLocation 契约）：host 指针直接解引用，device 指针同步 D2H，
+    // 不再无条件 D2H（host 指针 D2H 方向不符必返 INTERNAL_ERROR）
     float alphaPair[2] = {0.0f, 0.0f};
     if (readAlpha) {
-        aclError aclRet =
-            aclrtMemcpy(alphaPair, sizeof(alphaPair), alpha, sizeof(alphaPair), ACL_MEMCPY_DEVICE_TO_HOST);
-        if (aclRet != ACL_SUCCESS) {
-            OP_LOGE("aclblasCher2k", "ReadCher2kScalars: aclrtMemcpy alpha D2H failed, ret=%d", aclRet);
-            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        bool alphaOnDev = false;
+        aclblasStatus_t locSt = CheckPtrLocation(alpha, &alphaOnDev);
+        if (locSt != ACLBLAS_STATUS_SUCCESS) {
+            OP_LOGE(
+                "aclblasCher2k", "ReadCher2kScalars: alpha pointer location query failed, st=%d",
+                static_cast<int>(locSt));
+            return locSt;
+        }
+        if (alphaOnDev) {
+            aclError aclRet =
+                aclrtMemcpy(alphaPair, sizeof(alphaPair), alpha, sizeof(alphaPair), ACL_MEMCPY_DEVICE_TO_HOST);
+            if (aclRet != ACL_SUCCESS) {
+                OP_LOGE("aclblasCher2k", "ReadCher2kScalars: aclrtMemcpy alpha D2H failed, ret=%d", aclRet);
+                return ACLBLAS_STATUS_INTERNAL_ERROR;
+            }
+        } else {
+            alphaPair[0] = alpha->real;
+            alphaPair[1] = alpha->imag;
         }
     }
-    aclError aclRet = aclrtMemcpy(&betaVal, sizeof(float), beta, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST);
-    if (aclRet != ACL_SUCCESS) {
-        OP_LOGE("aclblasCher2k", "ReadCher2kScalars: aclrtMemcpy beta D2H failed, ret=%d", aclRet);
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    bool betaOnDev = false;
+    aclblasStatus_t locSt = CheckPtrLocation(beta, &betaOnDev);
+    if (locSt != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE(
+            "aclblasCher2k", "ReadCher2kScalars: beta pointer location query failed, st=%d", static_cast<int>(locSt));
+        return locSt;
+    }
+    if (betaOnDev) {
+        aclError aclRet = aclrtMemcpy(&betaVal, sizeof(float), beta, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST);
+        if (aclRet != ACL_SUCCESS) {
+            OP_LOGE("aclblasCher2k", "ReadCher2kScalars: aclrtMemcpy beta D2H failed, ret=%d", aclRet);
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+    } else {
+        betaVal = *beta;
     }
     if (readAlpha) {
         alphaReal = alphaPair[0];

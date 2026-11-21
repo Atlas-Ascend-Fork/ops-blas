@@ -47,6 +47,7 @@ struct Cher2kParam : public BlasTestParamBase {
     bool nullC = false;
     bool nullAlpha = false;
     bool nullBeta = false;
+    bool betaOnDevice = true;
 
     explicit Cher2kParam(const csv_map& map) : BlasTestParamBase(map)
     {
@@ -87,5 +88,8 @@ struct Cher2kParam : public BlasTestParamBase {
         nullA = (ReadMap(map, "nullA", "0") == "1");
         nullB = (ReadMap(map, "nullB", "0") == "1");
         nullC = (ReadMap(map, "nullC", "0") == "1");
+        // issue #1099: false 时 beta 以 Host 指针传入（不加 alpha_on_device 开关，
+        // alpha 路径与既有用例保持一致）
+        betaOnDevice = (ReadMap(map, "beta_on_device", "true") == "true");
     }
 };

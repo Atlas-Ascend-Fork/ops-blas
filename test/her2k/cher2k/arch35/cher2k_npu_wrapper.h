@@ -112,7 +112,7 @@ static T* Cher2kPickDevicePtr(void* dev, T* host)
 // already-uploaded prefix segments).
 static aclblasStatus_t Cher2kUploadBuffers(
     Cher2kDeviceBuffers& bufs, const aclblasComplex* effAlpha, const aclblasComplex* A, size_t aBytes,
-    const aclblasComplex* B, size_t bBytes, const float* effBeta, const void* C, size_t cBytes)
+    const aclblasComplex* B, size_t bBytes, const float* effBeta, bool betaOnDevice, const void* C, size_t cBytes)
 {
     constexpr size_t alphaBytes = sizeof(aclblasComplex); // 2 floats
     constexpr size_t betaBytes = sizeof(float);           // 1 float
@@ -131,7 +131,8 @@ static aclblasStatus_t Cher2kUploadBuffers(
         OP_LOGE("aclblasCher2k_npu", "upload B failed, st=%d", static_cast<int>(st));
         return st;
     }
-    st = Cher2kTryAllocAndCopy(effBeta, betaBytes, bufs.dBeta);
+    // issue #1099: betaOnDevice=false 时不上传 beta，Host 指针经 PickDevicePtr 直传
+    st = Cher2kTryAllocAndCopy(betaOnDevice ? effBeta : nullptr, betaBytes, bufs.dBeta);
     if (st != ACLBLAS_STATUS_SUCCESS) {
         OP_LOGE("aclblasCher2k_npu", "upload beta failed, st=%d", static_cast<int>(st));
         return st;
@@ -151,7 +152,7 @@ static aclblasStatus_t Cher2kUploadBuffers(
 inline aclblasStatus_t aclblasCher2k_npu(
     aclblasHandle handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const aclblasComplex* alpha,
     const aclblasComplex* A, int lda, const aclblasComplex* B, int ldb, const float* beta, aclblasComplex* C, int ldc,
-    bool nullAlpha = false, bool nullBeta = false)
+    bool nullAlpha = false, bool nullBeta = false, bool betaOnDevice = true)
 {
     if (handle == nullptr || n <= 0) {
         return aclblasCher2k(
@@ -168,7 +169,7 @@ inline aclblasStatus_t aclblasCher2k_npu(
     const float* effBeta = nullBeta ? nullptr : beta;
 
     Cher2kDeviceBuffers bufs;
-    aclblasStatus_t st = Cher2kUploadBuffers(bufs, effAlpha, A, aBytes, B, bBytes, effBeta, C, cBytes);
+    aclblasStatus_t st = Cher2kUploadBuffers(bufs, effAlpha, A, aBytes, B, bBytes, effBeta, betaOnDevice, C, cBytes);
     if (st != ACLBLAS_STATUS_SUCCESS) {
         OP_LOGE("aclblasCher2k_npu", "Cher2kUploadBuffers failed, st=%d", static_cast<int>(st));
         return st;

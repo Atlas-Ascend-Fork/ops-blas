@@ -1854,7 +1854,7 @@ TEST_P(Cher2kArch35Test, CsvDriven)
 
     aclblasStatus_t ret = aclblasCher2k_npu(
         Cher2kArch35Test::handle_, p.uplo, p.trans, p.n, p.k, &d.alpha, d.aPtr, p.lda, d.bPtr, p.ldb, &d.beta, d.cPtr,
-        p.ldc, p.nullAlpha, p.nullBeta);
+        p.ldc, p.nullAlpha, p.nullBeta, p.betaOnDevice);
 
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
