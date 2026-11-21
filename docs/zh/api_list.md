@@ -672,6 +672,8 @@ aclblasStatus_t aclblasLtMatmulAlgoGetHeuristic(aclblasLtHandle_t lightHandle,
 
 根据给定的 matmul 描述符与 A/B/C/D 矩阵 layout，检索可用的矩阵乘法算法启发式结果。结果按当前构建目标的内部启发式规则写入 `heuristicResultsArray`；该顺序不是实测或估算计算时间的保证，也不承诺跨设备、版本保持一致。arch35（Ascend 950 系列）当前按综合多核负载平衡、L1 利用率和 L0 tile 偏好匹配的评分排序；arch22（Atlas A2/A3 系列）按形状相关的算法优先级列出候选。调用方不应依赖固定索引代表固定性能顺序，应检查每项状态和 workspace，并按实际 workload 测量。实际返回数量写入 `returnAlgoCount`。调用 `aclblasLtMatmul` 时可将 `heuristicResultsArray[i].algo` 传入 `algo` 参数。`pref` 允许为空，但**空偏好与显式传入默认偏好并不等价**：arch35（Ascend 950 系列）实现下 `pref` 为空时 workspace 预算取 0，而本仓 0 值预算的语义是「关闭预算过滤」（即无上限），显式传入 `Create`/`Init` 产物则按默认 32MB 预算过滤候选，两者在存在超 32MB workspace 候选时结果不同；arch22（Atlas A2/A3 系列）实现下 `pref` 为空时预算取默认 32MB，与显式传入默认偏好一致。两种实现下 `pref` 为空时均不设置 L0 tile 偏好。
 
+**矩阵布局限制**：matmul 内核仅支持行主序，A/B/C/D 四个 layout 的 order 均须显式设置为 `ACLBLASLT_ORDER_ROW`（layout 描述符的默认值为 `ACLBLASLT_ORDER_COL`）。本接口当前**不按 order 过滤候选**——默认 COL layout 下仍会返回候选，但返回的候选仅可在 ROW layout 下执行：后续 `aclblasLtMatmulAlgoCheck` 与 `aclblasLtMatmul` 对任一非 ROW 的 layout 会返回 `ACLBLAS_STATUS_NOT_SUPPORTED`。调用方应将全部 layout 显式设置为 `ACLBLASLT_ORDER_ROW` 后再查询，约束详情见 [LtMatmul README](../../blasLt/README.md)。
+
 成功返回后应检查 `heuristicResultsArray[0 .. returnAlgoCount-1].state` 确认各候选算法是否可用。超过偏好中 workspace 预算的候选算法会被跳过（不计入返回数量，不写对应结果项）；**预算为 0 时的语义按构建目标不同**——arch35（Ascend 950 系列）实现把 0 读作「关闭预算过滤」（即无上限，不过滤任何候选），arch22（Atlas A2/A3 系列）实现与 cuBLASLt 一致、把 0 读作「零字节预算」（只保留无 workspace 需求的候选），详见 `aclblasLtMatmulPreferenceAttribute_t`；计算类型与输入矩阵数据类型不兼容时返回 `INVALID_VALUE`，且 `heuristicResultsArray[0].state` 会被写为 `INVALID_VALUE`。无论返回码如何，`returnAlgoCount` 均会被写入（失败路径写 0）。结果项中 `wavesCount` 当前为固定填充值 1.0（不代表实测设备利用率），`reserved` 为保留字段（填 0，调用方忽略）。
 
 | 返回值 | 含义 |
@@ -694,6 +696,8 @@ aclblasStatus_t aclblasLtMatmulAlgoCheck(aclblasLtHandle_t lightHandle,
 ```
 
 校验给定算法是否可用于由 `operationDesc` 与 A/B/C/D 四个 layout 描述的矩阵乘法问题，并把结论写入 `result`。与 `aclblasLtMatmulAlgoGetHeuristic` 的区别是：后者由库检索候选算法，本接口由调用方指定算法、库只负责判定其可用性并回填所需 workspace 大小。
+
+**矩阵布局限制**：matmul 内核仅支持行主序，A/B/C/D 四个 layout 的 order 均须显式设置为 `ACLBLASLT_ORDER_ROW`（layout 描述符的默认值为 `ACLBLASLT_ORDER_COL`）；任一 layout 未设置为 ROW 时本接口直接返回 `ACLBLAS_STATUS_NOT_SUPPORTED`，不再静默按行主序解释（对齐 `aclblasLtMatmul` 的拒绝行为）。注意 `aclblasLtMatmulAlgoGetHeuristic` 不按 order 过滤候选，默认 COL layout 下查询到的候选在本接口会被拒绝，两接口配合使用时应先统一设置为 ROW。
 
 `m == 0` 或 `n == 0` 的 no-op 情形视为可用，此时 `result` 的 `workspaceSize` 为 0。
 
