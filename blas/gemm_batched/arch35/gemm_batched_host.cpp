@@ -360,20 +360,46 @@ static int32_t CalcAivCoreNum(uint32_t aivCoreNum, int64_t totalElements)
             (totalElements + GEMM_BATCHED_AIV_ELEMENTS_PER_CORE - 1) / GEMM_BATCHED_AIV_ELEMENTS_PER_CORE)));
 }
 
-static aclblasStatus_t LaunchCgemmEarlyExit(
-    _aclblas_handle* h, int m, int n, int ldc, int batchCount, float alphaR, float alphaI, float betaR, float betaI,
-    uint32_t aivCoreNum, aclblasComplex* const Carray[])
+// issue #1103: 对齐 sgemm 路径 GemmBatchedPrepareTempWorkspace 的溢出防护口径——
+// 回绕出的小值会让 EnsureWorkspace 以不足容量成功，随后 kernel 按真实偏移写越界。
+// 独立成辅助函数，控制 LaunchCgemmEarlyExit 函数体规模。
+static aclblasStatus_t CalcCgemmEarlyExitWorkspace(
+    int m, int n, int batchCount, uint32_t& tempRowStride, size_t& totalWorkspace, size_t& alignedPtrBytes,
+    size_t& perBatchTempBytes, size_t& totalTempBytes)
 {
-    uint32_t tempRowStride = CeilAlign(static_cast<uint32_t>(m), GEMM_BATCHED_L0C_C0);
-    size_t perBatchTempBytes = static_cast<size_t>(n) * tempRowStride * sizeof(float);
-    size_t totalTempBytes = static_cast<size_t>(batchCount) * perBatchTempBytes;
-    size_t ptrBytes = static_cast<size_t>(batchCount) * sizeof(void*);
+    tempRowStride = CeilAlign(static_cast<uint32_t>(m), GEMM_BATCHED_L0C_C0);
+    const uint64_t perBatchTempU64 = static_cast<uint64_t>(n) * static_cast<uint64_t>(tempRowStride) * sizeof(float);
+    if (perBatchTempU64 > SIZE_MAX) {
+        OP_LOGE("aclblasCgemmBatched", "per-batch temp bytes overflow: n=%d rowStride=%u", n, tempRowStride);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    perBatchTempBytes = static_cast<size_t>(perBatchTempU64);
+    if (perBatchTempBytes != 0 && static_cast<uint64_t>(batchCount) > SIZE_MAX / perBatchTempBytes) {
+        OP_LOGE("aclblasCgemmBatched", "total temp bytes overflow: batchCount=%d perBatch=%zu", batchCount,
+                perBatchTempBytes);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    totalTempBytes = static_cast<size_t>(batchCount) * perBatchTempBytes;
+    const size_t ptrBytes = static_cast<size_t>(batchCount) * sizeof(void*);
     constexpr size_t ALIGN64 = 64;
-    size_t alignedPtrBytes = (ptrBytes + ALIGN64 - 1) & ~(ALIGN64 - 1);
+    alignedPtrBytes = (ptrBytes + ALIGN64 - 1) & ~(ALIGN64 - 1);
     // Early-exit: T1=T2=T3=T4 all zero. Allocate a single pointer array and
     // pass it four times to the combine kernel instead of 4 identical copies.
-    size_t totalWorkspace = alignedPtrBytes + totalTempBytes;
-    aclblasStatus_t wsRet = EnsureWorkspace(h, totalWorkspace);
+    if (totalTempBytes > SIZE_MAX - alignedPtrBytes) {
+        OP_LOGE("aclblasCgemmBatched", "total workspace bytes overflow: ptrArray=%zu temp=%zu", alignedPtrBytes,
+                totalTempBytes);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    totalWorkspace = alignedPtrBytes + totalTempBytes;
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+// Early-exit 路径的 workspace 初始化：清零临时区并写入四路复用的设备侧指针数组。
+// 独立成辅助函数，控制 LaunchCgemmEarlyExit 函数体规模。
+static aclblasStatus_t InitCgemmEarlyExitWorkspace(
+    _aclblas_handle* h, int batchCount, size_t alignedPtrBytes, size_t perBatchTempBytes, size_t totalTempBytes)
+{
+    aclblasStatus_t wsRet = EnsureWorkspace(h, alignedPtrBytes + totalTempBytes);
     if (wsRet != ACLBLAS_STATUS_SUCCESS) {
         return wsRet;
     }
@@ -388,11 +414,19 @@ static aclblasStatus_t LaunchCgemmEarlyExit(
     for (int i = 0; i < batchCount; i++) {
         ptrs[i] = base + static_cast<uint64_t>(i) * perBatchTempBytes;
     }
+    const size_t ptrBytes = static_cast<size_t>(batchCount) * sizeof(void*);
     aclRet = aclrtMemcpy(ws, ptrBytes, ptrs.data(), ptrBytes, ACL_MEMCPY_HOST_TO_DEVICE);
     if (aclRet != ACL_SUCCESS) {
         OP_LOGE("aclblasCgemmBatched", "aclrtMemcpy failed err=%d", aclRet);
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+static CgemmBatchedCombineTilingData BuildCgemmCombineTiling(
+    int m, int n, int ldc, int batchCount, uint32_t tempRowStride, float alphaR, float alphaI, float betaR,
+    float betaI, uint32_t aivCoreNum)
+{
     CgemmBatchedCombineTilingData cTiling{};
     cTiling.m = m;
     cTiling.n = n;
@@ -406,6 +440,27 @@ static aclblasStatus_t LaunchCgemmEarlyExit(
     cTiling.batchCount = batchCount;
     cTiling.totalCols = static_cast<int64_t>(batchCount) * n;
     cTiling.usedAivCoreNum = CalcAivCoreNum(aivCoreNum, static_cast<int64_t>(batchCount) * m * n);
+    return cTiling;
+}
+
+static aclblasStatus_t LaunchCgemmEarlyExit(
+    _aclblas_handle* h, int m, int n, int ldc, int batchCount, float alphaR, float alphaI, float betaR, float betaI,
+    uint32_t aivCoreNum, aclblasComplex* const Carray[])
+{
+    size_t totalWorkspace = 0;
+    size_t alignedPtrBytes = 0;
+    size_t perBatchTempBytes = 0;
+    size_t totalTempBytes = 0;
+    uint32_t tempRowStride = 0;
+    const aclblasStatus_t wsCalcRet = CalcCgemmEarlyExitWorkspace(
+        m, n, batchCount, tempRowStride, totalWorkspace, alignedPtrBytes, perBatchTempBytes, totalTempBytes);
+    CHECK_RET(wsCalcRet == ACLBLAS_STATUS_SUCCESS, wsCalcRet);
+    const aclblasStatus_t wsInitRet =
+        InitCgemmEarlyExitWorkspace(h, batchCount, alignedPtrBytes, perBatchTempBytes, totalTempBytes);
+    CHECK_RET(wsInitRet == ACLBLAS_STATUS_SUCCESS, wsInitRet);
+    uint8_t* ws = static_cast<uint8_t*>(GetEffectiveWorkspace(h));
+    CgemmBatchedCombineTilingData cTiling =
+        BuildCgemmCombineTiling(m, n, ldc, batchCount, tempRowStride, alphaR, alphaI, betaR, betaI, aivCoreNum);
     uint8_t* carrayPtr = const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(Carray));
     cgemm_batched_combine_do(
         static_cast<uint32_t>(cTiling.usedAivCoreNum), h->stream, ws, ws, ws, ws, carrayPtr, cTiling);
@@ -465,6 +520,43 @@ static aclblasStatus_t CopyCgemmPtrArrays(uint8_t* ws, const CgemmBatchedWsCtx& 
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// issue #1103: 逐级乘加前检查上限（对齐 sgemm 路径的溢出防护口径），防止回绕后
+// 以不足容量分配成功导致 kernel 写越界。独立成辅助函数，控制 PrepareCgemmWorkspace
+// 函数体规模。
+static aclblasStatus_t CheckCgemmWsRegion(CgemmBatchedWsCtx& ctx, int batchCount, size_t& totalWorkspace)
+{
+    if (ctx.aPerBatch != 0 && static_cast<uint64_t>(batchCount) > SIZE_MAX / ctx.aPerBatch) {
+        OP_LOGE("aclblasCgemmBatched", "a total bytes overflow: batchCount=%d perBatch=%zu", batchCount, ctx.aPerBatch);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (ctx.bPerBatch != 0 && static_cast<uint64_t>(batchCount) > SIZE_MAX / ctx.bPerBatch) {
+        OP_LOGE("aclblasCgemmBatched", "b total bytes overflow: batchCount=%d perBatch=%zu", batchCount, ctx.bPerBatch);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (ctx.tPerBatch != 0 && static_cast<uint64_t>(batchCount) > SIZE_MAX / ctx.tPerBatch) {
+        OP_LOGE("aclblasCgemmBatched", "temp total bytes overflow: batchCount=%d perBatch=%zu", batchCount,
+                ctx.tPerBatch);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    ctx.aTotal = ctx.aPerBatch * batchCount;
+    ctx.bTotal = ctx.bPerBatch * batchCount;
+    ctx.tTotal = ctx.tPerBatch * batchCount;
+    // a/b 各存实部+虚部两份，t 存四份临时
+    if (ctx.aTotal > SIZE_MAX / 2 || ctx.bTotal > SIZE_MAX / 2 || ctx.tTotal > SIZE_MAX / 4 ||
+        ctx.aTotal * 2 > SIZE_MAX - ctx.bTotal * 2 - ctx.tTotal * 4) {
+        OP_LOGE("aclblasCgemmBatched", "data region bytes overflow");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    const size_t dataRegion = ctx.aTotal * 2 + ctx.bTotal * 2 + ctx.tTotal * 4;
+    if (dataRegion > SIZE_MAX - ctx.ptrRegion) {
+        OP_LOGE("aclblasCgemmBatched", "total workspace bytes overflow: ptrRegion=%zu data=%zu", ctx.ptrRegion,
+                dataRegion);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    totalWorkspace = ctx.ptrRegion + dataRegion;
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 static aclblasStatus_t PrepareCgemmWorkspace(
     _aclblas_handle* h, int m, int n, int k, int lda, int ldb, int batchCount, bool isTransA, bool isTransB,
     CgemmBatchedWsCtx& ctx)
@@ -486,12 +578,14 @@ static aclblasStatus_t PrepareCgemmWorkspace(
     size_t ptrBytes = static_cast<size_t>(batchCount) * sizeof(void*);
     constexpr size_t ALIGN64 = 64;
     ctx.alignedPtrBytes = (ptrBytes + ALIGN64 - 1) & ~(ALIGN64 - 1);
-    ctx.aTotal = ctx.aPerBatch * batchCount;
-    ctx.bTotal = ctx.bPerBatch * batchCount;
-    ctx.tTotal = ctx.tPerBatch * batchCount;
     ctx.ptrRegion = ctx.alignedPtrBytes * 8;
-    size_t dataRegion = ctx.aTotal * 2 + ctx.bTotal * 2 + ctx.tTotal * 4;
-    size_t totalWorkspace = ctx.ptrRegion + dataRegion;
+    // issue #1103: 逐级乘加前检查上限（对齐 sgemm 路径的溢出防护口径），防止回绕后
+    // 以不足容量分配成功导致 kernel 写越界
+    size_t totalWorkspace = 0;
+    const aclblasStatus_t overflowRet = CheckCgemmWsRegion(ctx, batchCount, totalWorkspace);
+    if (overflowRet != ACLBLAS_STATUS_SUCCESS) {
+        return overflowRet;
+    }
 
     aclblasStatus_t wsRet = EnsureWorkspace(h, totalWorkspace);
     if (wsRet != ACLBLAS_STATUS_SUCCESS) {
@@ -1011,14 +1105,48 @@ static uint32_t SelectRealifiedSpatialBatch(const CgemmRealifiedParams& p, const
     return fiveWayNc576 ? 11 : 0;
 }
 
-static aclblasStatus_t PrepareRealifiedWorkspace(const CgemmRealifiedParams& p, CgemmRealifiedPlan& plan)
+// issue #1103: 逐级乘加前检查上限（对齐 sgemm 路径的溢出防护口径）。
+// 独立成辅助函数，控制 PrepareRealifiedWorkspace 函数体规模。
+static aclblasStatus_t CalcRealifiedWorkspaceBytes(
+    const CgemmRealifiedParams& p, const CgemmRealifiedPlan& plan, size_t& totalWorkspace)
 {
+    const uint64_t perBatchA = plan.perBatchABytes + (plan.packB ? plan.perBatchBBytes : 0);
+    if (perBatchA != 0 && static_cast<uint64_t>(p.batchCount) > SIZE_MAX / perBatchA) {
+        OP_LOGE("aclblasCgemmBatched", "base workspace bytes overflow: batchCount=%d perBatch=%zu", p.batchCount,
+                perBatchA);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (static_cast<uint64_t>(plan.alignedPtrBytes) > SIZE_MAX - perBatchA * p.batchCount) {
+        OP_LOGE("aclblasCgemmBatched", "base workspace bytes overflow: ptrArray=%zu", plan.alignedPtrBytes);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     const size_t baseWorkspace =
         plan.useGenericPack ?
             2 * plan.alignedPtrBytes + (plan.perBatchABytes + (plan.packB ? plan.perBatchBBytes : 0)) * p.batchCount :
             plan.alignedPtrBytes + plan.perBatchABytes * p.batchCount;
-    const size_t totalWorkspace =
+    if (plan.splitWideK) {
+        if (plan.splitPerBatchBytes != 0 && static_cast<uint64_t>(p.batchCount) > SIZE_MAX / plan.splitPerBatchBytes) {
+            OP_LOGE("aclblasCgemmBatched", "split workspace bytes overflow: batchCount=%d perBatch=%zu", p.batchCount,
+                    plan.splitPerBatchBytes);
+            return ACLBLAS_STATUS_INVALID_VALUE;
+        }
+        if (baseWorkspace > SIZE_MAX - (3 * plan.alignedPtrBytes + plan.splitPerBatchBytes * p.batchCount)) {
+            OP_LOGE("aclblasCgemmBatched", "total workspace bytes overflow");
+            return ACLBLAS_STATUS_INVALID_VALUE;
+        }
+    }
+    totalWorkspace =
         baseWorkspace + (plan.splitWideK ? 3 * plan.alignedPtrBytes + plan.splitPerBatchBytes * p.batchCount : 0);
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+static aclblasStatus_t PrepareRealifiedWorkspace(const CgemmRealifiedParams& p, CgemmRealifiedPlan& plan)
+{
+    size_t totalWorkspace = 0;
+    const aclblasStatus_t calcRet = CalcRealifiedWorkspaceBytes(p, plan, totalWorkspace);
+    if (calcRet != ACLBLAS_STATUS_SUCCESS) {
+        return calcRet;
+    }
     const aclblasStatus_t status = EnsureWorkspace(p.handle, totalWorkspace);
     if (status != ACLBLAS_STATUS_SUCCESS) {
         OP_LOGE("aclblasCgemmBatched", "realified workspace ensure failed, required=%zu", totalWorkspace);
