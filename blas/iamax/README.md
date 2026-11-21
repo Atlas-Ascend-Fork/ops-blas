@@ -54,6 +54,7 @@ aclblasStatus_t aclblasIsamax(aclblasHandle_t handle, int n, const float *x, int
 - x、result 不可为 nullptr
 - 正常计算（n > 0 且 incx >= 1）时，Arch22 会在函数返回前同步 handle 绑定的 stream；Arch35 仅将 kernel 排入该 stream 并返回。Arch35 调用方读取 result 前必须同步该 stream
 - 当多个元素绝对值相同时，返回索引最小的元素
+- Ascend 950PR / 950DT（Arch35）正常计算路径（n > 0 且 incx >= 1）要求 `(n - 1) * incx <= INT32_MAX`，超出该地址跨度上限时在 kernel 下发前返回 ACLBLAS_STATUS_INVALID_VALUE
 
 #### 调用示例
 
