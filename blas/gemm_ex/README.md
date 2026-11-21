@@ -58,7 +58,7 @@ arch22的alpha/beta为Host标量指针；A/B/C为Device矩阵指针。arch35 Cge
 | A、B | k>0且alpha非零时必须非空 |
 | C | beta非零时必须非空 |
 
-校验顺序为handle、维度/leading dimensions、alpha/beta、dtype、转置枚举、矩阵指针、GemmEx的computeType/algo，最后才判断no-op。leading dimension和其他参数非法返回INVALID_VALUE；合法但不支持的computeType/algo返回NOT_SUPPORTED。
+校验顺序为handle、维度/leading dimensions、alpha/beta、dtype、转置枚举、矩阵指针、GemmEx的computeType/algo，最后才判断no-op。arch35实现的校验顺序与之不同：handle、维度与转置枚举、leading dimensions、alpha/beta非空、algo、dtype组合，m=0或n=0在此阶段早退成功（no-op），最后校验矩阵指针。leading dimension和其他参数非法返回INVALID_VALUE；合法但不支持的computeType/algo返回NOT_SUPPORTED。
 
 - m=0或n=0在校验完成后成功返回，不计算。
 - k=0或alpha=0只处理`C=beta*C`，不读取A/B。beta=1不改C，beta=0不读取原C，其他beta按逻辑元素缩放。
