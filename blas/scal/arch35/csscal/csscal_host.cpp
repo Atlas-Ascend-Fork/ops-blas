@@ -124,9 +124,18 @@ aclblasStatus_t aclblasCsscal(aclblasHandle_t handle, int n, const float* alpha,
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
 
-    // n <= 0 或 incx <= 0 为合法 no-op
-    if (n <= 0 || incx <= 0) {
+    // n <= 0 为合法 no-op（issue #1092: incx 不再与 n<=0 混合静默假成功，
+    // 对齐 scalex 口径：incx<0 显式 NOT_SUPPORTED，incx==0 返回 INVALID_VALUE）
+    if (n <= 0) {
         return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (incx < 0) {
+        OP_LOGE("aclblasCsscal", "negative incx is not supported, got incx=%d", incx);
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
+    if (incx == 0) {
+        OP_LOGE("aclblasCsscal", "incx must not be zero");
+        return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
     // n > 0 时检查 alpha 和 x
