@@ -1,4 +1,4 @@
-# aclblasCgetrfBatched（Ascend 950PR）
+# aclblasCgetrfBatched（Ascend 950PR / 950DT）
 
 批量单精度复数 LU 分解。输入为列主序 complex64 方阵，原地写回 L/U；L 的单位对角线不单独存储。支持主元和非主元两种模式。
 
@@ -33,7 +33,7 @@ aclblasStatus_t aclblasCgetrfBatched(
 
 | 产品 | 支持情况 |
 | --- | --- |
-| Ascend 950PR（arch35） | 支持 |
+| Ascend 950PR / Ascend 950DT（arch35） | 支持 |
 | Atlas A2/A3（arch22） | 本实现不支持 |
 | Ascend 310P（arch20） | 本实现不支持 |
 
