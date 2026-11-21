@@ -20,7 +20,7 @@ SCRIPT = Path(os.environ.get(
 
 
 class ChangedPathSelectionTests(unittest.TestCase):
-    def run_case(self, paths, smoke=False):
+    def run_case(self, paths, smoke=False, soc="ascend950"):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             script = root / "scripts/ci/run_example.sh"
@@ -32,6 +32,7 @@ class ChangedPathSelectionTests(unittest.TestCase):
             for directory in (
                 "blasLtMatrixTransform", "gemm_ex", "isamax", "isamax/arch22",
                 "axpy/caxpy", "gemm", "gemm/cgemm", "blasLtMatmul",
+                "extensions/complexmatdot",
             ):
                 target = root / "test" / directory
                 target.mkdir(parents=True, exist_ok=True)
@@ -45,7 +46,7 @@ class ChangedPathSelectionTests(unittest.TestCase):
             filelist = root / "files.txt"
             filelist.write_text("\n".join(paths) + "\n", encoding="utf-8")
             result = subprocess.run(
-                [str(script), str(filelist), "ascend950"], cwd=root,
+                [str(script), str(filelist), soc], cwd=root,
                 env={**os.environ, "RUN_FLAGS": "" if smoke else "--no-smoke",
                      "RUNNER_NPU_COUNT": "1"},
                 capture_output=True, text=True, timeout=30, shell=False,
@@ -86,6 +87,24 @@ class ChangedPathSelectionTests(unittest.TestCase):
                 args = self.run_case(ordered, smoke=True)
                 self.assertNotIn("--ops=", args)
                 self.assertIn("--smoke", args)
+
+    def test_extension_source_selects_its_operator(self):
+        args = self.run_case(
+            ["extensions/complexmatdot/arch22/complexmatdot_kernel.cpp"],
+            smoke=True,
+            soc="ascend910b3",
+        )
+        self.assertIn("--ops=complexmatdot,blasLtMatmul", args)
+        self.assertIn("--smoke", args)
+
+    def test_shared_extension_build_changes_fall_back_to_all(self):
+        args = self.run_case(
+            ["extensions/CMakeLists.txt"],
+            smoke=True,
+            soc="ascend910b3",
+        )
+        self.assertNotIn("--ops=", args)
+        self.assertIn("--smoke", args)
 
     def test_existing_blas_and_shared_test_paths(self):
         self.assertIn("--ops=caxpy,blasLtMatmul", self.run_case(

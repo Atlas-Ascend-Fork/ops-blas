@@ -160,6 +160,18 @@ while IFS= read -r filepath; do
         run_all=true
         break
     fi
+    if [[ "$filepath" == extensions/* ]]; then
+        extension_path=${filepath#extensions/}
+        extension_op=${extension_path%%/*}
+        if [[ -f "./test/extensions/$extension_op/CMakeLists.txt" ]]; then
+            ops+=("$extension_op")
+            op_cases[$extension_op]="ALL"
+            continue
+        fi
+        echo "Warning: shared or unmapped extension code changed ($filepath), fallback to run all."
+        run_all=true
+        break
+    fi
     # issue #627: 取反符必须与操作数空格分隔（!"$filepath" 会粘成单词 "!<path>"
     # 使取反语义丢失），blas*/test* 为子串正则而非前缀匹配，均按目录前缀锚定修正
     if [[ ! "$filepath" =~ ^blas/ ]] && [[ ! "$filepath" =~ ^test/ ]]; then
