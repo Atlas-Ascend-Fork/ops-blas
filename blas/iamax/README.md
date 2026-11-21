@@ -376,3 +376,4 @@ int main()
     return 0;
 }
 ```
+- 当 `n > 0` 且 `incx > 0` 时，若 `(n - 1) * incx` 超过 `INT32_MAX`，返回 `ACLBLAS_STATUS_INVALID_VALUE`，不启动 kernel。
