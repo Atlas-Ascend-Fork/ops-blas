@@ -59,7 +59,13 @@ static SswapTilingData CalSswapTilingData(uint32_t n, uint32_t coreNum, int32_t 
 
 aclblasStatus_t aclblasSswap(aclblasHandle_t handle, int n, float* x, int incx, float* y, int incy)
 {
-    if (n <= 0) {
+    // issue #1083: 对齐 scopy 口径——n < 0 显式拒绝返回 INVALID_VALUE，
+    // 不再与 n == 0 合并静默假成功；n == 0 仍为合法 no-op
+    if (n < 0) {
+        OP_LOGE("aclblasSswap", "n must be >= 0, got %d", n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }
 
