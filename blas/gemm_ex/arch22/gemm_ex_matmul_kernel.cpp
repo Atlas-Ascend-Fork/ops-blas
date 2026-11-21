@@ -10,6 +10,7 @@
 
 // CATLASS-backed arch22 implementation; dependency revision is pinned by CMake.
 #ifdef GEMMEX_CATLASS_ENABLED
+#include <algorithm>
 #include "gemm_ex_device_common.h"
 
 using SgemmNativeArgs = gemm_ex::NativeArgs;

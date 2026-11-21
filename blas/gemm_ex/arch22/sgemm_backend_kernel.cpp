@@ -8,6 +8,7 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 #ifdef GEMMEX_CATLASS_ENABLED
+#include <algorithm>
 #include "gemm_ex_device_common.h"
 
 // CATLASS-backed arch22 implementation; dependency revision is pinned by CMake.
