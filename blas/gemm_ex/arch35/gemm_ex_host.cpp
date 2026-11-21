@@ -294,10 +294,12 @@ static GemmExTilingData CalcBlockMmadTiling(
 // Kernel launch sub-functions (P0-3: split aclblasGemmEx)
 // ============================================================================
 
-static aclblasStatus_t HandleKZero(void* C, int ldc, int n, aclDataType Ctype, float betaVal)
+// issue #1091: alpha=0 与 k=0 共用的 C=beta*C 原地缩放路径（不读取 A/B，README 契约）：
+// beta=0 置零、beta=1 原样保留、其余 beta 逐元素缩放；
+// k=0 或 beta==0 时契约允许 C 为 nullptr：此时无需写 C，直接成功返回，
+// 避免对空指针执行 aclrtMemset/aclrtMemcpy（issue #355）
+static aclblasStatus_t ScaleCWithBeta(void* C, int ldc, int n, aclDataType Ctype, float betaVal)
 {
-    // k == 0 且 beta == 0 时契约允许 C 为 nullptr：此时无需写 C，直接成功返回，
-    // 避免对空指针执行 aclrtMemset/aclrtMemcpy（issue #355）
     if (C == nullptr) {
         return ACLBLAS_STATUS_SUCCESS;
     }
@@ -306,7 +308,7 @@ static aclblasStatus_t HandleKZero(void* C, int ldc, int n, aclDataType Ctype, f
         size_t cBytes = static_cast<size_t>(ldc) * n * elemSizeC;
         aclError aclRet = aclrtMemset(C, cBytes, 0, cBytes);
         if (aclRet != ACL_SUCCESS) {
-            OP_LOGE("aclblasGemmEx", "aclrtMemset failed for C (k=0, beta=0), ret=%d", aclRet);
+            OP_LOGE("aclblasGemmEx", "aclrtMemset failed for C, ret=%d", aclRet);
             return ACLBLAS_STATUS_INTERNAL_ERROR;
         }
     } else if (betaVal != 1.0f) {
@@ -316,7 +318,7 @@ static aclblasStatus_t HandleKZero(void* C, int ldc, int n, aclDataType Ctype, f
         std::vector<uint8_t> cHost(cBytes);
         aclError aclRet = aclrtMemcpy(cHost.data(), cBytes, C, cBytes, ACL_MEMCPY_DEVICE_TO_HOST);
         if (aclRet != ACL_SUCCESS) {
-            OP_LOGE("aclblasGemmEx", "aclrtMemcpy failed for C (k=0), ret=%d", aclRet);
+            OP_LOGE("aclblasGemmEx", "aclrtMemcpy failed for C, ret=%d", aclRet);
             return ACLBLAS_STATUS_INTERNAL_ERROR;
         }
         if (Ctype == ACL_FLOAT) {
@@ -335,7 +337,7 @@ static aclblasStatus_t HandleKZero(void* C, int ldc, int n, aclDataType Ctype, f
         }
         aclRet = aclrtMemcpy(C, cBytes, cHost.data(), cBytes, ACL_MEMCPY_HOST_TO_DEVICE);
         if (aclRet != ACL_SUCCESS) {
-            OP_LOGE("aclblasGemmEx", "aclrtMemcpy H2D failed for C (k=0), ret=%d", aclRet);
+            OP_LOGE("aclblasGemmEx", "aclrtMemcpy H2D failed for C, ret=%d", aclRet);
             return ACLBLAS_STATUS_INTERNAL_ERROR;
         }
     }
@@ -344,21 +346,12 @@ static aclblasStatus_t HandleKZero(void* C, int ldc, int n, aclDataType Ctype, f
 
 static bool HandleAlphaZero(void* C, int ldc, int n, aclDataType Ctype, float betaVal, aclblasStatus_t& outStatus)
 {
-    if (betaVal == 0.0f) {
-        size_t cBytes = static_cast<size_t>(ldc) * n * (Ctype == ACL_FLOAT ? 4 : 2);
-        aclError aclRet = aclrtMemset(C, cBytes, 0, cBytes);
-        if (aclRet != ACL_SUCCESS) {
-            OP_LOGE("aclblasGemmEx", "aclrtMemset failed for C, ret=%d", aclRet);
-            outStatus = ACLBLAS_STATUS_INTERNAL_ERROR;
-            return true;
-        }
-    }
-    if (betaVal == 0.0f || betaVal == 1.0f) {
-        OP_LOGI("aclblasGemmEx", "alpha=0, beta=%.1f, skipping matmul", betaVal);
-        outStatus = ACLBLAS_STATUS_SUCCESS;
-        return true;
-    }
-    return false;
+    // issue #1091: alpha=0 时不读取 A/B（README 契约），全部 beta 值只走 C=beta*C
+    // 缩放路径，不再回落完整 GEMM 读取空指针/含 NaN 的 A/B（空指针设备访问、
+    // 0*NaN=NaN 污染 C）
+    OP_LOGI("aclblasGemmEx", "alpha=0, beta=%.3f, skipping matmul with C=beta*C only", betaVal);
+    outStatus = ScaleCWithBeta(C, ldc, n, Ctype, betaVal);
+    return true;
 }
 
 static aclblasStatus_t CheckWorkspaceSize(bool useFP32Output, aclDataType Ctype, int m, int n, _aclblas_handle* h)
@@ -477,7 +470,7 @@ static aclblasStatus_t AllocateAndLaunchKernel(
 }
 
 // issue #1028: 路径派发段（k=0 快路径、核数查询、alpha=0 处理与 kernel 下发）拆出
-// 独立函数——该段（含 HandleKZero 内 std::vector 堆分配）在入口侧由 try/catch 包裹，
+// 独立函数——该段（含 ScaleCWithBeta 内 std::vector 堆分配）在入口侧由 try/catch 包裹，
 // 拆分同时保证两个函数都不触碰单函数规模门禁。
 static aclblasStatus_t DispatchGemmEx(
     aclblasHandle_t handle, int m, int n, int k, const void* alpha, const void* A, aclDataType Atype, const void* B,
@@ -485,7 +478,7 @@ static aclblasStatus_t DispatchGemmEx(
     aclblasOperation_t transb, int lda, int ldb, int ldc)
 {
     if (k == 0) {
-        return HandleKZero(C, ldc, n, Ctype, *static_cast<const float*>(beta));
+        return ScaleCWithBeta(C, ldc, n, Ctype, *static_cast<const float*>(beta));
     }
     if (C == nullptr) {
         return ACLBLAS_STATUS_SUCCESS;

@@ -8,8 +8,7 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef GEMM_EX_GOLDEN_H
-#define GEMM_EX_GOLDEN_H
+#pragma once
 
 #include <algorithm>
 #include <cmath>
@@ -49,7 +48,9 @@ inline aclblasStatus_t ValidateGoldenParams(
     if (ldc < std::max(1, m))
         return ACLBLAS_STATUS_INVALID_VALUE;
 
-    if (k > 0 && (A == nullptr || B == nullptr))
+    // issue #1091: alpha=0 时 A/B 可为空指针（与 NPU 侧校验口径一致）
+    const float alphaVal = *static_cast<const float*>(alpha);
+    if (k > 0 && alphaVal != 0.0f && (A == nullptr || B == nullptr))
         return ACLBLAS_STATUS_INVALID_VALUE;
     if (C == nullptr && betaVal != 0.0f)
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -144,6 +145,15 @@ inline aclblasStatus_t aclblasGemmEx_cpu(
     if (cData == nullptr)
         return ACLBLAS_STATUS_SUCCESS;
 
+    // issue #1091: alpha=0 不读取 A/B（README 契约），C=beta*C（A/B 可为空指针或含 NaN）
+    if (alphaVal == 0.0f) {
+        const size_t cCount = static_cast<size_t>(ldc) * n;
+        for (size_t idx = 0; idx < cCount; idx++) {
+            cData[idx] = (betaVal == 0.0f) ? 0.0f : QuantizeGoldenOutput(cData[idx] * betaVal, Atype, Btype, Ctype);
+        }
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+
     cblas_sgemm(
         CblasColMajor, ToCblasOp(transA), ToCblasOp(transB), m, n, k, alphaVal, aData, lda, bData, ldb, betaVal, cData,
         ldc);
@@ -157,5 +167,3 @@ inline aclblasStatus_t aclblasGemmEx_cpu(
 
     return ACLBLAS_STATUS_SUCCESS;
 }
-
-#endif // GEMM_EX_GOLDEN_H
