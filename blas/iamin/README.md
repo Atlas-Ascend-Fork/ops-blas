@@ -52,6 +52,7 @@ aclblasStatus_t aclblasIsamin(aclblasHandle_t handle, int n, const float *x, int
 - handle 不可为 nullptr
 - x、result 不可为 nullptr
 - 当多个元素绝对值相同时，返回索引最小的元素
+- Ascend 950PR / 950DT（Arch35）正常计算路径（n > 0 且 incx >= 1）要求 `(n - 1) * incx <= INT32_MAX`，超出该地址跨度上限时在 kernel 下发前返回 ACLBLAS_STATUS_INVALID_VALUE
 
 ### aclblasIcamin
 
