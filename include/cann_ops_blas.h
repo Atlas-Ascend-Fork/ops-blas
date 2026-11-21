@@ -150,7 +150,7 @@ aclblasStatus_t aclblasSetLoggerCallback(aclblasLogCallback userCallback);
 aclblasStatus_t aclblasGetLoggerCallback(aclblasLogCallback* userCallback);
 
 aclblasStatus_t aclblasScopy_legacy(
-    aclblasHandle_t handle, uint8_t* x, uint8_t* y, const int64_t n, const int64_t incx, const int64_t incy);
+    aclblasHandle_t handle, uint8_t* x, uint8_t* y, int64_t n, int64_t incx, int64_t incy);
 
 aclblasStatus_t aclblasScopy(aclblasHandle_t handle, int n, const float* x, int incx, float* y, int incy);
 
@@ -236,7 +236,7 @@ aclblasStatus_t aclblasStpmv_legacy(
 // evolve or be removed in future releases.
 aclblasStatus_t aclblasStbmv_legacy(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, const float* a,
-    const int64_t lda, const float* x, float* y, const int64_t n, const int64_t k, const int64_t incx);
+    int64_t lda, const float* x, float* y, int64_t n, int64_t k, int64_t incx);
 
 aclblasStatus_t aclblasStbmv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n, int k,
@@ -348,7 +348,7 @@ aclblasStatus_t aclblasSnrm2(aclblasHandle_t handle, int n, const float* x, int 
 aclblasStatus_t aclblasScnrm2(aclblasHandle_t handle, int n, const aclblasComplex* x, int incx, float* result);
 
 aclblasStatus_t aclblasSnrm2Ex(
-    aclblasHandle_t handle, aclDataType xtype, const void* x, const int64_t n, const int64_t incx, void* result);
+    aclblasHandle_t handle, aclDataType xtype, const void* x, int64_t n, int64_t incx, void* result);
 
 aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, float* x, int incx);
 
@@ -467,28 +467,28 @@ aclblasStatus_t aclblasSsymm(
     const float* A, int lda, const float* B, int ldb, const float* beta, float* C, int ldc);
 
 aclblasStatus_t aclblasSsyr(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const float* alpha, const float* x, const int incx,
-    float* A, const int lda);
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* alpha, const float* x, int incx, float* A,
+    int lda);
 
 aclblasStatus_t aclblasCsyr(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const aclblasComplex* alpha, const aclblasComplex* x,
-    const int incx, aclblasComplex* A, const int lda);
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, const aclblasComplex* x,
+    int incx, aclblasComplex* A, int lda);
 
 aclblasStatus_t aclblasCher(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const float* alpha, const aclblasComplex* x,
-    const int incx, aclblasComplex* A, const int lda);
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* alpha, const aclblasComplex* x, int incx,
+    aclblasComplex* A, int lda);
 
 /** Hermitian rank-2 update. Host alpha; column-major A, selected triangle only.
  * Structural validation precedes n==0 / alpha==0 quick return.
  * Negative strides use the Netlib physical-base-pointer convention.
  */
 aclblasStatus_t aclblasCher2(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const aclblasComplex* alpha, const aclblasComplex* x,
-    const int incx, const aclblasComplex* y, const int incy, aclblasComplex* A, const int lda);
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, const aclblasComplex* x,
+    int incx, const aclblasComplex* y, int incy, aclblasComplex* A, int lda);
 
 aclblasStatus_t aclblasSsyr2(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const float* alpha, const float* x, const int incx,
-    const float* y, const int incy, float* A, const int lda);
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* alpha, const float* x, int incx, const float* y,
+    int incy, float* A, int lda);
 
 aclblasStatus_t aclblasCsyr2(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, const aclblasComplex* x,
@@ -506,8 +506,8 @@ aclblasStatus_t aclblasChpr(
     aclblasComplex* ap);
 
 aclblasStatus_t aclblasChpr2(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const aclblasComplex* alpha, const aclblasComplex* x,
-    const int incx, const aclblasComplex* y, const int incy, aclblasComplex* ap);
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, const aclblasComplex* x,
+    int incx, const aclblasComplex* y, int incy, aclblasComplex* ap);
 
 aclblasStatus_t aclblasCtrmv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
@@ -526,8 +526,7 @@ aclblasStatus_t aclblasStpttr(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* AP, float* A, int lda);
 
 aclblasStatus_t aclblasCtpttr(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const aclblasComplex* AP, aclblasComplex* A,
-    const int lda);
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* AP, aclblasComplex* A, int lda);
 
 aclblasStatus_t aclblasStrttp(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* A, int lda, float* AP);
