@@ -334,6 +334,25 @@ set_property(SOURCE
     "${CMAKE_CURRENT_LIST_DIR}/blas/herk/arch22/cherk_pack_kernel.cpp"
     APPEND PROPERTY COMPILE_OPTIONS "$<$<COMPILE_LANGUAGE:ASC>:--cce-auto-sync=off>")
 
+# ========= 安全加固: 完整 RELRO(BIND_NOW)、符号表裁剪(Strip)、栈保护(SP) =========
+# 链接期两项不改变源码与运行时行为; 栈保护仅作用于 host 代码(每函数数条 canary 指令),
+# device 内核不注入。ops_blas 全体源(含 *_host.cpp)标记为 LANGUAGE ASC,
+# CXX 生成器表达式覆盖不到其 host 文件, 故按文件名单独补(见下)。
+foreach(_hardening_target ${OPS_BLASLT} ${OPS_BLAS})
+    target_link_options(${_hardening_target} PRIVATE
+        -Wl,-z,now)
+    target_link_options(${_hardening_target} PRIVATE
+        -Wl,-s)
+    target_compile_options(${_hardening_target} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-fstack-protector-all>)
+endforeach()
+set(_ops_blas_host_srcs "${ALL_BLAS_SRC_FILES}")
+list(FILTER _ops_blas_host_srcs INCLUDE REGEX "_host\\.cpp$")
+if(_ops_blas_host_srcs)
+    set_property(SOURCE ${_ops_blas_host_srcs} APPEND
+        PROPERTY COMPILE_OPTIONS "-fstack-protector-all")
+endif()
+
 # ========= 安装规则（CPack 打包时放入 lib64 和 include） =========
 install(TARGETS ${OPS_BLASLT} ${OPS_BLAS}
     LIBRARY DESTINATION lib64
