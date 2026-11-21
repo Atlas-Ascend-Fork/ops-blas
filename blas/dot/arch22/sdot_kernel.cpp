@@ -188,6 +188,9 @@ __aicore__ __inline__ __attribute__((always_inline)) void sdot_process_aiv(
         AscendC::LocalTensor<float> ub_sum = buf.GetBuffer<BufferType::ASCEND_UB, float>(0);
         AscendC::LocalTensor<float> ub_result = buf.GetBuffer<BufferType::ASCEND_UB, float>(64 * 4);
         AscendC::Duplicate<float, false>(ub_sum, (float)0.0, 64, 2, 1, 8);
+        // 最终归约按 64 宽度执行，而 gm 只回读 vec_core_num 个部分和；
+        // 先清零 ub_result 填充区，避免未初始化 UB 残留（NaN 位型）污染总和
+        AscendC::Duplicate<float, false>(ub_result, (float)0.0, 64, 1, 1, 8);
 
         SET_FLAG(V, MTE2, EVENT_ID0);
         WAIT_FLAG(V, MTE2, EVENT_ID0);

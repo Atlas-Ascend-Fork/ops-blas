@@ -250,6 +250,7 @@ aclblasStatus_t aclblasCdotu(aclblasHandle_t handle, int n, const aclblasComplex
 
 - handle 为 nullptr 时返回 ACLBLAS_STATUS_NOT_INITIALIZED
 - handle 有效时，n <= 0 在检查非空 result 后直接写入 (0, 0) 并返回成功，不检查 incx、incy 或 x、y
+- 当前实现将 n 下发为 uint32，n 超出 UINT32_MAX 时返回 ACLBLAS_STATUS_NOT_SUPPORTED（issue #1081，对齐 srotm 口径），不再静默截断
 - n > 0 时仅支持 incx == 1 且 incy == 1，非单位步长返回 ACLBLAS_STATUS_INVALID_VALUE（不支持负步长）
 - result 不能为 nullptr；x、y 在 n > 0 时不能为 nullptr（为空返回 ACLBLAS_STATUS_INVALID_VALUE）
 

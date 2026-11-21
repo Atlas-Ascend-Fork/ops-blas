@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <algorithm>
 #include "acl/acl.h"
 #include "log/log.h"
@@ -99,6 +100,12 @@ aclblasStatus_t aclblasSdot(
         }
         return ACLBLAS_STATUS_SUCCESS;
     }
+
+    // issue #1081: 当前实现将 n 下发为 uint32_t（sdot_kernel.cpp），超出范围时
+    // 拒绝继续执行，对齐 srotm 口径；否则 int64 n 静默截断导致 SUCCESS 下结果错误
+    CHECK_RET(n <= static_cast<int64_t>(std::numeric_limits<uint32_t>::max()),
+              OP_LOGE("aclblasSdot", "n=%ld exceeds uint32 range", static_cast<long>(n));
+              return ACLBLAS_STATUS_NOT_SUPPORTED);
 
     aclblasStatus_t status = ValidateSdotParams(incx, incy, x, y, result);
     if (status != ACLBLAS_STATUS_SUCCESS) {
