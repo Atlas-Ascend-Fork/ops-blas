@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include <exception>
 #include <vector>
 #include "log/log.h"
 #include "cann_ops_blas.h"
@@ -122,6 +123,18 @@ static void LaunchScopyKernel(
         useStream);
 }
 
+// issue #1028: 偏移表工作区准备与 kernel 下发段拆出独立函数——该段（含
+// PrepareOffsetWorkspace 内 std::vector 堆分配）在入口侧由 try/catch 包裹，
+// 拆分同时保证两个函数都不触碰单函数规模门禁。
+static aclblasStatus_t PrepareAndLaunchScopy(
+    _aclblas_handle* h, aclrtStream useStream, const ScopyTilingData& tiling, uint32_t numBlocks, const float* x,
+    float* y, int incx, int incy)
+{
+    uint8_t* wsPtr = PrepareOffsetWorkspace(h, incx, incy, tiling.tileSize);
+    LaunchScopyKernel(tiling, x, y, wsPtr, numBlocks, useStream);
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 aclblasStatus_t aclblasScopy(aclblasHandle_t handle, int n, const float* x, int incx, float* y, int incy)
 {
     if (n < 0) {
@@ -177,8 +190,13 @@ aclblasStatus_t aclblasScopy(aclblasHandle_t handle, int n, const float* x, int 
         tiling.incx, tiling.incy);
     OP_LOGD("aclblasScopy", "launching kernel: blocks=%u n=%u incx=%d incy=%d", numBlocks, totalN, incx, incy);
 
-    uint8_t* wsPtr = PrepareOffsetWorkspace(h, incx, incy, tiling.tileSize);
-
-    LaunchScopyKernel(tiling, x, y, wsPtr, numBlocks, useStream);
-    return ACLBLAS_STATUS_SUCCESS;
+    // Kernel dispatch allocates via std::vector/aclrt (offset table staging); a
+    // std::exception here must not cross the extern "C" boundary
+    // (sgemm_grouped_batched contract). Parameter validation stays outside.
+    try {
+        return PrepareAndLaunchScopy(h, useStream, tiling, numBlocks, x, y, incx, incy);
+    } catch (const std::exception&) {
+        OP_LOGE("aclblasScopy", "host exception in kernel dispatch path");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 }

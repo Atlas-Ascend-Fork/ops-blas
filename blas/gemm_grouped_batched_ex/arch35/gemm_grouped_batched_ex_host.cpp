@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <vector>
 #include "acl/acl.h"
@@ -26,10 +27,11 @@
 #include "common/helper/dtype_cast.h"
 #include "common/helper/host_utils.h"
 
-void gemm_grouped_batched_ex_cube_kernel_do(uint32_t numBlocks, void *stream,
-    uint8_t *aarray, uint8_t *barray, uint8_t *workspace, uint8_t *tilingGm, int dtypeCase);
-void gemm_grouped_batched_ex_epilogue_kernel_do(uint32_t numBlocks, void *stream,
-    uint8_t *carray, uint8_t *workspace, uint8_t *tilingGm, int dtypeCase);
+void gemm_grouped_batched_ex_cube_kernel_do(
+    uint32_t numBlocks, void* stream, uint8_t* aarray, uint8_t* barray, uint8_t* workspace, uint8_t* tilingGm,
+    int dtypeCase);
+void gemm_grouped_batched_ex_epilogue_kernel_do(
+    uint32_t numBlocks, void* stream, uint8_t* carray, uint8_t* workspace, uint8_t* tilingGm, int dtypeCase);
 
 namespace {
 
@@ -43,7 +45,7 @@ struct GroupedProblem {
 };
 
 struct DeviceAllocation {
-    void *ptr = nullptr;
+    void* ptr = nullptr;
     ~DeviceAllocation()
     {
         if (ptr != nullptr) {
@@ -52,12 +54,9 @@ struct DeviceAllocation {
     }
 };
 
-bool IsFp8(aclDataType type)
-{
-    return type == ACL_FLOAT8_E4M3FN || type == ACL_FLOAT8_E5M2;
-}
+bool IsFp8(aclDataType type) { return type == ACL_FLOAT8_E4M3FN || type == ACL_FLOAT8_E5M2; }
 
-bool IsValidDtypeCombination(const GroupedProblem &p)
+bool IsValidDtypeCombination(const GroupedProblem& p)
 {
     if (p.aType == ACL_FLOAT16 && p.bType == ACL_FLOAT16 && p.cType == ACL_FLOAT16) {
         return p.computeType == ACLBLAS_COMPUTE_16F || p.computeType == ACLBLAS_COMPUTE_32F;
@@ -65,17 +64,20 @@ bool IsValidDtypeCombination(const GroupedProblem &p)
     if (p.aType == ACL_BF16 && p.bType == ACL_BF16 && p.cType == ACL_BF16) {
         return p.computeType == ACLBLAS_COMPUTE_32F;
     }
-    if (p.cType != ACL_FLOAT16 || p.computeType != ACLBLAS_COMPUTE_32F ||
-        !IsFp8(p.aType) || !IsFp8(p.bType)) {
+    if (p.cType != ACL_FLOAT16 || p.computeType != ACLBLAS_COMPUTE_32F || !IsFp8(p.aType) || !IsFp8(p.bType)) {
         return false;
     }
     return true;
 }
 
-int GetDtypeCase(const GroupedProblem &p)
+int GetDtypeCase(const GroupedProblem& p)
 {
-    if (p.aType == ACL_FLOAT16) { return GROUPED_GEMM_FP16; }
-    if (p.aType == ACL_BF16) { return GROUPED_GEMM_BF16; }
+    if (p.aType == ACL_FLOAT16) {
+        return GROUPED_GEMM_FP16;
+    }
+    if (p.aType == ACL_BF16) {
+        return GROUPED_GEMM_BF16;
+    }
     if (p.aType == ACL_FLOAT8_E4M3FN && p.bType == ACL_FLOAT8_E4M3FN) {
         return GROUPED_GEMM_FP8_E4M3_E4M3;
     }
@@ -91,12 +93,12 @@ int GetDtypeCase(const GroupedProblem &p)
     return -1;
 }
 
-float ReadScale(const void *scales, int index, aclblasComputeType_t computeType)
+float ReadScale(const void* scales, int index, aclblasComputeType_t computeType)
 {
     if (computeType == ACLBLAS_COMPUTE_16F) {
-        return blas_common::HalfToFloat(static_cast<const uint16_t *>(scales)[index]);
+        return blas_common::HalfToFloat(static_cast<const uint16_t*>(scales)[index]);
     }
-    return static_cast<const float *>(scales)[index];
+    return static_cast<const float*>(scales)[index];
 }
 
 bool IsValidOperation(aclblasOperation_t operation)
@@ -104,69 +106,73 @@ bool IsValidOperation(aclblasOperation_t operation)
     return operation == ACLBLAS_OP_N || operation == ACLBLAS_OP_T || operation == ACLBLAS_OP_C;
 }
 
-bool HasRequiredGroupArrays(const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[],
-    const int mArray[], const int nArray[], const int kArray[], const void *alphaArray,
-    const int ldaArray[], const int ldbArray[], const void *betaArray,
-    const int ldcArray[], const int groupSize[])
+bool HasRequiredGroupArrays(
+    const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[], const int mArray[],
+    const int nArray[], const int kArray[], const void* alphaArray, const int ldaArray[], const int ldbArray[],
+    const void* betaArray, const int ldcArray[], const int groupSize[])
 {
     return transaArray != nullptr && transbArray != nullptr && mArray != nullptr && nArray != nullptr &&
-        kArray != nullptr && alphaArray != nullptr && ldaArray != nullptr && ldbArray != nullptr &&
-        betaArray != nullptr && ldcArray != nullptr && groupSize != nullptr;
+           kArray != nullptr && alphaArray != nullptr && ldaArray != nullptr && ldbArray != nullptr &&
+           betaArray != nullptr && ldcArray != nullptr && groupSize != nullptr;
 }
 
-aclblasStatus_t ValidateOneGroup(int index,
-    const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[],
-    const int mArray[], const int nArray[], const int kArray[],
-    const int ldaArray[], const int ldbArray[], const int ldcArray[], const int groupSize[])
+aclblasStatus_t ValidateOneGroup(
+    int index, const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[], const int mArray[],
+    const int nArray[], const int kArray[], const int ldaArray[], const int ldbArray[], const int ldcArray[],
+    const int groupSize[])
 {
     if (!IsValidOperation(transaArray[index]) || !IsValidOperation(transbArray[index])) {
-        OP_LOGE("aclblasGemmGroupedBatchedEx", "invalid operation in group %d: transa=%d transb=%d",
-            index, transaArray[index], transbArray[index]);
+        OP_LOGE(
+            "aclblasGemmGroupedBatchedEx", "invalid operation in group %d: transa=%d transb=%d", index,
+            transaArray[index], transbArray[index]);
         return ACLBLAS_STATUS_INVALID_ENUM;
     }
     if (mArray[index] < 0 || nArray[index] < 0 || kArray[index] < 0 || groupSize[index] < 0) {
         OP_LOGE("aclblasGemmGroupedBatchedEx", "invalid dimensions in group %d", index);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    int minLda = transaArray[index] == ACLBLAS_OP_N ?
-        std::max(1, mArray[index]) : std::max(1, kArray[index]);
-    int minLdb = transbArray[index] == ACLBLAS_OP_N ?
-        std::max(1, kArray[index]) : std::max(1, nArray[index]);
+    int minLda = transaArray[index] == ACLBLAS_OP_N ? std::max(1, mArray[index]) : std::max(1, kArray[index]);
+    int minLdb = transbArray[index] == ACLBLAS_OP_N ? std::max(1, kArray[index]) : std::max(1, nArray[index]);
     int minLdc = std::max(1, mArray[index]);
     if (ldaArray[index] < minLda || ldbArray[index] < minLdb || ldcArray[index] < minLdc) {
-        OP_LOGE("aclblasGemmGroupedBatchedEx",
-            "invalid leading dimension in group %d: lda=%d/%d ldb=%d/%d ldc=%d/%d",
+        OP_LOGE(
+            "aclblasGemmGroupedBatchedEx", "invalid leading dimension in group %d: lda=%d/%d ldb=%d/%d ldc=%d/%d",
             index, ldaArray[index], minLda, ldbArray[index], minLdb, ldcArray[index], minLdc);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-aclblasStatus_t ValidateGroupArrays(int groupCount,
-    const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[],
-    const int mArray[], const int nArray[], const int kArray[], const void *alphaArray,
-    const int ldaArray[], const int ldbArray[], const void *betaArray,
-    const int ldcArray[], const int groupSize[])
+aclblasStatus_t ValidateGroupArrays(
+    int groupCount, const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[], const int mArray[],
+    const int nArray[], const int kArray[], const void* alphaArray, const int ldaArray[], const int ldbArray[],
+    const void* betaArray, const int ldcArray[], const int groupSize[])
 {
     if (groupCount < 0) {
         OP_LOGE("aclblasGemmGroupedBatchedEx", "invalid groupCount=%d", groupCount);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (groupCount == 0) { return ACLBLAS_STATUS_SUCCESS; }
-    if (!HasRequiredGroupArrays(transaArray, transbArray, mArray, nArray, kArray, alphaArray,
-        ldaArray, ldbArray, betaArray, ldcArray, groupSize)) {
+    if (groupCount == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    const bool hasRequiredArrays = HasRequiredGroupArrays(
+        transaArray, transbArray, mArray, nArray, kArray, alphaArray, ldaArray, ldbArray, betaArray, ldcArray,
+        groupSize);
+    if (!hasRequiredArrays) {
         OP_LOGE("aclblasGemmGroupedBatchedEx", "a per-group host array is nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     for (int i = 0; i < groupCount; ++i) {
         aclblasStatus_t status = ValidateOneGroup(
             i, transaArray, transbArray, mArray, nArray, kArray, ldaArray, ldbArray, ldcArray, groupSize);
-        if (status != ACLBLAS_STATUS_SUCCESS) { return status; }
+        if (status != ACLBLAS_STATUS_SUCCESS) {
+            return status;
+        }
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-void CalculatePartition(GroupedGemmGroupData &g, uint32_t cubeCoreCount, bool fp8)
+void CalculatePartition(GroupedGemmGroupData& g, uint32_t cubeCoreCount, bool fp8)
 {
     const int32_t baseM = fp8 ? 32 : 128;
     const int32_t baseN = fp8 ? 16 : 128;
@@ -190,17 +196,17 @@ void CalculatePartition(GroupedGemmGroupData &g, uint32_t cubeCoreCount, bool fp
     g.singleCoreN = std::min(g.n, ((g.n + bestN - 1) / bestN + baseN - 1) / baseN * baseN);
 }
 
-bool AddWithinUint32(uint64_t &accumulator, uint64_t value)
+bool AddWithinUint32(uint64_t& accumulator, uint64_t value)
 {
     accumulator += value;
     return accumulator <= std::numeric_limits<uint32_t>::max();
 }
 
-void InitializeGroupData(GroupedGemmGroupData &g, int index,
-    const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[],
-    const int mArray[], const int nArray[], const int kArray[], const void *alphaArray,
-    const int ldaArray[], const int ldbArray[], const void *betaArray, const int ldcArray[],
-    const int groupSize[], aclblasComputeType_t computeType, uint64_t problemStart, uint64_t workspaceElements)
+void InitializeGroupData(
+    GroupedGemmGroupData& g, int index, const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[],
+    const int mArray[], const int nArray[], const int kArray[], const void* alphaArray, const int ldaArray[],
+    const int ldbArray[], const void* betaArray, const int ldcArray[], const int groupSize[],
+    aclblasComputeType_t computeType, uint64_t problemStart, uint64_t workspaceElements)
 {
     g.originalM = mArray[index];
     g.originalN = nArray[index];
@@ -218,12 +224,12 @@ void InitializeGroupData(GroupedGemmGroupData &g, int index,
     g.batchStart = static_cast<uint32_t>(problemStart);
     g.batchCount = static_cast<uint32_t>(groupSize[index]);
     g.workspaceOffset = workspaceElements;
-    g.hasGemm = (g.batchCount > 0 && g.originalM > 0 && g.originalN > 0 &&
-        g.k > 0 && g.alpha != 0.0f) ? 1 : 0;
+    g.hasGemm = (g.batchCount > 0 && g.originalM > 0 && g.originalN > 0 && g.k > 0 && g.alpha != 0.0f) ? 1 : 0;
 }
 
-aclblasStatus_t UpdateTaskRanges(GroupedGemmGroupData &g, uint64_t &problemStart,
-    uint64_t &cubeTaskStart, uint64_t &epilogueTaskStart, bool fp8, uint32_t cubeCoreCount)
+aclblasStatus_t UpdateTaskRanges(
+    GroupedGemmGroupData& g, uint64_t& problemStart, uint64_t& cubeTaskStart, uint64_t& epilogueTaskStart, bool fp8,
+    uint32_t cubeCoreCount)
 {
     if (!AddWithinUint32(problemStart, static_cast<uint64_t>(g.batchCount))) {
         OP_LOGE("aclblasGemmGroupedBatchedEx", "problem count exceeds uint32 range");
@@ -235,20 +241,16 @@ aclblasStatus_t UpdateTaskRanges(GroupedGemmGroupData &g, uint64_t &problemStart
         g.mBlocks = g.nBlocks = 1;
         g.singleCoreM = g.singleCoreN = 1;
     }
-    uint64_t cubeTasks = g.hasGemm ?
-        static_cast<uint64_t>(g.batchCount) * g.mBlocks * g.nBlocks : 0;
+    uint64_t cubeTasks = g.hasGemm ? static_cast<uint64_t>(g.batchCount) * g.mBlocks * g.nBlocks : 0;
     g.cubeTaskStart = static_cast<uint32_t>(cubeTaskStart);
     g.cubeTaskCount = static_cast<uint32_t>(cubeTasks);
     if (!AddWithinUint32(cubeTaskStart, cubeTasks)) {
         OP_LOGE("aclblasGemmGroupedBatchedEx", "cube task count exceeds uint32 range");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    bool needsEpilogue = g.originalM > 0 && g.originalN > 0 && g.batchCount > 0 &&
-        (g.hasGemm != 0 || g.beta != 1.0f);
-    uint64_t tilesPerColumn =
-        (static_cast<uint64_t>(g.originalM) + EPILOGUE_TILE - 1) / EPILOGUE_TILE;
-    uint64_t epilogueTasks = needsEpilogue ?
-        static_cast<uint64_t>(g.batchCount) * g.originalN * tilesPerColumn : 0;
+    bool needsEpilogue = g.originalM > 0 && g.originalN > 0 && g.batchCount > 0 && (g.hasGemm != 0 || g.beta != 1.0f);
+    uint64_t tilesPerColumn = (static_cast<uint64_t>(g.originalM) + EPILOGUE_TILE - 1) / EPILOGUE_TILE;
+    uint64_t epilogueTasks = needsEpilogue ? static_cast<uint64_t>(g.batchCount) * g.originalN * tilesPerColumn : 0;
     g.epilogueTaskStart = static_cast<uint32_t>(epilogueTaskStart);
     g.epilogueTaskCount = static_cast<uint32_t>(epilogueTasks);
     if (!AddWithinUint32(epilogueTaskStart, epilogueTasks)) {
@@ -258,9 +260,11 @@ aclblasStatus_t UpdateTaskRanges(GroupedGemmGroupData &g, uint64_t &problemStart
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-aclblasStatus_t UpdateWorkspaceSize(const GroupedGemmGroupData &g, uint64_t &workspaceElements)
+aclblasStatus_t UpdateWorkspaceSize(const GroupedGemmGroupData& g, uint64_t& workspaceElements)
 {
-    if (g.hasGemm == 0) { return ACLBLAS_STATUS_SUCCESS; }
+    if (g.hasGemm == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
     uint64_t groupWorkspace = static_cast<uint64_t>(g.batchCount) * g.originalM * g.originalN;
     if (workspaceElements > std::numeric_limits<uint64_t>::max() - groupWorkspace) {
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -269,12 +273,12 @@ aclblasStatus_t UpdateWorkspaceSize(const GroupedGemmGroupData &g, uint64_t &wor
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-aclblasStatus_t BuildTiling(std::vector<GroupedGemmGroupData> &groups,
-    GroupedGemmTilingHeader &header, uint64_t &workspaceElements,
-    int groupCount, const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[],
-    const int mArray[], const int nArray[], const int kArray[], const void *alphaArray,
-    const int ldaArray[], const int ldbArray[], const void *betaArray, const int ldcArray[],
-    const int groupSize[], aclblasComputeType_t computeType, bool fp8, uint32_t cubeCoreCount)
+aclblasStatus_t BuildTiling(
+    std::vector<GroupedGemmGroupData>& groups, GroupedGemmTilingHeader& header, uint64_t& workspaceElements,
+    int groupCount, const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[], const int mArray[],
+    const int nArray[], const int kArray[], const void* alphaArray, const int ldaArray[], const int ldbArray[],
+    const void* betaArray, const int ldcArray[], const int groupSize[], aclblasComputeType_t computeType, bool fp8,
+    uint32_t cubeCoreCount)
 {
     uint64_t problemStart = 0;
     uint64_t cubeTaskStart = 0;
@@ -282,14 +286,19 @@ aclblasStatus_t BuildTiling(std::vector<GroupedGemmGroupData> &groups,
     workspaceElements = 0;
     groups.resize(groupCount);
     for (int i = 0; i < groupCount; ++i) {
-        GroupedGemmGroupData &g = groups[i];
-        InitializeGroupData(g, i, transaArray, transbArray, mArray, nArray, kArray, alphaArray,
-            ldaArray, ldbArray, betaArray, ldcArray, groupSize, computeType, problemStart, workspaceElements);
+        GroupedGemmGroupData& g = groups[i];
+        InitializeGroupData(
+            g, i, transaArray, transbArray, mArray, nArray, kArray, alphaArray, ldaArray, ldbArray, betaArray, ldcArray,
+            groupSize, computeType, problemStart, workspaceElements);
         aclblasStatus_t status =
             UpdateTaskRanges(g, problemStart, cubeTaskStart, epilogueTaskStart, fp8, cubeCoreCount);
-        if (status != ACLBLAS_STATUS_SUCCESS) { return status; }
+        if (status != ACLBLAS_STATUS_SUCCESS) {
+            return status;
+        }
         status = UpdateWorkspaceSize(g, workspaceElements);
-        if (status != ACLBLAS_STATUS_SUCCESS) { return status; }
+        if (status != ACLBLAS_STATUS_SUCCESS) {
+            return status;
+        }
     }
     header.groupCount = static_cast<uint32_t>(groupCount);
     header.problemCount = static_cast<uint32_t>(problemStart);
@@ -299,15 +308,15 @@ aclblasStatus_t BuildTiling(std::vector<GroupedGemmGroupData> &groups,
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-aclblasStatus_t AllocateAndCopyTiling(const GroupedGemmTilingHeader &header,
-    const std::vector<GroupedGemmGroupData> &groups, DeviceAllocation &device)
+aclblasStatus_t AllocateAndCopyTiling(
+    const GroupedGemmTilingHeader& header, const std::vector<GroupedGemmGroupData>& groups, DeviceAllocation& device)
 {
     size_t bytes = sizeof(header) + groups.size() * sizeof(GroupedGemmGroupData);
     std::vector<uint8_t> host(bytes);
-    const auto *headerBytes = reinterpret_cast<const uint8_t *>(&header);
+    const auto* headerBytes = reinterpret_cast<const uint8_t*>(&header);
     std::copy_n(headerBytes, sizeof(header), host.data());
     if (!groups.empty()) {
-        const auto *groupBytes = reinterpret_cast<const uint8_t *>(groups.data());
+        const auto* groupBytes = reinterpret_cast<const uint8_t*>(groups.data());
         std::copy_n(groupBytes, groups.size() * sizeof(GroupedGemmGroupData), host.data() + sizeof(header));
     }
     if (aclrtMalloc(&device.ptr, bytes, ACL_MEM_MALLOC_HUGE_FIRST) != ACL_SUCCESS) {
@@ -319,67 +328,124 @@ aclblasStatus_t AllocateAndCopyTiling(const GroupedGemmTilingHeader &header,
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-aclblasStatus_t AllocateWorkspace(uint64_t workspaceElements, DeviceAllocation &workspaceDevice)
+aclblasStatus_t AllocateWorkspace(uint64_t workspaceElements, DeviceAllocation& workspaceDevice)
 {
-    if (workspaceElements == 0) { return ACLBLAS_STATUS_SUCCESS; }
+    if (workspaceElements == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
     if (workspaceElements > std::numeric_limits<size_t>::max() / sizeof(float)) {
         return ACLBLAS_STATUS_ALLOC_FAILED;
     }
     size_t workspaceBytes = static_cast<size_t>(workspaceElements) * sizeof(float);
     return aclrtMalloc(&workspaceDevice.ptr, workspaceBytes, ACL_MEM_MALLOC_HUGE_FIRST) == ACL_SUCCESS ?
-        ACLBLAS_STATUS_SUCCESS : ACLBLAS_STATUS_ALLOC_FAILED;
+               ACLBLAS_STATUS_SUCCESS :
+               ACLBLAS_STATUS_ALLOC_FAILED;
 }
 
-aclblasStatus_t LaunchGroupedKernels(_aclblas_handle *handle, const GroupedProblem &problem,
-    const GroupedGemmTilingHeader &header, uint32_t cubeCoreCount,
-    const void *const aarray[], const void *const barray[], void *const carray[],
-    DeviceAllocation &workspaceDevice, DeviceAllocation &tilingDevice)
+aclblasStatus_t LaunchGroupedKernels(
+    _aclblas_handle* handle, const GroupedProblem& problem, const GroupedGemmTilingHeader& header,
+    uint32_t cubeCoreCount, const void* const aarray[], const void* const barray[], void* const carray[],
+    DeviceAllocation& workspaceDevice, DeviceAllocation& tilingDevice)
 {
     int dtypeCase = GetDtypeCase(problem);
     if (header.totalCubeTasks > 0) {
         uint32_t blocks = std::min(cubeCoreCount, header.totalCubeTasks);
         // B/A are intentionally swapped: column-major GEMM is evaluated as B^T * A^T.
-        gemm_grouped_batched_ex_cube_kernel_do(blocks, handle->stream,
-            const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(barray)),
-            const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(aarray)),
-            static_cast<uint8_t *>(workspaceDevice.ptr), static_cast<uint8_t *>(tilingDevice.ptr), dtypeCase);
+        gemm_grouped_batched_ex_cube_kernel_do(
+            blocks, handle->stream, const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(barray)),
+            const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(aarray)), static_cast<uint8_t*>(workspaceDevice.ptr),
+            static_cast<uint8_t*>(tilingDevice.ptr), dtypeCase);
     }
     if (header.totalEpilogueTasks > 0) {
         uint32_t vectorCoreCount = GetAivCoreCount();
-        if (vectorCoreCount == 0) { return ACLBLAS_STATUS_EXECUTION_FAILED; }
+        if (vectorCoreCount == 0) {
+            return ACLBLAS_STATUS_EXECUTION_FAILED;
+        }
         uint32_t blocks = std::min(vectorCoreCount, header.totalEpilogueTasks);
-        gemm_grouped_batched_ex_epilogue_kernel_do(blocks, handle->stream,
-            const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(carray)),
-            static_cast<uint8_t *>(workspaceDevice.ptr), static_cast<uint8_t *>(tilingDevice.ptr), dtypeCase);
+        gemm_grouped_batched_ex_epilogue_kernel_do(
+            blocks, handle->stream, const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(carray)),
+            static_cast<uint8_t*>(workspaceDevice.ptr), static_cast<uint8_t*>(tilingDevice.ptr), dtypeCase);
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
 } // namespace
 
-aclblasStatus_t aclblasGemmGroupedBatchedEx(aclblasHandle_t handle,
-    const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[],
-    const int mArray[], const int nArray[], const int kArray[], const void *alphaArray,
-    const void *const aarray[], aclDataType aType, const int ldaArray[],
-    const void *const barray[], aclDataType bType, const int ldbArray[],
-    const void *betaArray, void *const carray[], aclDataType cType, const int ldcArray[],
-    int groupCount, const int groupSize[], aclblasComputeType_t computeType)
+// issue #1028: tiling 构建与 kernel 下发段（BuildTiling、设备缓冲分配与 kernel
+// 下发，含 std::vector/DeviceAllocation 堆分配）拆出独立函数——该段在入口侧由
+// try/catch 包裹，拆分同时收敛入口函数规模。
+static aclblasStatus_t BuildAndLaunchGroupedKernels(
+    _aclblas_handle* h, const GroupedProblem& problem, int groupCount, const aclblasOperation_t transaArray[],
+    const aclblasOperation_t transbArray[], const int mArray[], const int nArray[], const int kArray[],
+    const void* alphaArray, const void* const aarray[], const int ldaArray[], const void* const barray[],
+    const int ldbArray[], const void* betaArray, void* const carray[], const int ldcArray[], const int groupSize[],
+    uint32_t cubeCoreCount)
 {
-    auto *h = handle;
-    if (h == nullptr) { return ACLBLAS_STATUS_HANDLE_IS_NULLPTR; }
+    GroupedGemmTilingHeader header{};
+    std::vector<GroupedGemmGroupData> groups;
+    uint64_t workspaceElements = 0;
+    aclblasStatus_t status = BuildTiling(
+        groups, header, workspaceElements, groupCount, transaArray, transbArray, mArray, nArray, kArray, alphaArray,
+        ldaArray, ldbArray, betaArray, ldcArray, groupSize, problem.computeType,
+        IsFp8(problem.aType) || IsFp8(problem.bType), cubeCoreCount);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    if (header.totalCubeTasks == 0 && header.totalEpilogueTasks == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+
+    DeviceAllocation tilingDevice;
+    status = AllocateAndCopyTiling(header, groups, tilingDevice);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    DeviceAllocation workspaceDevice;
+    status = AllocateWorkspace(workspaceElements, workspaceDevice);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    status =
+        LaunchGroupedKernels(h, problem, header, cubeCoreCount, aarray, barray, carray, workspaceDevice, tilingDevice);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    if (aclrtSynchronizeStream(h->stream) != ACL_SUCCESS) {
+        OP_LOGE("aclblasGemmGroupedBatchedEx", "kernel execution failed");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+aclblasStatus_t aclblasGemmGroupedBatchedEx(
+    aclblasHandle_t handle, const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[],
+    const int mArray[], const int nArray[], const int kArray[], const void* alphaArray, const void* const aarray[],
+    aclDataType aType, const int ldaArray[], const void* const barray[], aclDataType bType, const int ldbArray[],
+    const void* betaArray, void* const carray[], aclDataType cType, const int ldcArray[], int groupCount,
+    const int groupSize[], aclblasComputeType_t computeType)
+{
+    auto* h = handle;
+    if (h == nullptr) {
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
     GroupedProblem problem{aType, bType, cType, computeType};
     if (!IsValidDtypeCombination(problem)) {
-        OP_LOGE("aclblasGemmGroupedBatchedEx", "unsupported dtype combination A=%d B=%d C=%d compute=%d",
-            static_cast<int>(aType), static_cast<int>(bType), static_cast<int>(cType),
-            static_cast<int>(computeType));
+        OP_LOGE(
+            "aclblasGemmGroupedBatchedEx", "unsupported dtype combination A=%d B=%d C=%d compute=%d",
+            static_cast<int>(aType), static_cast<int>(bType), static_cast<int>(cType), static_cast<int>(computeType));
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
-    aclblasStatus_t status = ValidateGroupArrays(groupCount, transaArray, transbArray,
-        mArray, nArray, kArray, alphaArray, ldaArray, ldbArray, betaArray, ldcArray, groupSize);
-    if (status != ACLBLAS_STATUS_SUCCESS || groupCount == 0) { return status; }
+    aclblasStatus_t status = ValidateGroupArrays(
+        groupCount, transaArray, transbArray, mArray, nArray, kArray, alphaArray, ldaArray, ldbArray, betaArray,
+        ldcArray, groupSize);
+    if (status != ACLBLAS_STATUS_SUCCESS || groupCount == 0) {
+        return status;
+    }
 
     uint64_t problemCount = 0;
-    for (int i = 0; i < groupCount; ++i) { problemCount += static_cast<uint32_t>(groupSize[i]); }
+    for (int i = 0; i < groupCount; ++i) {
+        problemCount += static_cast<uint32_t>(groupSize[i]);
+    }
     if (problemCount > 0 && (aarray == nullptr || barray == nullptr || carray == nullptr)) {
         OP_LOGE("aclblasGemmGroupedBatchedEx", "matrix pointer arrays must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
@@ -390,29 +456,15 @@ aclblasStatus_t aclblasGemmGroupedBatchedEx(aclblasHandle_t handle,
         OP_LOGE("aclblasGemmGroupedBatchedEx", "failed to query cube core count");
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
-    GroupedGemmTilingHeader header{};
-    std::vector<GroupedGemmGroupData> groups;
-    uint64_t workspaceElements = 0;
-    status = BuildTiling(groups, header, workspaceElements, groupCount, transaArray, transbArray,
-        mArray, nArray, kArray, alphaArray, ldaArray, ldbArray, betaArray, ldcArray,
-        groupSize, computeType, IsFp8(aType) || IsFp8(bType), cubeCoreCount);
-    if (status != ACLBLAS_STATUS_SUCCESS) { return status; }
-    if (header.totalCubeTasks == 0 && header.totalEpilogueTasks == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-
-    DeviceAllocation tilingDevice;
-    status = AllocateAndCopyTiling(header, groups, tilingDevice);
-    if (status != ACLBLAS_STATUS_SUCCESS) { return status; }
-    DeviceAllocation workspaceDevice;
-    status = AllocateWorkspace(workspaceElements, workspaceDevice);
-    if (status != ACLBLAS_STATUS_SUCCESS) { return status; }
-    status = LaunchGroupedKernels(
-        h, problem, header, cubeCoreCount, aarray, barray, carray, workspaceDevice, tilingDevice);
-    if (status != ACLBLAS_STATUS_SUCCESS) { return status; }
-    if (aclrtSynchronizeStream(h->stream) != ACL_SUCCESS) {
-        OP_LOGE("aclblasGemmGroupedBatchedEx", "kernel execution failed");
+    // Tiling build and kernel dispatch allocate via std::vector/aclrt; a
+    // std::exception here must not cross the extern "C" boundary
+    // (sgemm_grouped_batched contract). Parameter validation stays outside.
+    try {
+        return BuildAndLaunchGroupedKernels(
+            h, problem, groupCount, transaArray, transbArray, mArray, nArray, kArray, alphaArray, aarray, ldaArray,
+            barray, ldbArray, betaArray, carray, ldcArray, groupSize, cubeCoreCount);
+    } catch (const std::exception&) {
+        OP_LOGE("aclblasGemmGroupedBatchedEx", "host exception in kernel dispatch path");
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
-    return ACLBLAS_STATUS_SUCCESS;
 }

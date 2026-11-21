@@ -1,4 +1,5 @@
 /**
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd.
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
@@ -8,6 +9,7 @@
  */
 
 #include <cstdint>
+#include <exception>
 #include <vector>
 #include <algorithm>
 #include "acl/acl.h"
@@ -140,6 +142,105 @@ static aclblasStatus_t ValidateStrsvParams(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// issue #1028/#949：异常防护所需的资源与暂存集合。句柄集中在结构体内，
+// 便于失败/异常路径统一释放（ReleaseStrsvStage）。
+struct StrsvStage {
+    uint8_t* xDevice = nullptr;
+    uint8_t* tilingDevice = nullptr;
+    size_t xSize = 0;
+    size_t xSpanSize = 0;
+    size_t absIncx = 0;
+    StrsvTilingData tiling{};
+    std::vector<float> xHost;
+    std::vector<float> xPacked;
+};
+
+static void ReleaseStrsvStage(StrsvStage& st)
+{
+    if (st.xDevice != nullptr) {
+        aclrtFree(st.xDevice);
+        st.xDevice = nullptr;
+    }
+    if (st.tilingDevice != nullptr) {
+        aclrtFree(st.tilingDevice);
+        st.tilingDevice = nullptr;
+    }
+}
+
+// 装载段：分配设备向量缓冲，把跨步 x 段拷回 host、按逻辑向量打包后 H2D
+// （原 aclblasStrsv 内联逻辑逐行搬运；失败路径释放已取得资源后返回精确状态码）。
+static aclblasStatus_t StageStrsvInput(int n, int incx, const float* x, StrsvStage& st)
+{
+    st.absIncx = static_cast<size_t>(incx < 0 ? -static_cast<int64_t>(incx) : incx);
+    const size_t xElements = (static_cast<size_t>(n) - 1) * st.absIncx + 1;
+    st.xSize = static_cast<size_t>(n) * sizeof(float);
+    st.xSpanSize = xElements * sizeof(float);
+
+    aclError aclRet = aclrtMalloc(reinterpret_cast<void**>(&st.xDevice), st.xSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (aclRet != ACL_SUCCESS) {
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
+
+    // A and x are device pointers. Stage the strided x span on the host,
+    // then pack the logical vector for the contiguous Arch22 kernel.
+    st.xHost.resize(xElements);
+    st.xPacked.resize(n);
+    aclRet = aclrtMemcpy(st.xHost.data(), st.xSpanSize, x, st.xSpanSize, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclRet != ACL_SUCCESS) {
+        ReleaseStrsvStage(st);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    PackStrsvVector(st.xHost, n, incx, st.absIncx, st.xPacked);
+
+    aclRet = aclrtMemcpy(st.xDevice, st.xSize, st.xPacked.data(), st.xSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        ReleaseStrsvStage(st);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+// tiling 上传段：分配 tiling 设备缓冲并 H2D（原 aclblasStrsv 内联逻辑逐行搬运）。
+static aclblasStatus_t UploadStrsvTiling(int n, int lda, StrsvStage& st)
+{
+    constexpr uint32_t numBlocks = 1;
+    st.tiling = CalStrsvTilingData(n, lda, numBlocks);
+
+    aclError aclRet =
+        aclrtMalloc(reinterpret_cast<void**>(&st.tilingDevice), sizeof(StrsvTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
+    if (aclRet != ACL_SUCCESS) {
+        ReleaseStrsvStage(st);
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
+
+    aclRet = aclrtMemcpy(
+        st.tilingDevice, sizeof(StrsvTilingData), &st.tiling, sizeof(StrsvTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        ReleaseStrsvStage(st);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+// 结果回写段：kernel 结果 D2H、跨步散回原 x 存储、H2D 写回
+// （原 aclblasStrsv 内联逻辑逐行搬运；失败路径释放全部资源后返回精确状态码）。
+static aclblasStatus_t ScatterStrsvResult(int n, int incx, float* x, StrsvStage& st)
+{
+    aclError aclRet = aclrtMemcpy(st.xPacked.data(), st.xSize, st.xDevice, st.xSize, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclRet != ACL_SUCCESS) {
+        ReleaseStrsvStage(st);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+
+    ScatterStrsvVector(st.xPacked, n, incx, st.absIncx, st.xHost);
+    aclRet = aclrtMemcpy(x, st.xSpanSize, st.xHost.data(), st.xSpanSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        ReleaseStrsvStage(st);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 aclblasStatus_t aclblasStrsv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
     const float* A, int lda, float* x, int incx)
@@ -162,81 +263,45 @@ aclblasStatus_t aclblasStrsv(
     auto* h = handle;
     aclrtStream useStream = h->stream;
 
-    const size_t absIncx = static_cast<size_t>(incx < 0 ? -static_cast<int64_t>(incx) : incx);
-    const size_t xElements = (static_cast<size_t>(n) - 1) * absIncx + 1;
-    const size_t xSize = static_cast<size_t>(n) * sizeof(float);
-    const size_t xSpanSize = xElements * sizeof(float);
+    // Resource allocation, staging buffers and kernel dispatch allocate via
+    // std::vector/aclrt; a std::exception here must not cross the extern "C"
+    // boundary (sgemm_grouped_batched contract). Parameter validation stays
+    // outside the guard. Staging/upload/scatter segments are extracted into
+    // helpers to keep the entry function within the single-function size gate;
+    // failure paths inside the helpers release what has already been acquired.
+    StrsvStage st;
+    try {
+        status = StageStrsvInput(n, incx, x, st);
+        if (status != ACLBLAS_STATUS_SUCCESS) {
+            return status;
+        }
+        status = UploadStrsvTiling(n, lda, st);
+        if (status != ACLBLAS_STATUS_SUCCESS) {
+            return status;
+        }
 
-    uint8_t* xDevice = nullptr;
-    aclRet = aclrtMalloc(reinterpret_cast<void**>(&xDevice), xSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        return ACLBLAS_STATUS_ALLOC_FAILED;
+        strsv_kernel_do(
+            reinterpret_cast<uint8_t*>(const_cast<float*>(A)), st.xDevice, st.tilingDevice, uplo, trans, diag, n, lda,
+            st.tiling.useCoreNum, useStream);
+
+        aclRet = aclrtSynchronizeStream(useStream);
+        if (aclRet != ACL_SUCCESS) {
+            ReleaseStrsvStage(st);
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+
+        status = ScatterStrsvResult(n, incx, x, st);
+        if (status != ACLBLAS_STATUS_SUCCESS) {
+            return status;
+        }
+
+        ReleaseStrsvStage(st);
+    } catch (const std::exception&) {
+        // Release whatever was already acquired; handles not yet allocated are
+        // still nullptr here and ReleaseStrsvStage skips them.
+        ReleaseStrsvStage(st);
+        OP_LOGE("aclblasStrsv", "host exception in kernel dispatch path");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
-
-    // A and x are device pointers. Stage the strided x span on the host,
-    // then pack the logical vector for the contiguous Arch22 kernel.
-    std::vector<float> xHost(xElements);
-    std::vector<float> xPacked(n);
-    aclRet = aclrtMemcpy(xHost.data(), xSpanSize, x, xSpanSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    if (aclRet != ACL_SUCCESS) {
-        aclrtFree(xDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-    PackStrsvVector(xHost, n, incx, absIncx, xPacked);
-
-    aclRet = aclrtMemcpy(xDevice, xSize, xPacked.data(), xSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        aclrtFree(xDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-
-    constexpr uint32_t numBlocks = 1;
-
-    StrsvTilingData tiling = CalStrsvTilingData(n, lda, numBlocks);
-
-    uint8_t* tilingDevice = nullptr;
-    aclRet = aclrtMalloc(reinterpret_cast<void**>(&tilingDevice), sizeof(StrsvTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        aclrtFree(xDevice);
-        return ACLBLAS_STATUS_ALLOC_FAILED;
-    }
-
-    aclRet =
-        aclrtMemcpy(tilingDevice, sizeof(StrsvTilingData), &tiling, sizeof(StrsvTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        aclrtFree(xDevice);
-        aclrtFree(tilingDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-
-    strsv_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<float*>(A)), xDevice, tilingDevice, uplo, trans, diag, n, lda,
-        tiling.useCoreNum, useStream);
-
-    aclRet = aclrtSynchronizeStream(useStream);
-    if (aclRet != ACL_SUCCESS) {
-        aclrtFree(xDevice);
-        aclrtFree(tilingDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-
-    aclRet = aclrtMemcpy(xPacked.data(), xSize, xDevice, xSize, ACL_MEMCPY_DEVICE_TO_HOST);
-    if (aclRet != ACL_SUCCESS) {
-        aclrtFree(xDevice);
-        aclrtFree(tilingDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-
-    ScatterStrsvVector(xPacked, n, incx, absIncx, xHost);
-    aclRet = aclrtMemcpy(x, xSpanSize, xHost.data(), xSpanSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        aclrtFree(xDevice);
-        aclrtFree(tilingDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-
-    aclrtFree(xDevice);
-    aclrtFree(tilingDevice);
-
     return ACLBLAS_STATUS_SUCCESS;
 }

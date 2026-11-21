@@ -42,6 +42,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <string>
 #include <fcntl.h>
@@ -1107,7 +1108,8 @@ static void Cher2kLaunchFused4(
     // > 0 term is the R8 division guard for the CeilDiv below.
     if (cubeTiling.baseM == 32 && segTkc > 0U && segK > segTkc && Cher2kTuningKnobDefaultOn("CHER2K_SEG_K")) {
         foldMode |= CHER2K_FOLD_SEG_BIT;
-        OP_LOGD("aclblasCher2k", "[SEG_K] segmented accumulation on: k=%u tkc=%u segments=%u", segK, segTkc,
+        OP_LOGD(
+            "aclblasCher2k", "[SEG_K] segmented accumulation on: k=%u tkc=%u segments=%u", segK, segTkc,
             CeilDiv<uint32_t>(segK, segTkc));
     }
     // [stage2 Step 3a] The combine parameter channel is threaded into the MIX
@@ -1140,8 +1142,8 @@ static void Cher2kLaunchUnfused4(
 
     // t1/t2 operand order is identical on both paths (§3.2 table);
     // only the t3/t4 operands differ between N and C.
-    gemm_kernel_do(numBlocks, stream, dBr, dAr, dT1, cubeTiling);     // t1: Ar * Br^T | Ar^T * Br
-    gemm_kernel_do(numBlocks, stream, dBi, dAi, dT2, cubeTiling);     // t2: Ai * Bi^T | Ai^T * Bi
+    gemm_kernel_do(numBlocks, stream, dBr, dAr, dT1, cubeTiling); // t1: Ar * Br^T | Ar^T * Br
+    gemm_kernel_do(numBlocks, stream, dBi, dAi, dT2, cubeTiling); // t2: Ai * Bi^T | Ai^T * Bi
     if (trans == ACLBLAS_OP_N) {
         gemm_kernel_do(numBlocks, stream, dBr, dAi, dT3, cubeTiling); // t3: Ai * Br^T
         gemm_kernel_do(numBlocks, stream, dBi, dAr, dT4, cubeTiling); // t4: Ar * Bi^T
@@ -1457,9 +1459,8 @@ static void Cher2kDispatchCombine(
     // here too: it never leaves Cher2kLaunchFused4's by-value copy, but the same
     // control-bits-only rule covers it defensively.)
     combineTiling.isPrPiFolded = static_cast<uint8_t>(
-        (foldMode & ~(CHER2K_FOLD_PAIRWALK_BIT | CHER2K_FOLD_LOWER_BIT | CHER2K_FOLD_SEG_BIT)) == CHER2K_FOLD_PRPI
-            ? 1
-            : 0);
+        (foldMode & ~(CHER2K_FOLD_PAIRWALK_BIT | CHER2K_FOLD_LOWER_BIT | CHER2K_FOLD_SEG_BIT)) == CHER2K_FOLD_PRPI ? 1 :
+                                                                                                                     0);
     combineTiling.isAlphaDev = static_cast<uint8_t>(isAlphaDev ? 1 : 0);
     combineTiling.isBetaDev = static_cast<uint8_t>(isBetaDev ? 1 : 0);
 
@@ -1590,7 +1591,16 @@ extern "C" aclblasStatus_t aclblasCher2k(
         return ACLBLAS_STATUS_SUCCESS;
     }
 
-    return LaunchCher2kKernel(
-        h, uplo, trans, static_cast<uint32_t>(n), static_cast<uint32_t>(k), alpha, A, static_cast<uint32_t>(lda), B,
-        static_cast<uint32_t>(ldb), beta, C, static_cast<uint32_t>(ldc));
+    // Kernel dispatch allocates via std::string/aclrt (tuning-knob snapshot and
+    // workspace staging); a std::exception here must not cross the extern "C"
+    // boundary (sgemm_grouped_batched contract). Parameter validation stays
+    // outside the guard.
+    try {
+        return LaunchCher2kKernel(
+            h, uplo, trans, static_cast<uint32_t>(n), static_cast<uint32_t>(k), alpha, A, static_cast<uint32_t>(lda), B,
+            static_cast<uint32_t>(ldb), beta, C, static_cast<uint32_t>(ldc));
+    } catch (const std::exception&) {
+        OP_LOGE("aclblasCher2k", "host exception in kernel dispatch path");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 }

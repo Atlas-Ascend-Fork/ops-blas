@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <vector>
 #include "acl/acl.h"
 #include "log/log.h"
@@ -395,24 +396,26 @@ static void LaunchAlphaBetaKernel(
         alphaBetaCores, h->stream, tempABDevice, cOrigPtr, cOutPtr, abTilingData, dtypeCase, useFP32Output);
 }
 
-static aclblasStatus_t AllocateAndLaunchKernel(
-    aclblasHandle_t handle, const void* A, const void* B, void* C, aclDataType Atype, aclDataType Btype,
-    aclDataType Ctype, bool isTransA, bool isTransB, float alphaVal, float betaVal, int m, int n, int k, int lda,
-    int ldb, int ldc, uint32_t cubeCoreNum)
+// tiling 准备与列主序换位（原 AllocateAndLaunchKernel 前半段逐行搬运，控制单函数规模）
+static aclblasStatus_t PrepareGemmExTilings(
+    aclblasHandle_t handle, aclDataType Atype, aclDataType Btype, aclDataType Ctype, bool isTransA, bool isTransB,
+    float alphaVal, float betaVal, int m, int n, int k, int lda, int ldb, int ldc, uint32_t cubeCoreNum,
+    GemmExTilingData& tilingData, GemmExTilingData& abTilingData, bool& useFP32Output, bool& needTempBuffer,
+    GemmDTypeCase& dtypeCase)
 {
-    GemmExTilingData tilingData = CalcBlockMmadTiling(
+    tilingData = CalcBlockMmadTiling(
         cubeCoreNum, m, n, k, lda, ldb, ldc, Atype, Btype, Ctype, isTransA, isTransB, alphaVal, betaVal);
     OP_CHECK_IF(
         tilingData.usedCoreNum == 0, OP_LOGE("aclblasGemmEx", "Invalid tiling data, usedCoreNum=0"),
         return ACLBLAS_STATUS_EXECUTION_FAILED);
     bool needPostProcess = (alphaVal != 1.0f) || (betaVal != 0.0f);
-    GemmDTypeCase dtypeCase = GetDtypeCase(Atype, Btype, Ctype);
-    bool useFP32Output = needPostProcess && (dtypeCase == GEMM_DTYPE_FP16 || dtypeCase == GEMM_DTYPE_BF16);
-    bool needTempBuffer = needPostProcess;
+    dtypeCase = GetDtypeCase(Atype, Btype, Ctype);
+    useFP32Output = needPostProcess && (dtypeCase == GEMM_DTYPE_FP16 || dtypeCase == GEMM_DTYPE_BF16);
+    needTempBuffer = needPostProcess;
     if (needTempBuffer) {
         tilingData.ldc = m;
     }
-    GemmExTilingData abTilingData = tilingData;
+    abTilingData = tilingData;
     // Column-major trick: swap A↔B, M↔N
     std::swap(tilingData.m, tilingData.n);
     std::swap(tilingData.lda, tilingData.ldb);
@@ -420,16 +423,36 @@ static aclblasStatus_t AllocateAndLaunchKernel(
     std::swap(tilingData.singleCoreM, tilingData.singleCoreN);
     std::swap(tilingData.mBlocks, tilingData.nBlocks);
 
-    auto* h = handle;
-
-    uint8_t* tempABDevice = nullptr;
     if (needTempBuffer) {
+        auto* h = handle;
         aclblasStatus_t st = CheckWorkspaceSize(useFP32Output, Ctype, m, n, h);
         if (st != ACLBLAS_STATUS_SUCCESS) {
             return st;
         }
     }
-    tempABDevice = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+static aclblasStatus_t AllocateAndLaunchKernel(
+    aclblasHandle_t handle, const void* A, const void* B, void* C, aclDataType Atype, aclDataType Btype,
+    aclDataType Ctype, bool isTransA, bool isTransB, float alphaVal, float betaVal, int m, int n, int k, int lda,
+    int ldb, int ldc, uint32_t cubeCoreNum)
+{
+    GemmExTilingData tilingData{};
+    GemmExTilingData abTilingData{};
+    GemmDTypeCase dtypeCase = GEMM_DTYPE_INVALID;
+    bool useFP32Output = false;
+    bool needTempBuffer = false;
+    aclblasStatus_t st = PrepareGemmExTilings(
+        handle, Atype, Btype, Ctype, isTransA, isTransB, alphaVal, betaVal, m, n, k, lda, ldb, ldc, cubeCoreNum,
+        tilingData, abTilingData, useFP32Output, needTempBuffer, dtypeCase);
+    if (st != ACLBLAS_STATUS_SUCCESS) {
+        return st;
+    }
+
+    auto* h = handle;
+
+    uint8_t* tempABDevice = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
 
     uint8_t* aDevicePtr = reinterpret_cast<uint8_t*>(const_cast<void*>(B));
     uint8_t* bDevicePtr = reinterpret_cast<uint8_t*>(const_cast<void*>(A));
@@ -438,7 +461,7 @@ static aclblasStatus_t AllocateAndLaunchKernel(
         "aclblasGemmEx",
         "launching kernel: blocks=%u, transA=%d, transB=%d, dtypeCase=%d, "
         "needPostProcess=%d, lda=%d, ldb=%d, ldc=%d",
-        tilingData.usedCoreNum, isTransA, isTransB, dtypeCase, needPostProcess, lda, ldb, tilingData.ldc);
+        tilingData.usedCoreNum, isTransA, isTransB, dtypeCase, needTempBuffer, lda, ldb, tilingData.ldc);
     GemmDTypeCase kernelDtypeCase = dtypeCase;
     if (useFP32Output) {
         kernelDtypeCase = (dtypeCase == GEMM_DTYPE_BF16) ? GEMM_DTYPE_BF16_OUT_F32 : GEMM_DTYPE_FP16_OUT_F32;
@@ -453,26 +476,14 @@ static aclblasStatus_t AllocateAndLaunchKernel(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-aclblasStatus_t aclblasGemmEx(
-    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
-    const void* alpha, const void* A, aclDataType Atype, int lda, const void* B, aclDataType Btype, int ldb,
-    const void* beta, void* C, aclDataType Ctype, int ldc, aclblasComputeType_t computeType, aclblasGemmAlgo_t algo)
+// issue #1028: 路径派发段（k=0 快路径、核数查询、alpha=0 处理与 kernel 下发）拆出
+// 独立函数——该段（含 HandleKZero 内 std::vector 堆分配）在入口侧由 try/catch 包裹，
+// 拆分同时保证两个函数都不触碰单函数规模门禁。
+static aclblasStatus_t DispatchGemmEx(
+    aclblasHandle_t handle, int m, int n, int k, const void* alpha, const void* A, aclDataType Atype, const void* B,
+    aclDataType Btype, const void* beta, void* C, aclDataType Ctype, aclblasOperation_t transa,
+    aclblasOperation_t transb, int lda, int ldb, int ldc)
 {
-    OP_LOGI(
-        "aclblasGemmEx",
-        "entry: transa=%d, transb=%d, m=%d, n=%d, k=%d, "
-        "Atype=%d, Btype=%d, Ctype=%d, computeType=%d, algo=%d",
-        static_cast<int>(transa), static_cast<int>(transb), m, n, k, static_cast<int>(Atype), static_cast<int>(Btype),
-        static_cast<int>(Ctype), static_cast<int>(computeType), static_cast<int>(algo));
-    aclblasStatus_t st = ValidateGemmParams(
-        handle, transa, transb, m, n, k, lda, ldb, ldc, alpha, beta, Atype, Btype, Ctype, computeType, algo, A, B, C);
-    if (st != ACLBLAS_STATUS_SUCCESS) {
-        OP_LOGE("aclblasGemmEx", "parameter validation failed, status=%d", static_cast<int>(st));
-        return st;
-    }
-    if (m == 0 || n == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
     if (k == 0) {
         return HandleKZero(C, ldc, n, Ctype, *static_cast<const float*>(beta));
     }
@@ -497,4 +508,37 @@ aclblasStatus_t aclblasGemmEx(
     return AllocateAndLaunchKernel(
         handle, A, B, C, Atype, Btype, Ctype, isTransA, isTransB, alphaVal, betaVal, m, n, k, lda, ldb, ldc,
         cubeCoreNum);
+}
+
+aclblasStatus_t aclblasGemmEx(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
+    const void* alpha, const void* A, aclDataType Atype, int lda, const void* B, aclDataType Btype, int ldb,
+    const void* beta, void* C, aclDataType Ctype, int ldc, aclblasComputeType_t computeType, aclblasGemmAlgo_t algo)
+{
+    OP_LOGI(
+        "aclblasGemmEx",
+        "entry: transa=%d, transb=%d, m=%d, n=%d, k=%d, "
+        "Atype=%d, Btype=%d, Ctype=%d, computeType=%d, algo=%d",
+        static_cast<int>(transa), static_cast<int>(transb), m, n, k, static_cast<int>(Atype), static_cast<int>(Btype),
+        static_cast<int>(Ctype), static_cast<int>(computeType), static_cast<int>(algo));
+    aclblasStatus_t st = ValidateGemmParams(
+        handle, transa, transb, m, n, k, lda, ldb, ldc, alpha, beta, Atype, Btype, Ctype, computeType, algo, A, B, C);
+    if (st != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE("aclblasGemmEx", "parameter validation failed, status=%d", static_cast<int>(st));
+        return st;
+    }
+    if (m == 0 || n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    // Kernel dispatch allocates via std::vector/aclrt (k=0 C staging and
+    // workspace checks); a std::exception here must not cross the extern "C"
+    // boundary (sgemm_grouped_batched contract). Parameter validation stays
+    // outside the guard.
+    try {
+        return DispatchGemmEx(
+            handle, m, n, k, alpha, A, Atype, B, Btype, beta, C, Ctype, transa, transb, lda, ldb, ldc);
+    } catch (const std::exception&) {
+        OP_LOGE("aclblasGemmEx", "host exception in kernel dispatch path");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 }

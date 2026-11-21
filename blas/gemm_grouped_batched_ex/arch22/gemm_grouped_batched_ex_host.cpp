@@ -8,6 +8,7 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 #include <algorithm>
+#include <exception>
 #include <limits>
 #include <vector>
 #include "cann_ops_blas.h"
@@ -310,10 +311,18 @@ aclblasStatus_t aclblasGemmGroupedBatchedEx(
                               ldbArray,    ldcArray,    groupSize, alphaArray, betaArray, groupCount};
     if (!HasWork(args))
         return ACLBLAS_STATUS_SUCCESS;
-    std::vector<GemmGrouped22Batch> batches;
-    uint64_t maximumWorkspace = 0;
-    status = BuildBatches(args, batches, maximumWorkspace);
-    if (status != ACLBLAS_STATUS_SUCCESS)
-        return status;
-    return LaunchBatches(handle, Aarray, Barray, Carray, batches, maximumWorkspace);
+    // Batch building and kernel dispatch allocate via std::vector/aclrt; a
+    // std::exception here must not cross the extern "C" boundary
+    // (sgemm_grouped_batched contract). Parameter validation stays outside.
+    try {
+        std::vector<GemmGrouped22Batch> batches;
+        uint64_t maximumWorkspace = 0;
+        status = BuildBatches(args, batches, maximumWorkspace);
+        if (status != ACLBLAS_STATUS_SUCCESS)
+            return status;
+        return LaunchBatches(handle, Aarray, Barray, Carray, batches, maximumWorkspace);
+    } catch (const std::exception&) {
+        OP_LOGE("aclblasGemmGroupedBatchedEx", "host exception in kernel dispatch path");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 }

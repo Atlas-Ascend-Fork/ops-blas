@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <new>
 #include <vector>
@@ -145,6 +146,111 @@ aclblasStatus_t ValidateCtrmvArgs(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// issue #1028/#949：异常防护所需的资源句柄集合。句柄集中在结构体内，
+// 便于失败/异常路径统一释放（ReleaseCtrmvBuffers）。
+struct CtrmvDeviceBuffers {
+    float* uploMatrixData = nullptr;
+    uint8_t* uploDevice = nullptr;
+    uint8_t* workspaceDevice = nullptr;
+    uint8_t* tilingDevice = nullptr;
+    size_t uploByteSize = 0;
+    size_t workspaceSize = 0;
+};
+
+static void ReleaseCtrmvBuffers(CtrmvDeviceBuffers& bufs)
+{
+    if (bufs.uploDevice != nullptr) {
+        aclrtFree(bufs.uploDevice);
+        bufs.uploDevice = nullptr;
+    }
+    if (bufs.workspaceDevice != nullptr) {
+        aclrtFree(bufs.workspaceDevice);
+        bufs.workspaceDevice = nullptr;
+    }
+    if (bufs.tilingDevice != nullptr) {
+        aclrtFree(bufs.tilingDevice);
+        bufs.tilingDevice = nullptr;
+    }
+    if (bufs.uploMatrixData != nullptr) {
+        delete[] bufs.uploMatrixData;
+        bufs.uploMatrixData = nullptr;
+    }
+}
+
+// 资源分配段：uplo 掩码矩阵（host new[]）与三块设备缓冲（uplo/workspace/tiling）。
+// 失败路径释放已取得资源后返回精确状态码（原 aclblasCtrmv 内联逻辑逐行搬运）。
+static aclblasStatus_t AllocCtrmvDeviceBuffers(int64_t uploLocal, int n, CtrmvDeviceBuffers& bufs)
+{
+    bufs.uploMatrixData = CreateCtrmvUploMatrix(uploLocal);
+    if (bufs.uploMatrixData == nullptr) {
+        LOG_PRINT("aclblasCtrmv: alloc uplo matrix failed\n");
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
+
+    bufs.uploByteSize = N0 * N0 * sizeof(float);
+    int64_t mTiles = (n + BASIC_DATA_PROC_CNT - 1) / BASIC_DATA_PROC_CNT;
+    bufs.workspaceSize = mTiles * BASIC_DATA_PROC_CNT * ELEMENTS_EACH_COMPLEX64 * sizeof(float);
+    if (bufs.workspaceSize < 1024) {
+        bufs.workspaceSize = 1024;
+    }
+
+    // issue #779: 失败路径用显式 if 块（G.FMT.04 每行仅一条语句，且 clang-format
+    // 不会将块内独立语句回并为一行）
+    aclError aclRet = aclrtMalloc((void**)&bufs.uploDevice, bufs.uploByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (aclRet != ACL_SUCCESS) {
+        LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
+        ReleaseCtrmvBuffers(bufs);
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
+
+    aclRet = aclrtMalloc((void**)&bufs.workspaceDevice, bufs.workspaceSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (aclRet != ACL_SUCCESS) {
+        LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
+        ReleaseCtrmvBuffers(bufs);
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
+
+    size_t tilingSize = (sizeof(CtrmvTilingData) + 31) / 32 * 32;
+    aclRet = aclrtMalloc((void**)&bufs.tilingDevice, tilingSize, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (aclRet != ACL_SUCCESS) {
+        LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
+        ReleaseCtrmvBuffers(bufs);
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+// 拷贝上传段：workspace 清零表、uplo 掩码矩阵与 tiling 三次 H2D。
+// 失败路径释放全部资源后返回精确状态码（原 aclblasCtrmv 内联逻辑逐行搬运）。
+static aclblasStatus_t UploadCtrmvBuffers(const CtrmvTilingData& tiling, CtrmvDeviceBuffers& bufs)
+{
+    std::vector<uint8_t> workspaceHost(bufs.workspaceSize, 0);
+    aclError aclRet = aclrtMemcpy(
+        bufs.workspaceDevice, bufs.workspaceSize, workspaceHost.data(), bufs.workspaceSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet);
+        ReleaseCtrmvBuffers(bufs);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+
+    uint8_t* uploHost = reinterpret_cast<uint8_t*>(bufs.uploMatrixData);
+    aclRet = aclrtMemcpy(bufs.uploDevice, bufs.uploByteSize, uploHost, bufs.uploByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet);
+        ReleaseCtrmvBuffers(bufs);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+
+    aclRet = aclrtMemcpy(
+        bufs.tilingDevice, sizeof(CtrmvTilingData), &tiling, sizeof(CtrmvTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
+    if (aclRet != ACL_SUCCESS) {
+        LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet);
+        ReleaseCtrmvBuffers(bufs);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 aclblasStatus_t aclblasCtrmv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
     const aclblasComplex* A, int lda, aclblasComplex* x, int incx)
@@ -174,103 +280,38 @@ aclblasStatus_t aclblasCtrmv(
     uint32_t coreNum = GetAivCoreCount();
     uint32_t numBlocks = CalCtrmvBlockDim(n, coreNum);
 
-    float* uploMatrixData = CreateCtrmvUploMatrix(uploLocal);
-    if (uploMatrixData == nullptr) {
-        LOG_PRINT("aclblasCtrmv: alloc uplo matrix failed\n");
-        return ACLBLAS_STATUS_ALLOC_FAILED;
+    // Resource allocation and kernel dispatch allocate via std::vector/aclrt; a
+    // std::exception here must not cross the extern "C" boundary
+    // (sgemm_grouped_batched contract). Parameter validation stays outside the
+    // guard. Allocation/upload segments are extracted into helpers to keep the
+    // entry function within the single-function size gate; failure paths inside
+    // the helpers release what has already been acquired.
+    CtrmvDeviceBuffers bufs;
+    try {
+        const aclblasStatus_t allocStatus = AllocCtrmvDeviceBuffers(uploLocal, n, bufs);
+        if (allocStatus != ACLBLAS_STATUS_SUCCESS) {
+            return allocStatus;
+        }
+        const aclblasStatus_t uploadStatus = UploadCtrmvBuffers(tiling, bufs);
+        if (uploadStatus != ACLBLAS_STATUS_SUCCESS) {
+            return uploadStatus;
+        }
+
+        ctrmv_kernel_do(
+            reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(A)), reinterpret_cast<uint8_t*>(x), bufs.uploDevice,
+            bufs.workspaceDevice, bufs.tilingDevice, numBlocks, useStream);
+        aclError aclRet = aclrtSynchronizeStream(useStream);
+        ReleaseCtrmvBuffers(bufs);
+        if (aclRet != ACL_SUCCESS) {
+            LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+    } catch (const std::exception&) {
+        // Release whatever was already acquired; handles not yet allocated are
+        // still nullptr here and ReleaseCtrmvBuffers skips them.
+        ReleaseCtrmvBuffers(bufs);
+        LOG_PRINT("aclblasCtrmv: host exception in kernel dispatch path\n");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
-
-    size_t uploByteSize = N0 * N0 * sizeof(float);
-    int64_t mTiles = (n + BASIC_DATA_PROC_CNT - 1) / BASIC_DATA_PROC_CNT;
-    size_t workspaceSize = mTiles * BASIC_DATA_PROC_CNT * ELEMENTS_EACH_COMPLEX64 * sizeof(float);
-    if (workspaceSize < 1024) {
-        workspaceSize = 1024;
-    }
-
-    uint8_t* uploHost = reinterpret_cast<uint8_t*>(uploMatrixData);
-
-    uint8_t* uploDevice = nullptr;
-    uint8_t* workspaceDevice = nullptr;
-    uint8_t* tilingDevice = nullptr;
-
-    // issue #779: 失败路径用显式 if 块（G.FMT.04 每行仅一条语句，且 clang-format
-    // 不会将块内独立语句回并为一行）
-    aclError aclRet = aclrtMalloc((void**)&uploDevice, uploByteSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-        delete[] uploMatrixData;
-        return ACLBLAS_STATUS_ALLOC_FAILED;
-    }
-
-    aclRet = aclrtMalloc((void**)&workspaceDevice, workspaceSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-        aclrtFree(uploDevice);
-        delete[] uploMatrixData;
-        return ACLBLAS_STATUS_ALLOC_FAILED;
-    }
-
-    size_t tilingSize = (sizeof(CtrmvTilingData) + 31) / 32 * 32;
-    aclRet = aclrtMalloc((void**)&tilingDevice, tilingSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) {
-        LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-        aclrtFree(workspaceDevice);
-        aclrtFree(uploDevice);
-        delete[] uploMatrixData;
-        return ACLBLAS_STATUS_ALLOC_FAILED;
-    }
-
-    std::vector<uint8_t> workspaceHost(workspaceSize, 0);
-    aclRet =
-        aclrtMemcpy(workspaceDevice, workspaceSize, workspaceHost.data(), workspaceSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet);
-        aclrtFree(tilingDevice);
-        aclrtFree(workspaceDevice);
-        aclrtFree(uploDevice);
-        delete[] uploMatrixData;
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-
-    aclRet = aclrtMemcpy(uploDevice, uploByteSize, uploHost, uploByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet);
-        aclrtFree(tilingDevice);
-        aclrtFree(workspaceDevice);
-        aclrtFree(uploDevice);
-        delete[] uploMatrixData;
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-
-    aclRet =
-        aclrtMemcpy(tilingDevice, sizeof(CtrmvTilingData), &tiling, sizeof(CtrmvTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    if (aclRet != ACL_SUCCESS) {
-        LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet);
-        aclrtFree(tilingDevice);
-        aclrtFree(workspaceDevice);
-        aclrtFree(uploDevice);
-        delete[] uploMatrixData;
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-
-    ctrmv_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(A)), reinterpret_cast<uint8_t*>(x), uploDevice,
-        workspaceDevice, tilingDevice, numBlocks, useStream);
-    aclRet = aclrtSynchronizeStream(useStream);
-    if (aclRet != ACL_SUCCESS) {
-        LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
-        aclrtFree(tilingDevice);
-        aclrtFree(workspaceDevice);
-        aclrtFree(uploDevice);
-        delete[] uploMatrixData;
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    }
-
-    aclrtFree(uploDevice);
-    aclrtFree(workspaceDevice);
-    aclrtFree(tilingDevice);
-
-    delete[] uploMatrixData;
-
     return ACLBLAS_STATUS_SUCCESS;
 }

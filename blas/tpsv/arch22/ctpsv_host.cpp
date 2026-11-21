@@ -56,6 +56,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -234,9 +235,10 @@ static aclblasStatus_t CtpsvLaunchKernel(
     }
     std::lock_guard<std::mutex> lock(tilingSlot->mu);
     if (!tilingSlot->valid || std::memcmp(&tilingSlot->last, &tiling, sizeof(CtpsvTilingDataDevice)) != 0) {
-        if (aclrtMemcpyAsync(
-                tilingSlot->dev, sizeof(CtpsvTilingDataDevice), &tiling, sizeof(CtpsvTilingDataDevice),
-                ACL_MEMCPY_HOST_TO_DEVICE, useStream) != ACL_SUCCESS) {
+        const aclError copyRet = aclrtMemcpyAsync(
+            tilingSlot->dev, sizeof(CtpsvTilingDataDevice), &tiling, sizeof(CtpsvTilingDataDevice),
+            ACL_MEMCPY_HOST_TO_DEVICE, useStream);
+        if (copyRet != ACL_SUCCESS) {
             return ACLBLAS_STATUS_INTERNAL_ERROR;
         }
         tilingSlot->last = tiling;
@@ -296,6 +298,15 @@ aclblasStatus_t aclblasCtpsv(
 
     CtpsvTilingDataDevice tiling = CalCtpsvTilingData(n, incx, AP, x);
 
-    // 异步返回：无数据 H2D/D2H、无内部同步；调用方读回前自行 aclrtSynchronizeStream
-    return CtpsvLaunchKernel(tiling, AP, x, n, incx, uplo, trans, diag, useStream);
+    // Kernel dispatch allocates via the per-stream tiling slot pool (static
+    // std::map first-miss insertion) and aclrt device buffers; a std::exception
+    // here must not cross the extern "C" boundary (sgemm_grouped_batched
+    // contract). Parameter validation stays outside the guard.
+    try {
+        // 异步返回：无数据 H2D/D2H、无内部同步；调用方读回前自行 aclrtSynchronizeStream
+        return CtpsvLaunchKernel(tiling, AP, x, n, incx, uplo, trans, diag, useStream);
+    } catch (const std::exception&) {
+        OP_LOGE("aclblasCtpsv", "host exception in kernel dispatch path");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 }

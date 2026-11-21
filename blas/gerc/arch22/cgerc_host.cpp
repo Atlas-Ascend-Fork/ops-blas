@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -168,34 +169,13 @@ static aclblasStatus_t CopyCgercBuffersToDevice(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-aclblasStatus_t aclblasCgerc(
-    aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,
-    const aclblasComplex* y, int incy, aclblasComplex* A, int lda)
+// issue #1028: 资源分配与 kernel 下发段（offset 表构造、设备缓冲分配拷贝、kernel
+// 下发与同步）。从 aclblasCgerc 拆出独立函数：该段在入口侧由 try/catch 包裹，
+// 拆分同时保证两个函数都不触碰单函数规模门禁。
+static aclblasStatus_t AllocateAndDispatchCgerc(
+    aclrtStream useStream, const CgercTilingData& tiling, uint32_t numBlocks, const aclblasComplex* x,
+    const aclblasComplex* y, aclblasComplex* A)
 {
-    if (handle == nullptr) {
-        LOG_PRINT("aclblasCgerc: handle is nullptr\n");
-        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
-    }
-    const aclblasStatus_t argsStatus = ValidateCgercArgs(m, n, alpha, x, y, A, incx, lda);
-    if (argsStatus != ACLBLAS_STATUS_SUCCESS) {
-        return argsStatus;
-    }
-    // issue #732: kernel 向量化路径按连续列块消费 y，incy!=1 的步进访问需要专用
-    // 数据通路；在未实现前显式拒绝，消除静默错算（对齐 caxpy #692 口径）
-    if (incy != 1) {
-        LOG_PRINT("aclblasCgerc: arch22 kernel requires contiguous y (incy=1), got %d\n", incy);
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-
-    auto* h = handle;
-    aclrtStream useStream = h->stream;
-    float alphaReal = alpha->real;
-    float alphaImag = alpha->imag;
-
-    uint32_t numBlocks = 8;
-
-    CgercTilingData tiling = CalCgercTilingData(m, n, alphaReal, alphaImag, numBlocks, incx, incy, lda);
-
     std::vector<uint32_t> offset = CreateCgercOffset();
     size_t offsetByteSize = offset.size() * sizeof(uint32_t);
     size_t workspaceSize = 1024;
@@ -224,4 +204,43 @@ aclblasStatus_t aclblasCgerc(
     aclrtFree(tilingDevice);
 
     return ACLBLAS_STATUS_SUCCESS;
+}
+
+aclblasStatus_t aclblasCgerc(
+    aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,
+    const aclblasComplex* y, int incy, aclblasComplex* A, int lda)
+{
+    if (handle == nullptr) {
+        LOG_PRINT("aclblasCgerc: handle is nullptr\n");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    const aclblasStatus_t argsStatus = ValidateCgercArgs(m, n, alpha, x, y, A, incx, lda);
+    if (argsStatus != ACLBLAS_STATUS_SUCCESS) {
+        return argsStatus;
+    }
+    // issue #732: kernel 向量化路径按连续列块消费 y，incy!=1 的步进访问需要专用
+    // 数据通路；在未实现前显式拒绝，消除静默错算（对齐 caxpy #692 口径）
+    if (incy != 1) {
+        LOG_PRINT("aclblasCgerc: arch22 kernel requires contiguous y (incy=1), got %d\n", incy);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+
+    auto* h = handle;
+    aclrtStream useStream = h->stream;
+    float alphaReal = alpha->real;
+    float alphaImag = alpha->imag;
+
+    uint32_t numBlocks = 8;
+
+    CgercTilingData tiling = CalCgercTilingData(m, n, alphaReal, alphaImag, numBlocks, incx, incy, lda);
+
+    // Kernel dispatch allocates via std::vector/aclrt; a std::exception here
+    // must not cross the extern "C" boundary (sgemm_grouped_batched contract).
+    // Parameter validation stays outside the guard.
+    try {
+        return AllocateAndDispatchCgerc(useStream, tiling, numBlocks, x, y, A);
+    } catch (const std::exception&) {
+        LOG_PRINT("aclblasCgerc: host exception in kernel dispatch path\n");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 }

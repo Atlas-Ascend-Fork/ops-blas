@@ -17,6 +17,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -551,5 +552,14 @@ aclblasStatus_t aclblasCtbmv(
     if (path == CtbmvPath::CompactPanel) {
         tiling.rowsPerCore = n > 2048 ? 128U : 64U;
     }
-    return LaunchCtbmv(handle, A, x, tiling);
+    // Kernel dispatch path allocates via static std::map miss-insertion and
+    // aclrt workspace; a std::exception here must not cross the extern "C"
+    // boundary (sgemm_grouped_batched contract). Parameter validation stays
+    // outside the guard.
+    try {
+        return LaunchCtbmv(handle, A, x, tiling);
+    } catch (const std::exception&) {
+        OP_LOGE("aclblasCtbmv", "host exception in kernel dispatch path");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 }

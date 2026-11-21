@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <type_traits>
 #include <vector>
 #include "log/log.h"
@@ -234,13 +235,21 @@ aclblasStatus_t aclblasSgemmBatched(
     float alphaVal = *alpha;
     float betaVal = *beta;
 
-    // Early exit: k=0 or alpha=0
-    if (k == 0 || alphaVal == 0.0f) {
-        return LaunchEarlyExit(h, m, n, ldc, batchCount, betaVal, Carray);
-    }
+    // Kernel dispatch allocates via std::vector/aclrt workspace; a
+    // std::exception here must not cross the extern "C" boundary
+    // (sgemm_grouped_batched contract). Parameter validation stays outside.
+    try {
+        // Early exit: k=0 or alpha=0
+        if (k == 0 || alphaVal == 0.0f) {
+            return LaunchEarlyExit(h, m, n, ldc, batchCount, betaVal, Carray);
+        }
 
-    return ExecuteSgemmBatched(
-        h, transa, transb, m, n, k, alpha, Aarray, lda, Barray, ldb, beta, Carray, ldc, batchCount);
+        return ExecuteSgemmBatched(
+            h, transa, transb, m, n, k, alpha, Aarray, lda, Barray, ldb, beta, Carray, ldc, batchCount);
+    } catch (const std::exception&) {
+        OP_LOGE("aclblasSgemmBatched", "host exception in kernel dispatch path");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 }
 
 // ============================================================================
@@ -1607,31 +1616,14 @@ static aclblasStatus_t LaunchCgemmRealified(
     DispatchRealifiedGemm(params, plan);
     return ACLBLAS_STATUS_SUCCESS;
 }
-aclblasStatus_t aclblasCgemmBatched(
-    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
-    const aclblasComplex* alpha, const aclblasComplex* const Aarray[], int lda, const aclblasComplex* const Barray[],
-    int ldb, const aclblasComplex* beta, aclblasComplex* const Carray[], int ldc, int batchCount)
+// issue #1028: 路径派发段（early-exit、核数校验与 direct/realified/main 三路下发）
+// 拆出独立函数——该段（含 std::vector/aclrt 资源分配）在入口侧由 try/catch 包裹，
+// 拆分同时保证两个函数都不触碰单函数规模门禁。
+static aclblasStatus_t DispatchCgemmBatched(
+    _aclblas_handle* h, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k, int lda, int ldb,
+    int ldc, int batchCount, float alphaR, float alphaI, float betaR, float betaI, const aclblasComplex* const Aarray[],
+    const aclblasComplex* const Barray[], aclblasComplex* const Carray[])
 {
-    OP_LOGI(
-        "aclblasCgemmBatched", "entry: transa=%d, transb=%d, m=%d, n=%d, k=%d, batch=%d", static_cast<int>(transa),
-        static_cast<int>(transb), m, n, k, batchCount);
-
-    aclblasStatus_t st = ValidateCgemmBatchedParams(
-        handle, transa, transb, m, n, k, lda, ldb, ldc, batchCount, alpha, beta, Aarray, Barray, Carray);
-    if (st != ACLBLAS_STATUS_SUCCESS) {
-        return st;
-    }
-
-    if (m == 0 || n == 0 || batchCount == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-
-    auto* h = reinterpret_cast<_aclblas_handle*>(handle);
-    float alphaR = alpha->real;
-    float alphaI = alpha->imag;
-    float betaR = beta->real;
-    float betaI = beta->imag;
-
     if (k == 0 || (alphaR == 0.0f && alphaI == 0.0f)) {
         if (betaR == 1.0f && betaI == 0.0f) {
             return ACLBLAS_STATUS_SUCCESS;
@@ -1675,4 +1667,42 @@ aclblasStatus_t aclblasCgemmBatched(
     return LaunchCgemmMainPath(
         h, transa, transb, m, n, k, lda, ldb, ldc, batchCount, alphaR, alphaI, betaR, betaI, cubeCoreNum, aivCoreNum,
         Aarray, Barray, Carray);
+}
+
+aclblasStatus_t aclblasCgemmBatched(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
+    const aclblasComplex* alpha, const aclblasComplex* const Aarray[], int lda, const aclblasComplex* const Barray[],
+    int ldb, const aclblasComplex* beta, aclblasComplex* const Carray[], int ldc, int batchCount)
+{
+    OP_LOGI(
+        "aclblasCgemmBatched", "entry: transa=%d, transb=%d, m=%d, n=%d, k=%d, batch=%d", static_cast<int>(transa),
+        static_cast<int>(transb), m, n, k, batchCount);
+
+    aclblasStatus_t st = ValidateCgemmBatchedParams(
+        handle, transa, transb, m, n, k, lda, ldb, ldc, batchCount, alpha, beta, Aarray, Barray, Carray);
+    if (st != ACLBLAS_STATUS_SUCCESS) {
+        return st;
+    }
+
+    if (m == 0 || n == 0 || batchCount == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+
+    auto* h = reinterpret_cast<_aclblas_handle*>(handle);
+    float alphaR = alpha->real;
+    float alphaI = alpha->imag;
+    float betaR = beta->real;
+    float betaI = beta->imag;
+
+    // Kernel dispatch allocates via std::vector/aclrt workspace; a
+    // std::exception here must not cross the extern "C" boundary
+    // (sgemm_grouped_batched contract). Parameter validation stays outside.
+    try {
+        return DispatchCgemmBatched(
+            h, transa, transb, m, n, k, lda, ldb, ldc, batchCount, alphaR, alphaI, betaR, betaI, Aarray, Barray,
+            Carray);
+    } catch (const std::exception&) {
+        OP_LOGE("aclblasCgemmBatched", "host exception in kernel dispatch path");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 }
