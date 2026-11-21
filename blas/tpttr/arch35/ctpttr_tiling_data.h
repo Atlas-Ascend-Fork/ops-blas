@@ -14,7 +14,6 @@
 #include <cstdint>
 
 struct CtpttrTilingData {
-    uint64_t packedElements;
     uint32_t n;
     uint32_t lda;
     uint32_t upper;
@@ -27,7 +26,6 @@ inline CtpttrTilingData MakeCtpttrTiling(uint32_t n, uint32_t lda, bool upper, u
     tiling.n = n;
     tiling.lda = lda;
     tiling.upper = upper ? 1U : 0U;
-    tiling.packedElements = static_cast<uint64_t>(n) * (static_cast<uint64_t>(n) + 1U) / 2U;
     // One column is the smallest copy unit, so the blocks never outnumber the columns.
     tiling.useCoreNum = std::min<uint32_t>(coreCount, std::max<uint32_t>(n, 1U));
     if (tiling.useCoreNum == 0U) {
