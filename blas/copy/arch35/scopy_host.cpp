@@ -52,9 +52,14 @@ static ScopyTilingData CalScopyTilingData(uint32_t n, uint32_t coreNum, int incx
     tiling.tailElements = leftover % alignUnit;
 
     auto* platform = platform_ascendc::PlatformAscendCManager::GetInstance();
-    uint64_t ubSize = 248 * 1024; // fallback
-    if (platform != nullptr) {
+    uint64_t ubSize = 248 * 1024; // fallback: only used when the platform query is unavailable
+    if (platform == nullptr) {
+        OP_LOGW("aclblasScopy", "platform query unavailable, keep fallback ubSize=253952 bytes");
+    } else {
+        // GetCoreMemSize is void-returning (platform_ascendc.h), so a failure can
+        // only surface as an unexpected size; log the queried value for diagnosis.
         platform->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubSize);
+        OP_LOGD("aclblasScopy", "queried UB size=%u bytes", static_cast<uint32_t>(ubSize));
     }
     // BUFFER_NUM=2 in kernel: continuous path uses double-buffer Prime-Pump-Drain
     // Each slot is tileSize*sizeof(float), total = 2*tileSize*sizeof(float) for inQueueX_
