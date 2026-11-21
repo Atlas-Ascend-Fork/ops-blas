@@ -76,6 +76,17 @@ aclblasStatus_t ValidateCgeruShape(int m, int n, const aclblasComplex* alpha, in
         OP_LOGE("aclblasCgeru", "incy must not be zero");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    // INT_MIN 步长跨度校验与 arch22 ValidateCgeruScalars 对齐，同在标量校验阶段拦截：
+    // |INT_MIN| = 2^31 的步长仅在向量长度 <=1（零维或单元素）时可寻址，长度 >1 时在此
+    // 统一拒绝，保证 alpha==0 与零维 quick return 路径上双架构状态码一致（issue #1031）。
+    if (incx == std::numeric_limits<int>::min() && m > 1) {
+        OP_LOGE("aclblasCgeru", "incx span only addressable for vector length <= 1, got incx=%d, m=%d", incx, m);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (incy == std::numeric_limits<int>::min() && n > 1) {
+        OP_LOGE("aclblasCgeru", "incy span only addressable for vector length <= 1, got incy=%d, n=%d", incy, n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     // A is column-major: lda is the physical column stride and must cover m rows.
     if (lda < std::max(1, m)) {
         OP_LOGE("aclblasCgeru", "lda must be >= max(1,m), got lda=%d, m=%d", lda, m);

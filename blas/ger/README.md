@@ -99,6 +99,9 @@ aclblasStatus_t aclblasCgeru(aclblasHandle_t handle, int m, int n, const aclblas
 
 - m >= 0，n >= 0
 - incx != 0，incy != 0
+- `incx`/`incy` 为 `INT_MIN` 时，仅当对应向量长度 <= 1（零维或单元素，不发生步进）时视为可寻址；
+  长度 > 1 的 `INT_MIN` 步长（|INT_MIN| = 2^31）物理跨度超出 32 位步长承载域，双架构均于标量校验
+  阶段（alpha 与零维快速返回之前）统一拒绝并返回 `ACLBLAS_STATUS_INVALID_VALUE`
 - 列主序矩阵的 lda >= max(1, m)，不以列数 n 作为下限
 - handle 和 alpha 不为空；非快速返回时 x、y、A 不为空
 - 额外 GM 工作区需求为 0 字节（arch35 各路径；arch22 的成对交换字节偏移表与交错符号表都在 UB 内

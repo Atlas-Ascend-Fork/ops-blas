@@ -56,18 +56,42 @@ TEST_F(CgeruTest, NullHandle)
         aclblasCgeru(nullptr, 4, 4, nullptr, nullptr, 1, nullptr, 1, nullptr, 4), ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 }
 
+// quick return 不触碰设备指针；INT_MIN 多维步长已前移到标量校验阶段统一拒绝，
+// 与 arch22 CgeruStrideSpanValid 口径一致（issue #1031）。
 TEST_F(CgeruTest, QuickReturnDoesNotAccessDevicePointers)
 {
     const aclblasComplex zeroAlpha{0.0f, -0.0f};
     EXPECT_EQ(
         aclblasCgeru(
-            CgeruTest::handle_, INT_MAX, INT_MAX, &zeroAlpha, nullptr, INT_MIN, nullptr, INT_MIN, nullptr, INT_MAX),
+            CgeruTest::handle_, INT_MAX, INT_MAX, &zeroAlpha, nullptr, INT_MAX, nullptr, INT_MAX, nullptr, INT_MAX),
         ACLBLAS_STATUS_SUCCESS);
 
     const aclblasComplex oneAlpha{1.0f, 0.0f};
     EXPECT_EQ(
-        aclblasCgeru(CgeruTest::handle_, 0, INT_MAX, &oneAlpha, nullptr, INT_MIN, nullptr, INT_MIN, nullptr, 1),
+        aclblasCgeru(CgeruTest::handle_, 0, INT_MAX, &oneAlpha, nullptr, INT_MIN, nullptr, INT_MAX, nullptr, 1),
         ACLBLAS_STATUS_SUCCESS);
+
+    EXPECT_EQ(
+        aclblasCgeru(
+            CgeruTest::handle_, INT_MAX, INT_MAX, &zeroAlpha, nullptr, INT_MIN, nullptr, INT_MIN, nullptr, INT_MAX),
+        ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+// INT_MIN 步长在标量校验阶段拒绝（含 alpha==0 组合，不再被 quick return 放行）；
+// 空指针传参覆盖未到指针判空即拒绝的路径。
+TEST_F(CgeruTest, IntMinStrideRejectedAtScalarStage)
+{
+    const aclblasComplex alpha{1.0f, 0.0f};
+    const aclblasComplex zeroAlpha{0.0f, 0.0f};
+    EXPECT_EQ(
+        aclblasCgeru(CgeruTest::handle_, 2, 2, &alpha, nullptr, INT_MIN, nullptr, 1, nullptr, 2),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasCgeru(CgeruTest::handle_, 2, 2, &alpha, nullptr, 1, nullptr, INT_MIN, nullptr, 2),
+        ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(
+        aclblasCgeru(CgeruTest::handle_, 2, 2, &zeroAlpha, nullptr, INT_MIN, nullptr, 1, nullptr, 2),
+        ACLBLAS_STATUS_INVALID_VALUE);
 }
 
 TEST_F(CgeruTest, ZeroYColumnSkipsInfAndNanX)
@@ -122,10 +146,9 @@ TEST_F(CgeruTest, ContiguousRegTallNarrowAndBoundaryRows)
                 ACLBLAS_STATUS_SUCCESS);
             VerifyConfig config;
             applyMixedTolerance(config, ACL_FLOAT, reinterpret_cast<const float*>(golden.data()), golden.size() * 2);
-            EXPECT_TRUE(
-                Verifier::verifyVector(
-                    reinterpret_cast<const float*>(matrix.data()), reinterpret_cast<const float*>(golden.data()),
-                    golden.size() * 2, 1, config, caseName));
+            EXPECT_TRUE(Verifier::verifyVector(
+                reinterpret_cast<const float*>(matrix.data()), reinterpret_cast<const float*>(golden.data()),
+                golden.size() * 2, 1, config, caseName));
         }
     }
 }
@@ -167,8 +190,7 @@ TEST_P(CgeruTest, CsvDriven)
     } else {
         applyMixedTolerance(config, ACL_FLOAT, reinterpret_cast<const float*>(golden.data()), golden.size() * 2);
     }
-    EXPECT_TRUE(
-        Verifier::verifyVector(
-            reinterpret_cast<const float*>(aHost.data()), reinterpret_cast<const float*>(golden.data()),
-            golden.size() * 2, 1, config, p.caseName));
+    EXPECT_TRUE(Verifier::verifyVector(
+        reinterpret_cast<const float*>(aHost.data()), reinterpret_cast<const float*>(golden.data()), golden.size() * 2,
+        1, config, p.caseName));
 }
