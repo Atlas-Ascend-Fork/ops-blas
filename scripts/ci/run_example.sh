@@ -66,6 +66,9 @@ declare -A op_cases
 run_all=false
 ignore_dirs="common include utils frame"
 base_branch=""
+# issue #1069：diff 基线不可解析（浅仓 fetch 受服务端 SHA-want 配置约束并非无条件
+# 可用）时置 true，下游 git diff 前显式报错并退化为全量，避免静默退化不可定位
+diff_base_invalid=false
 
 resolve_diff_base() {
     if [ -n "$base_branch" ]; then
@@ -84,6 +87,12 @@ resolve_diff_base() {
             echo "Warning: could not fetch the pre-merge commit parent for test selection." >&2
         fi
     fi
+    # issue #1069：fetch 失败或 HEAD^1 仍不可解析时，显式输出错误并标记降级，
+    # 后续不再依赖该基线做静默 diff（此前失败输出被 2>/dev/null、退出码被 || true 掩盖）
+    if ! git rev-parse --verify --quiet "$base_branch" >/dev/null; then
+        diff_base_invalid=true
+        echo "Error: diff base '$base_branch' is unresolvable; changed-op selection will degrade to full run." >&2
+    fi
 }
 
 # 公共头文件变更（issue #457）：include/cann_ops_blas.h 等被新增算子 PR 触发时，
@@ -100,9 +109,15 @@ while IFS= read -r filepath; do
         header_ops=""
         resolve_diff_base
         # 从新增/修改行提取 API 函数名：aclblas<Xxx>( 形态
-        funcs=$(git diff "$base_branch" HEAD -- "$filepath" 2>/dev/null \
-                | grep -E '^[+][^+]' \
-                | grep -oE 'aclblas[A-Za-z0-9_]+\(' | sort -u | tr -d '(' || true)
+        # issue #1069：基线不可解析时跳过提取（resolve_diff_base 已显式报错），
+        # funcs 为空 → 走下方"no API function extracted"既有回退全量路径
+        if [ "$diff_base_invalid" = "true" ]; then
+            funcs=""
+        else
+            funcs=$(git diff "$base_branch" HEAD -- "$filepath" 2>/dev/null \
+                    | grep -E '^[+][^+]' \
+                    | grep -oE 'aclblas[A-Za-z0-9_]+\(' | sort -u | tr -d '(' || true)
+        fi
         for fn in $funcs; do
             # 函数名转算子目录名：aclblasSsymm → ssymm；aclblasCgemmBatched → cgemm_batched
             op_name="${fn#aclblas}"
@@ -190,15 +205,19 @@ while IFS= read -r filepath; do
         # 与 git 基线比对：新增/修改行的 case_name（删除行无法在本分支取到，不纳入）
         # 管道口径：'^[+][^+]' 取新增数据行（排除 +++ 头），awk 剥离 + 前缀后取
         # 首列 case_name，排除 header
+        # issue #1069：基线不可解析时跳过提取（resolve_diff_base 已显式报错），
+        # op_cases 为空 → 走下方"no changed cases parsed"既有按算子全量回退路径
         resolve_diff_base
-        while IFS= read -r case_name; do
-            [ -z "$case_name" ] && continue
-            [[ "$case_name" == "case_name" ]] && continue
-            op_cases[$op]="${op_cases[$op]:-},${case_name}"
-        done < <(git diff "$base_branch" HEAD -- "$filepath" 2>/dev/null \
-                 | grep -E '^[+][^+]' \
-                 | awk -F, '{s=$1; gsub(/^\+/, "", s); print s}' || true)
-        # git diff 无基线信息（如 filelist 缺失）时退化为全量
+        if [ "$diff_base_invalid" != "true" ]; then
+            while IFS= read -r case_name; do
+                [ -z "$case_name" ] && continue
+                [[ "$case_name" == "case_name" ]] && continue
+                op_cases[$op]="${op_cases[$op]:-},${case_name}"
+            done < <(git diff "$base_branch" HEAD -- "$filepath" 2>/dev/null \
+                     | grep -E '^[+][^+]' \
+                     | awk -F, '{s=$1; gsub(/^\+/, "", s); print s}' || true)
+        fi
+        # git diff 无基线信息（基线不可解析或 filelist 缺失）时退化为全量
         if [ -z "${op_cases[$op]:-}" ]; then
             echo "Warning: no changed cases parsed from $filepath, will run all cases of $op."
         fi
