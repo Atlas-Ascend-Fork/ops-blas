@@ -329,6 +329,12 @@ aclblasStatus_t aclblasCsyr2k(
     int ldc);
 ```
 
+#### 参数位置、异步与工作区
+
+- `handle`、枚举、维度和 leading dimension 参数位于 Host；`A`、`B`、`C` 以及复数标量 `alpha`、`beta` 必须位于 Device。arch35 实现把 `alpha`/`beta` 作为 GM 地址直接传给计算 kernel，不会将 Host 标量拷贝到 Device；调用方应先用 `aclrtMalloc` 分配标量并拷贝数据。
+- 调用只把计算 kernel 按顺序提交到 `handle` 绑定的 stream 后返回；读取 `C` 前必须同步该 stream（例如 `aclrtSynchronizeStream`）。
+- `k > 0` 时实现使用 handle workspace 保存复数分量和中间矩阵；用户通过 `aclblasSetWorkspace` 提供的空间不足时返回 `ACLBLAS_STATUS_ALLOC_FAILED`。`k == 0` 只执行指定三角的 `beta * C` 缩放，不申请矩阵乘临时空间。
+
 #### 约束说明
 
 - `uplo` 为 `ACLBLAS_UPPER` 或 `ACLBLAS_LOWER`，仅指定三角被更新；另一三角值语义不变，但并非「零访问」：uplo='L' 时对角块的非 uplo（严格上）段按 C 旧值恒等回写（语义上不修改），uplo='U' 时非 uplo 段不写出。
