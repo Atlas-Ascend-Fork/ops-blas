@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include "kernel_operator.h"
+#include "acl/acl.h"
 #include "srotm_tiling_data.h"
 
 using namespace AscendC;
@@ -32,11 +33,11 @@ template <typename T>
 class SrotmKernel {
 public:
     __aicore__ inline SrotmKernel() = default;
-    __aicore__ inline void Init(const SrotmTilingData &tiling, TPipe *pipeObj);
+    __aicore__ inline void Init(const SrotmTilingData& tiling, TPipe* pipeObj);
     __aicore__ inline void Process();
 
 private:
-    __aicore__ inline void ParseTilingData(const SrotmTilingData &tiling);
+    __aicore__ inline void ParseTilingData(const SrotmTilingData& tiling);
     __aicore__ inline void CalculateBlockRange();
     __aicore__ inline uint32_t AlignToBlock(uint32_t dataCount) const;
     __aicore__ inline void CopyIn(uint32_t curOffset, uint32_t dataCount, uint32_t computeCount);
@@ -82,7 +83,7 @@ private:
 };
 
 template <typename T>
-__aicore__ inline void SrotmKernel<T>::ParseTilingData(const SrotmTilingData &tiling)
+__aicore__ inline void SrotmKernel<T>::ParseTilingData(const SrotmTilingData& tiling)
 {
     n = tiling.n;
     useCoreNum = tiling.useCoreNum;
@@ -98,8 +99,8 @@ __aicore__ inline void SrotmKernel<T>::ParseTilingData(const SrotmTilingData &ti
     xStartIndex = incx >= 0 ? 0 : (1 - static_cast<int64_t>(n)) * incx;
     yStartIndex = incy >= 0 ? 0 : (1 - static_cast<int64_t>(n)) * incy;
 
-    xGM.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(tiling.x), xStorageSize);
-    yGM.SetGlobalBuffer(reinterpret_cast<__gm__ T *>(tiling.y), yStorageSize);
+    xGM.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(tiling.x), xStorageSize);
+    yGM.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(tiling.y), yStorageSize);
 }
 
 template <typename T>
@@ -142,7 +143,7 @@ __aicore__ inline void SrotmKernel<T>::CalculateBlockRange()
 }
 
 template <typename T>
-__aicore__ inline void SrotmKernel<T>::Init(const SrotmTilingData &tiling, TPipe *pipeObj)
+__aicore__ inline void SrotmKernel<T>::Init(const SrotmTilingData& tiling, TPipe* pipeObj)
 {
     vecIdx = GetBlockIdx();
     ParseTilingData(tiling);
@@ -306,9 +307,20 @@ __global__ __aicore__ void srotm_kernel(const SrotmTilingData tiling)
     op.Process();
 }
 
-void srotm_kernel_do(const SrotmTilingData &tiling, uint32_t numBlocks, void *stream)
+aclError srotm_kernel_do(const SrotmTilingData& tiling, uint32_t numBlocks, void* stream)
 {
-    srotm_kernel<<<numBlocks, nullptr, stream>>>(tiling);
+    // issue #1152: report the launch status instead of discarding it, mirroring the
+    // chbmv/ssbmv pattern (aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs).
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(reinterpret_cast<const void*>(srotm_kernel), &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        SrotmTilingData tiling;
+    } args{tiling};
+    static_assert(sizeof(Arguments) == sizeof(SrotmTilingData));
+    return aclrtLaunchKernelWithHostArgs(function, numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }
 
 #endif // __OPS_SROTM_KERNEL_H__

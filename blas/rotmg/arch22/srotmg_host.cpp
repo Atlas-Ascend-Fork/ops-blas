@@ -205,7 +205,14 @@ aclblasStatus_t aclblasSrotmg(aclblasHandle_t handle, float* d1, float* d2, floa
         tiling.y1 = reinterpret_cast<uint64_t>(const_cast<float*>(y1));
         tiling.param = reinterpret_cast<uint64_t>(param);
 
-        srotmg_kernel_do(tiling, 1, handle->stream);
+        // issue #1152: a failed launch previously reported SUCCESS with a stale
+        // param array consumed later by rotm users; surface it as
+        // EXECUTION_FAILED like the chbmv host does.
+        const aclError launch = srotmg_kernel_do(tiling, 1, handle->stream);
+        if (launch != ACL_SUCCESS) {
+            OP_LOGE("aclblasSrotmg", "srotmg_kernel_do failed: %d", launch);
+            return ACLBLAS_STATUS_EXECUTION_FAILED;
+        }
         return ACLBLAS_STATUS_SUCCESS;
     }
 

@@ -11,6 +11,7 @@
 #include <cstdint>
 
 #include "kernel_operator.h"
+#include "acl/acl.h"
 #include "crotg_tiling_data.h"
 
 using namespace AscendC;
@@ -48,17 +49,28 @@ extern "C" __global__ __aicore__ void crotg_kernel(const CrotgTilingData tiling)
 
     float ma = max(max(abs(a_r), abs(a_i)), max(abs(b_r), abs(b_i)));
     if (ma == 0.0f) {
-        c = 1.0f; s_r = 0.0f; s_i = 0.0f; r_r = 0.0f; r_i = 0.0f;
+        c = 1.0f;
+        s_r = 0.0f;
+        s_i = 0.0f;
+        r_r = 0.0f;
+        r_i = 0.0f;
     } else {
         float a_sr = a_r / ma, a_si = a_i / ma;
         float b_sr = b_r / ma, b_si = b_i / ma;
         float abs_a = hypotScaled(a_sr, a_si);
         float abs_b = hypotScaled(b_sr, b_si);
         if (abs_b == 0.0f) {
-            c = 1.0f; s_r = 0.0f; s_i = 0.0f; r_r = a_r; r_i = a_i;
+            c = 1.0f;
+            s_r = 0.0f;
+            s_i = 0.0f;
+            r_r = a_r;
+            r_i = a_i;
         } else if (abs_a == 0.0f) {
-            c = 0.0f; s_r = b_sr / abs_b; s_i = -b_si / abs_b;
-            r_r = abs_b * ma; r_i = 0.0f;
+            c = 0.0f;
+            s_r = b_sr / abs_b;
+            s_i = -b_si / abs_b;
+            r_r = abs_b * ma;
+            r_i = 0.0f;
         } else {
             float norm_s = hypotScaled(abs_a, abs_b);
             c = abs_a / norm_s;
@@ -69,13 +81,30 @@ extern "C" __global__ __aicore__ void crotg_kernel(const CrotgTilingData tiling)
             r_i = sgn_ai * norm_s * ma;
         }
     }
-    aGM.SetValue(0, r_r); aGM.SetValue(1, r_i);
+    aGM.SetValue(0, r_r);
+    aGM.SetValue(1, r_i);
     cGM.SetValue(0, c);
-    sGM.SetValue(0, s_r); sGM.SetValue(1, s_i);
+    sGM.SetValue(0, s_r);
+    sGM.SetValue(1, s_i);
 }
 
-void crotg_kernel_do(uint8_t* a, uint8_t* b, uint8_t* c, uint8_t* s,
-                     const CrotgTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError crotg_kernel_do(
+    uint8_t* a, uint8_t* b, uint8_t* c, uint8_t* s, const CrotgTilingData& tiling, uint32_t numBlocks, void* stream)
 {
-    crotg_kernel<<<numBlocks, nullptr, stream>>>(tiling);
+    // issue #1152: report the launch status instead of discarding it, mirroring the
+    // chbmv/ssbmv pattern (aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs).
+    (void)a;
+    (void)b;
+    (void)c;
+    (void)s;
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(reinterpret_cast<const void*>(crotg_kernel), &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        CrotgTilingData tiling;
+    } args{tiling};
+    static_assert(sizeof(Arguments) == sizeof(CrotgTilingData));
+    return aclrtLaunchKernelWithHostArgs(function, numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }

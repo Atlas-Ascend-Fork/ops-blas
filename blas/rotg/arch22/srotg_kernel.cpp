@@ -11,6 +11,7 @@
 #include <cstdint>
 
 #include "kernel_operator.h"
+#include "acl/acl.h"
 #include "srotg_tiling_data.h"
 
 using namespace AscendC;
@@ -51,25 +52,13 @@ __aicore__ inline void SrotgKernel::Init(const SrotgTilingData& tiling)
     sGM.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(tiling.s), SROTG_DATA_COUNT);
 }
 
-__aicore__ inline float SrotgKernel::Abs(float value) const
-{
-    return value < SROTG_ZERO ? -value : value;
-}
+__aicore__ inline float SrotgKernel::Abs(float value) const { return value < SROTG_ZERO ? -value : value; }
 
-__aicore__ inline float SrotgKernel::Max(float lhs, float rhs) const
-{
-    return lhs > rhs ? lhs : rhs;
-}
+__aicore__ inline float SrotgKernel::Max(float lhs, float rhs) const { return lhs > rhs ? lhs : rhs; }
 
-__aicore__ inline float SrotgKernel::Min(float lhs, float rhs) const
-{
-    return lhs < rhs ? lhs : rhs;
-}
+__aicore__ inline float SrotgKernel::Min(float lhs, float rhs) const { return lhs < rhs ? lhs : rhs; }
 
-__aicore__ inline float SrotgKernel::Sign(float value) const
-{
-    return value < SROTG_ZERO ? -SROTG_ONE : SROTG_ONE;
-}
+__aicore__ inline float SrotgKernel::Sign(float value) const { return value < SROTG_ZERO ? -SROTG_ONE : SROTG_ONE; }
 
 __aicore__ inline float SrotgKernel::DivideOr(float numerator, float denominator, float fallback) const
 {
@@ -124,8 +113,23 @@ extern "C" __global__ __aicore__ void srotg_kernel(const SrotgTilingData tiling)
     op.Process();
 }
 
-void srotg_kernel_do(uint8_t* a, uint8_t* b, uint8_t* c, uint8_t* s,
-                     const SrotgTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError srotg_kernel_do(
+    uint8_t* a, uint8_t* b, uint8_t* c, uint8_t* s, const SrotgTilingData& tiling, uint32_t numBlocks, void* stream)
 {
-    srotg_kernel<<<numBlocks, nullptr, stream>>>(tiling);
+    // issue #1152: report the launch status instead of discarding it, mirroring the
+    // chbmv/ssbmv pattern (aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs).
+    (void)a;
+    (void)b;
+    (void)c;
+    (void)s;
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(reinterpret_cast<const void*>(srotg_kernel), &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        SrotgTilingData tiling;
+    } args{tiling};
+    static_assert(sizeof(Arguments) == sizeof(SrotgTilingData));
+    return aclrtLaunchKernelWithHostArgs(function, numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }

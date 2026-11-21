@@ -12,6 +12,7 @@
 
 #include <cstdint>
 
+#include "acl/acl.h"
 #include "srotmg_tiling_data.h"
 
-void srotmg_kernel_do(const SrotmgTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError srotmg_kernel_do(const SrotmgTilingData& tiling, uint32_t numBlocks, void* stream);

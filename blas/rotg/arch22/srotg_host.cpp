@@ -17,8 +17,8 @@
 #include "srotg_tiling_data.h"
 #include "common/helper/aclblas_handle_internal.h"
 
-void srotg_kernel_do(uint8_t* a, uint8_t* b, uint8_t* c, uint8_t* s,
-                     const SrotgTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError srotg_kernel_do(
+    uint8_t* a, uint8_t* b, uint8_t* c, uint8_t* s, const SrotgTilingData& tiling, uint32_t numBlocks, void* stream);
 
 namespace {
 
@@ -46,25 +46,13 @@ static aclblasStatus_t SrotgCheckPtrLocation(const void* ptr, bool* isDevice)
 // Core srotg algorithm — reference BLAS CPU implementation
 // Reference: http://www.netlib.org/lapack/explore-html/d7/dc5/group__rotg_ga55d839ab27a662d848390a2bbe3ee9d3.html
 // ==========================================================================
-static float Abs(float value)
-{
-    return value < SROTG_ZERO ? -value : value;
-}
+static float Abs(float value) { return value < SROTG_ZERO ? -value : value; }
 
-static float Max(float lhs, float rhs)
-{
-    return lhs > rhs ? lhs : rhs;
-}
+static float Max(float lhs, float rhs) { return lhs > rhs ? lhs : rhs; }
 
-static float Min(float lhs, float rhs)
-{
-    return lhs < rhs ? lhs : rhs;
-}
+static float Min(float lhs, float rhs) { return lhs < rhs ? lhs : rhs; }
 
-static float Sign(float value)
-{
-    return value < SROTG_ZERO ? -SROTG_ONE : SROTG_ONE;
-}
+static float Sign(float value) { return value < SROTG_ZERO ? -SROTG_ONE : SROTG_ONE; }
 
 static void SrotgCpuCompute(float* a, float* b, float* c, float* s)
 {
@@ -145,9 +133,15 @@ static aclblasStatus_t LaunchSrotgKernel(aclblasHandle_t handle, float* a, float
     OP_LOGD("aclblasSrotg", "tiling: scalar op launchBlocks=1");
     OP_LOGI("aclblasSrotg", "launching kernel");
 
-    srotg_kernel_do(reinterpret_cast<uint8_t*>(a), reinterpret_cast<uint8_t*>(b),
-                    reinterpret_cast<uint8_t*>(c), reinterpret_cast<uint8_t*>(s),
-                    tiling, 1, useStream);
+    const aclError launch = srotg_kernel_do(
+        reinterpret_cast<uint8_t*>(a), reinterpret_cast<uint8_t*>(b), reinterpret_cast<uint8_t*>(c),
+        reinterpret_cast<uint8_t*>(s), tiling, 1, useStream);
+    // issue #1152: a failed launch previously reported SUCCESS with stale scalars;
+    // surface it as EXECUTION_FAILED like the chbmv host does.
+    if (launch != ACL_SUCCESS) {
+        OP_LOGE("aclblasSrotg", "srotg_kernel_do failed: %d", launch);
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 
     return ACLBLAS_STATUS_SUCCESS;
 }
@@ -172,13 +166,17 @@ aclblasStatus_t aclblasSrotg(aclblasHandle_t handle, float* a, float* b, float* 
     // Check pointer locations
     bool aDev = false, bDev = false, cDev = false, sDev = false;
     status = SrotgCheckPtrLocation(a, &aDev);
-    if (status != ACLBLAS_STATUS_SUCCESS) return status;
+    if (status != ACLBLAS_STATUS_SUCCESS)
+        return status;
     status = SrotgCheckPtrLocation(b, &bDev);
-    if (status != ACLBLAS_STATUS_SUCCESS) return status;
+    if (status != ACLBLAS_STATUS_SUCCESS)
+        return status;
     status = SrotgCheckPtrLocation(c, &cDev);
-    if (status != ACLBLAS_STATUS_SUCCESS) return status;
+    if (status != ACLBLAS_STATUS_SUCCESS)
+        return status;
     status = SrotgCheckPtrLocation(s, &sDev);
-    if (status != ACLBLAS_STATUS_SUCCESS) return status;
+    if (status != ACLBLAS_STATUS_SUCCESS)
+        return status;
 
     bool allHost = !aDev && !bDev && !cDev && !sDev;
     bool allDevice = aDev && bDev && cDev && sDev;
@@ -195,10 +193,10 @@ aclblasStatus_t aclblasSrotg(aclblasHandle_t handle, float* a, float* b, float* 
     }
 
     // ── Mixed host/device pointers: not supported ──
-    OP_LOGE("aclblasSrotg",
-            "mixed host/device pointers not supported "
-            "(a=%s b=%s c=%s s=%s)",
-            aDev ? "dev" : "host", bDev ? "dev" : "host",
-            cDev ? "dev" : "host", sDev ? "dev" : "host");
+    OP_LOGE(
+        "aclblasSrotg",
+        "mixed host/device pointers not supported "
+        "(a=%s b=%s c=%s s=%s)",
+        aDev ? "dev" : "host", bDev ? "dev" : "host", cDev ? "dev" : "host", sDev ? "dev" : "host");
     return ACLBLAS_STATUS_INVALID_VALUE;
 }

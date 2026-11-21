@@ -17,8 +17,8 @@
 #include "crotg_tiling_data.h"
 #include "common/helper/aclblas_handle_internal.h"
 
-void crotg_kernel_do(uint8_t* a, uint8_t* b, uint8_t* c, uint8_t* s,
-                     const CrotgTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError crotg_kernel_do(
+    uint8_t* a, uint8_t* b, uint8_t* c, uint8_t* s, const CrotgTilingData& tiling, uint32_t numBlocks, void* stream);
 
 namespace {
 
@@ -63,8 +63,7 @@ static void CrotgCpuCompute(aclblasComplex* a, aclblasComplex* b, float* c, aclb
     const double b_i = b->imag;
 
     // Global scaling: max of the 4 component absolute values
-    const double ma = std::fmax(std::fmax(std::fabs(a_r), std::fabs(a_i)),
-                                std::fmax(std::fabs(b_r), std::fabs(b_i)));
+    const double ma = std::fmax(std::fmax(std::fabs(a_r), std::fabs(a_i)), std::fmax(std::fabs(b_r), std::fabs(b_i)));
     if (ma == 0.0f) {
         // All-zero input
         SetCrotgZeroResult(a, c, s);
@@ -128,8 +127,8 @@ static void CrotgCpuCompute(aclblasComplex* a, aclblasComplex* b, float* c, aclb
 // ==========================================================================
 // Parameter validation
 // ==========================================================================
-static aclblasStatus_t ValidateCrotgParams(aclblasHandle_t handle, aclblasComplex* a, aclblasComplex* b,
-                                           float* c, aclblasComplex* s)
+static aclblasStatus_t ValidateCrotgParams(
+    aclblasHandle_t handle, aclblasComplex* a, aclblasComplex* b, float* c, aclblasComplex* s)
 {
     if (handle == nullptr) {
         OP_LOGE("aclblasCrotg", "handle is nullptr");
@@ -152,8 +151,8 @@ static aclblasStatus_t ValidateCrotgParams(aclblasHandle_t handle, aclblasComple
 // ==========================================================================
 // Kernel launch (all-device path)
 // ==========================================================================
-static aclblasStatus_t LaunchCrotgKernel(aclblasHandle_t handle, aclblasComplex* a, aclblasComplex* b,
-                                         float* c, aclblasComplex* s)
+static aclblasStatus_t LaunchCrotgKernel(
+    aclblasHandle_t handle, aclblasComplex* a, aclblasComplex* b, float* c, aclblasComplex* s)
 {
     CrotgTilingData tiling = {};
     tiling.a = reinterpret_cast<uint64_t>(a);
@@ -162,9 +161,15 @@ static aclblasStatus_t LaunchCrotgKernel(aclblasHandle_t handle, aclblasComplex*
     tiling.s = reinterpret_cast<uint64_t>(s);
 
     // Scalar op: fixed single core (Block Dim = 1)
-    crotg_kernel_do(reinterpret_cast<uint8_t*>(a), reinterpret_cast<uint8_t*>(b),
-                    reinterpret_cast<uint8_t*>(c), reinterpret_cast<uint8_t*>(s),
-                    tiling, 1, handle->stream);
+    const aclError launch = crotg_kernel_do(
+        reinterpret_cast<uint8_t*>(a), reinterpret_cast<uint8_t*>(b), reinterpret_cast<uint8_t*>(c),
+        reinterpret_cast<uint8_t*>(s), tiling, 1, handle->stream);
+    // issue #1152: a failed launch previously reported SUCCESS with stale scalars;
+    // surface it as EXECUTION_FAILED like the chbmv host does.
+    if (launch != ACL_SUCCESS) {
+        OP_LOGE("aclblasCrotg", "crotg_kernel_do failed: %d", launch);
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -177,8 +182,7 @@ static aclblasStatus_t LaunchCrotgKernel(aclblasHandle_t handle, aclblasComplex*
 //   - All device → device kernel
 //   - Mixed     → ACLBLAS_STATUS_INVALID_VALUE
 // ==========================================================================
-aclblasStatus_t aclblasCrotg(aclblasHandle_t handle, aclblasComplex* a, aclblasComplex* b,
-                             float* c, aclblasComplex* s)
+aclblasStatus_t aclblasCrotg(aclblasHandle_t handle, aclblasComplex* a, aclblasComplex* b, float* c, aclblasComplex* s)
 {
     aclblasStatus_t status = ValidateCrotgParams(handle, a, b, c, s);
     if (status != ACLBLAS_STATUS_SUCCESS) {
@@ -191,13 +195,17 @@ aclblasStatus_t aclblasCrotg(aclblasHandle_t handle, aclblasComplex* a, aclblasC
     bool cDev = false;
     bool sDev = false;
     status = CrotgCheckPtrLocation(a, &aDev);
-    if (status != ACLBLAS_STATUS_SUCCESS) return status;
+    if (status != ACLBLAS_STATUS_SUCCESS)
+        return status;
     status = CrotgCheckPtrLocation(b, &bDev);
-    if (status != ACLBLAS_STATUS_SUCCESS) return status;
+    if (status != ACLBLAS_STATUS_SUCCESS)
+        return status;
     status = CrotgCheckPtrLocation(c, &cDev);
-    if (status != ACLBLAS_STATUS_SUCCESS) return status;
+    if (status != ACLBLAS_STATUS_SUCCESS)
+        return status;
     status = CrotgCheckPtrLocation(s, &sDev);
-    if (status != ACLBLAS_STATUS_SUCCESS) return status;
+    if (status != ACLBLAS_STATUS_SUCCESS)
+        return status;
 
     const bool allHost = !aDev && !bDev && !cDev && !sDev;
     const bool allDevice = aDev && bDev && cDev && sDev;
@@ -214,10 +222,10 @@ aclblasStatus_t aclblasCrotg(aclblasHandle_t handle, aclblasComplex* a, aclblasC
     }
 
     // ── Mixed host/device pointers: not supported ──
-    OP_LOGE("aclblasCrotg",
-            "mixed host/device pointers not supported "
-            "(a=%s b=%s c=%s s=%s)",
-            aDev ? "dev" : "host", bDev ? "dev" : "host",
-            cDev ? "dev" : "host", sDev ? "dev" : "host");
+    OP_LOGE(
+        "aclblasCrotg",
+        "mixed host/device pointers not supported "
+        "(a=%s b=%s c=%s s=%s)",
+        aDev ? "dev" : "host", bDev ? "dev" : "host", cDev ? "dev" : "host", sDev ? "dev" : "host");
     return ACLBLAS_STATUS_INVALID_VALUE;
 }

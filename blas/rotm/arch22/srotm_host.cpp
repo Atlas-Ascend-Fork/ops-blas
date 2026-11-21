@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include "acl/acl.h"
+#include "log/log.h"
 #include "cann_ops_blas.h"
 #include "cann_ops_blas_common.h"
 #include "common/helper/aclblas_handle_internal.h"
@@ -20,7 +21,7 @@
 
 struct SrotmTilingData;
 
-void srotm_kernel_do(const SrotmTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError srotm_kernel_do(const SrotmTilingData& tiling, uint32_t numBlocks, void* stream);
 
 constexpr uint32_t MAX_CORE_NUM = 50;
 constexpr uint32_t MIN_ELEMENTS_PER_CORE = 2048;
@@ -147,7 +148,15 @@ static SrotmTilingData BuildSrotmTilingData(
 
 static aclblasStatus_t LaunchSrotmKernel(const SrotmTilingData& tiling, aclrtStream useStream)
 {
-    srotm_kernel_do(tiling, std::max<uint32_t>(DEFAULT_LAUNCH_BLOCKS, tiling.useCoreNum), useStream);
+    const aclError launch =
+        srotm_kernel_do(tiling, std::max<uint32_t>(DEFAULT_LAUNCH_BLOCKS, tiling.useCoreNum), useStream);
+    // issue #1152: a failed launch previously reported SUCCESS with a stale param
+    // array consumed later by rotm users; surface it as EXECUTION_FAILED like the
+    // chbmv host does.
+    if (launch != ACL_SUCCESS) {
+        OP_LOGE("aclblasSrotm", "srotm_kernel_do failed: %d", launch);
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 

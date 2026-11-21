@@ -23,6 +23,7 @@
 #include <cstdint>
 
 #include "kernel_operator.h"
+#include "acl/acl.h"
 #include "srotmg_tiling_data.h"
 
 using namespace AscendC;
@@ -53,14 +54,14 @@ private:
     __aicore__ inline float Abs(float value) const;
     __aicore__ inline void StoreIdentityParam();
     __aicore__ inline void StoreZeroResult();
-    __aicore__ inline void ComputeBranch(float& sd1, float& sd2, float& sx1, const float sy1,
-                                         float& dflag, float& dh11, float& dh21, float& dh12, float& dh22) const;
-    __aicore__ inline void RescaleD1(float& sd1, float& sx1, float& dh11, float& dh12,
-                                     float& dh21, float& dh22, float& dflag) const;
-    __aicore__ inline void RescaleD2(float& sd2, float& dh11, float& dh12,
-                                     float& dh21, float& dh22, float& dflag) const;
-    __aicore__ inline void FlipFlagAndResetH(float& dh11, float& dh12, float& dh21, float& dh22,
-                                             float& dflag) const;
+    __aicore__ inline void ComputeBranch(
+        float& sd1, float& sd2, float& sx1, const float sy1, float& dflag, float& dh11, float& dh21, float& dh12,
+        float& dh22) const;
+    __aicore__ inline void RescaleD1(
+        float& sd1, float& sx1, float& dh11, float& dh12, float& dh21, float& dh22, float& dflag) const;
+    __aicore__ inline void RescaleD2(
+        float& sd2, float& dh11, float& dh12, float& dh21, float& dh22, float& dflag) const;
+    __aicore__ inline void FlipFlagAndResetH(float& dh11, float& dh12, float& dh21, float& dh22, float& dflag) const;
     __aicore__ inline void StoreParam(float dflag, float dh11, float dh21, float dh12, float dh22);
 
     GlobalTensor<float> d1GM;
@@ -79,10 +80,7 @@ __aicore__ inline void SrotmgKernel::Init(const SrotmgTilingData& tiling)
     paramGM.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(tiling.param), SROTMG_PARAM_COUNT);
 }
 
-__aicore__ inline float SrotmgKernel::Abs(float value) const
-{
-    return value < SROTMG_ZERO ? -value : value;
-}
+__aicore__ inline float SrotmgKernel::Abs(float value) const { return value < SROTMG_ZERO ? -value : value; }
 
 // flag = -2 identity transform: inputs untouched, param zeroed.
 __aicore__ inline void SrotmgKernel::StoreIdentityParam()
@@ -108,9 +106,9 @@ __aicore__ inline void SrotmgKernel::StoreZeroResult()
 // makes sq1 = 0 which never dominates, and sy1 == 0 is screened by the
 // caller's flag = -2 return; the ?: guards keep that invariant visible to
 // static tools.
-__aicore__ inline void SrotmgKernel::ComputeBranch(float& sd1, float& sd2, float& sx1, const float sy1,
-                                                   float& dflag, float& dh11, float& dh21, float& dh12,
-                                                   float& dh22) const
+__aicore__ inline void SrotmgKernel::ComputeBranch(
+    float& sd1, float& sd2, float& sx1, const float sy1, float& dflag, float& dh11, float& dh21, float& dh12,
+    float& dh22) const
 {
     const float sp2 = sd2 * sy1;
     const float sp1 = sd1 * sx1;
@@ -159,8 +157,8 @@ __aicore__ inline void SrotmgKernel::ComputeBranch(float& sd1, float& sd2, float
 
 // netlib: flip the stored flag to -1 and reset the implied h slots to +-1
 // before each rescale round, exactly as the FORTRAN does inside its loops.
-__aicore__ inline void SrotmgKernel::FlipFlagAndResetH(float& dh11, float& dh12, float& dh21, float& dh22,
-                                                       float& dflag) const
+__aicore__ inline void SrotmgKernel::FlipFlagAndResetH(
+    float& dh11, float& dh12, float& dh21, float& dh22, float& dflag) const
 {
     if (dflag == SROTMG_ZERO) {
         dh11 = SROTMG_ONE;
@@ -175,8 +173,8 @@ __aicore__ inline void SrotmgKernel::FlipFlagAndResetH(float& dh11, float& dh12,
 
 // netlib SCALE-CHECK for SD1: single combined loop; the implied h values
 // are reset to +-1 each round as the flag flips to -1.
-__aicore__ inline void SrotmgKernel::RescaleD1(float& sd1, float& sx1, float& dh11, float& dh12,
-                                               float& dh21, float& dh22, float& dflag) const
+__aicore__ inline void SrotmgKernel::RescaleD1(
+    float& sd1, float& sx1, float& dh11, float& dh12, float& dh21, float& dh22, float& dflag) const
 {
     if (sd1 == SROTMG_ZERO) {
         return;
@@ -201,8 +199,8 @@ __aicore__ inline void SrotmgKernel::RescaleD1(float& sd1, float& sx1, float& dh
 }
 
 // netlib SCALE-CHECK for SD2: same structure, updating dh21/dh22.
-__aicore__ inline void SrotmgKernel::RescaleD2(float& sd2, float& dh11, float& dh12,
-                                               float& dh21, float& dh22, float& dflag) const
+__aicore__ inline void SrotmgKernel::RescaleD2(
+    float& sd2, float& dh11, float& dh12, float& dh21, float& dh22, float& dflag) const
 {
     if (sd2 == SROTMG_ZERO) {
         return;
@@ -296,7 +294,18 @@ extern "C" __global__ __aicore__ void srotmg_kernel(const SrotmgTilingData tilin
     op.Process();
 }
 
-void srotmg_kernel_do(const SrotmgTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError srotmg_kernel_do(const SrotmgTilingData& tiling, uint32_t numBlocks, void* stream)
 {
-    srotmg_kernel<<<numBlocks, nullptr, stream>>>(tiling);
+    // issue #1152: report the launch status instead of discarding it, mirroring the
+    // chbmv/ssbmv pattern (aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs).
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(reinterpret_cast<const void*>(srotmg_kernel), &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        SrotmgTilingData tiling;
+    } args{tiling};
+    static_assert(sizeof(Arguments) == sizeof(SrotmgTilingData));
+    return aclrtLaunchKernelWithHostArgs(function, numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }
