@@ -253,6 +253,7 @@ aclblasStatus_t aclblasChpmv(aclblasHandle_t handle, aclblasFillMode_t uplo, int
 
 ```bash
 source /usr/local/Ascend/cann/set_env.sh
+# CANN 安装在其他目录时改用实际安装路径：source ${install_path}/cann/set_env.sh
 export CHPMV_NETLIB_CBLAS=/absolute/path/netlib-build/lib/libcblas.so.3.10.0
 export CHPMV_NETLIB_BLAS=/absolute/path/netlib-build/lib/libblas.so.3.10.0
 export BLAS_DEVICE_ID=0

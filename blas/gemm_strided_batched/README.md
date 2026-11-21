@@ -418,6 +418,7 @@ aclblasStatus_t status = aclblasCgemmStridedBatched(
 
 ```bash
 source /usr/local/Ascend/cann/set_env.sh
+# CANN 安装在其他目录时改用实际安装路径：source ${install_path}/cann/set_env.sh
 bash build.sh --soc=ascend910b3 --ops=gemm_strided_batched
 # 默认冒烟：前 50 条 CSV 用例及 3 项独立接口检查
 build/test/gemm_strided_batched/gemm_strided_batched_test

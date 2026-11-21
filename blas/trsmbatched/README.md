@@ -401,6 +401,7 @@ L0 和 Fixpipe 保持串行，事件保证缓冲区读取完成后才可复用�
 
 ```bash
 source /usr/local/Ascend/cann/set_env.sh
+# CANN 安装在其他目录时改用实际安装路径：source ${install_path}/cann/set_env.sh
 bash build.sh --soc=ascend910b --ops=strsmbatched
 # 默认冒烟：前 50 条 CSV 用例及 3 项独立接口检查
 build/test/trsmbatched/strsmbatched/strsmbatched_test

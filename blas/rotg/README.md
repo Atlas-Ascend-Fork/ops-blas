@@ -476,6 +476,7 @@ int main()
 - 配置环境变量
   ```bash
   source /usr/local/Ascend/cann/set_env.sh
+  # CANN 安装在其他目录时改用实际安装路径：source ${install_path}/cann/set_env.sh
   ```
 
 - Srotg 编译并执行测试

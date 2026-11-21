@@ -305,6 +305,7 @@ int main() {
 
 ```bash
 source /usr/local/Ascend/cann/set_env.sh
+# CANN 安装在其他目录时改用实际安装路径：source ${install_path}/cann/set_env.sh
 g++ -std=c++17 example.cpp -Iinclude -I"$ASCEND_HOME_PATH/include" \
   -Lbuild -Wl,-rpath,"$PWD/build" \
   -L"$ASCEND_HOME_PATH/lib64" -Wl,-rpath,"$ASCEND_HOME_PATH/lib64" \

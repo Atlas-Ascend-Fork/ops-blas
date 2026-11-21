@@ -347,6 +347,7 @@ int main()
 
 ```bash
 source /usr/local/Ascend/cann/set_env.sh
+# CANN 安装在其他目录时改用实际安装路径：source ${install_path}/cann/set_env.sh
 cmake -S . -B build-release -DSOC_VERSION=ascend950 \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$ASCEND_HOME_PATH/lib64/cmake"
 cmake --build build-release --target ops_blas -j8
