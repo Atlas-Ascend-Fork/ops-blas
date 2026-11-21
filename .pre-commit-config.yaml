@@ -21,12 +21,11 @@ repos:
         language: system
         types_or: [c, c++]
         files: '\.(h|hpp)$'
+  # OAT 合规性检查 (Open Source Audit Tool) — 远程 Python hook
+  - repo: https://atomgit.com/HiAgent/compliance
+    rev: v1.0.6
+    hooks:
       - id: oat-check
-        name: OAT Compliance Check (Python)
-        entry: bash scripts/oat_check.sh
-        language: system
         pass_filenames: true
-        require_serial: true
-        types: [file]
         stages: [pre-commit]
         verbose: true
