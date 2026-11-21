@@ -68,6 +68,11 @@ aclblasStatus_t aclblasSgemmGroupedBatched(aclblasHandle_t handle, int groupCoun
 - k=0 时等效为 C = beta * C
 - transa/transb 各支持 N/T，组合为 NN / NT / TN / TT 四种
 
+#### 执行、同步与工作区
+
+- Atlas A2/A3（arch22）在参数校验后将计算任务排入 handle 绑定的 stream，并在入队后返回。成功返回不表示 Device 上的 C 已完成；读取 C 或释放、复用矩阵对应的 Device 内存前，需同步该 stream。该路径将分组参数和矩阵地址封装在 kernel 参数中，不从 handle workspace 申请 grouped metadata scratch。
+- Ascend 950（arch35）使用 handle 的有效 workspace 保存 tiling、分组参数以及 A/B/C 指针数组的 Device scratch，所需空间随 groupCount 和所有 groupSize 之和增长。workspace 不足时返回 `ACLBLAS_STATUS_EXECUTION_FAILED`；可通过 `aclblasSetWorkspace` 提供更大的 Device workspace。计算 kernel 仍排入 handle 绑定的 stream，成功返回后读取 C 或释放、复用矩阵对应的 Device 内存前，需同步该 stream。
+
 #### 调用示例
 
 示例代码如下，仅供参考，具体编译和执行过程请参考[编译与运行样例](../../docs/zh/develop/compile_and_run_example.md)。
