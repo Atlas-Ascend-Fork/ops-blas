@@ -130,5 +130,9 @@ aclblasStatus_t aclblasCtbsv(
         tiling.n, tiling.k, tiling.uplo, tiling.trans, tiling.diag, tiling.incx, tiling.lda, tiling.numThreads);
     OP_LOGI("aclblasCtbsv", "launching kernel");
     ctbsv_kernel_do(tiling, handle->stream);
+    if (aclrtPeekAtLastError(ACL_RT_THREAD_LEVEL) != ACL_SUCCESS) {
+        OP_LOGE("aclblasCtbsv", "kernel launch failed");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }

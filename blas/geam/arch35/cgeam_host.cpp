@@ -14,6 +14,8 @@
  *        Handles parameter validation, tiling calculation, and kernel launch
  */
 
+#include "acl/acl.h"
+#include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "cgeam_kernel.h"
 #include "geam_host_common.h"
@@ -224,6 +226,10 @@ aclblasStatus_t LaunchCgeamKernel(
     GM_ADDR gmB = (B != nullptr) ? reinterpret_cast<GM_ADDR>(const_cast<aclblasComplex*>(B)) : gmC;
 
     cgeam_kernel_do(gmA, gmB, gmC, tiling, numBlocks, handle->stream);
+    if (aclrtPeekAtLastError(ACL_RT_THREAD_LEVEL) != ACL_SUCCESS) {
+        OP_LOGE("aclblasCgeam", "kernel launch failed");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 
     return ACLBLAS_STATUS_SUCCESS;
 }

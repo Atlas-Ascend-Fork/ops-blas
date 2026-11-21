@@ -99,6 +99,10 @@ aclblasStatus_t aclblasStrsv(
 
     strsv_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float*>(A)), reinterpret_cast<uint8_t*>(x), tiling, h->stream);
+    if (aclrtPeekAtLastError(ACL_RT_THREAD_LEVEL) != ACL_SUCCESS) {
+        OP_LOGE("aclblasStrsv", "kernel launch failed");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 
     return ACLBLAS_STATUS_SUCCESS;
 }

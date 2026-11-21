@@ -99,6 +99,10 @@ aclblasStatus_t aclblasStbsv(
     OP_LOGI("aclblasStbsv", "launching kernel");
 
     stbsv_kernel_do(tiling, h->stream);
+    if (aclrtPeekAtLastError(ACL_RT_THREAD_LEVEL) != ACL_SUCCESS) {
+        OP_LOGE("aclblasStbsv", "kernel launch failed");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 
     return ACLBLAS_STATUS_SUCCESS;
 }

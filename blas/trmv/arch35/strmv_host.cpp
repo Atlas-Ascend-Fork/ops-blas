@@ -104,6 +104,10 @@ aclblasStatus_t aclblasStrmv(
     uint8_t* workspaceDevice = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
 
     strmv_arch35_kernel_do(A, x, workspaceDevice, tilingData, useNumBlocks, useStream);
+    if (aclrtPeekAtLastError(ACL_RT_THREAD_LEVEL) != ACL_SUCCESS) {
+        OP_LOGE("aclblasStrmv", "kernel launch failed");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 
     return ACLBLAS_STATUS_SUCCESS;
 }

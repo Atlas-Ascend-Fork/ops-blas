@@ -112,13 +112,17 @@ static aclblasStatus_t GetCtpmvWorkspace(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static void ExecuteKernel(
+static aclblasStatus_t ExecuteKernel(
     const aclblasComplex* AP, aclblasComplex* x, uint8_t* workspace, const CtpmvTilingData& tiling, uint32_t numBlocks,
     void* stream)
 {
     ctpmv_arch35_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(AP)), reinterpret_cast<uint8_t*>(x), workspace, tiling,
         numBlocks, stream);
+    if (aclrtPeekAtLastError(ACL_RT_THREAD_LEVEL) != ACL_SUCCESS) {
+        OP_LOGE("aclblasCtpmv", "kernel launch failed");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     // v5.0: 两遍分组归约 (mid 8行 + y 行位于 parts 行之后); v5.1: 单 block 时行 0 即终值, 跳过
     if (numBlocks > 1u) {
         const size_t slotBytes = static_cast<size_t>(tiling.n) * sizeof(aclblasComplex);
@@ -126,6 +130,7 @@ static void ExecuteKernel(
         uint8_t* ySlot = mid + 8u * slotBytes;
         ctpmv_arch35_reduce2_do(workspace, mid, ySlot, tiling, numBlocks, stream);
     }
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
 static aclblasStatus_t WriteBackResult(
@@ -261,7 +266,10 @@ static aclblasStatus_t RunCtpmvGeneralPath(
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
     }
-    ExecuteKernel(AP, x, workspaceDevice, tiling, useNumBlocks, stream);
+    const aclblasStatus_t kernelSt = ExecuteKernel(AP, x, workspaceDevice, tiling, useNumBlocks, stream);
+    if (kernelSt != ACLBLAS_STATUS_SUCCESS) {
+        return kernelSt;
+    }
     return WriteBackResult(x, workspaceDevice, n, incx, tiling, useNumBlocks, stream);
 }
 

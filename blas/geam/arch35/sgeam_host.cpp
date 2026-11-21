@@ -14,6 +14,8 @@
  *        Handles parameter validation, tiling calculation, and kernel launch
  */
 
+#include "acl/acl.h"
+#include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "geam_host_common.h"
 
@@ -130,6 +132,10 @@ aclblasStatus_t LaunchSgeamKernel(
 
     // Launch kernel
     sgeam_kernel_do(gmA, gmB, gmC, tiling, numBlocks, handle->stream);
+    if (aclrtPeekAtLastError(ACL_RT_THREAD_LEVEL) != ACL_SUCCESS) {
+        OP_LOGE("aclblasSgeam", "kernel launch failed");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 
     return ACLBLAS_STATUS_SUCCESS;
 }

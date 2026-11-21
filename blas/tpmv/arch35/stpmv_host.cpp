@@ -76,6 +76,10 @@ static aclblasStatus_t ExecuteKernel(
     stpmv_arch35_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float*>(AP)), reinterpret_cast<uint8_t*>(x), workspace, tiling, numBlocks,
         stream);
+    if (aclrtPeekAtLastError(ACL_RT_THREAD_LEVEL) != ACL_SUCCESS) {
+        OP_LOGE("aclblasStpmv", "kernel launch failed");
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
 
     aclError aclRet = aclrtSynchronizeStream(stream);
     CHECK_RET(aclRet == ACL_SUCCESS, OP_LOGE("aclblasStpmv", "aclrtSynchronizeStream failed, ret=%d", aclRet);
