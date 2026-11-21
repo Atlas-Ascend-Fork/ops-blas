@@ -76,6 +76,21 @@ aclblasStatus_t aclblasSspmv(
         return st;
     }
 
+    // Reject device pointers for alpha/beta before host dereference (same
+    // convention as Ssymm/Strmm).
+    bool alphaIsDevice = false;
+    bool betaIsDevice = false;
+    const aclblasStatus_t alphaLocSt = CheckPtrLocation(alpha, &alphaIsDevice);
+    if (alphaLocSt != ACLBLAS_STATUS_SUCCESS || alphaIsDevice) {
+        OP_LOGE("aclblasSspmv", "alpha and beta must be in Host memory");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    const aclblasStatus_t betaLocSt = CheckPtrLocation(beta, &betaIsDevice);
+    if (betaLocSt != ACLBLAS_STATUS_SUCCESS || betaIsDevice) {
+        OP_LOGE("aclblasSspmv", "alpha and beta must be in Host memory");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+
     auto* h = handle;
     aclrtStream useStream = h->stream;
 

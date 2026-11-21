@@ -48,32 +48,38 @@ inline bool ChpmvIsNoOp(const aclblasComplex& alpha, const aclblasComplex& beta)
     return alpha.real == 0.0f && alpha.imag == 0.0f && beta.real == 1.0f && beta.imag == 0.0f;
 }
 
+// Reject device pointers for alpha/beta before host dereference (same
+// convention as Ssymm/Strmm).
+static aclblasStatus_t ChpmvCheckScalarLocation(const aclblasComplex* ptr)
+{
+    bool isDevice = false;
+    const aclblasStatus_t locSt = CheckPtrLocation(ptr, &isDevice);
+    if (locSt != ACLBLAS_STATUS_SUCCESS) {
+        OP_LOGE("aclblasChpmv", "scalar pointer location query failed, st=%d", static_cast<int>(locSt));
+        return locSt;
+    }
+    if (isDevice) {
+        OP_LOGE("aclblasChpmv", "alpha and beta must be in Host memory");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 inline bool ChpmvUseSimd(uint32_t size, const aclblasComplex& alpha, uint64_t ubBytes)
 {
     return size >= 512 && (alpha.real != 0.0f || alpha.imag != 0.0f) &&
            ubBytes >= CHPMV_STAGE_BYTES + CHPMV_X_BYTES + CHPMV_ACC_BYTES + 64U * 1024U;
 }
-} // namespace
 
-aclblasStatus_t aclblasChpmv(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, const aclblasComplex* ap,
-    const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y, int incy)
+static aclblasStatus_t ChpmvLaunchKernel(aclblasHandle_t handle, aclblasFillMode_t uplo, uint32_t size,
+                                         int incx, int incy, const aclblasComplex& a, const aclblasComplex& b,
+                                         const aclblasComplex* ap, const aclblasComplex* x, aclblasComplex* y)
 {
-    const auto inputStatus = ChpmvValidateInput(handle, uplo, n, alpha, ap, x, incx, beta, y, incy);
-    if (inputStatus != ACLBLAS_STATUS_SUCCESS || n == 0) {
-        return inputStatus;
-    }
-    const aclblasComplex a = *alpha;
-    const aclblasComplex b = *beta;
-    if (ChpmvIsNoOp(a, b)) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
     const uint32_t cores = GetAivCoreCount();
     if (cores == 0) {
         OP_LOGE("aclblasChpmv", "AIV core count is zero.");
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
-    const uint32_t size = static_cast<uint32_t>(n);
     const bool groupOrdered = size >= 16;
     auto* platform = platform_ascendc::PlatformAscendCManager::GetInstance();
     if (platform == nullptr) {
@@ -104,4 +110,30 @@ aclblasStatus_t aclblasChpmv(
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
     return ACLBLAS_STATUS_SUCCESS;
+}
+} // namespace
+
+aclblasStatus_t aclblasChpmv(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, const aclblasComplex* ap,
+    const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y, int incy)
+{
+    const auto inputStatus = ChpmvValidateInput(handle, uplo, n, alpha, ap, x, incx, beta, y, incy);
+    if (inputStatus != ACLBLAS_STATUS_SUCCESS || n == 0) {
+        return inputStatus;
+    }
+    const aclblasStatus_t scalarLocSt = ChpmvCheckScalarLocation(alpha);
+    if (scalarLocSt != ACLBLAS_STATUS_SUCCESS) {
+        return scalarLocSt;
+    }
+    const aclblasStatus_t betaLocSt = ChpmvCheckScalarLocation(beta);
+    if (betaLocSt != ACLBLAS_STATUS_SUCCESS) {
+        return betaLocSt;
+    }
+    const aclblasComplex a = *alpha;
+    const aclblasComplex b = *beta;
+    if (ChpmvIsNoOp(a, b)) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    const uint32_t size = static_cast<uint32_t>(n);
+    return ChpmvLaunchKernel(handle, uplo, size, incx, incy, a, b, ap, x, y);
 }

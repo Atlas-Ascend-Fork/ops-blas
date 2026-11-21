@@ -245,7 +245,8 @@ aclblasStatus_t aclblasChpmv(aclblasHandle_t handle, aclblasFillMode_t uplo, int
 - 参数检查依次为：空 handle、负 n、n=0、非法 uplo、零步长及空指针。空 handle 优先返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`；句柄有效时，负 n 返回 `ACLBLAS_STATUS_INVALID_VALUE`，n=0 直接返回成功。
 - n > 0 时，非法 uplo 返回 `ACLBLAS_STATUS_INVALID_ENUM`；零 incx/incy 或 alpha/beta/AP/x/y 为空返回 `ACLBLAS_STATUS_INVALID_VALUE`。
 - alpha=0 时仍要求上述指针非空；计算路径不读取 AP/x。beta=0 时不读取旧 y。
-- 调用在 handle 绑定的 stream 上异步执行；alpha/beta 按值传入，Device 缓冲区须保持有效直到 stream 完成。AP、x 和 y 应使用互不重叠的存储区。
+- 调用在 handle 绑定的 stream 上异步执行；alpha/beta 必须位于 Host 内存，传入 Device 指针返回
+  `ACLBLAS_STATUS_INVALID_VALUE`（issue #1085：host 解引用前显式校验指针位置）。AP、x 和 y 应使用互不重叠的存储区。
 
 #### 自测
 
