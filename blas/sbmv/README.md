@@ -258,7 +258,7 @@ aclblasStatus_t aclblasChbmv(aclblasHandle_t handle, aclblasFillMode_t uplo, int
 #### Atlas A2/A3 实现说明
 
 A2/A3 路径采用标量、窄带 Gather 缓存和宽带分块向量计算。Host 查询并按设备缓存
-Vector 核数与 UB 容量，中等宽带按 8 行对齐均衡分核；宽带（band>128）使用 32 组
-FP32 部分和、band≤128 的中等宽带使用 8 组部分和，有限输入的中间溢出相消由独立
-指数与补偿尾数回算处理。启动接口直接返回本次查询和下发状态，避免读取先前运行时错误。
-Ascend 950PR 路径保持独立。
+Vector 核数与 UB 容量，中等宽带按 8 行对齐均衡分核；宽带（band > 128）使用 32 组
+FP32 部分和，band <= 128 使用 8 组部分和（与 `PartialCount()` 一致），有限输入的
+中间溢出相消由独立指数与补偿尾数回算处理。启动接口直接返回本次查询和
+下发状态，避免读取先前运行时错误。Ascend 950PR 路径保持独立。
