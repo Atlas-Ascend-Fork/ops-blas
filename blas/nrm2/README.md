@@ -47,13 +47,13 @@ aclblasStatus_t aclblasSnrm2(aclblasHandle_t handle, int n, const float* x, int 
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，内部携带 stream 和 workspace，Host 内存 |
 | n | 输入 | int | 向量元素个数，n >= 0（n <= 0 时直接返回 0.0），Host 内存 |
 | x | 输入 | const float\*（FP32） | 输入向量，当 n > 0 时不可为 nullptr，Device 内存 |
-| incx | 输入 | int | x 中连续元素之间的步长，incx != 0，Host 内存 |
+| incx | 输入 | int | x 中相邻元素之间的步长，incx != 0；Atlas A2 / Atlas A3（Arch22）仅支持 incx = 1，Host 内存 |
 | result | 输出 | float\*（FP32） | 欧几里得范数结果，不可为 nullptr，Device 内存 |
 
 #### 约束说明
 
 - n >= 0
-- incx != 0
+- incx != 0；Atlas A2 / Atlas A3（Arch22）kernel 按连续内存读取 x，仅支持 incx = 1：n > 0 且 incx != 1 时返回 ACLBLAS_STATUS_INVALID_VALUE，不启动 kernel，incx < 0 不再静默写 0。Arch35 支持任意 incx >= 1 的步长
 
 #### 调用示例
 
@@ -217,13 +217,13 @@ aclblasStatus_t aclblasScnrm2(aclblasHandle_t handle, int n, const aclblasComple
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，内部携带 stream，Host 内存 |
 | n | 输入 | int | 复数元素个数（kernel 内部处理 2\*n 个 float 元素），Host 内存 |
 | x | 输入 | const aclblasComplex\* | 复数向量（交错实部/虚部存储，实际为 2\*n 个 float），Device 内存 |
-| incx | 输入 | int | x 中连续元素之间的步长，支持正负步长，Host 内存 |
+| incx | 输入 | int | x 中相邻元素之间的步长；Atlas A2 / Atlas A3（Arch22）仅支持 incx = 1，Ascend 950PR / 950DT（Arch35）支持正负步长，Host 内存 |
 | result | 输出 | float\* | 复数向量的欧几里得范数（FP32 结果），Device 内存 |
 
 #### 约束说明
 
 - n <= 0 时 quick return，result 写 0.0f
-- incx != 0
+- incx != 0；Atlas A2 / Atlas A3（Arch22）kernel 按连续内存读取 x，仅支持 incx = 1：n > 0 且 incx != 1 时返回 ACLBLAS_STATUS_INVALID_VALUE，不启动 kernel。Arch35 支持正负步长（incx 不可为 INT32_MIN）
 
 Ascend 950PR 的补充约束与执行行为：
 

@@ -24,12 +24,27 @@ INSTANTIATE_TEST_SUITE_P(
     Scnrm2, Scnrm2Test, ::testing::ValuesIn(GetCasesFromCsv<Scnrm2Param>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<Scnrm2Param>);
 
+TEST_F(Scnrm2Test, NullHandle)
+{
+    float result = 0.0f;
+    aclblasComplex dummyX{1.0f, 0.0f};
+    // issue #1149: the real API must reject a null handle with NOT_INITIALIZED
+    // (the arch22 wrapper no longer pre-empts it).
+    aclblasStatus_t ret = aclblasScnrm2_npu(nullptr, 5, &dummyX, 1, &result);
+    EXPECT_EQ(ret, ACLBLAS_STATUS_NOT_INITIALIZED);
+}
+
 TEST_P(Scnrm2Test, CsvDriven)
 {
     const auto& p = GetParam();
-    ASSERT_EQ(p.expectResult, ACLBLAS_STATUS_SUCCESS);
-    ASSERT_GT(p.n, 0);
-    TestScnrm2NormalPath(p, Scnrm2Test::handle_);
+
+    if (p.expectResult != ACLBLAS_STATUS_SUCCESS) {
+        TestScnrm2ErrorPath(p, Scnrm2Test::handle_);
+    } else if (p.n <= 0) {
+        TestScnrm2NoOpPath(p, Scnrm2Test::handle_);
+    } else {
+        TestScnrm2NormalPath(p, Scnrm2Test::handle_);
+    }
 }
 
 // Coverage migrated from the former standalone main() binary in snrm2_test.cpp (issue #920):

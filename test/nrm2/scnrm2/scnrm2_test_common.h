@@ -54,6 +54,37 @@ inline void VerifyScnrm2Result(float result, float golden, const std::string& ca
     EXPECT_TRUE(Verifier::verifyScalar(result, golden, cfg, caseName));
 }
 
+// ---------------------------------------------------------------------------
+// Error path test (expectResult != SUCCESS), mirrors TestSnrm2ErrorPath
+// ---------------------------------------------------------------------------
+inline void TestScnrm2ErrorPath(const Scnrm2Param& p, aclblasHandle_t handle)
+{
+    std::vector<aclblasComplex> xHost = MakeComplexInput(p);
+    const aclblasComplex* xPtr = xHost.empty() ? nullptr : xHost.data();
+
+    float result = 0.0f;
+    float* resultPtr = p.resultIsNull ? nullptr : &result;
+
+    aclblasStatus_t ret = aclblasScnrm2_npu(handle, p.n, xPtr, p.incx, resultPtr);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
+}
+
+// ---------------------------------------------------------------------------
+// No-op path test (n <= 0 quick return writes 0.0f)
+// ---------------------------------------------------------------------------
+inline void TestScnrm2NoOpPath(const Scnrm2Param& p, aclblasHandle_t handle)
+{
+    std::vector<aclblasComplex> xHost = MakeComplexInput(p);
+    const aclblasComplex* xPtr = xHost.empty() ? nullptr : xHost.data();
+
+    float result = 123.0f;
+    aclblasStatus_t ret = aclblasScnrm2_npu(handle, p.n, xPtr, p.incx, &result);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
+    if (ret == ACLBLAS_STATUS_SUCCESS) {
+        EXPECT_FLOAT_EQ(result, 0.0f) << "[" << p.caseName << "] n<=0 quick return should write 0.0f, got " << result;
+    }
+}
+
 inline void TestScnrm2NormalPath(const Scnrm2Param& p, aclblasHandle_t handle)
 {
     std::vector<aclblasComplex> xHost = MakeComplexInput(p);

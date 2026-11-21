@@ -30,15 +30,11 @@ inline std::unique_ptr<DeviceBuffer> tryAllocAndCopyScnrm2(const void* hostPtr, 
 inline aclblasStatus_t aclblasScnrm2_npu(
     aclblasHandle_t handle, int64_t n, const aclblasComplex* x, int64_t incx, float* result)
 {
-    // arch22 aclblasScnrm2 缺少 handle/result 判空守卫，空指针直接透传会在
-    // host 侧解引用空 handle / 内核写空 result 指针；测试封装先行拦下，
-    // 语义对齐 aclblasSnrm2 的参数校验口径（issue #920）。
-    if (handle == nullptr) {
-        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
-    }
-
-    if (result == nullptr) {
-        return ACLBLAS_STATUS_INVALID_VALUE;
+    // issue #1149: arch22 aclblasScnrm2 now enforces the handle/result guards itself
+    // (mirroring aclblasSnrm2); pass the raw pointers through so negative tests
+    // exercise the real API contract instead of a harness-side pre-check.
+    if (handle == nullptr || result == nullptr) {
+        return aclblasScnrm2(handle, static_cast<int>(n), nullptr, static_cast<int>(incx), nullptr);
     }
 
     aclrtStream stream = nullptr;
