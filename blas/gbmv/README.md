@@ -161,17 +161,17 @@ aclblasStatus_t aclblasCgbmv(aclblasHandle_t handle, aclblasOperation_t trans, i
 | alpha | 输入 | const aclblasComplex*（COMPLEX64） | 复数标量乘数，Host/Device 内存 |
 | A | 输入 | const aclblasComplex*（COMPLEX64） | 列主序带状存储的矩阵，数组维度 lda x n，元素 A(i,j)（1-based）存于 A(ku+1+i-j, j)，Device 内存 |
 | lda | 输入 | int | 带状矩阵 A 存储的主维长度，Host 内存 |
-| x | 输入 | const aclblasComplex*（COMPLEX64） | 向量，trans=ACLBLAS_OP_N 时包含 n 个元素，否则包含 m 个元素，Device 内存 |
+| x | 输入 | const aclblasComplex*（COMPLEX64） | 输入向量，逻辑长度 `lenX = trans=ACLBLAS_OP_N ? n : m`；当 `lenX > 0` 时物理存储至少为 `1 + (lenX - 1) * abs(incx)` 个复数元素，Device 内存 |
 | incx | 输入 | int | x 中连续元素之间的步长，可为负，Host 内存 |
 | beta | 输入 | const aclblasComplex*（COMPLEX64） | 复数标量乘数。beta 为 (0,0) 时不读取 y 的旧值，Host/Device 内存 |
-| y | 输入/输出 | aclblasComplex*（COMPLEX64） | 向量，trans=ACLBLAS_OP_N 时包含 m 个元素，否则包含 n 个元素，原地覆写，Device 内存 |
+| y | 输入/输出 | aclblasComplex*（COMPLEX64） | 输出向量，逻辑长度 `lenY = trans=ACLBLAS_OP_N ? m : n`；当 `lenY > 0` 时物理存储至少为 `1 + (lenY - 1) * abs(incy)` 个复数元素，按原位更新，Device 内存 |
 | incy | 输入 | int | y 中连续元素之间的步长，可为负，Host 内存 |
 
 #### 约束说明
 
 - m >= 0，n >= 0；m == 0 或 n == 0 时为合法 no-op：trans、kl/ku 下界、lda、incx/incy、alpha/beta 非空等检查仍先执行，通过后返回 ACLBLAS_STATUS_SUCCESS，不访问 A、x、y。
 - kl >= 0，ku >= 0，lda >= kl + ku + 1；m、n 均大于 0 时还要求 kl <= m - 1，ku <= n - 1。
-- incx != 0，incy != 0；负步长按 BLAS 语义从物理存储的高地址端开始遍历，调用方传入物理存储的起始地址。
+- incx != 0，incy != 0；向量长度为 len、步长为 inc 时，len > 0 的物理存储至少包含 `1 + (len - 1) * abs(inc)` 个复数元素。负步长按 BLAS 语义从高地址端开始遍历，逻辑元素 i 的物理下标为 `(len - 1 - i) * abs(inc)`；调用方传入物理存储的起始地址。计算跨度时应先提升到 64 位再取绝对值。
 - alpha、beta 不可为 nullptr，可各自位于 Host 或 Device 内存，由算子内部通过 aclrtPointerGetAttributes 自动判断；位于 Device 时由 kernel 直接读取，不引入同步。
 - m、n 均大于 0 时 A、x、y 不可为 nullptr（y 为输出，beta 为 (0,0) 时同样要求非空）。
 - 非法参数返回 ACLBLAS_STATUS_INVALID_VALUE（含 alpha/beta 指针位置查询失败），trans 取值非法同样返回 ACLBLAS_STATUS_INVALID_VALUE（与 aclblasSgbmv 一致），handle 为 nullptr 返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR，获取 AI Vector 核数失败返回 ACLBLAS_STATUS_EXECUTION_FAILED。
