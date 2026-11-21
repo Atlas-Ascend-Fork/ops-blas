@@ -54,7 +54,8 @@ aclblasStatus_t aclblasChpr(aclblasHandle_t handle, aclblasFillMode_t uplo, int 
 - `ap` 按列压缩存储：上三角 `A(i,j)` 的偏移为 `j*(j+1)/2+i`，下三角为 `j*(2*n-j+1)/2+i-j`。
 - 更新时忽略对角元素的输入虚部，输出对角虚部为零；`x` 保持只读。
 - arch35 按 handle、`n<0`、`n=0`、uplo、incx、alpha/x/ap 的顺序处理参数。空 handle 优先返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`；handle 有效且 `n=0` 时直接成功且不访问其余参数；`n>0` 的 `alpha=0` 在参数校验成功后直接返回，`ap` 保持原样。
-- 接口异步执行于 handle 绑定的 stream；读回结果或释放输入输出内存前应同步该 stream。
+- arch35 的 Host `alpha` 直接读取，不触发标量 D2H 同步。Device `alpha` 先在 handle stream 上执行 D2H 回读并同步该 stream，再判断零值；回读或同步失败返回 `ACLBLAS_STATUS_INTERNAL_ERROR`。
+- Device `alpha` 非零时，CHPR kernel 在标量同步之后异步下发；成功返回只表示 kernel 已下发，不保证 `ap` 已完成。读取或释放 `x`、`ap` 前仍须同步 handle stream。
 
 #### arch35 实现
 
