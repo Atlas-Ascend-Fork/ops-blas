@@ -188,7 +188,7 @@ aclblasStatus_t aclblasComplexMatDot(
     // 内核侧 core_idx 读 tiling 同样以 40 为界，防止越界读
     uint32_t numBlocks = std::min(GetAivCoreCount(), MAX_VEC_CORE_NUM);
 
-    ComplexMatDotTilingData tiling;
+    ComplexMatDotTilingData tiling{};
     CalTilingData(tiling, m, n, numBlocks);
     std::vector<uint32_t> aug = CreateAugComplexMatDot();
 
