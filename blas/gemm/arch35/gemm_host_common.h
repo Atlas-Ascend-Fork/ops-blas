@@ -95,3 +95,9 @@ aclblasStatus_t LaunchCgemm3mOnchipBatches(
     aclblasHandle_t handle, aclblasOperation_t ta, aclblasOperation_t tb, int m, int n, int k, const aclblasComplex* a,
     int lda, int64_t strideA, const aclblasComplex* b, int ldb, int64_t strideB, aclblasComplex* c, int ldc,
     int64_t strideC, int batch);
+
+// Shared complex GEMM dispatch. The 3m API requires three real products for every scalar combination.
+aclblasStatus_t LaunchComplexGemm(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
+    const aclblasComplex* alpha, const aclblasComplex* A, int lda, const aclblasComplex* B, int ldb,
+    const aclblasComplex* beta, aclblasComplex* C, int ldc, bool forceThreeProducts);

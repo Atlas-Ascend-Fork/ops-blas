@@ -31,7 +31,7 @@ constexpr uint32_t PREPROCESS_MAX_ELEMENTS =
     PREPROCESS_VECTOR_FLOATS;
 constexpr uint32_t PREPROCESS_STAGE_BYTES = PREPROCESS_PLANES * PREPROCESS_MAX_ELEMENTS * sizeof(float);
 
-template <bool ThreeProducts>
+template <bool ThreeProducts, bool StandardProducts = false>
 __simd_vf__ inline void TransformPacked(
     __ubuf__ float* input, __ubuf__ float* output, uint32_t elements, float sign, bool isB)
 {
@@ -41,7 +41,12 @@ __simd_vf__ inline void TransformPacked(
         V::RegTensor<float> real, imag, first, second, third;
         V::LoadAlign<float, V::LoadDist::DIST_DINTLV_B32>(real, imag, input + CGEMM_COMPLEX_COMPONENTS * offset);
         V::Muls(imag, imag, sign, mask);
-        if constexpr (ThreeProducts) {
+        if constexpr (ThreeProducts && StandardProducts) {
+            V::Add(third, real, imag, mask);
+            V::StoreAlign(output + offset, real, mask);
+            V::StoreAlign(output + PREPROCESS_MAX_ELEMENTS + offset, imag, mask);
+            V::StoreAlign(output + 2 * PREPROCESS_MAX_ELEMENTS + offset, third, mask);
+        } else if constexpr (ThreeProducts) {
             if (isB) {
                 V::Sub(second, imag, real, mask);
                 V::Add(third, real, imag, mask);
@@ -63,7 +68,7 @@ __simd_vf__ inline void TransformPacked(
     }
 }
 
-template <bool ThreeProducts>
+template <bool ThreeProducts, bool StandardProducts = false>
 __aicore__ inline void CopyPackedChunk(
     GM_ADDR source, GM_ADDR first, GM_ADDR second, GM_ADDR third, uint64_t offset, uint32_t count, uint32_t stage,
     bool conjugate, bool isB)
@@ -86,7 +91,7 @@ __aicore__ inline void CopyPackedChunk(
     DataCopyPad(input, src[CGEMM_COMPLEX_COMPONENTS * offset], load, padding);
     SetFlag<HardEvent::MTE2_V>(stage);
     WaitFlag<HardEvent::MTE2_V>(stage);
-    asc_vf_call<TransformPacked<ThreeProducts>>(
+    asc_vf_call<TransformPacked<ThreeProducts, StandardProducts>>(
         reinterpret_cast<__ubuf__ float*>(input.GetPhyAddr()), reinterpret_cast<__ubuf__ float*>(output.GetPhyAddr()),
         count, conjugate ? -1.0f : 1.0f, isB);
     SetFlag<HardEvent::V_MTE3>(stage);
@@ -100,7 +105,7 @@ __aicore__ inline void CopyPackedChunk(
     SetFlag<HardEvent::MTE3_MTE2>(stage);
 }
 
-template <bool ThreeProducts>
+template <bool ThreeProducts, bool StandardProducts = false>
 __aicore__ inline void PreprocessPacked(
     GM_ADDR a, GM_ADDR b, GM_ADDR ar, GM_ADDR ai, GM_ADDR br, GM_ADDR bi, GM_ADDR auxiliaryA, GM_ADDR auxiliaryB,
     const CgemmDeinterleaveTilingData& t)
@@ -120,7 +125,7 @@ __aicore__ inline void PreprocessPacked(
         const bool isB = task >= aChunks;
         const uint64_t offset = (isB ? task - aChunks : task) * chunk;
         const uint32_t count = Min<uint64_t>(chunk, (isB ? bElements : aElements) - offset);
-        CopyPackedChunk<ThreeProducts>(
+        CopyPackedChunk<ThreeProducts, StandardProducts>(
             isB ? b : a, isB ? br : ar, isB ? bi : ai, isB ? auxiliaryB : auxiliaryA, offset, count, stage,
             isB ? t.conjugateB : t.conjugateA, isB);
     }
@@ -137,7 +142,11 @@ extern "C" __global__ __aicore__ void gemm_cgemm_deinterleave_kernel(
     const bool packed = tiling.lda == tiling.aRows && tiling.ldb == tiling.bRows && tiling.aOutRows == tiling.aRows &&
                         tiling.bOutRows == tiling.bRows;
     if (tiling.threeProducts && packed) {
-        PreprocessPacked<true>(a, b, ar, ai, br, bi, auxiliaryA, auxiliaryB, tiling);
+        if (tiling.standardThreeProducts) {
+            PreprocessPacked<true, true>(a, b, ar, ai, br, bi, auxiliaryA, auxiliaryB, tiling);
+        } else {
+            PreprocessPacked<true>(a, b, ar, ai, br, bi, auxiliaryA, auxiliaryB, tiling);
+        }
     } else if (tiling.threeProducts) {
         LaunchDeinterleaveVf<false, true>(a, b, ar, ai, br, bi, auxiliaryA, auxiliaryB, tiling);
     } else if (packed) {

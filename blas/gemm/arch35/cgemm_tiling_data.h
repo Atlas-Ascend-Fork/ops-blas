@@ -47,7 +47,37 @@ constexpr uint32_t CGEMM_MAX_SQUARE_TILE = CgemmMaxSquareTile();
 constexpr uint32_t CGEMM_FUSED_TILE = CGEMM_MAX_SQUARE_TILE / CGEMM_COMPLEX_COMPONENTS;
 constexpr uint32_t CGEMM_VECTOR_BYTES = 256;                   // 950 vector register width.
 constexpr uint32_t CGEMM_UB_WORKSPACE_BYTES = 192 * CGEMM_KIB; // Conservative per-AIV budget.
+// Derive the TrackPath requirement from its tensor layout, not a measured device capacity.
+// LaunchGeneralCgemm checks the actual platform UB capacity before selecting this path.
+constexpr uint32_t CGEMM_PATH_UB_WORKSPACE_BYTES = (CGEMM_FOUR_PRODUCTS + CGEMM_COMPLEX_COMPONENTS + 1) *
+                                                   (CGEMM_MAX_SQUARE_TILE / CGEMM_COMPLEX_COMPONENTS) *
+                                                   CGEMM_MAX_SQUARE_TILE * sizeof(float);
 constexpr uint32_t CGEMM_FUSED_MAX_TILE = CGEMM_MAX_SQUARE_TILE;
+constexpr uint32_t CGEMM_SELECT_UB_ELEMENTS = 16896;
+constexpr uint32_t CGEMM_SELECT_UB_BYTES = CGEMM_SELECT_UB_ELEMENTS * sizeof(float);
+constexpr uint32_t CGEMM_PACK_UB_ELEMENTS = 16384;
+constexpr uint32_t CGEMM_PERMUTE_UB_ELEMENTS = 16896;
+constexpr uint32_t CGEMM_PREFIX_UB_ELEMENTS = 42304;
+// The two result slots end at float offset 42256. Stage 48 selected indices in the remaining UB.
+constexpr uint32_t CGEMM_PREFIX_INDEX_OFFSET = 42256;
+constexpr uint32_t CGEMM_PREFIX_INDEX_BATCH = CGEMM_PREFIX_UB_ELEMENTS - CGEMM_PREFIX_INDEX_OFFSET;
+// Rounding kernels run sequentially; prefix has the largest allocation (169216 bytes).
+constexpr uint32_t CGEMM_ROUNDING_UB_BYTES = CGEMM_PREFIX_UB_ELEMENTS * sizeof(float);
+static_assert(CGEMM_PACK_UB_ELEMENTS <= CGEMM_PREFIX_UB_ELEMENTS);
+static_assert(CGEMM_PERMUTE_UB_ELEMENTS <= CGEMM_PREFIX_UB_ELEMENTS);
+static_assert(CGEMM_SELECT_UB_ELEMENTS <= CGEMM_PREFIX_UB_ELEMENTS);
+static_assert(CGEMM_ROUNDING_UB_BYTES % CGEMM_DATA_BLOCK_BYTES == 0);
+static_assert(CGEMM_SELECT_UB_BYTES % CGEMM_DATA_BLOCK_BYTES == 0);
+static_assert(CGEMM_SELECT_UB_BYTES <= CGEMM_UB_WORKSPACE_BYTES);
+static_assert(CGEMM_PREFIX_INDEX_OFFSET % (CGEMM_DATA_BLOCK_BYTES / sizeof(uint32_t)) == 0);
+static_assert(CGEMM_PREFIX_INDEX_BATCH % (CGEMM_DATA_BLOCK_BYTES / sizeof(uint32_t)) == 0);
+
+// Matrix sub-buffers are independently aligned for GM/UB data movement.
+constexpr uint64_t CgemmRoundingMatrixBytes(uint64_t n)
+{
+    const uint64_t bytes = n * n * CGEMM_COMPLEX_COMPONENTS * sizeof(float);
+    return (bytes + CGEMM_DATA_BLOCK_BYTES - 1) / CGEMM_DATA_BLOCK_BYTES * CGEMM_DATA_BLOCK_BYTES;
+}
 
 struct CgemmDeinterleaveTilingData {
     uint32_t aRows;
@@ -63,6 +93,7 @@ struct CgemmDeinterleaveTilingData {
     uint8_t conjugateA;
     uint8_t conjugateB;
     uint8_t threeProducts;
+    uint8_t standardThreeProducts;
 };
 
 struct CgemmEpilogueTilingData {
@@ -78,6 +109,7 @@ struct CgemmEpilogueTilingData {
     uint8_t alphaZero;
     uint8_t betaZero;
     uint8_t threeProducts;
+    uint8_t standardThreeProducts;
     uint32_t kPartitions;
     uint64_t partStride;
     // Nonzero only for the forced-3m scalar epilogue that can require ordered correction.

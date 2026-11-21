@@ -52,6 +52,8 @@ function(ops_blas_detect_asc_devkit_version)
       "GEMM_STRIDED_BATCHED|/gemm_strided_batched/arch35/gemm_strided_batched_|gemm_strided_batched"
       "CGEMM_STRIDED_BATCHED|/gemm_strided_batched/arch35/cgemm_strided_batched_|cgemm_strided_batched"
       "GEMM|/gemm/arch35/gemm_|gemm"
+      # Filter only CGEMM3M-owned TUs; shared cgemm TUs retain their ASC_DEVKIT_GE_9_1 guards.
+      "CGEMM3M|/gemm/arch35/cgemm3m_|cgemm3m"
   )
 
   # 初始化所有 tensor_api 算子为 TRUE

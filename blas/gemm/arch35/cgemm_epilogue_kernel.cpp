@@ -40,8 +40,9 @@ __simd_vf__ inline void MergePlanarOutput(__ubuf__ float* p, uint32_t count, boo
         V::LoadAlign(a, p + offset);
         V::LoadAlign(b, p + EPILOGUE_PLANE + offset);
         V::LoadAlign(c, p + 2 * EPILOGUE_PLANE + offset);
-        V::Sub(real, a, c, mask);
-        V::Add(imag, a, b, mask);
+        V::Sub(real, a, b, mask);
+        V::Sub(imag, c, a, mask);
+        V::Sub(imag, imag, b, mask);
         if (!first) {
             V::LoadAlign(previous, p + EPILOGUE_SUM_OFFSET + offset);
             V::Add(real, previous, real, mask);
@@ -231,7 +232,8 @@ template <bool AlphaZero, bool BetaZero, bool Packed>
 __simt_vf__ __aicore__ LAUNCH_BOUND(CGEMM_SIMT_THREADS) inline void CgemmEpilogueVf(
     __gm__ const float* t1, __gm__ const float* t2, __gm__ const float* t3, __gm__ const float* t4, __gm__ float* c,
     uint32_t m, uint32_t n, uint32_t ldc, uint32_t tempLdc, float alphaReal, float alphaImag, float betaReal,
-    float betaImag, bool threeProducts, uint32_t kPartitions, uint64_t partStride, uint32_t block, uint32_t blocks)
+    float betaImag, bool threeProducts, bool standardThreeProducts, uint32_t kPartitions, uint64_t partStride,
+    uint32_t block, uint32_t blocks)
 {
     const uint64_t total = static_cast<uint64_t>(m) * n;
     const uint64_t thread = static_cast<uint64_t>(block) * blockDim.x + threadIdx.x;
@@ -253,8 +255,16 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(CGEMM_SIMT_THREADS) inline void CgemmEpilogu
             const uint32_t parts = kPartitions > 0 ? kPartitions : 1;
             for (uint32_t part = 0; part < parts; ++part) {
                 const uint64_t offset = tempOffset + part * partStride;
-                productReal += threeProducts ? t1[offset] - t3[offset] : t1[offset] - t2[offset];
-                productImag += threeProducts ? t1[offset] + t2[offset] : t3[offset] + t4[offset];
+                if (standardThreeProducts) {
+                    productReal += t1[offset] - t2[offset];
+                    productImag += t3[offset] - t1[offset] - t2[offset];
+                } else if (threeProducts) {
+                    productReal += t1[offset] - t3[offset];
+                    productImag += t1[offset] + t2[offset];
+                } else {
+                    productReal += t1[offset] - t2[offset];
+                    productImag += t3[offset] + t4[offset];
+                }
             }
             resultReal = alphaReal * productReal - alphaImag * productImag;
             resultImag = alphaReal * productImag + alphaImag * productReal;
@@ -279,7 +289,7 @@ __aicore__ inline void LaunchCgemmEpilogueVf(
         reinterpret_cast<__gm__ const float*>(t2), reinterpret_cast<__gm__ const float*>(t3),
         reinterpret_cast<__gm__ const float*>(t4), reinterpret_cast<__gm__ float*>(c), tiling.m, tiling.n, tiling.ldc,
         tiling.tempLdc, tiling.alphaReal, tiling.alphaImag, tiling.betaReal, tiling.betaImag, tiling.threeProducts != 0,
-        tiling.kPartitions, tiling.partStride, GetBlockIdx(), GetBlockNum());
+        tiling.standardThreeProducts != 0, tiling.kPartitions, tiling.partStride, GetBlockIdx(), GetBlockNum());
 }
 
 template <bool Packed>
@@ -308,8 +318,8 @@ extern "C" __global__ __aicore__ void gemm_cgemm_epilogue_kernel(
         LaunchCorrectableEpilogue(t1, t2, t3, originalA, originalB, c, tiling);
         return;
     }
-    if (tiling.threeProducts != 0 && tiling.alphaZero == 0 && tiling.betaZero != 0 && tiling.alphaReal == 1.0f &&
-        tiling.alphaImag == 0.0f) {
+    if (tiling.standardThreeProducts != 0 && tiling.alphaZero == 0 && tiling.betaZero != 0 &&
+        tiling.alphaReal == 1.0f && tiling.alphaImag == 0.0f) {
         LaunchPlanarOutput(t1, t2, t3, c, tiling);
         return;
     }

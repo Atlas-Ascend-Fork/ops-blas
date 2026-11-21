@@ -24,6 +24,7 @@ C = alpha * op(A) * op(B) + beta * C
 | aclblasCgemm | 复数单精度（COMPLEX64）通用矩阵乘法，支持矩阵转置和 alpha/beta 缩放 |
 | aclblasCgemm3mStridedBatched | COMPLEX64 固定步长批量 GEMM，使用三次实数乘积 |
 | aclblasCgemmEx | 扩展复数通用矩阵乘法，A/B/C 可独立指定元素类型（Ascend 950） |
+| aclblasCgemm3m | 复数单精度三乘法通用矩阵乘法（950PR） |
 
 ## 算子执行接口
 
@@ -939,3 +940,37 @@ int main()
 ```
 
 构建、精度和性能测试方法见[测试说明](../../test/gemm/cgemm3m_strided_batched/README.md)。
+
+### aclblasCgemm3m
+
+支持 Atlas 950PR / arch35，要求 CANN 9.1.0 对应开发套件。
+
+```cpp
+aclblasStatus_t aclblasCgemm3m(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb,
+    int m, int n, int k, const aclblasComplex* alpha, const aclblasComplex* A,
+    int lda, const aclblasComplex* B, int ldb, const aclblasComplex* beta,
+    aclblasComplex* C, int ldc);
+```
+
+计算 `C = alpha * op(A) * op(B) + beta * C`，complex64 列主序；支持 N/T/C 九种组合。
+alpha/beta 位于 Host；A/B/C 位于 Device。前导维约束同 Cgemm。
+所有非退化标量场景都采用三次实数矩阵乘法，具体分解随执行路径选择：
+
+- 融合路径（`fusedTile != 0`）及其纠正重算：P0=(Ar+Ai)×Br，P1=Ar×(Bi−Br)，P2=Ai×(Br+Bi)；
+  乘积实部=P0−P2，虚部=P0+P1。
+- 非融合路径（`fusedTile == 0`）：P0=Ar×Br，P1=Ai×Bi，P2=(Ar+Ai)×(Br+Bi)；
+  乘积实部=P0−P1，虚部=P2−P0−P1。
+
+两条路径随后都应用复数 alpha/beta。`fusedTile` 由形状和 UB 容量选择；两种分解代数等价，
+但中间项的 FP32 舍入不同，因此不能把一种路径的误差分析套到另一种路径。
+
+空 handle 返回 HANDLE_IS_NULLPTR；非法枚举、负维度、非法前导维、空标量指针返回 INVALID_VALUE。
+参数校验后，m=0/n=0 返回 SUCCESS 且不写 C；k=0/alpha=0 只做 beta*C，允许 A/B 为空。
+m,n>0 时 C 必须非空。beta=0 不读取旧 C，输出 padding 不被修改。
+用户负责 stream 同步及输入输出存储有效性，不支持 C 与 A/B 存储重叠。
+
+当前 Cgemm3m 自验按任务书 §3.2：实部/虚部分别使用 `atol=rtol=2^-13`，
+`matched_ratio≥99%`，且 `max_abs_error≤max(0.01,32 ULP)`。非有限值按任务书规则独立判定。
+历史通过报告不代表当前版本已经通过。
+测试、Netlib 3.10.0 复现及性能采样见 [测试说明](../../test/gemm/cgemm3m/README.md)。

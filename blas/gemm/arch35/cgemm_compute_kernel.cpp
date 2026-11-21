@@ -431,19 +431,22 @@ constexpr uint32_t REPAIR_THREADS = CGEMM_VECTOR_BYTES / sizeof(float);
 constexpr uint32_t FP32_EXPONENT_MASK = 0x7f800000; // All exponent bits set identify infinity or NaN.
 constexpr FixpipeConfig ROW_MAJOR_UB = {CO2Layout::ROW_MAJOR, true};
 
-template <uint32_t BS>
+template <uint32_t BS, bool TrackPath = false>
 struct Storage {
     static constexpr uint32_t ROWS = BS / CGEMM_COMPLEX_COMPONENTS;
     static constexpr uint32_t PLANE = ROWS * BS;
     static constexpr uint32_t BYTES = PLANE * sizeof(float);
-    static constexpr uint32_t UB_STAGE_BYTES = (CGEMM_FOUR_PRODUCTS + CGEMM_COMPLEX_COMPONENTS) * BYTES;
-    static constexpr uint32_t STAGES =
-        CGEMM_UB_WORKSPACE_BYTES / UB_STAGE_BYTES >= CGEMM_OUTPUT_STAGES ? CGEMM_OUTPUT_STAGES : 1;
+    // The host validates the layout-derived workspace and reserved headroom against platform capacity.
+    static constexpr uint32_t PLANES = CGEMM_FOUR_PRODUCTS + CGEMM_COMPLEX_COMPONENTS + TrackPath;
+    static constexpr uint32_t BUDGET = TrackPath ? CGEMM_PATH_UB_WORKSPACE_BYTES : CGEMM_UB_WORKSPACE_BYTES;
+    static constexpr uint32_t UB_STAGE_BYTES = PLANES * BYTES;
+    static constexpr uint32_t STAGES = BUDGET / UB_STAGE_BYTES >= CGEMM_OUTPUT_STAGES ? CGEMM_OUTPUT_STAGES : 1;
     static constexpr uint32_t INNER_K = CGEMM_HALF_L0_FLOAT_ELEMENTS / BS;
     static constexpr uint32_t PANEL_CAPACITY =
         CGEMM_L1_BYTES / (CGEMM_L1_PING_PONG_STAGES * INPUT_PLANES * BS * sizeof(float));
     static constexpr uint32_t PANEL_K = PANEL_CAPACITY / INNER_K * INNER_K;
-    static_assert((CGEMM_FOUR_PRODUCTS + CGEMM_COMPLEX_COMPONENTS) * BYTES <= CGEMM_UB_WORKSPACE_BYTES);
+    static_assert(PLANES * BYTES <= BUDGET);
+    static_assert(STAGES * UB_STAGE_BYTES <= BUDGET);
     static_assert(CGEMM_FOUR_PRODUCTS * BS * BS * sizeof(float) <= CGEMM_L0C_BYTES);
 };
 
@@ -466,6 +469,52 @@ __simd_vf__ inline void MergeProducts(__ubuf__ float* p, bool first, uint32_t ro
             V::LoadAlign(previous, p + 5 * PLANE + offset);
             V::Add(imag, imag, previous, mask);
         }
+        V::StoreAlign(p + 4 * PLANE + offset, real, mask);
+        V::StoreAlign(p + 5 * PLANE + offset, imag, mask);
+    }
+}
+
+// Integrate squared partial sums to estimate sequential FP32 accumulation risk.
+template <uint32_t BS>
+__simd_vf__ inline void MergeProductsWithPath(__ubuf__ float* p, bool first, bool last, uint32_t rows, uint32_t depth)
+{
+    namespace V = AscendC::MicroAPI;
+    constexpr uint32_t PLANE = Storage<BS>::PLANE;
+    auto mask = V::CreateMask<float, V::MaskPattern::ALL>();
+    for (uint32_t offset = 0; offset < rows * BS; offset += VECTOR_FLOATS) {
+        V::RegTensor<float> a, b, c, real, imag, oldR, oldI, integralR, integralI, term;
+        V::LoadAlign(a, p + offset);
+        V::LoadAlign(b, p + PLANE + offset);
+        V::LoadAlign(c, p + 2 * PLANE + offset);
+        V::Sub(real, a, c, mask);
+        V::Add(imag, a, b, mask);
+        if (first) {
+            V::Duplicate(oldR, 0.0f, mask);
+            V::Duplicate(oldI, 0.0f, mask);
+            V::Duplicate(integralR, 0.0f, mask);
+            V::Duplicate(integralI, 0.0f, mask);
+        } else {
+            V::LoadAlign(oldR, p + 4 * PLANE + offset);
+            V::LoadAlign(oldI, p + 5 * PLANE + offset);
+            V::LoadAlign(integralR, p + 3 * PLANE + offset);
+            V::LoadAlign(integralI, p + 6 * PLANE + offset);
+        }
+        V::Add(real, real, oldR, mask);
+        V::Add(imag, imag, oldI, mask);
+        V::Mul(term, oldR, oldR, mask);
+        V::MulAddDst(term, oldR, real, mask);
+        V::MulAddDst(term, real, real, mask);
+        V::Muls(term, term, static_cast<float>(depth) / 9.0f, mask);
+        V::Add(integralR, integralR, term, mask);
+        V::Mul(term, oldI, oldI, mask);
+        V::MulAddDst(term, oldI, imag, mask);
+        V::MulAddDst(term, imag, imag, mask);
+        V::Muls(term, term, static_cast<float>(depth) / 9.0f, mask);
+        V::Add(integralI, integralI, term, mask);
+        if (last)
+            V::Max(integralR, integralR, integralI, mask);
+        V::StoreAlign(p + 3 * PLANE + offset, integralR, mask);
+        V::StoreAlign(p + 6 * PLANE + offset, integralI, mask);
         V::StoreAlign(p + 4 * PLANE + offset, real, mask);
         V::StoreAlign(p + 5 * PLANE + offset, imag, mask);
     }
@@ -609,7 +658,7 @@ __aicore__ inline void MultiplyPanel(const TileShape& s, uint32_t depth, bool fi
     SetFlag<HardEvent::MTE1_MTE2>(stage);
 }
 
-template <uint32_t BS>
+template <uint32_t BS, bool TrackPath = false>
 __aicore__ inline void PublishProducts(const TileShape& s, uint32_t outputStage)
 {
     SetFlag<HardEvent::M_FIX>(GEMM_ZERO_FLAG);
@@ -626,7 +675,7 @@ __aicore__ inline void PublishProducts(const TileShape& s, uint32_t outputStage)
     for (uint32_t product = 0; product < CGEMM_THREE_PRODUCTS; ++product) {
         LocalTensor<float> accum(TPosition::CO1, product * BS * BS * sizeof(float), BS * BS);
         LocalTensor<float> out(
-            TPosition::VECCALC, outputStage * Storage<BS>::UB_STAGE_BYTES + product * Storage<BS>::BYTES,
+            TPosition::VECCALC, outputStage * Storage<BS, TrackPath>::UB_STAGE_BYTES + product * Storage<BS>::BYTES,
             Storage<BS>::PLANE);
         Fixpipe<float, float, ROW_MAJOR_UB>(out, accum, fp);
     }
@@ -635,7 +684,7 @@ __aicore__ inline void PublishProducts(const TileShape& s, uint32_t outputStage)
     CrossCoreSetFlag<SYNC_MODE, PIPE_FIX>(READY_FLAG + outputStage + PEER_OFFSET);
 }
 
-template <uint32_t BS, bool TransA, bool TransB>
+template <uint32_t BS, bool TransA, bool TransB, bool TrackPath = false>
 __aicore__ inline void ComputePart(
     GM_ADDR ar, GM_ADDR ai, GM_ADDR br, GM_ADDR bi, GM_ADDR auxiliaryA, GM_ADDR auxiliaryB, const GemmTilingData& t,
     const TileShape& s, uint32_t start, uint32_t end, uint32_t outputStage)
@@ -661,7 +710,7 @@ __aicore__ inline void ComputePart(
     WaitFlag<HardEvent::M_MTE1>(GEMM_FIRST_FLAG);
     WaitFlag<HardEvent::MTE1_MTE2>(GEMM_ZERO_FLAG);
     WaitFlag<HardEvent::MTE1_MTE2>(GEMM_FIRST_FLAG);
-    PublishProducts<BS>(s, outputStage);
+    PublishProducts<BS, TrackPath>(s, outputStage);
 }
 
 // Recompute only non-finite outputs with explicit FP32 operations. Cube and
@@ -742,10 +791,10 @@ __simd_vf__ inline void CheckMergedOutput(__ubuf__ float* p, uint32_t rows)
     V::StoreAlign(reinterpret_cast<__ubuf__ uint32_t*>(p + 3 * Storage<BS>::PLANE), largest, mask);
 }
 
-template <uint32_t BS>
-__aicore__ inline void StorePartOutput(
-    GM_ADDR cAddr, const GemmTilingData& t, const TileShape& s, LocalTensor<float> buffer, uint32_t start,
-    uint32_t rows, bool direct)
+template <uint32_t BS, bool TrackPath>
+__aicore__ inline void StoreConsumedPart(
+    GM_ADDR cAddr, const GemmTilingData& t, const TileShape& s, const LocalTensor<float>& buffer, bool direct,
+    uint32_t start, uint32_t rows, GM_ADDR path)
 {
     GlobalTensor<float> c;
     c.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(cAddr));
@@ -756,23 +805,36 @@ __aicore__ inline void StorePartOutput(
     DataCopyExtParams copy{static_cast<uint16_t>(rows), bytes, sourceGap, destGap, 0};
     const uint64_t offset = CGEMM_COMPLEX_COMPONENTS * (static_cast<uint64_t>(s.row + start) * t.ldc + s.col);
     DataCopyPad(c[offset], buffer[direct ? CGEMM_FOUR_PRODUCTS * Storage<BS>::PLANE : 0], copy);
+    if constexpr (TrackPath) {
+        GlobalTensor<float> risk;
+        risk.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(path));
+        constexpr uint32_t FLOAT_BYTES = sizeof(float);
+        constexpr uint32_t FLOATS_PER_BLOCK = CGEMM_DATA_BLOCK_BYTES / FLOAT_BYTES;
+        DataCopyExtParams riskCopy{
+            static_cast<uint16_t>(rows), s.cols * FLOAT_BYTES,
+            (BS - RoundUp<uint32_t>(s.cols, FLOATS_PER_BLOCK)) / FLOATS_PER_BLOCK, (t.ldc - s.cols) * FLOAT_BYTES, 0};
+        DataCopyPad(
+            risk[static_cast<uint64_t>(s.row + start) * t.ldc + s.col], buffer[3 * Storage<BS>::PLANE], riskCopy);
+    }
 }
 
-template <uint32_t BS, bool CheckNonFinite = false>
+template <uint32_t BS, bool CheckNonFinite = false, bool TrackPath = false>
 __aicore__ inline void ConsumePart(
     GM_ADDR cAddr, const GemmTilingData& t, const TileShape& s, bool first, bool last, uint32_t outputStage,
-    GM_ADDR a = nullptr, GM_ADDR b = nullptr, const CgemmOnchipTilingData* original = nullptr)
+    GM_ADDR a = nullptr, GM_ADDR b = nullptr, const CgemmOnchipTilingData* original = nullptr, GM_ADDR path = nullptr,
+    uint32_t depth = 0)
 {
     CrossCoreWaitFlag<SYNC_MODE, PIPE_MTE3>(READY_FLAG + outputStage);
     SetFlag<HardEvent::MTE3_V>(GEMM_ZERO_FLAG);
     WaitFlag<HardEvent::MTE3_V>(GEMM_ZERO_FLAG);
-    constexpr uint32_t ELEMENTS = (CGEMM_FOUR_PRODUCTS + CGEMM_COMPLEX_COMPONENTS) * Storage<BS>::PLANE;
-    LocalTensor<float> buffer(TPosition::VECCALC, outputStage * Storage<BS>::UB_STAGE_BYTES, ELEMENTS);
+    constexpr uint32_t ELEMENTS = Storage<BS, TrackPath>::PLANES * Storage<BS>::PLANE;
+    LocalTensor<float> buffer(TPosition::VECCALC, outputStage * Storage<BS, TrackPath>::UB_STAGE_BYTES, ELEMENTS);
     auto ptr = reinterpret_cast<__ubuf__ float*>(buffer.GetPhyAddr());
     const uint32_t half = s.paddedRows / CGEMM_COMPLEX_COMPONENTS;
     const uint32_t start = GetSubBlockIdx() * half;
     const uint32_t rows = start < s.rows ? Min<uint32_t>(half, s.rows - start) : 0;
-    const bool direct = first && last;
+    // TrackPath must initialize and export its risk plane even with one partition.
+    const bool direct = first && last && !TrackPath;
     bool repairTile = false;
     if (direct) {
         asc_vf_call<BuildSinglePartOutput<BS, CheckNonFinite>>(ptr, half);
@@ -780,7 +842,11 @@ __aicore__ inline void ConsumePart(
             repairTile = OutputNeedsRepair<BS>(buffer, rows);
         }
     } else {
-        asc_vf_call<MergeProducts<BS>>(ptr, first, half);
+        if constexpr (TrackPath) {
+            asc_vf_call<MergeProductsWithPath<BS>>(ptr, first, last, half, depth);
+        } else {
+            asc_vf_call<MergeProducts<BS>>(ptr, first, half);
+        }
         if (last) {
             asc_vf_call<InterleaveOutput<BS>>(ptr, half);
             if constexpr (CheckNonFinite) {
@@ -792,7 +858,7 @@ __aicore__ inline void ConsumePart(
     SetFlag<HardEvent::V_MTE3>(GEMM_ZERO_FLAG);
     WaitFlag<HardEvent::V_MTE3>(GEMM_ZERO_FLAG);
     if (last && rows > 0) {
-        StorePartOutput<BS>(cAddr, t, s, buffer, start, rows, direct);
+        StoreConsumedPart<BS, TrackPath>(cAddr, t, s, buffer, direct, start, rows, path);
         if constexpr (CheckNonFinite) {
             if (repairTile) {
                 RepairOutputTile<BS>(cAddr, a, b, *original, s, start, rows);
@@ -802,10 +868,10 @@ __aicore__ inline void ConsumePart(
     CrossCoreSetFlag<SYNC_MODE, PIPE_MTE3>(FREE_FLAG + outputStage);
 }
 
-template <uint32_t BS, bool TransA, bool TransB>
+template <uint32_t BS, bool TransA, bool TransB, bool TrackPath = false>
 __aicore__ inline void Run(
     GM_ADDR ar, GM_ADDR ai, GM_ADDR br, GM_ADDR bi, GM_ADDR auxiliaryA, GM_ADDR auxiliaryB, GM_ADDR c,
-    const GemmTilingData& t)
+    const GemmTilingData& t, GM_ADDR path = nullptr)
 {
     uint32_t block = GetBlockIdx();
     if ASCEND_IS_AIC {
@@ -813,7 +879,7 @@ __aicore__ inline void Run(
     }
     if ASCEND_IS_AIV {
         block /= GetTaskRation();
-        for (uint32_t stage = 0; stage < Storage<BS>::STAGES; ++stage) {
+        for (uint32_t stage = 0; stage < Storage<BS, TrackPath>::STAGES; ++stage) {
             CrossCoreSetFlag<SYNC_MODE, PIPE_MTE3>(FREE_FLAG + stage);
         }
     }
@@ -821,22 +887,24 @@ __aicore__ inline void Run(
     const uint32_t parts = t.cgemmKPartitions;
     uint32_t iteration = 0;
     for (uint64_t tile = block; tile < tiles; tile += t.usedCoreNum, ++iteration) {
-        const uint32_t outputStage = iteration % Storage<BS>::STAGES;
+        const uint32_t outputStage = iteration % Storage<BS, TrackPath>::STAGES;
         const TileShape s = Shape<BS>(t, tile);
         for (uint32_t part = 0; part < parts; ++part) {
             const uint32_t start = part * t.cgemmKSpan;
             const uint32_t end = Min<uint32_t>(t.k, start + t.cgemmKSpan);
             if ASCEND_IS_AIC {
-                ComputePart<BS, TransA, TransB>(ar, ai, br, bi, auxiliaryA, auxiliaryB, t, s, start, end, outputStage);
+                ComputePart<BS, TransA, TransB, TrackPath>(
+                    ar, ai, br, bi, auxiliaryA, auxiliaryB, t, s, start, end, outputStage);
             }
             if ASCEND_IS_AIV {
-                ConsumePart<BS>(c, t, s, part == 0, part + 1 == parts, outputStage);
+                ConsumePart<BS, false, TrackPath>(
+                    c, t, s, part == 0, part + 1 == parts, outputStage, nullptr, nullptr, nullptr, path, end - start);
             }
         }
     }
     if ASCEND_IS_AIC {
         WaitFlag<HardEvent::FIX_M>(GEMM_ZERO_FLAG);
-        for (uint32_t stage = 0; stage < Storage<BS>::STAGES; ++stage) {
+        for (uint32_t stage = 0; stage < Storage<BS, TrackPath>::STAGES; ++stage) {
             CrossCoreWaitFlag<SYNC_MODE, PIPE_FIX>(FREE_FLAG + stage);
             CrossCoreWaitFlag<SYNC_MODE, PIPE_FIX>(FREE_FLAG + stage + PEER_OFFSET);
         }
@@ -873,6 +941,38 @@ extern "C" __global__ __aicore__ void gemm_cgemm_fused_kernel(
         Dispatch<false, false>(ar, ai, br, bi, auxiliaryA, auxiliaryB, c, t);
     }
 }
+extern "C" __global__ __aicore__ void cgemm3m_path_kernel(
+    GM_ADDR ar, GM_ADDR ai, GM_ADDR br, GM_ADDR bi, GM_ADDR auxiliaryA, GM_ADDR auxiliaryB, GM_ADDR c, GM_ADDR path,
+    GemmTilingData t)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
+    InitSocState();
+    if ASCEND_IS_AIC {
+        SetHF32Mode(HF32Mode::DISABLE);
+    }
+    if (t.baseM == CGEMM_FUSED_MAX_TILE) {
+        if (t.isTransA && t.isTransB) {
+            Run<CGEMM_FUSED_MAX_TILE, true, true, true>(ar, ai, br, bi, auxiliaryA, auxiliaryB, c, t, path);
+        } else if (t.isTransA) {
+            Run<CGEMM_FUSED_MAX_TILE, true, false, true>(ar, ai, br, bi, auxiliaryA, auxiliaryB, c, t, path);
+        } else if (t.isTransB) {
+            Run<CGEMM_FUSED_MAX_TILE, false, true, true>(ar, ai, br, bi, auxiliaryA, auxiliaryB, c, t, path);
+        } else {
+            Run<CGEMM_FUSED_MAX_TILE, false, false, true>(ar, ai, br, bi, auxiliaryA, auxiliaryB, c, t, path);
+        }
+    } else {
+        if (t.isTransA && t.isTransB) {
+            Run<CGEMM_FUSED_TILE, true, true, true>(ar, ai, br, bi, auxiliaryA, auxiliaryB, c, t, path);
+        } else if (t.isTransA) {
+            Run<CGEMM_FUSED_TILE, true, false, true>(ar, ai, br, bi, auxiliaryA, auxiliaryB, c, t, path);
+        } else if (t.isTransB) {
+            Run<CGEMM_FUSED_TILE, false, true, true>(ar, ai, br, bi, auxiliaryA, auxiliaryB, c, t, path);
+        } else {
+            Run<CGEMM_FUSED_TILE, false, false, true>(ar, ai, br, bi, auxiliaryA, auxiliaryB, c, t, path);
+        }
+    }
+}
+
 } // namespace cgemm_fused
 
 void gemm_cgemm_fused_do(
@@ -881,6 +981,14 @@ void gemm_cgemm_fused_do(
 {
     cgemm_fused::gemm_cgemm_fused_kernel<<<blocks, nullptr, stream>>>(
         ar, ai, br, bi, auxiliaryA, auxiliaryB, c, tiling);
+}
+
+void gemm_cgemm3m_path_do(
+    uint32_t blocks, void* stream, GM_ADDR ar, GM_ADDR ai, GM_ADDR br, GM_ADDR bi, GM_ADDR auxiliaryA,
+    GM_ADDR auxiliaryB, GM_ADDR c, GM_ADDR path, const GemmTilingData& tiling)
+{
+    cgemm_fused::cgemm3m_path_kernel<<<blocks, nullptr, stream>>>(
+        ar, ai, br, bi, auxiliaryA, auxiliaryB, c, path, tiling);
 }
 
 #include "cgemm_onchip_kernel.h"

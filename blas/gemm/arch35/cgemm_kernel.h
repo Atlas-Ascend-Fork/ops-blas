@@ -41,3 +41,10 @@ void gemm_cgemm_fused_do(
     uint32_t, void*, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, const GemmTilingData&);
 
 void gemm_cgemm_onchip_do(uint32_t, void*, GM_ADDR, GM_ADDR, GM_ADDR, const CgemmOnchipTilingData&);
+
+void gemm_cgemm3m_path_do(
+    uint32_t, void*, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, const GemmTilingData&);
+
+void gemm_cgemm3m_rounding_do(
+    uint32_t, void*, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, GM_ADDR, uint32_t, float, GM_ADDR, GM_ADDR, char,
+    char);

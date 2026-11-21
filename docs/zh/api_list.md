@@ -1002,6 +1002,7 @@ Level 3 接口在矩阵之间进行运算，典型操作包括对称矩阵乘法
 | [aclblasSgemm](../../blas/gemm/README.md) | 单精度浮点通用矩阵乘法 |
 | [aclblasCgemm](../../blas/gemm/README.md) | 复数通用矩阵乘法 |
 | [aclblasCgemmEx](../../blas/gemm_ex/README.md) | 扩展复数通用矩阵乘法，A/B/C 可独立指定元素类型 |
+| [aclblasCgemm3m](../../blas/gemm/README.md#aclblascgemm3m) | 复数三乘法通用矩阵乘法（950PR） |
 | [aclblasSgemmBatched](../../blas/gemm_batched/README.md) | 单精度浮点批量矩阵乘法 |
 | [aclblasCgemmBatched](../../blas/gemm_batched/README.md) | 单精度复数批量矩阵乘法 |
 | [aclblasHgemmBatched](../../blas/gemm_batched/README.md#aclblashgemmbatched) | 半精度浮点批量矩阵乘法（Ascend 950PR 支持） |

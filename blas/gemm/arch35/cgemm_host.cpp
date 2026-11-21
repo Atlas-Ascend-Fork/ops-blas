@@ -31,7 +31,16 @@ constexpr uint32_t CGEMM3M_PARTITION_K = 256;
 constexpr uint32_t CGEMM_TILE_SIZE_RATIO = 2; // Adjacent supported sizes double each dimension.
 static_assert(CGEMM_OUTPUT_STAGES * CGEMM_MAX_TILE * CGEMM_MAX_TILE * sizeof(float) <= CGEMM_L0C_BYTES);
 constexpr size_t CGEMM_WORKSPACE_ALIGNMENT = CGEMM_CUBE_FRACTAL * CGEMM_DATA_BLOCK_BYTES;
-static aclblasStatus_t HandleCgemmAlphaZero(aclblasHandle_t, int, int, int, std::complex<float>, aclblasComplex*);
+constexpr uint32_t CGEMM_NARROW_K_PARTITIONS = CGEMM_MAX_SQUARE_TILE / CGEMM_CUBE_FRACTAL;
+constexpr uint32_t CGEMM_NARROW_LONG_K = CGEMM_MAX_SQUARE_TILE * CGEMM_NARROW_K_PARTITIONS;
+// Tuned screening multiplier for optional sequential recomputation; it is not an accuracy tolerance.
+constexpr float CGEMM_ROUNDING_CONFIDENCE = 3.75f;
+constexpr const char* CgemmApiName(bool forceThreeProducts)
+{
+    return forceThreeProducts ? "aclblasCgemm3m" : "aclblasCgemm";
+}
+static aclblasStatus_t HandleCgemmAlphaZero(
+    aclblasHandle_t, int, int, int, std::complex<float>, aclblasComplex*, const char*);
 static bool CheckedMulSize(size_t, size_t, size_t&);
 static bool AddWorkspaceRegion(size_t, size_t&, size_t&);
 
@@ -55,6 +64,7 @@ struct CgemmLaunchContext {
     uint32_t cubeCores;
     uint32_t vectorCores;
     bool forceThreeProducts;
+    bool forceGaussProducts; // Upstream strided-batched entry retains its original Gauss decomposition.
 };
 
 struct CgemmWorkspaceLayout {
@@ -84,18 +94,24 @@ struct CgemmWorkspaceLayout {
     uint8_t* temp2;
     uint8_t* temp3;
     uint8_t* temp4;
+    bool correctRounding;
+    uint8_t* path;
+    uint8_t* packed;
+    uint8_t* energy;
+    uint8_t* selected;
+    uint8_t* selectedCounts;
 };
 
 static aclblasStatus_t InitCgemmCores(CgemmLaunchContext& context)
 {
     context.cubeCores = GetAicCoreCount();
     if (context.cubeCores == 0) {
-        OP_LOGE("aclblasCgemm", "GetAicCoreCount failed");
+        OP_LOGE(CgemmApiName(context.forceThreeProducts), "GetAicCoreCount failed");
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
     context.vectorCores = GetAivCoreCount();
     if (context.vectorCores == 0) {
-        OP_LOGE("aclblasCgemm", "GetAivCoreCount failed");
+        OP_LOGE(CgemmApiName(context.forceThreeProducts), "GetAivCoreCount failed");
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
     return ACLBLAS_STATUS_SUCCESS;
@@ -105,7 +121,8 @@ static aclblasStatus_t ReserveCgemmWorkspace(CgemmLaunchContext& context, size_t
 {
     const aclblasStatus_t status = EnsureDefaultWorkspace(context.internal, bytes);
     if (status != ACLBLAS_STATUS_SUCCESS) {
-        OP_LOGE("aclblasCgemm", "%s requires %zu workspace bytes, ret=%d", path, bytes, status);
+        OP_LOGE(
+            CgemmApiName(context.forceThreeProducts), "%s requires %zu workspace bytes, ret=%d", path, bytes, status);
     }
     return status;
 }
@@ -154,6 +171,34 @@ static uint32_t SelectCgemmProductTile(
                defaultTile;
 }
 
+static void SelectCgemm3mDecomposition(const CgemmLaunchContext& context, CgemmWorkspaceLayout& layout)
+{
+    // Search balanced K partitions jointly with output tile sizes. Splitting
+    // only K exposes more independent dot products without duplicating the
+    // input transformation. Charge partial-output traffic per partition.
+    uint64_t bestWork = std::numeric_limits<uint64_t>::max();
+    for (uint32_t tile = CGEMM_MAX_TILE; tile >= CGEMM_FUSED_TILE; tile /= CGEMM_TILE_SIZE_RATIO) {
+        for (uint32_t parts = 1; parts <= CGEMM_FOUR_PRODUCTS; ++parts) {
+            const uint32_t span =
+                CeilDiv(CeilDiv(context.k, static_cast<int>(GEMM_FRACTAL)), static_cast<int>(parts)) * GEMM_FRACTAL;
+            if (span > CGEMM_L1_OPERAND_STAGE_ELEMENTS * CGEMM_TILE_SIZE_RATIO / CGEMM_FUSED_TILE ||
+                (parts - 1) * span >= static_cast<uint32_t>(context.k)) {
+                continue;
+            }
+            const uint64_t coreWork = EstimateCgemmCoreWork(context, tile, CGEMM_THREE_PRODUCTS, parts);
+            if (coreWork > std::numeric_limits<uint64_t>::max() / (span + CGEMM_CUBE_FRACTAL)) {
+                continue;
+            }
+            const uint64_t work = coreWork * (span + CGEMM_CUBE_FRACTAL);
+            if (work < bestWork) {
+                bestWork = work;
+                layout.productTile = tile;
+                layout.kPartitions = parts;
+            }
+        }
+    }
+}
+
 static uint32_t SelectCgemmFusedTile(const CgemmLaunchContext& context)
 {
     const bool unitOutput =
@@ -173,11 +218,27 @@ static uint32_t SelectCgemmFusedTile(const CgemmLaunchContext& context)
     return largeTiles >= workerProducts ? CGEMM_FUSED_MAX_TILE : 0;
 }
 
-static bool CalculateCgemmWorkspaceSizes(const CgemmLaunchContext& context, CgemmWorkspaceLayout& layout)
+static uint32_t SelectGaussCgemmPartitions(const CgemmLaunchContext& context, uint32_t partitions)
 {
-    layout.fusedTile = SelectCgemmFusedTile(context);
-    layout.threeProducts = context.forceThreeProducts || context.alpha == std::complex<float>(1.0f, 0.0f) &&
-                                                             context.beta == std::complex<float>(0.0f, 0.0f);
+    const bool unitOutput =
+        context.alpha == std::complex<float>(1.0f, 0.0f) && context.beta == std::complex<float>(0.0f, 0.0f);
+    return context.forceGaussProducts && unitOutput ? CeilDiv<uint32_t>(context.k, CGEMM3M_PARTITION_K) : partitions;
+}
+
+static bool CalculateCgemmWorkspaceSizes(
+    const CgemmLaunchContext& context, CgemmWorkspaceLayout& layout, bool allowRounding = true)
+{
+    layout.fusedTile = allowRounding ? SelectCgemmFusedTile(context) : 0;
+    // The vector correction buffers hold up to 4096 terms. Smaller reductions
+    // use the ordinary Cube path; non-contiguous and general scalars retain the general implementation.
+    layout.correctRounding = allowRounding && layout.fusedTile != 0 && context.forceThreeProducts &&
+                             context.m == context.n && context.n == context.k && context.k >= 2048 &&
+                             context.k <= 4096 && context.lda == context.m && context.ldb == context.m &&
+                             context.ldc == context.m && context.alpha == std::complex<float>(1.0f, 0.0f) &&
+                             context.beta == std::complex<float>(0.0f, 0.0f);
+    layout.threeProducts =
+        context.forceThreeProducts || context.forceGaussProducts ||
+        (context.alpha == std::complex<float>(1.0f, 0.0f) && context.beta == std::complex<float>(0.0f, 0.0f));
     layout.aRows = context.transa == ACLBLAS_OP_N ? context.m : context.k;
     layout.aCols = context.transa == ACLBLAS_OP_N ? context.k : context.m;
     layout.bRows = context.transb == ACLBLAS_OP_N ? context.k : context.n;
@@ -188,12 +249,28 @@ static bool CalculateCgemmWorkspaceSizes(const CgemmLaunchContext& context, Cgem
     const uint32_t accumulationTile = SelectCgemmAccumulationTile(context);
     const uint32_t panelDepth = CGEMM_L1_OPERAND_STAGE_ELEMENTS / accumulationTile;
     layout.kPartitions = context.k > static_cast<int>(panelDepth) ? 2 : 1;
-    if (context.forceThreeProducts && context.alpha == std::complex<float>(1.0f, 0.0f) &&
-        context.beta == std::complex<float>(0.0f, 0.0f)) {
-        layout.kPartitions = CeilDiv<uint32_t>(context.k, CGEMM3M_PARTITION_K);
+    if (context.forceThreeProducts && layout.fusedTile != 0) {
+        // Bound each FP32 dot product to two L1 panels, then merge in UB.
+        // Fused partial sums stay on chip, so deeper reductions do not grow
+        // the global product workspace or add kernel launches.
+        layout.kPartitions = std::max(layout.kPartitions, CeilDiv(context.k, CGEMM_TILE_SIZE_RATIO * panelDepth));
+        if (layout.correctRounding) {
+            // Short panels both limit Cube rounding and expose the accumulation trajectory.
+            layout.kPartitions = CeilDiv(context.k, panelDepth / CGEMM_TILE_SIZE_RATIO);
+        }
     }
+    layout.kPartitions = SelectGaussCgemmPartitions(context, layout.kPartitions);
     const uint32_t products = layout.threeProducts ? CGEMM_THREE_PRODUCTS : CGEMM_FOUR_PRODUCTS;
     layout.productTile = SelectCgemmProductTile(context, accumulationTile, products, layout.kPartitions);
+    if (context.forceThreeProducts && layout.fusedTile == 0 && accumulationTile >= CGEMM_FUSED_TILE) {
+        SelectCgemm3mDecomposition(context, layout);
+    }
+    // Very narrow outputs expose few Cube tiles. More K tasks improve occupancy and shorten FP32 reductions.
+    if (context.forceThreeProducts && layout.fusedTile == 0 && context.k >= static_cast<int>(CGEMM_NARROW_LONG_K) &&
+        std::min(context.m, context.n) <= static_cast<int>(CGEMM_CUBE_FRACTAL) &&
+        std::max(context.m, context.n) <= static_cast<int>(CGEMM_FUSED_TILE / CGEMM_TILE_SIZE_RATIO)) {
+        layout.kPartitions = std::max(layout.kPartitions, CGEMM_NARROW_K_PARTITIONS);
+    }
     layout.kSpan = CeilDiv(CeilDiv(context.k, static_cast<int>(GEMM_FRACTAL)), static_cast<int>(layout.kPartitions)) *
                    GEMM_FRACTAL;
     size_t tempElements = 0;
@@ -207,24 +284,53 @@ static bool CalculateCgemmWorkspaceSizes(const CgemmLaunchContext& context, Cgem
            CheckedMulSize(layout.fusedTile != 0 ? 0 : tempElements, sizeof(float), layout.tempBytes);
 }
 
+enum CgemmWorkspaceRegion {
+    CGEMM_REGION_REAL_A,
+    CGEMM_REGION_IMAG_A,
+    CGEMM_REGION_REAL_B,
+    CGEMM_REGION_IMAG_B,
+    CGEMM_REGION_AUXILIARY_A,
+    CGEMM_REGION_AUXILIARY_B,
+    CGEMM_REGION_PRODUCT_1,
+    CGEMM_REGION_PRODUCT_2,
+    CGEMM_REGION_PRODUCT_3,
+    CGEMM_REGION_PRODUCT_4,
+    CGEMM_REGION_ROUNDING_PATH,
+    CGEMM_REGION_ROUNDING_PACKED,
+    CGEMM_REGION_ROUNDING_ENERGY,
+    CGEMM_REGION_ROUNDING_SELECTED,
+    CGEMM_REGION_ROUNDING_COUNTS,
+    CGEMM_REGION_COUNT
+};
+
+static void BindCgemmWorkspace(CgemmLaunchContext& context, CgemmWorkspaceLayout& layout, const size_t* offsets)
+{
+    uint8_t* workspace = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(context.internal));
+    layout.realA = workspace + offsets[CGEMM_REGION_REAL_A];
+    layout.imagA = workspace + offsets[CGEMM_REGION_IMAG_A];
+    layout.realB = workspace + offsets[CGEMM_REGION_REAL_B];
+    layout.imagB = workspace + offsets[CGEMM_REGION_IMAG_B];
+    layout.auxiliaryA = workspace + offsets[CGEMM_REGION_AUXILIARY_A];
+    layout.auxiliaryB = workspace + offsets[CGEMM_REGION_AUXILIARY_B];
+    layout.temp1 = workspace + offsets[CGEMM_REGION_PRODUCT_1];
+    layout.temp2 = workspace + offsets[CGEMM_REGION_PRODUCT_2];
+    layout.temp3 = workspace + offsets[CGEMM_REGION_PRODUCT_3];
+    layout.temp4 = layout.threeProducts ? layout.temp3 : workspace + offsets[CGEMM_REGION_PRODUCT_4];
+    layout.path = workspace + offsets[CGEMM_REGION_ROUNDING_PATH];
+    layout.packed = workspace + offsets[CGEMM_REGION_ROUNDING_PACKED];
+    layout.energy = workspace + offsets[CGEMM_REGION_ROUNDING_ENERGY];
+    layout.selected = workspace + offsets[CGEMM_REGION_ROUNDING_SELECTED];
+    layout.selectedCounts = workspace + offsets[CGEMM_REGION_ROUNDING_COUNTS];
+}
+
 static aclblasStatus_t AllocateCgemmWorkspace(CgemmLaunchContext& context, CgemmWorkspaceLayout& layout)
 {
-    enum Region {
-        REAL_A,
-        IMAG_A,
-        REAL_B,
-        IMAG_B,
-        AUXILIARY_A,
-        AUXILIARY_B,
-        PRODUCT_1,
-        PRODUCT_2,
-        PRODUCT_3,
-        PRODUCT_4,
-        REGION_COUNT
-    };
     size_t total = 0;
-    size_t offsets[REGION_COUNT]{};
-    const size_t sizes[REGION_COUNT] = {
+    size_t offsets[CGEMM_REGION_COUNT]{};
+    const size_t extent = layout.correctRounding ? static_cast<size_t>(context.n) : 0;
+    const size_t width = ((CeilDiv<size_t>(extent, 64)) | size_t(1)) * 64;
+    const size_t selectedSpan = CeilDiv<size_t>(extent * extent, context.vectorCores);
+    const size_t sizes[CGEMM_REGION_COUNT] = {
         layout.aBytes,
         layout.aBytes,
         layout.bBytes,
@@ -234,8 +340,13 @@ static aclblasStatus_t AllocateCgemmWorkspace(CgemmLaunchContext& context, Cgemm
         layout.tempBytes,
         layout.tempBytes,
         layout.tempBytes,
-        layout.tempBytes};
-    for (size_t index = 0; index < REGION_COUNT; ++index) {
+        layout.threeProducts ? 0 : layout.tempBytes,
+        extent * extent * sizeof(float),
+        2 * CgemmRoundingMatrixBytes(extent) + 2 * extent * width * sizeof(aclblasComplex),
+        extent * sizeof(float) * 2,
+        selectedSpan * context.vectorCores * sizeof(uint32_t),
+        layout.correctRounding ? context.vectorCores * sizeof(uint32_t) : 0};
+    for (size_t index = 0; index < CGEMM_REGION_COUNT; ++index) {
         if (!AddWorkspaceRegion(sizes[index], total, offsets[index])) {
             return ACLBLAS_STATUS_INVALID_VALUE;
         }
@@ -244,17 +355,7 @@ static aclblasStatus_t AllocateCgemmWorkspace(CgemmLaunchContext& context, Cgemm
     if (status != ACLBLAS_STATUS_SUCCESS) {
         return status;
     }
-    uint8_t* workspace = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(context.internal));
-    layout.realA = workspace + offsets[REAL_A];
-    layout.imagA = workspace + offsets[IMAG_A];
-    layout.realB = workspace + offsets[REAL_B];
-    layout.imagB = workspace + offsets[IMAG_B];
-    layout.auxiliaryA = workspace + offsets[AUXILIARY_A];
-    layout.auxiliaryB = workspace + offsets[AUXILIARY_B];
-    layout.temp1 = workspace + offsets[PRODUCT_1];
-    layout.temp2 = workspace + offsets[PRODUCT_2];
-    layout.temp3 = workspace + offsets[PRODUCT_3];
-    layout.temp4 = workspace + offsets[PRODUCT_4];
+    BindCgemmWorkspace(context, layout, offsets);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -274,6 +375,8 @@ static void LaunchCgemmDeinterleave(const CgemmLaunchContext& context, const Cge
     tiling.aRowsPerCore = CeilDiv<uint32_t>(tiling.aRows, blocks);
     tiling.bRowsPerCore = CeilDiv<uint32_t>(tiling.bRows, blocks);
     tiling.threeProducts = layout.threeProducts;
+    // Keep the existing Cgemm Gauss decomposition; standard 3M is specific to Cgemm3m.
+    tiling.standardThreeProducts = context.forceThreeProducts && layout.threeProducts && layout.fusedTile == 0;
     tiling.conjugateA = context.transa == ACLBLAS_OP_C ? 1 : 0;
     tiling.conjugateB = context.transb == ACLBLAS_OP_C ? 1 : 0;
     gemm_cgemm_deinterleave_do(
@@ -317,13 +420,14 @@ static void LaunchCgemmEpilogue(const CgemmLaunchContext& context, const CgemmWo
     tiling.kPartitions = layout.kPartitions;
     tiling.partStride = layout.partElements;
     tiling.threeProducts = layout.threeProducts;
+    tiling.standardThreeProducts = context.forceThreeProducts && layout.threeProducts;
     tiling.rowsPerCore = CeilDiv<uint32_t>(tiling.m, blocks);
     tiling.alphaReal = context.alpha.real();
     tiling.alphaImag = context.alpha.imag();
     tiling.betaReal = context.beta.real();
     tiling.betaImag = context.beta.imag();
     tiling.betaZero = context.beta == std::complex<float>(0.0f, 0.0f) ? 1 : 0;
-    if (context.forceThreeProducts && (context.alpha != std::complex<float>(1.0f, 0.0f) || !tiling.betaZero)) {
+    if (context.forceGaussProducts && (context.alpha != std::complex<float>(1.0f, 0.0f) || !tiling.betaZero)) {
         tiling.referenceK = context.k;
         tiling.referenceLda = context.lda;
         tiling.referenceLdb = context.ldb;
@@ -339,7 +443,11 @@ static void LaunchCgemmEpilogue(const CgemmLaunchContext& context, const CgemmWo
 
 static bool UseCgemmOnchipInput(const CgemmLaunchContext& context)
 {
+    if (context.forceThreeProducts) {
+        return false;
+    }
     const uint32_t shortDepth = CGEMM_HALF_L0_FLOAT_ELEMENTS / CGEMM_FUSED_TILE;
+    // Keep the existing Cgemm dispatch boundary; long K uses the general path.
     return context.alpha == std::complex<float>(1.0f, 0.0f) && context.beta == std::complex<float>(0.0f, 0.0f) &&
            context.k <= static_cast<int>(shortDepth);
 }
@@ -365,15 +473,43 @@ static void LaunchCgemmOnchipInput(const CgemmLaunchContext& context)
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(context.b)), reinterpret_cast<uint8_t*>(context.c), t);
 }
 
+static aclblasStatus_t PrepareCgemmWorkspaceLayout(CgemmLaunchContext& context, CgemmWorkspaceLayout& layout)
+{
+    if (!CalculateCgemmWorkspaceSizes(context, layout)) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (!layout.correctRounding) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    auto* platform = platform_ascendc::PlatformAscendCManager::GetInstance();
+    uint64_t ubBytes = 0;
+    if (platform != nullptr) {
+        platform->GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubBytes);
+    }
+    const uint64_t roundingUbBytes = std::max<uint64_t>(CGEMM_PATH_UB_WORKSPACE_BYTES, CGEMM_ROUNDING_UB_BYTES);
+    if (ubBytes >= roundingUbBytes) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    // Zero means the optional platform query supplied no capacity, not a zero-sized UB.
+    // Disable rounding and use the ordinary arch35 path's existing 192 KiB budget,
+    // just as non-rounding calls do. A known insufficient capacity must still fail.
+    if (ubBytes != 0 && ubBytes < CGEMM_UB_WORKSPACE_BYTES) {
+        OP_LOGE("aclblasCgemm3m", "Insufficient UB capacity for complex GEMM");
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    return CalculateCgemmWorkspaceSizes(context, layout, false) ? ACLBLAS_STATUS_SUCCESS : ACLBLAS_STATUS_INVALID_VALUE;
+}
+
 static aclblasStatus_t LaunchGeneralCgemm(CgemmLaunchContext& context)
 {
-    if (!context.forceThreeProducts && UseCgemmOnchipInput(context)) {
+    if (!context.forceGaussProducts && UseCgemmOnchipInput(context)) {
         LaunchCgemmOnchipInput(context);
         return ACLBLAS_STATUS_SUCCESS;
     }
     CgemmWorkspaceLayout layout{};
-    if (!CalculateCgemmWorkspaceSizes(context, layout)) {
-        return ACLBLAS_STATUS_INVALID_VALUE;
+    const aclblasStatus_t layoutStatus = PrepareCgemmWorkspaceLayout(context, layout);
+    if (layoutStatus != ACLBLAS_STATUS_SUCCESS) {
+        return layoutStatus;
     }
     const aclblasStatus_t status = AllocateCgemmWorkspace(context, layout);
     if (status != ACLBLAS_STATUS_SUCCESS) {
@@ -389,6 +525,19 @@ static aclblasStatus_t LaunchGeneralCgemm(CgemmLaunchContext& context)
         tiling.usedCoreNum = std::min<uint64_t>(tiles, context.cubeCores);
         // The output keeps the caller's column stride, including padding.
         tiling.ldc = context.ldc;
+        if (layout.correctRounding) {
+            gemm_cgemm3m_path_do(
+                tiling.usedCoreNum, context.stream, layout.realA, layout.imagA, layout.realB, layout.imagB,
+                layout.auxiliaryA, layout.auxiliaryB, reinterpret_cast<uint8_t*>(context.c), layout.path, tiling);
+            const char ta = context.transa == ACLBLAS_OP_N ? 'N' : context.transa == ACLBLAS_OP_T ? 'T' : 'C';
+            const char tb = context.transb == ACLBLAS_OP_N ? 'N' : context.transb == ACLBLAS_OP_T ? 'T' : 'C';
+            gemm_cgemm3m_rounding_do(
+                context.vectorCores, context.stream, reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(context.a)),
+                reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(context.b)),
+                reinterpret_cast<uint8_t*>(context.c), layout.energy, layout.selected, layout.selectedCounts, context.n,
+                CGEMM_ROUNDING_CONFIDENCE, layout.packed, layout.path, ta, tb);
+            return ACLBLAS_STATUS_SUCCESS;
+        }
         gemm_cgemm_fused_do(
             tiling.usedCoreNum, context.stream, layout.realA, layout.imagA, layout.realB, layout.imagB,
             layout.auxiliaryA, layout.auxiliaryB, reinterpret_cast<uint8_t*>(context.c), tiling);
@@ -404,71 +553,88 @@ static aclblasStatus_t LaunchGeneralCgemm(CgemmLaunchContext& context)
 static aclblasStatus_t LaunchCgemmKernel(
     aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
     std::complex<float> alphaVal, const aclblasComplex* A, int lda, const aclblasComplex* B, int ldb,
-    std::complex<float> betaVal, aclblasComplex* C, int ldc, bool forceThreeProducts = false)
+    std::complex<float> betaVal, aclblasComplex* C, int ldc, bool forceThreeProducts, bool forceGaussProducts = false)
 {
     auto* internal = reinterpret_cast<_aclblas_handle*>(handle);
-    CgemmLaunchContext context{
-        handle, internal, internal->stream,  transa, transb, m, n, k, alphaVal, A, lda, B, ldb, betaVal, C, ldc,
-        0,      0,        forceThreeProducts};
+    CgemmLaunchContext context{handle,
+                               internal,
+                               internal->stream,
+                               transa,
+                               transb,
+                               m,
+                               n,
+                               k,
+                               alphaVal,
+                               A,
+                               lda,
+                               B,
+                               ldb,
+                               betaVal,
+                               C,
+                               ldc,
+                               0,
+                               0,
+                               forceThreeProducts,
+                               forceGaussProducts};
     const aclblasStatus_t coreStatus = InitCgemmCores(context);
     if (coreStatus != ACLBLAS_STATUS_SUCCESS) {
         return coreStatus;
     }
     if (k == 0 || alphaVal == std::complex<float>(0.0f, 0.0f)) {
-        return HandleCgemmAlphaZero(handle, m, n, ldc, betaVal, C);
+        return HandleCgemmAlphaZero(handle, m, n, ldc, betaVal, C, CgemmApiName(forceThreeProducts));
     }
     return LaunchGeneralCgemm(context);
 }
 
 static aclblasStatus_t ValidateCgemmParams(
     aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
-    const void* alpha, int lda, int ldb, const void* beta, int ldc)
+    const void* alpha, int lda, int ldb, const void* beta, int ldc, const char* opName)
 {
     if (handle == nullptr) {
-        OP_LOGE("aclblasCgemm", "handle is nullptr");
+        OP_LOGE(opName, "handle is nullptr");
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
     if (transa != ACLBLAS_OP_N && transa != ACLBLAS_OP_T && transa != ACLBLAS_OP_C) {
-        OP_LOGE("aclblasCgemm", "invalid transa: %d", static_cast<int>(transa));
+        OP_LOGE(opName, "invalid transa: %d", static_cast<int>(transa));
         return ACLBLAS_STATUS_INVALID_ENUM;
     }
     if (transb != ACLBLAS_OP_N && transb != ACLBLAS_OP_T && transb != ACLBLAS_OP_C) {
-        OP_LOGE("aclblasCgemm", "invalid transb: %d", static_cast<int>(transb));
+        OP_LOGE(opName, "invalid transb: %d", static_cast<int>(transb));
         return ACLBLAS_STATUS_INVALID_ENUM;
     }
     if (m < 0 || n < 0 || k < 0) {
-        OP_LOGE("aclblasCgemm", "m, n, k must be non-negative: m=%d, n=%d, k=%d", m, n, k);
+        OP_LOGE(opName, "m, n, k must be non-negative: m=%d, n=%d, k=%d", m, n, k);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     bool isTransA = (transa != ACLBLAS_OP_N);
     bool isTransB = (transb != ACLBLAS_OP_N);
     int ldaMin = isTransA ? std::max(1, k) : std::max(1, m);
     if (lda < ldaMin) {
-        OP_LOGE("aclblasCgemm", "lda=%d must be >= %d", lda, ldaMin);
+        OP_LOGE(opName, "lda=%d must be >= %d", lda, ldaMin);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     int ldbMin = isTransB ? std::max(1, n) : std::max(1, k);
     if (ldb < ldbMin) {
-        OP_LOGE("aclblasCgemm", "ldb=%d must be >= %d", ldb, ldbMin);
+        OP_LOGE(opName, "ldb=%d must be >= %d", ldb, ldbMin);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (ldc < std::max(1, m)) {
-        OP_LOGE("aclblasCgemm", "ldc=%d must be >= %d", ldc, std::max(1, m));
+        OP_LOGE(opName, "ldc=%d must be >= %d", ldc, std::max(1, m));
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (alpha == nullptr) {
-        OP_LOGE("aclblasCgemm", "alpha must not be nullptr");
+        OP_LOGE(opName, "alpha must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (beta == nullptr) {
-        OP_LOGE("aclblasCgemm", "beta must not be nullptr");
+        OP_LOGE(opName, "beta must not be nullptr");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
 static aclblasStatus_t HandleCgemmAlphaZero(
-    aclblasHandle_t handle, int m, int n, int ldc, std::complex<float> betaVal, aclblasComplex* C)
+    aclblasHandle_t handle, int m, int n, int ldc, std::complex<float> betaVal, aclblasComplex* C, const char* opName)
 {
     if (betaVal == std::complex<float>(1.0f, 0.0f)) {
         return ACLBLAS_STATUS_SUCCESS;
@@ -476,7 +642,7 @@ static aclblasStatus_t HandleCgemmAlphaZero(
     auto* h = reinterpret_cast<_aclblas_handle*>(handle);
     uint32_t aivCoreNum = GetAivCoreCount();
     if (aivCoreNum == 0) {
-        OP_LOGE("aclblasCgemm", "GetAivCoreCount failed");
+        OP_LOGE(opName, "GetAivCoreCount failed");
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
     const uint64_t outputElements = static_cast<uint64_t>(m) * n;
@@ -519,31 +685,32 @@ static bool AddWorkspaceRegion(size_t bytes, size_t& total, size_t& offset)
 }
 
 static aclblasStatus_t ValidateCgemmPointers(
-    int k, const aclblasComplex* A, const aclblasComplex* B, const aclblasComplex* C)
+    int k, const aclblasComplex* A, const aclblasComplex* B, const aclblasComplex* C, const char* opName)
 {
     if (C == nullptr) {
-        OP_LOGE("aclblasCgemm", "C must not be nullptr for a non-empty output");
+        OP_LOGE(opName, "C must not be nullptr for a non-empty output");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (k > 0 && (A == nullptr || B == nullptr)) {
-        OP_LOGE("aclblasCgemm", "A and B must not be nullptr when k > 0");
+        OP_LOGE(opName, "A and B must not be nullptr when k > 0");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-extern "C" aclblasStatus_t aclblasCgemm(
+aclblasStatus_t LaunchComplexGemm(
     aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
     const aclblasComplex* alpha, const aclblasComplex* A, int lda, const aclblasComplex* B, int ldb,
-    const aclblasComplex* beta, aclblasComplex* C, int ldc)
+    const aclblasComplex* beta, aclblasComplex* C, int ldc, bool forceThreeProducts)
 {
+    const char* opName = CgemmApiName(forceThreeProducts);
     OP_LOGI(
-        "aclblasCgemm", "entry: transa=%d, transb=%d, m=%d, n=%d, k=%d", static_cast<int>(transa),
-        static_cast<int>(transb), m, n, k);
+        opName, "entry: transa=%d, transb=%d, m=%d, n=%d, k=%d", static_cast<int>(transa), static_cast<int>(transb), m,
+        n, k);
 
-    aclblasStatus_t st = ValidateCgemmParams(handle, transa, transb, m, n, k, alpha, lda, ldb, beta, ldc);
+    aclblasStatus_t st = ValidateCgemmParams(handle, transa, transb, m, n, k, alpha, lda, ldb, beta, ldc, opName);
     if (st != ACLBLAS_STATUS_SUCCESS) {
-        return st;
+        return forceThreeProducts && st == ACLBLAS_STATUS_INVALID_ENUM ? ACLBLAS_STATUS_INVALID_VALUE : st;
     }
     if (m == 0 || n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
@@ -552,12 +719,22 @@ extern "C" aclblasStatus_t aclblasCgemm(
     std::complex<float> alphaVal(alpha->real, alpha->imag);
     std::complex<float> betaVal(beta->real, beta->imag);
 
-    st = ValidateCgemmPointers(k, A, B, C);
+    const bool skipProduct = forceThreeProducts && alphaVal == std::complex<float>(0.0f, 0.0f);
+    st = ValidateCgemmPointers(skipProduct ? 0 : k, A, B, C, opName);
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
     }
 
-    return LaunchCgemmKernel(handle, transa, transb, m, n, k, alphaVal, A, lda, B, ldb, betaVal, C, ldc);
+    return LaunchCgemmKernel(
+        handle, transa, transb, m, n, k, alphaVal, A, lda, B, ldb, betaVal, C, ldc, forceThreeProducts);
+}
+
+extern "C" aclblasStatus_t aclblasCgemm(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
+    const aclblasComplex* alpha, const aclblasComplex* A, int lda, const aclblasComplex* B, int ldb,
+    const aclblasComplex* beta, aclblasComplex* C, int ldc)
+{
+    return LaunchComplexGemm(handle, transa, transb, m, n, k, alpha, A, lda, B, ldb, beta, C, ldc, false);
 }
 
 aclblasStatus_t LaunchCgemmThreeProducts(
@@ -567,7 +744,7 @@ aclblasStatus_t LaunchCgemmThreeProducts(
 {
     return LaunchCgemmKernel(
         handle, transa, transb, m, n, k, {alpha.real, alpha.imag}, a, lda, b, ldb, {beta.real, beta.imag}, c, ldc,
-        true);
+        false, true);
 }
 aclblasStatus_t LaunchCgemm3mOnchipBatches(
     aclblasHandle_t handle, aclblasOperation_t ta, aclblasOperation_t tb, int m, int n, int k, const aclblasComplex* a,
