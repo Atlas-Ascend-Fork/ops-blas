@@ -90,7 +90,7 @@ aclblasStatus_t aclblasRotEx(
 - `incy != 0`，否则返回 `ACLBLAS_STATUS_INVALID_VALUE`
 - `executionType` 必须为 FP32（arch35 仅支持 S 组），否则返回 `ACLBLAS_STATUS_NOT_SUPPORTED`
 - `xType`、`yType` 和 `csType` 必须相同（仅对称类型），且必须为 FP32 / FP16 / BF16 之一，否则返回 `ACLBLAS_STATUS_NOT_SUPPORTED`
-- c/s 标量指针可为 Host 或 Device 内存，运行时自动检测并处理
+- c/s 标量指针可为 Host 或 Device 内存，运行时自动检测并处理；Device 标量经 handle 绑定 stream 上的异步拷贝并流同步后读回（issue #1082），因此同 stream 上先前提交的算子（如 aclblasRotg 输出 c/s）对该调用可见，不会读到旧值
 
 #### 调用示例
 

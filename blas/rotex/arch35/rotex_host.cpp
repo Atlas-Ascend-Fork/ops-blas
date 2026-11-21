@@ -65,9 +65,12 @@ static void ReadScalarValues(const void* c, const void* s, aclDataType csType,
 //  CheckAndCopyScalar — check if scalar pointer is on device, copy to host
 //  Returns ACLBLAS_STATUS_SUCCESS on success,
 //          ACLBLAS_STATUS_INTERNAL_ERROR on aclrtMemcpy failure.
+//  issue #1082: device 标量经 handle->stream 上的异步拷贝 + 流同步读回，
+//  与同 stream 上先前提交的算子（如 aclblasRotg 的输出）建立流序依赖，
+//  避免读到旧值（对齐 strmm ResolveStrmmScalars 口径）。
 // ==========================================================================
 static aclblasStatus_t CheckAndCopyScalar(const void* ptr, size_t csBytes,
-    uint8_t* hostBuf, bool& isDevice, const char* name)
+    uint8_t* hostBuf, bool& isDevice, const char* name, aclrtStream stream)
 {
     aclrtPtrAttributes attr{};
     aclError aclRet = aclrtPointerGetAttributes(ptr, &attr);
@@ -80,11 +83,17 @@ static aclblasStatus_t CheckAndCopyScalar(const void* ptr, size_t csBytes,
     if (!isDevice) {
         return ACLBLAS_STATUS_SUCCESS;
     }
-    aclError ret = aclrtMemcpy(hostBuf, csBytes, ptr, csBytes,
-                               ACL_MEMCPY_DEVICE_TO_HOST);
+    aclError ret = aclrtMemcpyAsync(hostBuf, csBytes, ptr, csBytes,
+                                    ACL_MEMCPY_DEVICE_TO_HOST, stream);
     if (ret != ACL_SUCCESS) {
         OP_LOGE("aclblasRotEx",
-                "aclrtMemcpy %s from device to host failed, ret=%d", name, ret);
+                "aclrtMemcpyAsync %s from device to host failed, ret=%d", name, ret);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    ret = aclrtSynchronizeStream(stream);
+    if (ret != ACL_SUCCESS) {
+        OP_LOGE("aclblasRotEx",
+                "aclrtSynchronizeStream for %s D2H failed, ret=%d", name, ret);
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
     return ACLBLAS_STATUS_SUCCESS;
@@ -319,11 +328,11 @@ static aclblasStatus_t LaunchRotExKernel(
     uint8_t sHostBuf[4] = {0};
     bool cIsDevice = false;
     bool sIsDevice = false;
-    aclblasStatus_t ret = CheckAndCopyScalar(c, csBytes, cHostBuf, cIsDevice, "c");
+    aclblasStatus_t ret = CheckAndCopyScalar(c, csBytes, cHostBuf, cIsDevice, "c", h->stream);
     if (ret != ACLBLAS_STATUS_SUCCESS) {
         return ret;
     }
-    ret = CheckAndCopyScalar(s, csBytes, sHostBuf, sIsDevice, "s");
+    ret = CheckAndCopyScalar(s, csBytes, sHostBuf, sIsDevice, "s", h->stream);
     if (ret != ACLBLAS_STATUS_SUCCESS) {
         return ret;
     }
