@@ -47,6 +47,7 @@ aclblasStatus_t aclblasIsamin(aclblasHandle_t handle, int n, const float *x, int
 
 - n < 0 时返回 ACLBLAS_STATUS_INVALID_VALUE
 - n = 0 或 incx < 1 时 result 写 0，返回 ACLBLAS_STATUS_SUCCESS
+- 对 Ascend 950PR / 950DT 的正常计算（n > 0 且 incx >= 1），要求 `(n - 1) * incx <= INT32_MAX`；超过时返回 `ACLBLAS_STATUS_INVALID_VALUE`，不会下发 kernel
 - handle 不可为 nullptr
 - x、result 不可为 nullptr
 - 当多个元素绝对值相同时，返回索引最小的元素
