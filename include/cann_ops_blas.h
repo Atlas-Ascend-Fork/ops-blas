@@ -655,6 +655,16 @@ aclblasStatus_t aclblasSgetrsBatched(
     aclblasHandle_t handle, aclblasOperation_t trans, int n, int nrhs, const float* const Aarray[], int lda,
     const int* devIpiv, float* const Barray[], int ldb, int* info, int batchCount);
 
+/**
+ * @brief Executes grouped batched GEMM with per-group shapes and scaling values.
+ *
+ * On Atlas A2/A3 (arch22), nonempty work is enqueued asynchronously on the
+ * handle stream; callers must synchronize that stream before reading C or
+ * releasing the matrix inputs. Device alphaArray and betaArray are supported.
+ * On Ascend 950PR/950DT (arch35), the entry point synchronizes the handle
+ * stream after kernel submission, so successful return means this call has
+ * completed. Alpha and beta arrays are read from Host on arch35.
+ */
 aclblasStatus_t aclblasGemmGroupedBatchedEx(
     aclblasHandle_t handle, const aclblasOperation_t transaArray[], const aclblasOperation_t transbArray[],
     const int mArray[], const int nArray[], const int kArray[], const void* alphaArray, const void* const Aarray[],

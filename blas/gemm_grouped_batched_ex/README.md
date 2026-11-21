@@ -89,9 +89,19 @@ FP16/BF16/FP8 类型表为 arch35 的支持范围，不表示 arch22 同样支�
 公共 API 仍复用 `include/cann_ops_blas.h` 的已有声明。
 
 Aarray、Barray、Carray 本身及矩阵位于 Device；组内实例按组顺序展开。
-Host 组数组长度须为 groupCount，不能广播。alphaArray、betaArray 为连续
-FLOAT32 标量数组，arch22 支持 Host 或 Device 存储；Device 标量在句柄
-stream 上执行时读取。arch35 标量布局仍按其已有实现的 Host 约束。
+Host 组数组长度须为 groupCount，不能广播。
+
+arch22 的 alphaArray、betaArray 为连续 FLOAT32 标量数组，支持 Host 或
+Device 存储；Device 标量在句柄绑定的 stream 上读取。存在计算任务时，任务
+异步下发到该 stream，成功返回不表示 Device C 已完成；读取结果或释放输入前
+须同步该 stream。工作区由 handle 管理；库工作区扩容会先同步该 stream，用户
+工作区不足时返回 `ACLBLAS_STATUS_ALLOC_FAILED`。
+
+arch35 的 alphaArray、betaArray 按 Host FLOAT16 或 FLOAT32 标量数组读取，具体
+布局由 computeType 决定。计算 kernel 下发后，入口会同步句柄绑定的 stream；
+成功返回时本次调用的计算已完成，调用方无需为本次调用再次同步该 stream。
+arch35 每次调用按需申请并在返回前释放临时 Device 工作区，不使用 handle
+workspace；临时工作区申请失败时返回 `ACLBLAS_STATUS_ALLOC_FAILED`。
 
 所有矩阵为列主序，支持 N/T/C（实数 C 等同 T）和合法 leading dimension
 padding。m/n/k、groupCount、groupSize 非负。dtype 校验后，groupCount=0
@@ -100,9 +110,7 @@ padding。m/n/k、groupCount、groupSize 非负。dtype 校验后，groupCount=0
 
 k=0 或 alpha=0 时不读取 A/B 矩阵与对应单个指针；beta=1 保持 C，beta=0
 直接写零，其余值缩放 C。正常 GEMM 的 beta=0 也不读取旧 C。结果仅覆盖
-C 的逻辑 m×n 区域，padding 保持不变。异步调用使用 handle 绑定的 stream；
-读回结果或释放输入前须同步该 stream。工作区由 handle 管理；用户提供的
-工作区不足时返回 `ACLBLAS_STATUS_ALLOC_FAILED`。
+C 的逻辑 m×n 区域，padding 保持不变。
 
 两种架构的非法 transa/transb 均返回 `ACLBLAS_STATUS_INVALID_ENUM`，
 与公共 CPU 参考实现及 A2/A3 任务书 §2.4/§2.5 一致。
