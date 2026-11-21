@@ -49,6 +49,7 @@ aclblasStatus_t aclblasScalex(aclblasHandle_t handle, int n, const void *alpha, 
 
 - n <= 0 时为 no-op（直接返回 ACLBLAS_STATUS_SUCCESS，不修改 x）
 - incx == 0 为非法步长，返回 ACLBLAS_STATUS_INVALID_VALUE；incx < 0 暂不支持，返回 ACLBLAS_STATUS_NOT_SUPPORTED（issue #749：不再与 n<=0 合并静默成功，后续如需负步长支持另行迭代）；n <= 0 时为 no-op（不修改 x，直接返回 ACLBLAS_STATUS_SUCCESS）
+- incx != 1 时 kernel 侧偏移按 uint32 索引域寻址，(n-1)*incx + 1 超出 UINT32_MAX 时返回 ACLBLAS_STATUS_INVALID_VALUE（issue #1080，对齐 sasum/scopy/strsv 口径）
 - alphaType 固定为 ACL_FLOAT
 - executionType 固定为 ACL_FLOAT
 - xType 必须为 ACL_FLOAT、ACL_FLOAT16 或 ACL_BF16

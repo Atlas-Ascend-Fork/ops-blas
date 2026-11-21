@@ -172,6 +172,17 @@ aclblasStatus_t aclblasScalex(
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
 
+    // issue #1080: SIMT 路径（incx != 1）kernel 侧偏移按 uint32 寻址（i * stride），
+    // (n-1)*incx 超出 uint32 索引域时地址回绕产生越界读写；超界显式拒绝，
+    // 对齐 sasum（#804）/scopy（#866）/strsv（#744）口径
+    if (incx != 1) {
+        const uint64_t extent = static_cast<uint64_t>(n - 1) * static_cast<uint64_t>(incx) + 1;
+        if (extent > UINT32_MAX) {
+            OP_LOGE("aclblasScalex", "vector extent exceeds uint32 range: n=%d incx=%d", n, incx);
+            return ACLBLAS_STATUS_INVALID_VALUE;
+        }
+    }
+
     aclblasStatus_t status = ValidateScalexParams(handle, n, alpha, alphaType, x, xType, incx, executionType);
     if (status != ACLBLAS_STATUS_SUCCESS) {
         return status;
