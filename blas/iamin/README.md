@@ -7,7 +7,8 @@ Iamin 算子实现了查找向量中绝对值最小元素的索引，核心运�
 数学表达式：
 
 ```
-result = argmin_i |x[i]|
+result = 1 + argmin_i |x[i]|
+       （返回 1-based 索引；复数接口按 |Re(x[i])| + |Im(x[i])| 比较）
 ```
 
 包含以下接口：
