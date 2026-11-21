@@ -4,7 +4,7 @@
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
  * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
- * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
@@ -50,6 +50,12 @@ static aclblasStatus_t ValidateSdgmmParams(
     }
     if (ldc < std::max(1, m)) {
         OP_LOGE("aclblasSdgmm", "ldc must be >= max(1, m), got ldc=%d, m=%d", ldc, m);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (incx == 0) {
+        // issue #1100: incx=0 会让 kernel 所有元素都读 x[0]，静默错算，
+        // 对齐 scopy/sswap/rotex/scalex 的零步长拒绝口径
+        OP_LOGE("aclblasSdgmm", "incx must not be zero, got incx=%d", incx);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (m > 0 && n > 0 && (x == nullptr || A == nullptr || C == nullptr)) {
