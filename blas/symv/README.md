@@ -56,6 +56,8 @@ aclblasStatus_t aclblasSsymv(aclblasHandle_t handle, aclblasFillMode_t uplo, int
 - incx != 0
 - incy != 0
 - lda >= max(1, n)
+- 对 n > 0 的调用，成功返回只表示 beta 缩放与 alpha * A * x 计算已在 handle stream 上入队，不表示 y 已更新完成；读取或复用 y 前需同步该 stream。
+- Atlas A2/A3（Arch22）上，alpha 或 beta 位于 Device 时，主机分别在 handle stream 上执行 D2H 标量读取并同步该 stream。该同步只完成标量读取，不代表后续 y 更新已完成。
 
 #### 调用示例
 
