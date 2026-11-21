@@ -362,34 +362,35 @@ fi
 rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}"
 
-CMAKE_OPTIONS="-DSOC_VERSION=${SOC_VERSION} -DASCEND_CANN_PACKAGE_PATH=${ASCEND_HOME}"
+CMAKE_OPTIONS=(
+    "-DSOC_VERSION=${SOC_VERSION}"
+    "-DASCEND_CANN_PACKAGE_PATH=${ASCEND_HOME}"
+)
 
 # 帮助 find_package(ASC) 定位 ASCConfig.cmake（CMake 查找 ASC/ASCConfig.cmake 或 ASC/asc-config.cmake）
 if [ -z "${ASC_DIR}" ]; then
     for p in "${ASCEND_HOME}/lib64/cmake" "${ASCEND_HOME}/compiler/latest/lib64/cmake" \
              "${ASCEND_HOME}/ascendc/lib64/cmake"; do
         if [ -f "${p}/ASC/ASCConfig.cmake" ] || [ -f "${p}/ASC/asc-config.cmake" ]; then
-            CMAKE_OPTIONS="${CMAKE_OPTIONS} -DCMAKE_PREFIX_PATH=${p}"
+            CMAKE_OPTIONS+=("-DCMAKE_PREFIX_PATH=${p}")
             break
         fi
     done
 fi
-[ -n "${ASC_DIR}" ] && CMAKE_OPTIONS="${CMAKE_OPTIONS} -DASC_DIR=${ASC_DIR}"
+[ -n "${ASC_DIR}" ] && CMAKE_OPTIONS+=("-DASC_DIR=${ASC_DIR}")
 
 if [ -n "${BUILD_OPS}" ]; then
     # 将逗号分隔转换为 CMake 列表格式（分号分隔）
     TEST_NAMES_CMAKE="${BUILD_OPS//,/;}"
-    CMAKE_OPTIONS="${CMAKE_OPTIONS} -DBUILD_TEST=ON -DTEST_NAMES=${TEST_NAMES_CMAKE}"
+    CMAKE_OPTIONS+=("-DBUILD_TEST=ON" "-DTEST_NAMES=${TEST_NAMES_CMAKE}")
 fi
 
-CMAKE_OPTIONS="${CMAKE_OPTIONS} -DTEST_DEVICE_ID=${TEST_DEVICE_ID}"
+CMAKE_OPTIONS+=("-DTEST_DEVICE_ID=${TEST_DEVICE_ID}")
 
 if [ "${ENABLE_PACKAGE}" == "TRUE" ]; then
-    CMAKE_OPTIONS="${CMAKE_OPTIONS} -DENABLE_PACKAGE=ON"
+    CMAKE_OPTIONS+=("-DENABLE_PACKAGE=ON")
 fi
 
-# issue #610: 路径展开加引号（rm -rf/mkdir/cmake），路径含空格时不再被拆分；
-# CMAKE_OPTIONS 保持分词展开（多选项语义），如未来需支持带空格选项应改为 bash 数组
 # The clean build discards CMakeCache.txt, so forward the pinned CHEMV
 # reference explicitly instead of relying on an earlier configure step.
 CHEMV_CMAKE_OPTIONS=()
@@ -400,7 +401,7 @@ if [ -n "${CHEMV_NETLIB_CONFIG:-}" ]; then
     fi
     CHEMV_CMAKE_OPTIONS+=("-DCHEMV_NETLIB_CONFIG=$(realpath "${CHEMV_NETLIB_CONFIG}")")
 fi
-cmake -S "${BASE_PATH}" -B "${BUILD_DIR}" ${CMAKE_OPTIONS} "${CHEMV_CMAKE_OPTIONS[@]}"
+cmake -S "${BASE_PATH}" -B "${BUILD_DIR}" "${CMAKE_OPTIONS[@]}" "${CHEMV_CMAKE_OPTIONS[@]}"
 cmake --build "${BUILD_DIR}" -j
 if [ "${ENABLE_PACKAGE}" == "TRUE" ]; then
     cmake --build "${BUILD_DIR}" --target package
