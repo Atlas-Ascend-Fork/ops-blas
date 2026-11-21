@@ -49,12 +49,16 @@ static aclblasStatus_t ValidateTrsvParams(
     CHECK_RET(x != nullptr, OP_LOGE("aclblasStrsv", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     // issue #744: 对齐同 arch ctrsv 的跨度守卫——kernel 侧偏移按 uint32 寻址，
     // n*lda 或 (n-1)*|incx| 超出 uint32 时地址回绕产生越界读写；超界显式拒绝
-    const uint64_t stride = incx < 0 ? -static_cast<int64_t>(incx) : static_cast<int64_t>(incx);
-    const uint64_t extent = static_cast<uint64_t>(n - 1) * stride + 1;
-    const uint64_t limit = UINT32_MAX;
-    if (static_cast<uint64_t>(n) * static_cast<uint64_t>(lda) > limit || extent > limit) {
-        OP_LOGE("aclblasStrsv", "matrix or vector extent exceeds uint32 range: n=%d lda=%d incx=%d", n, lda, incx);
-        return ACLBLAS_STATUS_INVALID_VALUE;
+    // n == 0 为空操作：跳过跨度守卫，避免 (n - 1) 下溢误拒合法空操作；
+    // 枚举/incx/lda/空指针等基础校验仍在 n == 0 之前执行（对齐 arch22 ValidateStrsvParams 与 README 约定）。
+    if (n > 0) {
+        const uint64_t stride = incx < 0 ? -static_cast<int64_t>(incx) : static_cast<int64_t>(incx);
+        const uint64_t extent = static_cast<uint64_t>(n - 1) * stride + 1;
+        const uint64_t limit = UINT32_MAX;
+        if (static_cast<uint64_t>(n) * static_cast<uint64_t>(lda) > limit || extent > limit) {
+            OP_LOGE("aclblasStrsv", "matrix or vector extent exceeds uint32 range: n=%d lda=%d incx=%d", n, lda, incx);
+            return ACLBLAS_STATUS_INVALID_VALUE;
+        }
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
@@ -67,13 +71,14 @@ aclblasStatus_t aclblasStrsv(
     CHECK_RET(h != nullptr, OP_LOGE("aclblasStrsv", "handle is nullptr"); return ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
 
     CHECK_RET(n >= 0, OP_LOGE("aclblasStrsv", "invalid n=%d", n); return ACLBLAS_STATUS_INVALID_VALUE);
-    if (n == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-
+    // issue #1087: 校验顺序对齐 stpmv 契约（#748）——枚举/incx 校验先于 n==0 快速返回，
+    // 使 n=0 且 incx=0 与 stpmv 同返回 INVALID_VALUE
     aclblasStatus_t st = ValidateTrsvParams(uplo, trans, diag, n, incx, lda, A, x);
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
+    }
+    if (n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
     }
 
     uint32_t numThreads = SIMT_OPTIMAL_THREADS;

@@ -227,7 +227,7 @@ aclblasStatus_t aclblasCtrmv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 
 #### 约束说明
 
-- n >= 0；n = 0 为合法 no-op，返回 ACLBLAS_STATUS_SUCCESS 且不执行计算
+- n >= 0；n = 0 为合法 no-op，返回 ACLBLAS_STATUS_SUCCESS 且不执行计算；但 uplo/trans/diag 枚举、incx、lda 等参数校验先于 n = 0 快速返回执行，n = 0 且 incx = 0 仍返回 ACLBLAS_STATUS_INVALID_VALUE（与 stpmv #748 契约一致）
 - incx != 0（负步长合法）
 - lda >= max(1, n)
 - 仅引用 uplo 指定三角，另一部分不读取；diag = ACLBLAS_UNIT 时不访问对角元素

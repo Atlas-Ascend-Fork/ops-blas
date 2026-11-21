@@ -70,12 +70,14 @@ aclblasStatus_t aclblasStrmv(
     // issue #765: handle 判空先于参数校验，对齐 api_list.md 契约与 stpttr（#722）口径
     CHECK_RET(handle != nullptr, OP_LOGE("aclblasStrmv", "handle is nullptr"); return ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
     CHECK_RET(n >= 0, OP_LOGE("aclblasStrmv", "invalid n=%d", n); return ACLBLAS_STATUS_INVALID_VALUE);
-    if (n == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
+    // issue #1087: 校验顺序对齐 stpmv 契约（#748）——枚举/incx 校验先于 n==0 快速返回，
+    // 使 n=0 且 incx=0 与 stpmv 同返回 INVALID_VALUE
     aclblasStatus_t st = ValidateStrmvParams(uplo, trans, diag, n, A, lda, x, incx);
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
+    }
+    if (n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
     }
 
     auto* h = handle;

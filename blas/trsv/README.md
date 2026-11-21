@@ -41,7 +41,7 @@ aclblasStatus_t aclblasStrsv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 | uplo | 输入 | aclblasFillMode_t | ACLBLAS_UPPER(121) — A 为上三角矩阵；ACLBLAS_LOWER(122) — A 为下三角矩阵，Host 内存 |
 | trans | 输入 | aclblasOperation_t | ACLBLAS_OP_N(111) — op(A) = A；ACLBLAS_OP_T(112) — op(A) = A^T；ACLBLAS_OP_C(113) — op(A) = A^H（FP32 下与 T 等价），Host 内存 |
 | diag | 输入 | aclblasDiagType_t | ACLBLAS_NON_UNIT(131) — 对角元从 A 读取；ACLBLAS_UNIT(132) — 对角元固定为 1，Host 内存 |
-| n | 输入 | int | 矩阵阶数，n >= 0。n == 0 时为空操作直接返回成功，Host 内存 |
+| n | 输入 | int | 矩阵阶数，n >= 0。n == 0 且参数校验全部通过时为空操作直接返回成功，Host 内存 |
 | A | 输入 | const float*（FP32） | n x lda 三角矩阵指针，仅相关三角部分被访问，Device 内存 |
 | lda | 输入 | int | A 的 leading dimension，lda >= max(1, n)，Host 内存 |
 | x | 输入/输出 | float*（FP32） | 输入时存储右端向量 b，输出时原地覆盖为解向量 x，Device 内存 |
@@ -49,7 +49,7 @@ aclblasStatus_t aclblasStrsv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 
 #### 约束说明
 
-- n >= 0，n == 0 时为空操作直接返回成功
+- n >= 0，n == 0 时为空操作直接返回成功；但 uplo/trans/diag 枚举、incx、lda 等参数校验先于 n == 0 快速返回执行，n == 0 且 incx == 0 仍返回 ACLBLAS_STATUS_INVALID_VALUE（与 stpmv #748 契约一致）
 - uplo 必须为 ACLBLAS_UPPER 或 ACLBLAS_LOWER
 - trans 必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C
 - diag 必须为 ACLBLAS_NON_UNIT 或 ACLBLAS_UNIT
