@@ -66,6 +66,8 @@ aclblasStatus_t aclblasSgemmBatched(aclblasHandle_t handle, aclblasOperation_t t
 - transb == N 时 ldb >= max(1, k)；transb == T 或 C 时 ldb >= max(1, n)
 - ldc >= max(1, m)
 - 各 C[i] 矩阵之间不得重叠
+- 非法参数返回 `ACLBLAS_STATUS_INVALID_VALUE`；非法 transa/transb 枚举返回 `ACLBLAS_STATUS_INVALID_ENUM`（与家族内 HgemmBatched 口径一致）；handle 为空返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`
+- Aarray/Barray/Carray 数组的每个元素必须指向有效 Device 内存，不得为 null（元素为空指针时设备侧将产生非法地址访问，host 侧仅校验数组基指针）
 
 #### 精度验证
 
@@ -243,6 +245,8 @@ aclblasStatus_t aclblasCgemmBatched(aclblasHandle_t handle, aclblasOperation_t t
 - ldc >= max(1, m)
 - 各 C[i] 矩阵之间不得重叠
 - 复数矩阵以实部/虚部交错存储（interleaved complex），即 A[i][0].real, A[i][0].imag, A[i][1].real, A[i][1].imag, ...
+- 非法参数返回 `ACLBLAS_STATUS_INVALID_VALUE`；非法 transa/transb 枚举返回 `ACLBLAS_STATUS_INVALID_ENUM`（与家族内 HgemmBatched 及 arch22 实现口径一致）；handle 为空返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`
+- Aarray/Barray/Carray 数组的每个元素必须指向有效 Device 内存，不得为 null（元素为空指针时设备侧将产生非法地址访问，host 侧仅校验数组基指针）
 - m = 0 或 n = 0 或 batchCount = 0 为合法 no-op（返回成功，不执行计算）；k = 0 或 alpha = (0,0) 时逐批执行 `C[i] = beta * C[i]`（beta = (1,0) 时 C 不变；beta = (0,0) 时 C 置零，且 C 无需预先初始化）
 - Atlas A2/A3（arch22）实现复用仓内 complex BLAS-3 共享框架：AIV 拆分实虚部（含 op=C 共轭）、AIC 以 Matmul API 执行 4 次实数 GEMM（C^T = op(B)^T * op(A)^T，转置语义由 Matmul 读取方向吸收）、AIV 合并复数 alpha/beta 写回；batch 超出 workspace 容量时自动分轮执行
 - arch22 按尺寸、布局和标量选择直接复数归约、UB 向量计算或 FP32 Cube；小面板可融合预处理与写回。小输出的部分布局保留顺序复数归约，极端数值使用数值修正。具体分派见 `cgemm_batched_host.cpp`。
@@ -404,6 +408,7 @@ aclblasStatus_t aclblasHgemmBatched(aclblasHandle_t handle, aclblasOperation_t t
 - `k == 0` 时逐 batch 仅执行 `C[i] = beta * C[i]`（beta == 0 时置零），不引用 A/B
 - 参数校验顺序（与实现 `ValidateHgemmBatchedParams` 一致）：handle 判空 -> alpha/beta 判空 -> m/n/k/batchCount 非负 -> transa/transb 枚举合法性 -> lda/ldb/ldc 前导维约束 -> batchCount > 0 时 Aarray/Barray/Carray 判空 -> 主入口 m/n/batchCount == 0 短路返回。故当 `batchCount > 0` 且同时存在非法枚举与数组指针为空时，先命中的是枚举校验，返回 `ACLBLAS_STATUS_INVALID_ENUM`
 - 非法参数返回 `ACLBLAS_STATUS_INVALID_VALUE`；非法 transa/transb 枚举返回 `ACLBLAS_STATUS_INVALID_ENUM`；handle 为空返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`
+- Aarray/Barray/Carray 数组的每个元素必须指向有效 Device 内存，不得为 null（元素为空指针时设备侧将产生非法地址访问，host 侧仅校验数组基指针）
 - 仅支持列主序；各 batch 矩阵连续存储，仅支持 lda/ldb/ldc 前导维语义；不支持广播、dynamic shape、确定性计算要求
 
 #### 精度验证

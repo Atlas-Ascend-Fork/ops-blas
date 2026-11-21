@@ -60,10 +60,10 @@ static aclblasStatus_t ValidateSgemmBatchedParams(
               return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(transa == ACLBLAS_OP_N || transa == ACLBLAS_OP_T || transa == ACLBLAS_OP_C,
               OP_LOGE("aclblasSgemmBatched", "invalid transa=%d", static_cast<int>(transa));
-              return ACLBLAS_STATUS_INVALID_VALUE);
+              return ACLBLAS_STATUS_INVALID_ENUM);
     CHECK_RET(transb == ACLBLAS_OP_N || transb == ACLBLAS_OP_T || transb == ACLBLAS_OP_C,
               OP_LOGE("aclblasSgemmBatched", "invalid transb=%d", static_cast<int>(transb));
-              return ACLBLAS_STATUS_INVALID_VALUE);
+              return ACLBLAS_STATUS_INVALID_ENUM);
 
     bool isTransA = (transa != ACLBLAS_OP_N);
     bool isTransB = (transb != ACLBLAS_OP_N);
@@ -101,14 +101,11 @@ static aclblasStatus_t CalcGemmTiling(
     // Keep the original minimal-divisible-wave search for the FLOAT32 path.
     constexpr bool useTrailingWaveBalance = false;
     return GemmBatchedCalcGemmTiling(
-        SG_OP_NAME, GEMM_BATCHED_DTYPE_FP32, useTrailingWaveBalance, m, n, k, batchCount, lda, ldb, ldc,
-        isTransA, isTransB, cubeCoreNum, tiling);
+        SG_OP_NAME, GEMM_BATCHED_DTYPE_FP32, useTrailingWaveBalance, m, n, k, batchCount, lda, ldb, ldc, isTransA,
+        isTransB, cubeCoreNum, tiling);
 }
 
-static void ApplyColumnMajorSwap(GemmBatchedGemmTilingData& tiling)
-{
-    GemmBatchedApplyColumnMajorSwap(tiling);
-}
+static void ApplyColumnMajorSwap(GemmBatchedGemmTilingData& tiling) { GemmBatchedApplyColumnMajorSwap(tiling); }
 
 // ============================================================================
 // Workspace helpers
@@ -313,10 +310,10 @@ static aclblasStatus_t ValidateCgemmBatchedParams(
               return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(transa == ACLBLAS_OP_N || transa == ACLBLAS_OP_T || transa == ACLBLAS_OP_C,
               OP_LOGE("aclblasCgemmBatched", "invalid transa=%d", static_cast<int>(transa));
-              return ACLBLAS_STATUS_INVALID_VALUE);
+              return ACLBLAS_STATUS_INVALID_ENUM);
     CHECK_RET(transb == ACLBLAS_OP_N || transb == ACLBLAS_OP_T || transb == ACLBLAS_OP_C,
               OP_LOGE("aclblasCgemmBatched", "invalid transb=%d", static_cast<int>(transb));
-              return ACLBLAS_STATUS_INVALID_VALUE);
+              return ACLBLAS_STATUS_INVALID_ENUM);
 
     bool isTransA = (transa != ACLBLAS_OP_N);
     bool isTransB = (transb != ACLBLAS_OP_N);

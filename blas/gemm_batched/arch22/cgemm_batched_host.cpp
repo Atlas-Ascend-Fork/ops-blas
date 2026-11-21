@@ -127,10 +127,10 @@ aclblasStatus_t ValidateCgemmBatchedParams(
               return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(transa == ACLBLAS_OP_N || transa == ACLBLAS_OP_T || transa == ACLBLAS_OP_C,
               OP_LOGE(OP_TAG, "invalid transa=%d", static_cast<int>(transa));
-              return ACLBLAS_STATUS_INVALID_VALUE);
+              return ACLBLAS_STATUS_INVALID_ENUM);
     CHECK_RET(transb == ACLBLAS_OP_N || transb == ACLBLAS_OP_T || transb == ACLBLAS_OP_C,
               OP_LOGE(OP_TAG, "invalid transb=%d", static_cast<int>(transb));
-              return ACLBLAS_STATUS_INVALID_VALUE);
+              return ACLBLAS_STATUS_INVALID_ENUM);
 
     const bool isTransA = (transa != ACLBLAS_OP_N);
     const bool isTransB = (transb != ACLBLAS_OP_N);
