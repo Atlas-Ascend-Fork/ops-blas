@@ -434,8 +434,8 @@ aclblasStatus_t aclblasCdotc(aclblasHandle_t handle, int n, const aclblasComplex
 
 #### 约束说明
 
-- n >= 0；n == 0 时直接返回成功，result 置 0
-- incx != 0，incy != 0
+- n >= 0；n == 0 时先检查 result 非空，异步将 result 置 (0, 0) 后直接返回成功，此时不检查 x、y、incx、incy（零 stride 合法）
+- n > 0 时要求 incx != 0，incy != 0，并执行 x、y 指针校验
 - Ascend 950 实现支持任意非 0 的 incx/incy（含负步长）
 - n > 0 时，x、y、result 不能为 nullptr
 
