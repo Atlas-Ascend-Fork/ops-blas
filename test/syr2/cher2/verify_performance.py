@@ -98,6 +98,12 @@ def load_cases():
     if len(rows) != 200 or len(baseline) != 200:
         raise RuntimeError("Expected all 200 published PF cases and GPU baselines")
     for row, ref in zip(rows, baseline):
+        try:
+            gpu_us = float(ref["gpu_ms"]) * 1000
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("Invalid gpu_ms for " + row["case_name"]) from error
+        if not math.isfinite(gpu_us) or gpu_us <= 0:
+            raise ValueError("Expected finite positive gpu_ms for " + row["case_name"])
         for key in ("uplo", "n", "alpha_real", "alpha_imag", "incx", "incy", "lda"):
             if key == "uplo":
                 valid = row[key].removeprefix("ACLBLAS_") == ref[key]
@@ -216,8 +222,8 @@ def main():
     p.add_argument("--batch-size", type=int, default=16, choices=range(1, 17))
     a = p.parse_args()
     a.binary, a.output = a.binary.resolve(), a.output.resolve()
-    a.output.mkdir(parents=True, exist_ok=False)
     rows, baseline = load_cases()
+    a.output.mkdir(parents=True, exist_ok=False)
     app = prepare_app(a.binary, a.output, a.container_device_fix)
     env = dict(os.environ, CHER2_PROFILE="1", CHER2_PROFILE_RANGE="1")
     env.pop("BLAS_TEST_CASES", None)
