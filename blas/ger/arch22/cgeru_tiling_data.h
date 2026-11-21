@@ -10,9 +10,6 @@
 
 #pragma once
 
-#ifndef CGERU_TILING_H
-#define CGERU_TILING_H
-
 #include <cstdint>
 
 // 行方向分块上限（单位：复数）。列主序矩阵的一列在 UB 内是 2*rowTile 个 float，
@@ -43,5 +40,3 @@ struct CgeruTilingData {
     float alphaReal;
     float alphaImag;
 };
-
-#endif // CGERU_TILING_H
