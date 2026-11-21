@@ -106,6 +106,27 @@ static SscalTilingData CalSscalTilingDataStrided(int64_t n, int64_t incx, uint32
     return tiling;
 }
 
+// issue #1111: tiling 路径选择抽出为独立函数，控制入口函数规模
+static SscalTilingData CalcSscalTiling(int n, int incx, uint32_t aivCoreNum, float alphaVal, uint32_t& numBlocks)
+{
+    uint32_t totalN = static_cast<uint32_t>(n);
+    SscalTilingData tiling{};
+    if (incx == 1) {
+        numBlocks = (totalN < aivCoreNum) ? totalN : aivCoreNum;
+        tiling = CalSscalTilingDataContiguous(totalN, numBlocks, alphaVal);
+    } else {
+        numBlocks = std::min(CeilDiv<uint32_t>(totalN, SIMT_MIN_THREAD_NUM), aivCoreNum);
+        // kernel 以 blockIdx 直接索引 tiling.calCount[SSCAL_MAX_CORE_NUM] 定长数组，
+        // 启动块数必须同步按该上限封顶（对照 sasum/scasum 的封顶口径），
+        // 否则核数大于 SSCAL_MAX_CORE_NUM 的硬件上 blockIdx 越界读取 calCount
+        if (numBlocks > SSCAL_MAX_CORE_NUM) {
+            numBlocks = SSCAL_MAX_CORE_NUM;
+        }
+        tiling = CalSscalTilingDataStrided(n, incx, numBlocks, alphaVal);
+    }
+    return tiling;
+}
+
 aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, float* x, int incx)
 {
     if (handle == nullptr) {
@@ -145,28 +166,23 @@ aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, 
     }
 
     auto* h = handle;
-    uint32_t totalN = static_cast<uint32_t>(n);
 
-    SscalTilingData tiling{};
-    uint32_t numBlocks;
-
-    if (incx == 1) {
-        numBlocks = (totalN < aivCoreNum) ? totalN : aivCoreNum;
-        tiling = CalSscalTilingDataContiguous(totalN, numBlocks, *alpha);
-    } else {
-        numBlocks = std::min(CeilDiv<uint32_t>(totalN, SIMT_MIN_THREAD_NUM), aivCoreNum);
-        // kernel 以 blockIdx 直接索引 tiling.calCount[SSCAL_MAX_CORE_NUM] 定长数组，
-        // 启动块数必须同步按该上限封顶（对照 sasum/scasum 的封顶口径），
-        // 否则核数大于 SSCAL_MAX_CORE_NUM 的硬件上 blockIdx 越界读取 calCount
-        if (numBlocks > SSCAL_MAX_CORE_NUM) {
-            numBlocks = SSCAL_MAX_CORE_NUM;
-        }
-        tiling = CalSscalTilingDataStrided(n, incx, numBlocks, *alpha);
+    // issue #1111: alpha 支持 host/device 双位置（对齐 scalex/csscal 同族口径，
+    // ReadScalarFromHostOrDevice 为 #652 既有 helper）：host 指针直接解引用，
+    // device 指针异步 D2H + stream 同步后参与 tiling，消除 host 侧对 device
+    // 指针的裸解引用（段错误/垃圾值风险）
+    float alphaVal = 0.0f;
+    status = ReadScalarFromHostOrDevice(alpha, h->stream, alphaVal);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
     }
+
+    uint32_t numBlocks = 0;
+    SscalTilingData tiling = CalcSscalTiling(n, incx, aivCoreNum, alphaVal, numBlocks);
 
     OP_LOGD(
         "aclblasSscal", "tiling: n=%d incx=%d numBlocks=%u alpha=%.6f", n, incx, numBlocks,
-        static_cast<double>(*alpha));
+        static_cast<double>(alphaVal));
 
     sscal_kernel_do(reinterpret_cast<uint8_t*>(x), nullptr, tiling, numBlocks, h->stream);
 

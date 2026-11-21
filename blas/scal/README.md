@@ -40,7 +40,7 @@ aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, 
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
 | n | 输入 | int | 向量 x 中的元素个数，Host 内存 |
-| alpha | 输入 | const float*（FP32） | 指向标量乘数的指针，Host 内存 |
+| alpha | 输入 | const float*（FP32） | 指向标量乘数的指针，Host/Device 内存均支持（Device 指针经同步 D2H 读取） |
 | x | 输入/输出 | float*（FP32） | float 向量，包含 n 个元素，Device 内存 |
 | incx | 输入 | int | x 中连续元素之间的步长，Host 内存 |
 
@@ -52,6 +52,7 @@ aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, 
 - incx 为整数；incx <= 0 时为 no-op（不修改 x，对齐参考 BLAS cblas_sscal 的 IF (INCX.LE.0) RETURN 语义）；incx > 0 时支持任意步长
 - handle 不能为 nullptr，否则返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR
 - n > 0 时 alpha、x 不能为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE
+- arch35 支持 alpha 指针 Host/Device 双位置：Host 指针直接读取，Device 指针经同步 D2H 读取（对齐 scalex 同族口径）
 
 **Atlas A2 / Atlas A3 系列产品（arch22）：**
 

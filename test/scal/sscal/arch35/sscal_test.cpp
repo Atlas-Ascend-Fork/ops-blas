@@ -44,6 +44,38 @@ TEST_F(SscalArch35Test, QuickReturnSkipsDataPointerValidation)
     EXPECT_EQ(aclblasSscal(SscalArch35Test::handle_, 5, nullptr, nullptr, -1), ACLBLAS_STATUS_SUCCESS);
 }
 
+// issue #1111: alpha 支持 host/device 双位置——device alpha 经同步 D2H 读取后
+// 正常参与缩放，不再 host 侧裸解引用
+TEST_F(SscalArch35Test, DeviceAlphaScalesCorrectly)
+{
+    const int n = 5;
+    const int incx = 1;
+    const float alphaHost = 2.0f;
+    std::vector<float> xHost = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+    const size_t xBytes = xHost.size() * sizeof(float);
+
+    void* dX = nullptr;
+    void* dAlpha = nullptr;
+    ASSERT_EQ(aclrtMalloc(&dX, xBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dAlpha, sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMemcpy(dX, xBytes, xHost.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMemcpy(dAlpha, sizeof(float), &alphaHost, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+
+    aclblasStatus_t ret =
+        aclblasSscal(SscalArch35Test::handle_, n, static_cast<const float*>(dAlpha), static_cast<float*>(dX), incx);
+    EXPECT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclrtSynchronizeDevice(), ACL_SUCCESS);
+
+    std::vector<float> xOut(xHost.size());
+    ASSERT_EQ(aclrtMemcpy(xOut.data(), xBytes, dX, xBytes, ACL_MEMCPY_DEVICE_TO_HOST), ACL_SUCCESS);
+    for (size_t i = 0; i < xHost.size(); i++) {
+        EXPECT_EQ(xOut[i], xHost[i] * alphaHost);
+    }
+
+    aclrtFree(dX);
+    aclrtFree(dAlpha);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     Sscal, SscalArch35Test, ::testing::ValuesIn(GetCasesFromCsv<SscalParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<SscalParam>);
