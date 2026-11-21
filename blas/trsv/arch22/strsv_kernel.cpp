@@ -1,4 +1,5 @@
 /**
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd.
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
  * CANN Open Software License Agreement Version 2.0 (the "License").
  * Please refer to the License for details. You may not use this file except in compliance with the License.
@@ -21,18 +22,15 @@ constexpr uint32_t BYTENUM_PER_FLOAT32 = 4;
 constexpr uint32_t TILE_SIZE = 32;
 constexpr uint32_t UB_SIZE = 192 * 1024;
 constexpr uint32_t MAX_UB_ELEMENTS = UB_SIZE / BYTENUM_PER_FLOAT32;
-constexpr uint32_t MAX_CORE_NUM = 40;
 
 enum class UploMode { UPPER, LOWER };
 enum class TransMode { NO_TRANS, TRANS };
 enum class DiagMode { UNIT, NON_UNIT };
 
+// issue #1110: 与 host 侧 StrsvTilingData 同步简化（H2D 结构拷贝需两端一致）
 struct StrsvTilingDataDevice {
     uint32_t n;
     uint32_t lda;
-    uint32_t useCoreNum;
-    uint32_t startRow[MAX_CORE_NUM];
-    uint32_t rowCount[MAX_CORE_NUM];
 };
 
 template <typename T, UploMode UPLO, TransMode TRANS, DiagMode DIAG>
@@ -58,14 +56,8 @@ private:
     TQue<QuePosition::VECIN, BUFFER_NUM> aQueue;
     TQue<QuePosition::VECOUT, BUFFER_NUM> xQueue;
 
-    int32_t blockIdx;
-    int32_t blockNum;
     int64_t n;
     int64_t lda;
-
-    uint32_t rowsPerCore;
-    uint32_t rowStart;
-    uint32_t rowCount;
 };
 
 template <typename T, UploMode UPLO, TransMode TRANS, DiagMode DIAG>
@@ -75,17 +67,11 @@ __aicore__ inline void StrsvKernel<T, UPLO, TRANS, DIAG>::ParseTilingData(GM_ADD
 
     this->n = tiling->n;
     this->lda = tiling->lda;
-    this->blockNum = tiling->useCoreNum;
-    this->rowStart = tiling->startRow[this->blockIdx];
-    this->rowCount = tiling->rowCount[this->blockIdx];
 }
 
 template <typename T, UploMode UPLO, TransMode TRANS, DiagMode DIAG>
 __aicore__ inline void StrsvKernel<T, UPLO, TRANS, DIAG>::Init(GM_ADDR A, GM_ADDR x, GM_ADDR tilingGm)
 {
-    this->blockNum = GetBlockNum();
-    this->blockIdx = GetBlockIdx();
-
     ParseTilingData(tilingGm);
 
     aGM.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(A), static_cast<uint32_t>(n * lda));
@@ -185,14 +171,11 @@ __aicore__ inline void StrsvKernel<T, UPLO, TRANS, DIAG>::ProcessUpper(int64_t r
 template <typename T, UploMode UPLO, TransMode TRANS, DiagMode DIAG>
 __aicore__ inline void StrsvKernel<T, UPLO, TRANS, DIAG>::Process()
 {
-    if (rowCount == 0) {
-        return;
-    }
-
+    // 三角求解行间顺序依赖（后行消费前行结果），恒单核全行串行执行
     if constexpr (UPLO == UploMode::LOWER) {
-        ProcessLower(rowStart, rowCount);
+        ProcessLower(0, n);
     } else {
-        ProcessUpper(rowStart, rowCount);
+        ProcessUpper(0, n);
     }
 }
 

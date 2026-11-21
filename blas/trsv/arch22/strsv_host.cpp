@@ -22,51 +22,23 @@ void strsv_kernel_do(
     uint8_t* A, uint8_t* x, uint8_t* tilingGm, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag,
     int n, int lda, uint32_t numBlocks, void* stream);
 
-constexpr uint32_t MAX_CORE_NUM = 40;
-
-struct StrsvTilingData {
-    uint32_t n;
-    uint32_t lda;
-    uint32_t useCoreNum;
-    uint32_t startRow[MAX_CORE_NUM];
-    uint32_t rowCount[MAX_CORE_NUM];
-};
-
-constexpr uint64_t BYTENUM_PER_FLOAT32_TILING = 4;
+constexpr uint32_t BYTENUM_PER_FLOAT32_TILING = 4;
 constexpr uint64_t UB_BYTENUM_PER_BLOCK_TILING = 32;
 constexpr uint64_t ELEMENTS_PER_BLOCK_TILING = UB_BYTENUM_PER_BLOCK_TILING / BYTENUM_PER_FLOAT32_TILING;
 
-static StrsvTilingData CalStrsvTilingData(int n, int lda, uint32_t coreNum)
+// issue #1110: 三角方程求解行间存在顺序依赖（后行消费前行结果）且 kernel 无跨核
+// 同步，多核按行拆分不可行；恒单核下发。删除恒不可达的多核 tiling 脚手架
+// （MAX_CORE_NUM 数组与按核分行循环），tiling 结构同步简化为 {n, lda}。
+struct StrsvTilingData {
+    uint32_t n;
+    uint32_t lda;
+};
+
+static StrsvTilingData CalStrsvTilingData(int n, int lda)
 {
     StrsvTilingData tiling{};
     tiling.n = static_cast<uint32_t>(n);
     tiling.lda = static_cast<uint32_t>(lda);
-    tiling.useCoreNum = 0;
-
-    for (uint32_t i = 0; i < MAX_CORE_NUM; i++) {
-        tiling.startRow[i] = 0;
-        tiling.rowCount[i] = 0;
-    }
-
-    if (coreNum == 0) {
-        coreNum = 1;
-    }
-
-    uint32_t totalBlockNum = coreNum;
-    uint32_t rowsPerBlock = (n + totalBlockNum - 1) / totalBlockNum;
-
-    for (uint32_t i = 0; i < totalBlockNum && i < MAX_CORE_NUM; i++) {
-        tiling.startRow[i] = i * rowsPerBlock;
-        uint32_t rowEnd = (i + 1) * rowsPerBlock;
-        if (rowEnd > n)
-            rowEnd = n;
-        tiling.rowCount[i] = (rowEnd > tiling.startRow[i]) ? (rowEnd - tiling.startRow[i]) : 0;
-
-        if (tiling.rowCount[i] > 0) {
-            tiling.useCoreNum = i + 1;
-        }
-    }
-
     return tiling;
 }
 
@@ -203,8 +175,7 @@ static aclblasStatus_t StageStrsvInput(int n, int incx, const float* x, StrsvSta
 // tiling 上传段：分配 tiling 设备缓冲并 H2D（原 aclblasStrsv 内联逻辑逐行搬运）。
 static aclblasStatus_t UploadStrsvTiling(int n, int lda, StrsvStage& st)
 {
-    constexpr uint32_t numBlocks = 1;
-    st.tiling = CalStrsvTilingData(n, lda, numBlocks);
+    st.tiling = CalStrsvTilingData(n, lda);
 
     aclError aclRet =
         aclrtMalloc(reinterpret_cast<void**>(&st.tilingDevice), sizeof(StrsvTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
@@ -282,7 +253,7 @@ aclblasStatus_t aclblasStrsv(
 
         strsv_kernel_do(
             reinterpret_cast<uint8_t*>(const_cast<float*>(A)), st.xDevice, st.tilingDevice, uplo, trans, diag, n, lda,
-            st.tiling.useCoreNum, useStream);
+            1, useStream);
 
         aclRet = aclrtSynchronizeStream(useStream);
         if (aclRet != ACL_SUCCESS) {
