@@ -14,8 +14,6 @@
 
 constexpr uint32_t SGEMMV_ALIGN = 8;
 constexpr uint32_t SGEMMV_PARTITION_ALIGN = 16;
-constexpr uint32_t SGEMMV_N_ROW_TILE = 512;
-constexpr uint32_t SGEMMV_N_COL_TILE = 16;
 constexpr uint32_t SGEMMV_T_REDUCE_TILE = 1024;
 constexpr uint32_t SGEMMV_T_COL_TILE = 64;
 constexpr uint32_t SGEMMV_SMALL_M_LIMIT = 16;

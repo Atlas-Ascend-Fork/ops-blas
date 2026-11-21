@@ -864,7 +864,6 @@ private:
         LocalTensor<float> aTile = aBuf_.Get<float>();
         LocalTensor<float> xTile = xBuf_.Get<float>();
         LocalTensor<float> row = rowBuf_.Get<float>();
-        LocalTensor<float> product = productBuf_.Get<float>();
         LocalTensor<uint32_t> offsets = offsetBuf_.Get<uint32_t>();
         const uint32_t rowsAligned = AlignUp8(m_);
 
