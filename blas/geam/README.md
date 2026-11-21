@@ -314,7 +314,7 @@ aclblasStatus_t aclblasCgeam(aclblasHandle_t handle, aclblasOperation_t transa, 
 - *beta != 0 时，B 不能为 nullptr
 - m > 0 且 n > 0 时，C 不能为 nullptr
 - 支持 in-place：C == A 时要求 transa == N 且 lda == ldc；C == B 时要求 transb == N 且 ldb == ldc
-- 当 m == 0 或 n == 0 且 m、n 均非负时，仅校验 handle 非空以及 transa/transb 枚举合法；通过后返回 ACLBLAS_STATUS_SUCCESS，不检查 alpha/beta/A/B/C 指针、lda/ldb/ldc 或 in-place 条件，也不读取或写入矩阵
+- 当 m == 0 或 n == 0 且 m、n 均非负时，先执行与常规维度相同的全量参数校验（handle 非空、transa/transb 枚举、alpha/beta 指针与非空判据、lda/ldb/ldc、in-place 条件），全部通过后返回 ACLBLAS_STATUS_SUCCESS，不读取或写入矩阵；任一校验失败仍返回对应错误码
 - ACLBLAS_OP_C 对复数执行共轭转置，实部不变，虚部取反
 
 #### 调用示例
