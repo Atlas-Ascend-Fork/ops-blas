@@ -278,77 +278,40 @@ static aclblasStatus_t ValidateCher2kParams(
         return ptrSt;
     }
     // #11 a null C together with a positive n: resolved in aclblasCher2k after a
-    // staging read of beta (needs the handle's stream), see ResolveCher2kCNull.
+    // staging read of beta, see ResolveCher2kCNull.
     return ACLBLAS_STATUS_SUCCESS;
 }
 
 // ==========================================================================
-//  Staging read of alpha (complex, 2 floats) and beta (1 float) from device.
+//  Synchronous staging read of beta (1 float) from its host/device location.
 //  Only used for the branch decision when C is null and n is positive.
 //
 //  [review: stream sync in library code] Uses the SYNCHRONOUS aclrtMemcpy for
 //  this one-shot scalar read, instead of an async copy followed by an explicit
 //  stream wait: the library's normal path must not wait on the stream, and the
-//  value is needed before returning (same shape as sasum_host.cpp:137 /
-//  scopy_host.cpp:106, which copy scalars synchronously).
+//  value is needed before returning.
 //  Because the copy is synchronous the values are landed on return, so no
 //  explicit sync is needed and no work of the caller's stream is waited on.
 // ==========================================================================
-static aclblasStatus_t ReadCher2kScalars(
-    const aclblasComplex* alpha, const float* beta, float& alphaReal, float& alphaImag, float& betaVal,
-    aclrtStream stream, bool readAlpha = true)
+static aclblasStatus_t ReadCher2kBeta(const float* beta, float& betaVal)
 {
-    // [perf-iter30] Stage alpha.real/alpha.imag in ONE 8B D2H instead of two
-    // separate 4B copies. Every tiny D2H costs ~16us of stream-timeline latency
-    // on this platform (measured: three 4-byte copies plus a sync cost 34.5us,
-    // against 18.0us for an 8-byte plus a 4-byte copy with a sync), and this
-    // staging read sits inside the caller's timed window, so the extra copy is
-    // pure fixed per-call overhead that dominates small-n cases.
-    (void)stream; // kept for signature stability; the copy below is synchronous
     // issue #1099: 标量指针支持 host/device 双位置（PrepareCher2kParams 的
     // CheckPtrLocation 契约）：host 指针直接解引用，device 指针同步 D2H，
     // 不再无条件 D2H（host 指针 D2H 方向不符必返 INTERNAL_ERROR）
-    float alphaPair[2] = {0.0f, 0.0f};
-    if (readAlpha) {
-        bool alphaOnDev = false;
-        aclblasStatus_t locSt = CheckPtrLocation(alpha, &alphaOnDev);
-        if (locSt != ACLBLAS_STATUS_SUCCESS) {
-            OP_LOGE(
-                "aclblasCher2k", "ReadCher2kScalars: alpha pointer location query failed, st=%d",
-                static_cast<int>(locSt));
-            return locSt;
-        }
-        if (alphaOnDev) {
-            aclError aclRet =
-                aclrtMemcpy(alphaPair, sizeof(alphaPair), alpha, sizeof(alphaPair), ACL_MEMCPY_DEVICE_TO_HOST);
-            if (aclRet != ACL_SUCCESS) {
-                OP_LOGE("aclblasCher2k", "ReadCher2kScalars: aclrtMemcpy alpha D2H failed, ret=%d", aclRet);
-                return ACLBLAS_STATUS_INTERNAL_ERROR;
-            }
-        } else {
-            alphaPair[0] = alpha->real;
-            alphaPair[1] = alpha->imag;
-        }
-    }
     bool betaOnDev = false;
     aclblasStatus_t locSt = CheckPtrLocation(beta, &betaOnDev);
     if (locSt != ACLBLAS_STATUS_SUCCESS) {
-        OP_LOGE(
-            "aclblasCher2k", "ReadCher2kScalars: beta pointer location query failed, st=%d", static_cast<int>(locSt));
+        OP_LOGE("aclblasCher2k", "ReadCher2kBeta: beta pointer location query failed, st=%d", static_cast<int>(locSt));
         return locSt;
     }
     if (betaOnDev) {
         aclError aclRet = aclrtMemcpy(&betaVal, sizeof(float), beta, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST);
         if (aclRet != ACL_SUCCESS) {
-            OP_LOGE("aclblasCher2k", "ReadCher2kScalars: aclrtMemcpy beta D2H failed, ret=%d", aclRet);
+            OP_LOGE("aclblasCher2k", "ReadCher2kBeta: aclrtMemcpy beta D2H failed, ret=%d", aclRet);
             return ACLBLAS_STATUS_INTERNAL_ERROR;
         }
     } else {
         betaVal = *beta;
-    }
-    if (readAlpha) {
-        alphaReal = alphaPair[0];
-        alphaImag = alphaPair[1];
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
@@ -357,12 +320,12 @@ static aclblasStatus_t ReadCher2kScalars(
 //  Design §4.1 #11: a null C together with a positive n
 //    a non-zero beta gives INVALID_VALUE; a zero beta gives SUCCESS without any write.
 // ==========================================================================
-static aclblasStatus_t ResolveCher2kCNull(_aclblas_handle* h, const float* beta, int n)
+static aclblasStatus_t ResolveCher2kCNull(const float* beta, int n)
 {
     float betaVal = 0.0f;
-    aclblasStatus_t st = ReadCher2kScalars(nullptr, beta, betaVal, betaVal, betaVal, h->stream, false);
+    aclblasStatus_t st = ReadCher2kBeta(beta, betaVal);
     if (st != ACLBLAS_STATUS_SUCCESS) {
-        OP_LOGE("aclblasCher2k", "ResolveCher2kCNull: ReadCher2kScalars beta failed, st=%d", static_cast<int>(st));
+        OP_LOGE("aclblasCher2k", "ResolveCher2kCNull: ReadCher2kBeta beta failed, st=%d", static_cast<int>(st));
         return st;
     }
     if (betaVal != 0.0f) {
@@ -1607,10 +1570,10 @@ extern "C" aclblasStatus_t aclblasCher2k(
 
     auto* h = static_cast<_aclblas_handle*>(handle);
 
-    // #11 a null C together with a positive order (needs the stream for the
-    // staging read of beta)
+    // #11 a null C together with a positive order: resolved via the staging
+    // read of beta
     if (C == nullptr && n > 0) {
-        return ResolveCher2kCNull(h, beta, n);
+        return ResolveCher2kCNull(beta, n);
     }
 
     // quick return when the order is zero
