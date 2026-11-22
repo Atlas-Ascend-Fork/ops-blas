@@ -154,7 +154,11 @@ static aclblasStatus_t LaunchGemmKernel(
     OP_LOGI("aclblasSsyrkx", "launching gemm kernel: n=%u k=%u aicCores=%u", n, k, actualAicCores);
 
     // GEMM computes temp_T = op(B) * op(A)^T: left=gmB, right=gmA
-    ssyrkx_gemm_kernel_do(ToGmAddr(B), ToGmAddr(A), tempDevice, gemmTiling, actualAicCores, h->stream);
+    // issue #1179: a failed launch must not be reported as SUCCESS.
+    const aclError launch =
+        ssyrkx_gemm_kernel_do(ToGmAddr(B), ToGmAddr(A), tempDevice, gemmTiling, actualAicCores, h->stream);
+    CHECK_RET(launch == ACL_SUCCESS, OP_LOGE("aclblasSsyrkx", "ssyrkx_gemm_kernel_do failed: %d", launch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -197,7 +201,10 @@ static aclblasStatus_t LaunchSsyrkxKernel(
         scaleTiling.n, scaleTiling.ldc, scaleTiling.tempRowStride, scaleTiling.rowsPerCore, scaleTiling.uploMode,
         scaleTiling.isAlphaZero, scaleTiling.isKZero, scaleTiling.isBetaZero);
     OP_LOGI("aclblasSsyrkx", "launching scale kernel: n=%u aivCores=%u", n, ctx.usedAivCoreNum);
-    ssyrkx_scale_kernel_do(tempDevice, ToGmAddr(C), scaleTiling, ctx.usedAivCoreNum, h->stream);
+    const aclError scaleLaunch =
+        ssyrkx_scale_kernel_do(tempDevice, ToGmAddr(C), scaleTiling, ctx.usedAivCoreNum, h->stream);
+    CHECK_RET(scaleLaunch == ACL_SUCCESS, OP_LOGE("aclblasSsyrkx", "ssyrkx_scale_kernel_do failed: %d", scaleLaunch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     return ACLBLAS_STATUS_SUCCESS;
 }

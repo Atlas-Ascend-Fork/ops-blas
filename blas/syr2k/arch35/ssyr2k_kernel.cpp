@@ -19,6 +19,7 @@
  *                column-major layout without Gather transpose.
  */
 
+#include <cstddef>
 #include <cstdint>
 
 #include "ssyr2k_tiling_data.h"
@@ -31,8 +32,7 @@ using namespace AscendC;
 constexpr int64_t L1_SIZE = static_cast<int64_t>(SSYR2K_ARCH35_L1_SIZE_BYTES);
 
 extern "C" __global__ __aicore__ void ssyr2k_gemm_kernel(
-    GM_ADDR gmLeft, GM_ADDR gmRight, GM_ADDR gmTemp,
-    const Ssyr2kGemmTilingData tiling)
+    GM_ADDR gmLeft, GM_ADDR gmRight, GM_ADDR gmTemp, const Ssyr2kGemmTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIC_ONLY);
 
@@ -48,9 +48,9 @@ extern "C" __global__ __aicore__ void ssyr2k_gemm_kernel(
         auto gmRightTensor = te::MakeTensor(
             te::MakeMemPtr<te::Location::GM>(reinterpret_cast<__gm__ float*>(gmRight)),
             te::MakeFrameLayout<te::NDExtLayoutPtn>(tiling.k, tiling.rightLd));
-        SyrkGemmKernelImpl<decltype(gmLeftTensor), decltype(gmRightTensor), decltype(gmTempTensor), Ssyr2kGemmTilingData>(
-            gmLeftTensor, gmRightTensor, gmTempTensor, tiling,
-            SSYR2K_ARCH35_BASE_K, SSYR2K_ARCH35_L1_BUF_NUM, L1_SIZE);
+        SyrkGemmKernelImpl<
+            decltype(gmLeftTensor), decltype(gmRightTensor), decltype(gmTempTensor), Ssyr2kGemmTilingData>(
+            gmLeftTensor, gmRightTensor, gmTempTensor, tiling, SSYR2K_ARCH35_BASE_K, SSYR2K_ARCH35_L1_BUF_NUM, L1_SIZE);
     } else {
         // trans=T: left=NDExt(N,leftLd) right=DNExt(rightLd,N)
         auto gmLeftTensor = te::MakeTensor(
@@ -59,19 +59,32 @@ extern "C" __global__ __aicore__ void ssyr2k_gemm_kernel(
         auto gmRightTensor = te::MakeTensor(
             te::MakeMemPtr<te::Location::GM>(reinterpret_cast<__gm__ float*>(gmRight)),
             te::MakeFrameLayout<te::DNExtLayoutPtn>(tiling.rightLd, tiling.n));
-        SyrkGemmKernelImpl<decltype(gmLeftTensor), decltype(gmRightTensor), decltype(gmTempTensor), Ssyr2kGemmTilingData>(
-            gmLeftTensor, gmRightTensor, gmTempTensor, tiling,
-            SSYR2K_ARCH35_BASE_K, SSYR2K_ARCH35_L1_BUF_NUM, L1_SIZE);
+        SyrkGemmKernelImpl<
+            decltype(gmLeftTensor), decltype(gmRightTensor), decltype(gmTempTensor), Ssyr2kGemmTilingData>(
+            gmLeftTensor, gmRightTensor, gmTempTensor, tiling, SSYR2K_ARCH35_BASE_K, SSYR2K_ARCH35_L1_BUF_NUM, L1_SIZE);
     }
 }
 
-void ssyr2k_gemm_kernel_do(
-    GM_ADDR gmLeft, GM_ADDR gmRight, GM_ADDR gmTemp,
-    const Ssyr2kGemmTilingData& tiling,
-    uint32_t numBlocks, void* stream)
+// issue #1179: launch through aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs
+// so the runtime status of the launch is returned to the caller: the <<<>>>
+// statement form discards it. Same pattern as the gemm_batched arch35 launchers.
+aclError ssyr2k_gemm_kernel_do(
+    GM_ADDR gmLeft, GM_ADDR gmRight, GM_ADDR gmTemp, const Ssyr2kGemmTilingData& tiling, uint32_t numBlocks,
+    void* stream)
 {
-    ssyr2k_gemm_kernel<<<numBlocks, nullptr, stream>>>(
-        gmLeft, gmRight, gmTemp, tiling);
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(reinterpret_cast<const void*>(ssyr2k_gemm_kernel), &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        GM_ADDR gmLeft;
+        GM_ADDR gmRight;
+        GM_ADDR gmTemp;
+        Ssyr2kGemmTilingData tiling;
+    } args{gmLeft, gmRight, gmTemp, tiling};
+    static_assert(offsetof(Arguments, tiling) == 3U * sizeof(uint8_t*), "kernel ABI mismatch");
+    return aclrtLaunchKernelWithHostArgs(function, numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }
 
 // ================================================================================
@@ -99,8 +112,7 @@ public:
     __aicore__ inline explicit Ssyr2kScaleAIV(TPipe& pipe) : pipe_(pipe) {}
     __aicore__ inline void Init(GM_ADDR gmTemp1, GM_ADDR gmTemp2, GM_ADDR gmC, const Ssyr2kScaleTilingData& tiling);
     __aicore__ inline void Process();
-    __aicore__ inline void ProcessBlock(uint32_t iBase, uint32_t jBase,
-        uint32_t rows, uint32_t cols);
+    __aicore__ inline void ProcessBlock(uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols);
 
 private:
     TPipe& pipe_;
@@ -134,8 +146,7 @@ __aicore__ inline void Ssyr2kScaleAIV::Init(
     rowEnd_ = Min<uint32_t>(rowStart_ + tiling_.rowsPerCore, tiling_.n);
 }
 
-__aicore__ inline void Ssyr2kScaleAIV::ProcessBlock(
-    uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
+__aicore__ inline void Ssyr2kScaleAIV::ProcessBlock(uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
 {
     float alpha = tiling_.alphaVal;
     float beta = tiling_.betaVal;
@@ -163,9 +174,8 @@ __aicore__ inline void Ssyr2kScaleAIV::ProcessBlock(
         // -- correct value, and DataCopyPad produces column-major UB layout matching cInUb.
         LocalTensor<float> temp2Ub = temp2Buf_.Get<float>();
         int64_t tempSrcStride = static_cast<int64_t>(tempRowStride - rows) * sizeof(float);
-        DataCopyExtParams cpTemp{static_cast<uint16_t>(cols),
-            static_cast<uint32_t>(rows * sizeof(float)),
-            tempSrcStride, 0, 0};
+        DataCopyExtParams cpTemp{
+            static_cast<uint16_t>(cols), static_cast<uint32_t>(rows * sizeof(float)), tempSrcStride, 0, 0};
         DataCopyPadExtParams<float> ppTemp{true, 0, 0, 0.0f};
         int64_t tempGmOffset = static_cast<int64_t>(jBase) * tempRowStride + iBase;
         DataCopyPad(temp1Ub, temp1GM_[tempGmOffset], cpTemp, ppTemp);
@@ -181,8 +191,9 @@ __aicore__ inline void Ssyr2kScaleAIV::ProcessBlock(
         AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(0);
     }
 
-    SyrkScaleComputeResult(tiling_.uploMode, iBase, jBase, rows, cols, ubColStride,
-        cUb, cInUb, temp1Ub, skipTemp, isBetaZero, alpha, beta);
+    SyrkScaleComputeResult(
+        tiling_.uploMode, iBase, jBase, rows, cols, ubColStride, cUb, cInUb, temp1Ub, skipTemp, isBetaZero, alpha,
+        beta);
 
     SyrkStoreCBlockAndSync(cGM_, cUb, cGmOffset, cSrcStride, rows, cols);
 }
@@ -200,8 +211,7 @@ __aicore__ inline void Ssyr2kScaleAIV::Process()
 }
 
 extern "C" __global__ __aicore__ void ssyr2k_scale_kernel(
-    GM_ADDR gmTemp1, GM_ADDR gmTemp2, GM_ADDR gmC,
-    const Ssyr2kScaleTilingData tiling)
+    GM_ADDR gmTemp1, GM_ADDR gmTemp2, GM_ADDR gmC, const Ssyr2kScaleTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     TPipe pipe;
@@ -210,11 +220,21 @@ extern "C" __global__ __aicore__ void ssyr2k_scale_kernel(
     op.Process();
 }
 
-void ssyr2k_scale_kernel_do(
-    GM_ADDR gmTemp1, GM_ADDR gmTemp2, GM_ADDR gmC,
-    const Ssyr2kScaleTilingData& tiling,
-    uint32_t numBlocks, void* stream)
+aclError ssyr2k_scale_kernel_do(
+    GM_ADDR gmTemp1, GM_ADDR gmTemp2, GM_ADDR gmC, const Ssyr2kScaleTilingData& tiling, uint32_t numBlocks,
+    void* stream)
 {
-    ssyr2k_scale_kernel<<<numBlocks, nullptr, stream>>>(
-        gmTemp1, gmTemp2, gmC, tiling);
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(reinterpret_cast<const void*>(ssyr2k_scale_kernel), &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        GM_ADDR gmTemp1;
+        GM_ADDR gmTemp2;
+        GM_ADDR gmC;
+        Ssyr2kScaleTilingData tiling;
+    } args{gmTemp1, gmTemp2, gmC, tiling};
+    static_assert(offsetof(Arguments, tiling) == 3U * sizeof(uint8_t*), "kernel ABI mismatch");
+    return aclrtLaunchKernelWithHostArgs(function, numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }

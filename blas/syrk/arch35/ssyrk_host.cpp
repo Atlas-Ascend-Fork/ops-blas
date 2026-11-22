@@ -120,7 +120,10 @@ static aclblasStatus_t LaunchGemmKernel(
         gemmTiling.singleCoreN, gemmTiling.tileM, gemmTiling.tileN, gemmTiling.tileKChunk, gemmTiling.tempRowStride);
     OP_LOGI("aclblasSsyrk", "launching gemm kernel: aicCores=%u", usedAicCoreNum);
 
-    syrk_gemm_kernel_do(ToGmAddr(A), tempDevice, gemmTiling, usedAicCoreNum, h->stream);
+    // issue #1179: a failed launch must not be reported as SUCCESS.
+    const aclError launch = syrk_gemm_kernel_do(ToGmAddr(A), tempDevice, gemmTiling, usedAicCoreNum, h->stream);
+    CHECK_RET(launch == ACL_SUCCESS, OP_LOGE("aclblasSsyrk", "syrk_gemm_kernel_do failed: %d", launch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -157,7 +160,10 @@ static aclblasStatus_t LaunchSsyrkKernel(
         static_cast<uint8_t>(ctx.isKZero ? 1 : 0), static_cast<uint8_t>(ctx.isBetaZero ? 1 : 0), ctx.tempRowStride,
         static_cast<uint8_t>(uplo), ctx.alphaVal, ctx.betaVal);
     OP_LOGI("aclblasSsyrk", "launching scale kernel: aivCores=%u", ctx.usedAivCoreNum);
-    syrk_scale_kernel_do(tempDevice, reinterpret_cast<uint8_t*>(C), scaleTiling, ctx.usedAivCoreNum, h->stream);
+    const aclError scaleLaunch =
+        syrk_scale_kernel_do(tempDevice, reinterpret_cast<uint8_t*>(C), scaleTiling, ctx.usedAivCoreNum, h->stream);
+    CHECK_RET(scaleLaunch == ACL_SUCCESS, OP_LOGE("aclblasSsyrk", "syrk_scale_kernel_do failed: %d", scaleLaunch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     return ACLBLAS_STATUS_SUCCESS;
 }

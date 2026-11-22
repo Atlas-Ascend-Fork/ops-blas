@@ -128,17 +128,25 @@ static aclblasStatus_t LaunchGemmKernels(
         gemm1Tiling.singleCoreM, gemm1Tiling.singleCoreN, gemm1Tiling.tileM, gemm1Tiling.tileN, gemm1Tiling.tileKChunk,
         gemm1Tiling.tempRowStride);
     OP_LOGI("aclblasSsyr2k", "launching gemm1 kernel: aicCores=%u", usedAicCoreNum);
-    ssyr2k_gemm_kernel_do(ToGmAddr(A), ToGmAddr(B), temp1Device, gemm1Tiling, usedAicCoreNum, h->stream);
+    // issue #1179: a failed launch must not be reported as SUCCESS, and a
+    // failed first GEMM must not trigger the second one.
+    const aclError launch1 =
+        ssyr2k_gemm_kernel_do(ToGmAddr(A), ToGmAddr(B), temp1Device, gemm1Tiling, usedAicCoreNum, h->stream);
+    CHECK_RET(launch1 == ACL_SUCCESS, OP_LOGE("aclblasSsyr2k", "ssyr2k_gemm_kernel_do(gemm1) failed: %d", launch1);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     // GEMM2: op(B) * op(A)^T -> temp2  (left=B, right=A)
     Ssyr2kGemmTilingData gemm2Tiling = CalGemmTilingData(usedAicCoreNum, n, k, ldb, lda, isTransN, tempRowStride);
     OP_LOGI("aclblasSsyr2k", "launching gemm2 kernel: aicCores=%u", usedAicCoreNum);
-    ssyr2k_gemm_kernel_do(ToGmAddr(B), ToGmAddr(A), temp2Device, gemm2Tiling, usedAicCoreNum, h->stream);
+    const aclError launch2 =
+        ssyr2k_gemm_kernel_do(ToGmAddr(B), ToGmAddr(A), temp2Device, gemm2Tiling, usedAicCoreNum, h->stream);
+    CHECK_RET(launch2 == ACL_SUCCESS, OP_LOGE("aclblasSsyr2k", "ssyr2k_gemm_kernel_do(gemm2) failed: %d", launch2);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static void LaunchScaleKernel(
+static aclblasStatus_t LaunchScaleKernel(
     _aclblas_handle* h, uint32_t usedAivCoreNum, uint32_t n, uint32_t ldc, bool isAlphaZero, bool isKZero,
     bool isBetaZero, aclblasFillMode_t uplo, float alphaVal, float betaVal, uint32_t tempRowStride,
     uint8_t* temp1Device, uint8_t* temp2Device, float* C)
@@ -154,8 +162,11 @@ static void LaunchScaleKernel(
         static_cast<uint32_t>(scaleTiling.uploMode));
     OP_LOGI("aclblasSsyr2k", "launching scale kernel: aivCores=%u", usedAivCoreNum);
 
-    ssyr2k_scale_kernel_do(
+    const aclError scaleLaunch = ssyr2k_scale_kernel_do(
         temp1Device, temp2Device, reinterpret_cast<uint8_t*>(C), scaleTiling, usedAivCoreNum, h->stream);
+    CHECK_RET(scaleLaunch == ACL_SUCCESS, OP_LOGE("aclblasSsyr2k", "ssyr2k_scale_kernel_do failed: %d", scaleLaunch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
 static aclblasStatus_t LaunchSsyr2kKernel(
@@ -188,9 +199,12 @@ static aclblasStatus_t LaunchSsyr2kKernel(
         }
     }
 
-    LaunchScaleKernel(
+    const aclblasStatus_t scaleRet = LaunchScaleKernel(
         h, ctx.usedAivCoreNum, n, ldc, ctx.isAlphaZero, ctx.isKZero, ctx.isBetaZero, uplo, ctx.alphaVal, ctx.betaVal,
         ctx.tempRowStride, temp1Device, temp2Device, C);
+    if (scaleRet != ACLBLAS_STATUS_SUCCESS) {
+        return scaleRet;
+    }
 
     return ACLBLAS_STATUS_SUCCESS;
 }

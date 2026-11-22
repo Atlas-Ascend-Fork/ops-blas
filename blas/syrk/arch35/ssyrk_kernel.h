@@ -17,18 +17,15 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "ssyrk_tiling_data.h"
 
 #ifndef GM_ADDR
 #define GM_ADDR uint8_t*
 #endif
 
-void syrk_gemm_kernel_do(
-    GM_ADDR gmA, GM_ADDR gmTemp,
-    const SyrkGemmTilingData& tiling,
-    uint32_t numBlocks, void* stream);
+aclError syrk_gemm_kernel_do(
+    GM_ADDR gmA, GM_ADDR gmTemp, const SyrkGemmTilingData& tiling, uint32_t numBlocks, void* stream);
 
-void syrk_scale_kernel_do(
-    GM_ADDR gmTemp, GM_ADDR gmC,
-    const SyrkScaleTilingData& tiling,
-    uint32_t numBlocks, void* stream);
+aclError syrk_scale_kernel_do(
+    GM_ADDR gmTemp, GM_ADDR gmC, const SyrkScaleTilingData& tiling, uint32_t numBlocks, void* stream);
