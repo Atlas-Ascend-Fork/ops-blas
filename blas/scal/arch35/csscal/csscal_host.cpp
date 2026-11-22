@@ -144,8 +144,18 @@ aclblasStatus_t aclblasCsscal(aclblasHandle_t handle, int n, const float* alpha,
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
+    // issue #1094: alpha 支持 host/device 双位置（对齐同族 sscal #1111 已确立口径，
+    // ReadScalarFromHostOrDevice 为 #652 既有 helper）：host 指针直接解引用，
+    // device 指针经 handle stream 异步 D2H + 流同步后读回，消除 host 侧对
+    // device 指针的裸解引用（段错误/垃圾值静默假成功风险）
+    float alphaVal = 0.0f;
+    aclblasStatus_t alphaStatus = ReadScalarFromHostOrDevice(alpha, handle->stream, alphaVal);
+    if (alphaStatus != ACLBLAS_STATUS_SUCCESS) {
+        return alphaStatus;
+    }
+
     // alpha = 1.0 时提前返回（数值结果一致）
-    if (*alpha == 1.0f) {
+    if (alphaVal == 1.0f) {
         return ACLBLAS_STATUS_SUCCESS;
     }
 
@@ -167,16 +177,20 @@ aclblasStatus_t aclblasCsscal(aclblasHandle_t handle, int n, const float* alpha,
         // At least 256 complex values per core except for a small single-core
         // vector. The former min(n, cores) launched many entirely idle cores.
         numBlocks = std::min(CeilDiv<uint32_t>(totalN, 256), aivCoreNum);
-        tiling = CalCsscalTilingDataContiguous(totalN, numBlocks, *alpha);
+        tiling = CalCsscalTilingDataContiguous(totalN, numBlocks, alphaVal);
     } else {
         // 跳步访问模式
-        numBlocks = std::min(CeilDiv<uint32_t>(totalN, 32), aivCoreNum);
-        tiling = CalCsscalTilingDataStrided(n, incx, numBlocks, *alpha);
+        // issue #1095: tiling 侧 useCoreNum 已按 CSSCAL_MAX_CORE_NUM 封顶，
+        // kernel 由 blockIdx 推导元素偏移（baseCount/remain 按 useCoreNum 分片），
+        // 启动块数必须同步按该上限封顶（对照 sscal 的封顶口径），否则核数大于
+        // 64 的硬件上 blockIdx>=64 的块推导出越界偏移读写 GM（in-place x）
+        numBlocks = std::min(CeilDiv<uint32_t>(totalN, 32), std::min(aivCoreNum, CSSCAL_MAX_CORE_NUM));
+        tiling = CalCsscalTilingDataStrided(n, incx, numBlocks, alphaVal);
     }
 
     OP_LOGD(
         "aclblasCsscal", "tiling: n=%d incx=%d numBlocks=%u alpha=%.6f", n, incx, numBlocks,
-        static_cast<double>(*alpha));
+        static_cast<double>(alphaVal));
 
     csscal_kernel_do(reinterpret_cast<uint8_t*>(x), nullptr, tiling, numBlocks, handle->stream);
 

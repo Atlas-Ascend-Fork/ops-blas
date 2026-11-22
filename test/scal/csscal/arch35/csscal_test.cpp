@@ -42,15 +42,49 @@ TEST_F(CsscalTest, NullHandleTakesPrecedenceOverQuickReturn)
 TEST_F(CsscalTest, QuickReturnSkipsDataPointerValidation)
 {
     EXPECT_EQ(aclblasCsscal(CsscalTest::handle_, 0, nullptr, nullptr, 1), ACLBLAS_STATUS_SUCCESS);
-    EXPECT_EQ(aclblasCsscal(CsscalTest::handle_, 5, nullptr, nullptr, 0), ACLBLAS_STATUS_SUCCESS);
-    EXPECT_EQ(aclblasCsscal(CsscalTest::handle_, 5, nullptr, nullptr, -1), ACLBLAS_STATUS_SUCCESS);
+    // n > 0 时 incx 口径先于指针校验（对齐 #1092 后的 host/README/CSV：incx<0 拒绝 NOT_SUPPORTED，
+    // incx==0 返回 INVALID_VALUE，不再静默假成功）
+    EXPECT_EQ(aclblasCsscal(CsscalTest::handle_, 5, nullptr, nullptr, 0), ACLBLAS_STATUS_INVALID_VALUE);
+    EXPECT_EQ(aclblasCsscal(CsscalTest::handle_, 5, nullptr, nullptr, -1), ACLBLAS_STATUS_NOT_SUPPORTED);
+}
+
+// issue #1094: alpha 支持 host/device 双位置——device alpha 经同步 D2H 读取后
+// 正常参与缩放，不再 host 侧裸解引用（段错误/垃圾值风险）
+TEST_F(CsscalTest, DeviceAlphaScalesCorrectly)
+{
+    const int n = 5;
+    const int incx = 1;
+    const float alphaHost = 2.0f;
+    std::vector<aclblasComplex> xHost = {{1, 2}, {3, 4}, {5, 6}, {7, 8}, {9, 10}};
+    const size_t xBytes = xHost.size() * sizeof(aclblasComplex);
+
+    void* dX = nullptr;
+    void* dAlpha = nullptr;
+    ASSERT_EQ(aclrtMalloc(&dX, xBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dAlpha, sizeof(float), ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMemcpy(dX, xBytes, xHost.data(), xBytes, ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMemcpy(dAlpha, sizeof(float), &alphaHost, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+
+    aclblasStatus_t ret = aclblasCsscal(
+        CsscalTest::handle_, n, static_cast<const float*>(dAlpha), static_cast<aclblasComplex*>(dX), incx);
+    EXPECT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
+    ASSERT_EQ(aclrtSynchronizeDevice(), ACL_SUCCESS);
+
+    std::vector<aclblasComplex> xOut(xHost.size());
+    ASSERT_EQ(aclrtMemcpy(xOut.data(), xBytes, dX, xBytes, ACL_MEMCPY_DEVICE_TO_HOST), ACL_SUCCESS);
+    for (size_t i = 0; i < xHost.size(); i++) {
+        EXPECT_EQ(xOut[i].real, xHost[i].real * alphaHost);
+        EXPECT_EQ(xOut[i].imag, xHost[i].imag * alphaHost);
+    }
+
+    aclrtFree(dX);
+    aclrtFree(dAlpha);
 }
 
 // Helper: verify complex vector by checking real and imag parts separately
 static bool verifyCsscalResult(
-    const aclblasComplex* output, const aclblasComplex* golden,
-    size_t count, int64_t stride,
-    const VerifyConfig& cfg, const std::string& caseId)
+    const aclblasComplex* output, const aclblasComplex* golden, size_t count, int64_t stride, const VerifyConfig& cfg,
+    const std::string& caseId)
 {
     // Extract real parts (stride positions: 0, stride, 2*stride, ...)
     std::vector<float> outReal(count);
@@ -116,6 +150,6 @@ TEST_P(CsscalTest, CsvDriven)
     cfg.mixedMaxAbsErrorLimit = p.mereThreshold * 32.0;
 
     int absInc = std::abs(p.incx);
-    EXPECT_TRUE(verifyCsscalResult(xPtr, goldenX.data(), static_cast<size_t>(p.n),
-                                   static_cast<int64_t>(absInc), cfg, p.caseName));
+    EXPECT_TRUE(verifyCsscalResult(
+        xPtr, goldenX.data(), static_cast<size_t>(p.n), static_cast<int64_t>(absInc), cfg, p.caseName));
 }

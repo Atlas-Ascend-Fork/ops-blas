@@ -12,7 +12,7 @@ aclblasStatus_t aclblasCsscal(aclblasHandle_t handle, int n,
     const float* alpha, aclblasComplex* x, int incx);
 ```
 
-handle 为 ops-blas 句柄，alpha 指向 Host float，x 指向 Device complex64。正步长时，x 的物理长度至少为 `1+(n-1)*incx`。只更新选中的复数，间隔元素保持不变。
+handle 为 ops-blas 句柄，alpha 支持 Host 或 Device float 指针（按指针位置自动探测：Host 直接读取，Device 经句柄 stream 异步 D2H 读回并同步，issue #1094 对齐 sscal 同族口径），x 指向 Device complex64。正步长时，x 的物理长度至少为 `1+(n-1)*incx`。只更新选中的复数，间隔元素保持不变。
 
 句柄为空优先返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`；n≤0 返回成功；incx<0 返回 `ACLBLAS_STATUS_NOT_SUPPORTED`，incx==0 返回 `ACLBLAS_STATUS_INVALID_VALUE`（与 scopy/sswap/rotex/scalex 口径一致）；其余情况 alpha/x 为空返回 `ACLBLAS_STATUS_INVALID_VALUE`。alpha=1 可提前返回；alpha=0 仍执行乘法并保留特殊浮点语义。查询不到核数时返回 `ACLBLAS_STATUS_EXECUTION_FAILED`。
 
