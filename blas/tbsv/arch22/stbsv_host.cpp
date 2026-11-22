@@ -18,7 +18,7 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
-void stbsv_kernel_do(const StbsvTilingData& tiling, void* stream);
+aclError stbsv_kernel_do(const StbsvTilingData& tiling, void* stream);
 
 static uint64_t GetTbsvUbBudgetBytes()
 {
@@ -103,7 +103,10 @@ aclblasStatus_t aclblasStbsv(
         tiling.trans, tiling.diag, tiling.incx, tiling.lda);
     OP_LOGI("aclblasStbsv", "launching kernel");
 
-    stbsv_kernel_do(tiling, h->stream);
+    // issue #1178: a failed launch must not be reported as SUCCESS with x stale.
+    const aclError launch = stbsv_kernel_do(tiling, h->stream);
+    CHECK_RET(launch == ACL_SUCCESS, OP_LOGE("aclblasStbsv", "stbsv_kernel_do failed: %d", launch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     return ACLBLAS_STATUS_SUCCESS;
 }

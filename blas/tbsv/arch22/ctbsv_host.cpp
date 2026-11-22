@@ -88,6 +88,9 @@ aclblasStatus_t aclblasCtbsv(
         "aclblasCtbsv", "tiling: n=%u k=%u uplo=%u trans=%u diag=%u incx=%d lda=%u gmFallback=%u", tiling.n, tiling.k,
         tiling.uplo, tiling.trans, tiling.diag, tiling.incx, tiling.lda, tiling.useGmFallback);
     OP_LOGI("aclblasCtbsv", "launching kernel");
-    ctbsv_kernel_do(tiling, handle->stream);
+    // issue #1178: a failed launch must not be reported as SUCCESS with x stale.
+    const aclError launch = ctbsv_kernel_do(tiling, handle->stream);
+    CHECK_RET(launch == ACL_SUCCESS, OP_LOGE("aclblasCtbsv", "ctbsv_kernel_do failed: %d", launch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
     return ACLBLAS_STATUS_SUCCESS;
 }

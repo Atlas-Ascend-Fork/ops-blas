@@ -11,6 +11,7 @@
 #include <cstdint>
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
+#include "acl/acl.h"
 #include "stbsv_tiling_data.h"
 #include "stbsv_fma.h"
 
@@ -1752,21 +1753,37 @@ static bool UseNarrowWindowKernel(const StbsvTilingData& tiling)
     return uint64_t{reserved} + uint64_t{minimumCols} * tiling.lda <= available;
 }
 
-static void LaunchNarrowWindowKernel(const StbsvTilingData& tiling, void* stream)
+// issue #1178: the chevron syntax discards the launch status, so a failed
+// launch previously surfaced as SUCCESS with x stale. Launch through the
+// runtime handle and report each launch's own error instead (chbmv pattern).
+static aclError LaunchStbsv(const void* symbol, uint32_t blocks, void* stream, const StbsvTilingData& tiling)
+{
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(symbol, &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        StbsvTilingData tiling;
+    } args{tiling};
+    static_assert(sizeof(Arguments) == sizeof(StbsvTilingData));
+    return aclrtLaunchKernelWithHostArgs(function, blocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
+}
+
+static aclError LaunchNarrowWindowKernel(const StbsvTilingData& tiling, void* stream)
 {
     if (tiling.uplo == ACLBLAS_LOWER) {
         if (tiling.trans == ACLBLAS_OP_N) {
-            stbsv_kernel_lower_no_trans_non_unit_window<<<1, nullptr, stream>>>(tiling);
-        } else {
-            stbsv_kernel_lower_trans_non_unit_window<<<1, nullptr, stream>>>(tiling);
+            return LaunchStbsv(
+                reinterpret_cast<const void*>(stbsv_kernel_lower_no_trans_non_unit_window), 1U, stream, tiling);
         }
-    } else {
-        if (tiling.trans == ACLBLAS_OP_N) {
-            stbsv_kernel_upper_no_trans_non_unit_window<<<1, nullptr, stream>>>(tiling);
-        } else {
-            stbsv_kernel_upper_trans_non_unit_window<<<1, nullptr, stream>>>(tiling);
-        }
+        return LaunchStbsv(reinterpret_cast<const void*>(stbsv_kernel_lower_trans_non_unit_window), 1U, stream, tiling);
     }
+    if (tiling.trans == ACLBLAS_OP_N) {
+        return LaunchStbsv(
+            reinterpret_cast<const void*>(stbsv_kernel_upper_no_trans_non_unit_window), 1U, stream, tiling);
+    }
+    return LaunchStbsv(reinterpret_cast<const void*>(stbsv_kernel_upper_trans_non_unit_window), 1U, stream, tiling);
 }
 
 static bool UseParallelKernel(const StbsvTilingData& tiling)
@@ -1783,67 +1800,58 @@ static bool UseParallelKernel(const StbsvTilingData& tiling)
            (tiling.trans == ACLBLAS_OP_N || tiling.lda <= 0x3fffffff);
 }
 
-static void LaunchParallelKernel(const StbsvTilingData& tiling, void* stream)
+static aclError LaunchParallelKernel(const StbsvTilingData& tiling, void* stream)
 {
     uint32_t blocks = tiling.trans != ACLBLAS_OP_N && tiling.n < 1024 ? 4 : 8;
     if (tiling.uplo == ACLBLAS_LOWER) {
         if (tiling.trans == ACLBLAS_OP_N) {
-            stbsv_kernel_lower_no_trans_non_unit_owned<<<blocks, nullptr, stream>>>(tiling);
-        } else {
-            stbsv_kernel_lower_trans_non_unit_owned<<<blocks, nullptr, stream>>>(tiling);
+            return LaunchStbsv(
+                reinterpret_cast<const void*>(stbsv_kernel_lower_no_trans_non_unit_owned), blocks, stream, tiling);
         }
-    } else {
-        if (tiling.trans == ACLBLAS_OP_N) {
-            stbsv_kernel_upper_no_trans_non_unit_owned<<<blocks, nullptr, stream>>>(tiling);
-        } else {
-            stbsv_kernel_upper_trans_non_unit_owned<<<blocks, nullptr, stream>>>(tiling);
-        }
+        return LaunchStbsv(
+            reinterpret_cast<const void*>(stbsv_kernel_lower_trans_non_unit_owned), blocks, stream, tiling);
     }
-    return;
+    if (tiling.trans == ACLBLAS_OP_N) {
+        return LaunchStbsv(
+            reinterpret_cast<const void*>(stbsv_kernel_upper_no_trans_non_unit_owned), blocks, stream, tiling);
+    }
+    return LaunchStbsv(reinterpret_cast<const void*>(stbsv_kernel_upper_trans_non_unit_owned), blocks, stream, tiling);
 }
 
-static void LaunchSingleKernel(const StbsvTilingData& tiling, void* stream)
+static aclError LaunchSingleKernel(const StbsvTilingData& tiling, void* stream)
 {
     if (tiling.uplo == ACLBLAS_LOWER) {
         if (tiling.trans == ACLBLAS_OP_N) {
             if (tiling.diag == ACLBLAS_NON_UNIT) {
-                stbsv_kernel_lower_no_trans_non_unit<<<1, nullptr, stream>>>(tiling);
-            } else {
-                stbsv_kernel_lower_no_trans_unit<<<1, nullptr, stream>>>(tiling);
+                return LaunchStbsv(
+                    reinterpret_cast<const void*>(stbsv_kernel_lower_no_trans_non_unit), 1U, stream, tiling);
             }
-        } else {
-            if (tiling.diag == ACLBLAS_NON_UNIT) {
-                stbsv_kernel_lower_trans_non_unit<<<1, nullptr, stream>>>(tiling);
-            } else {
-                stbsv_kernel_lower_trans_unit<<<1, nullptr, stream>>>(tiling);
-            }
+            return LaunchStbsv(reinterpret_cast<const void*>(stbsv_kernel_lower_no_trans_unit), 1U, stream, tiling);
         }
-    } else {
-        if (tiling.trans == ACLBLAS_OP_N) {
-            if (tiling.diag == ACLBLAS_NON_UNIT) {
-                stbsv_kernel_upper_no_trans_non_unit<<<1, nullptr, stream>>>(tiling);
-            } else {
-                stbsv_kernel_upper_no_trans_unit<<<1, nullptr, stream>>>(tiling);
-            }
-        } else {
-            if (tiling.diag == ACLBLAS_NON_UNIT) {
-                stbsv_kernel_upper_trans_non_unit<<<1, nullptr, stream>>>(tiling);
-            } else {
-                stbsv_kernel_upper_trans_unit<<<1, nullptr, stream>>>(tiling);
-            }
+        if (tiling.diag == ACLBLAS_NON_UNIT) {
+            return LaunchStbsv(reinterpret_cast<const void*>(stbsv_kernel_lower_trans_non_unit), 1U, stream, tiling);
         }
+        return LaunchStbsv(reinterpret_cast<const void*>(stbsv_kernel_lower_trans_unit), 1U, stream, tiling);
     }
+    if (tiling.trans == ACLBLAS_OP_N) {
+        if (tiling.diag == ACLBLAS_NON_UNIT) {
+            return LaunchStbsv(reinterpret_cast<const void*>(stbsv_kernel_upper_no_trans_non_unit), 1U, stream, tiling);
+        }
+        return LaunchStbsv(reinterpret_cast<const void*>(stbsv_kernel_upper_no_trans_unit), 1U, stream, tiling);
+    }
+    if (tiling.diag == ACLBLAS_NON_UNIT) {
+        return LaunchStbsv(reinterpret_cast<const void*>(stbsv_kernel_upper_trans_non_unit), 1U, stream, tiling);
+    }
+    return LaunchStbsv(reinterpret_cast<const void*>(stbsv_kernel_upper_trans_unit), 1U, stream, tiling);
 }
 
-void stbsv_kernel_do(const StbsvTilingData& tiling, void* stream)
+aclError stbsv_kernel_do(const StbsvTilingData& tiling, void* stream)
 {
     if (UseParallelKernel(tiling)) {
-        LaunchParallelKernel(tiling, stream);
-        return;
+        return LaunchParallelKernel(tiling, stream);
     }
     if (UseNarrowWindowKernel(tiling)) {
-        LaunchNarrowWindowKernel(tiling, stream);
-        return;
+        return LaunchNarrowWindowKernel(tiling, stream);
     }
-    LaunchSingleKernel(tiling, stream);
+    return LaunchSingleKernel(tiling, stream);
 }

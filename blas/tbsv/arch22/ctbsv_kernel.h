@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "acl/acl.h"
 #include "ctbsv_tiling_data.h"
 
-void ctbsv_kernel_do(const CtbsvTilingData& tiling, void* stream);
+aclError ctbsv_kernel_do(const CtbsvTilingData& tiling, void* stream);

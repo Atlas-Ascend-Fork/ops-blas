@@ -11,6 +11,7 @@
 #include <cstdint>
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
+#include "acl/acl.h"
 #include "ctbsv_tiling_data.h"
 #include "common/helper/kernel_constant.h"
 #include "ctbsv_complex_arith.h"
@@ -1230,6 +1231,23 @@ __global__ __aicore__ void ctbsv_kernel_small_aic(CtbsvTilingData tiling)
 }
 
 namespace {
+// issue #1178: the chevron syntax discards the launch status, so a failed
+// launch previously surfaced as SUCCESS with stale contents. Launch through
+// the runtime handle and report each launch's own error instead (chbmv pattern).
+aclError LaunchCtbsv(const void* symbol, uint32_t blocks, void* stream, const CtbsvTilingData& tiling)
+{
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(symbol, &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        CtbsvTilingData tiling;
+    } args{tiling};
+    static_assert(sizeof(Arguments) == sizeof(CtbsvTilingData));
+    return aclrtLaunchKernelWithHostArgs(function, blocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
+}
+
 bool CtbsvUseReferenceOrder(const CtbsvTilingData& tiling)
 {
     if (tiling.useGmFallback != 0U || tiling.diag != ACLBLAS_UNIT || tiling.n < CTBSV_REFERENCE_MIN_N) {
@@ -1240,104 +1258,122 @@ bool CtbsvUseReferenceOrder(const CtbsvTilingData& tiling)
     return 2ULL * (static_cast<uint64_t>(effectiveK) + 1ULL) >= static_cast<uint64_t>(tiling.n);
 }
 
-void CtbsvLaunchLowerNoTrans(const CtbsvTilingData& tiling, void* stream)
+aclError CtbsvLaunchLowerNoTrans(const CtbsvTilingData& tiling, void* stream)
 {
     if (tiling.diag == ACLBLAS_NON_UNIT) {
-        ctbsv_kernel_lower_no_trans_non_unit<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_lower_no_trans_non_unit), CTBSV_SOLVE_BLOCKS, stream, tiling);
     } else if (CtbsvUseReferenceOrder(tiling)) {
-        ctbsv_kernel_lower_no_trans_unit_reference<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_lower_no_trans_unit_reference), CTBSV_SOLVE_BLOCKS, stream,
+            tiling);
     } else {
-        ctbsv_kernel_lower_no_trans_unit<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_lower_no_trans_unit), CTBSV_SOLVE_BLOCKS, stream, tiling);
     }
 }
 
-void CtbsvLaunchLowerTrans(const CtbsvTilingData& tiling, void* stream)
+aclError CtbsvLaunchLowerTrans(const CtbsvTilingData& tiling, void* stream)
 {
     if (tiling.diag == ACLBLAS_NON_UNIT) {
-        ctbsv_kernel_lower_trans_non_unit<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_lower_trans_non_unit), CTBSV_SOLVE_BLOCKS, stream, tiling);
     } else if (CtbsvUseReferenceOrder(tiling)) {
-        ctbsv_kernel_lower_trans_unit_reference<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_lower_trans_unit_reference), CTBSV_SOLVE_BLOCKS, stream, tiling);
     } else {
-        ctbsv_kernel_lower_trans_unit<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_lower_trans_unit), CTBSV_SOLVE_BLOCKS, stream, tiling);
     }
 }
 
-void CtbsvLaunchLowerConj(const CtbsvTilingData& tiling, void* stream)
+aclError CtbsvLaunchLowerConj(const CtbsvTilingData& tiling, void* stream)
 {
     if (tiling.diag == ACLBLAS_NON_UNIT) {
-        ctbsv_kernel_lower_conj_non_unit<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_lower_conj_non_unit), CTBSV_SOLVE_BLOCKS, stream, tiling);
     } else if (CtbsvUseReferenceOrder(tiling)) {
-        ctbsv_kernel_lower_conj_unit_reference<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_lower_conj_unit_reference), CTBSV_SOLVE_BLOCKS, stream, tiling);
     } else {
-        ctbsv_kernel_lower_conj_unit<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_lower_conj_unit), CTBSV_SOLVE_BLOCKS, stream, tiling);
     }
 }
 
-void CtbsvLaunchUpperNoTrans(const CtbsvTilingData& tiling, void* stream)
+aclError CtbsvLaunchUpperNoTrans(const CtbsvTilingData& tiling, void* stream)
 {
     if (tiling.diag == ACLBLAS_NON_UNIT) {
-        ctbsv_kernel_upper_no_trans_non_unit<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_upper_no_trans_non_unit), CTBSV_SOLVE_BLOCKS, stream, tiling);
     } else if (CtbsvUseReferenceOrder(tiling)) {
-        ctbsv_kernel_upper_no_trans_unit_reference<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_upper_no_trans_unit_reference), CTBSV_SOLVE_BLOCKS, stream,
+            tiling);
     } else {
-        ctbsv_kernel_upper_no_trans_unit<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_upper_no_trans_unit), CTBSV_SOLVE_BLOCKS, stream, tiling);
     }
 }
 
-void CtbsvLaunchUpperTrans(const CtbsvTilingData& tiling, void* stream)
+aclError CtbsvLaunchUpperTrans(const CtbsvTilingData& tiling, void* stream)
 {
     if (tiling.diag == ACLBLAS_NON_UNIT) {
-        ctbsv_kernel_upper_trans_non_unit<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_upper_trans_non_unit), CTBSV_SOLVE_BLOCKS, stream, tiling);
     } else if (CtbsvUseReferenceOrder(tiling)) {
-        ctbsv_kernel_upper_trans_unit_reference<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_upper_trans_unit_reference), CTBSV_SOLVE_BLOCKS, stream, tiling);
     } else {
-        ctbsv_kernel_upper_trans_unit<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_upper_trans_unit), CTBSV_SOLVE_BLOCKS, stream, tiling);
     }
 }
 
-void CtbsvLaunchUpperConj(const CtbsvTilingData& tiling, void* stream)
+aclError CtbsvLaunchUpperConj(const CtbsvTilingData& tiling, void* stream)
 {
     if (tiling.diag == ACLBLAS_NON_UNIT) {
-        ctbsv_kernel_upper_conj_non_unit<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_upper_conj_non_unit), CTBSV_SOLVE_BLOCKS, stream, tiling);
     } else if (CtbsvUseReferenceOrder(tiling)) {
-        ctbsv_kernel_upper_conj_unit_reference<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_upper_conj_unit_reference), CTBSV_SOLVE_BLOCKS, stream, tiling);
     } else {
-        ctbsv_kernel_upper_conj_unit<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
+        return LaunchCtbsv(
+            reinterpret_cast<const void*>(ctbsv_kernel_upper_conj_unit), CTBSV_SOLVE_BLOCKS, stream, tiling);
     }
 }
 
-void CtbsvLaunchLower(const CtbsvTilingData& tiling, void* stream)
+aclError CtbsvLaunchLower(const CtbsvTilingData& tiling, void* stream)
 {
     if (tiling.trans == ACLBLAS_OP_N) {
-        CtbsvLaunchLowerNoTrans(tiling, stream);
+        return CtbsvLaunchLowerNoTrans(tiling, stream);
     } else if (tiling.trans == ACLBLAS_OP_T) {
-        CtbsvLaunchLowerTrans(tiling, stream);
+        return CtbsvLaunchLowerTrans(tiling, stream);
     } else {
-        CtbsvLaunchLowerConj(tiling, stream);
+        return CtbsvLaunchLowerConj(tiling, stream);
     }
 }
 
-void CtbsvLaunchUpper(const CtbsvTilingData& tiling, void* stream)
+aclError CtbsvLaunchUpper(const CtbsvTilingData& tiling, void* stream)
 {
     if (tiling.trans == ACLBLAS_OP_N) {
-        CtbsvLaunchUpperNoTrans(tiling, stream);
+        return CtbsvLaunchUpperNoTrans(tiling, stream);
     } else if (tiling.trans == ACLBLAS_OP_T) {
-        CtbsvLaunchUpperTrans(tiling, stream);
+        return CtbsvLaunchUpperTrans(tiling, stream);
     } else {
-        CtbsvLaunchUpperConj(tiling, stream);
+        return CtbsvLaunchUpperConj(tiling, stream);
     }
 }
 } // namespace
 
-void ctbsv_kernel_do(const CtbsvTilingData& tiling, void* stream)
+aclError ctbsv_kernel_do(const CtbsvTilingData& tiling, void* stream)
 {
     if (tiling.n <= CTBSV_SMALL_AIC_MAX_N) {
-        ctbsv_kernel_small_aic<<<CTBSV_SOLVE_BLOCKS, nullptr, stream>>>(tiling);
-        return;
+        return LaunchCtbsv(reinterpret_cast<const void*>(ctbsv_kernel_small_aic), CTBSV_SOLVE_BLOCKS, stream, tiling);
     }
     if (tiling.uplo == ACLBLAS_LOWER) {
-        CtbsvLaunchLower(tiling, stream);
-    } else {
-        CtbsvLaunchUpper(tiling, stream);
+        return CtbsvLaunchLower(tiling, stream);
     }
+    return CtbsvLaunchUpper(tiling, stream);
 }
