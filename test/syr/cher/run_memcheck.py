@@ -43,7 +43,7 @@ def audit_memcheck(text, returncode):
     warnings = len(re.findall(r"WARNING: MemorySanitizer|ERROR: MemorySanitizer|LeakSanitizer", text or ""))
     starts = (text or "").count("Start memcheck")
     finished = len(re.findall(r"No error detected", text or ""))
-    ok = warnings == 0 and returncode == 0 and starts > 0
+    ok = warnings == 0 and returncode == 0 and starts > 0 and starts == finished
     return {
         "warnings": warnings,
         "starts": starts,
@@ -93,6 +93,8 @@ def main():
         LOG.error(
             "FAIL: no 'Start memcheck' records; gtest filter matched 0 tests or mssanitizer did not run"
         )
+    elif summary["starts"] != summary["finished_clean"]:
+        LOG.error("FAIL: %d memcheck starts but %d clean finishes", summary["starts"], summary["finished_clean"])
     LOG.info("RESULT: %s", "PASS" if summary["ok"] else "FAIL")
     return 0 if summary["ok"] else 1
 
