@@ -23,6 +23,8 @@ Usage
 """
 
 import argparse
+import csv
+from collections import Counter
 import logging
 import os
 import re
@@ -48,16 +50,16 @@ def parse_args():
 
 
 def csv_stats(csv_path):
-    text = csv_path.read_text(encoding="utf-8")
-    rows = [line for line in text.splitlines() if line.strip()][1:]
-    names = [row.split(",")[0] for row in rows]
+    with csv_path.open(encoding="utf-8", newline="") as source:
+        names = [row["case_name"] for row in csv.DictReader(source)]
     perf = sum(1 for name in names if name.startswith("TC_PF_"))
-    duplicates = sorted({name for name in names if names.count(name) > 1})
-    return len(rows), perf, duplicates
+    duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
+    return names, perf, duplicates
 
 
 def check_csv(csv_path):
-    total, perf, duplicates = csv_stats(csv_path)
+    names, perf, duplicates = csv_stats(csv_path)
+    total = len(names)
     errors = []
     if total != EXPECTED_CSV_CASES:
         errors.append("csv case count %d != expected %d" % (total, EXPECTED_CSV_CASES))
@@ -65,7 +67,7 @@ def check_csv(csv_path):
         errors.append("perf case count %d != expected %d" % (perf, EXPECTED_PERF_CASES))
     if duplicates:
         errors.append("duplicate case names: %s" % ", ".join(duplicates))
-    return {"csv_cases": total, "perf_cases": perf, "duplicate_case_names": duplicates}, errors
+    return {"csv_cases": total, "perf_cases": perf, "duplicate_case_names": duplicates}, errors, names
 
 
 def parse_perf(text):
@@ -78,15 +80,19 @@ def parse_perf(text):
     return rows
 
 
-def check_run(proc, parsed, perf_rows):
-    csv_executed = sum(1 for name in parsed["executed"] if "CsvDriven" in name)
+def check_run(proc, parsed, perf_rows, csv_names):
+    csv_prefix = "Crot/CrotTest.CsvDriven/"
+    expected = Counter(csv_prefix + name for name in csv_names)
+    observed = Counter(name for name in parsed["executed"] if name.startswith(csv_prefix))
+    csv_executed = sum(observed.values())
     errors = []
     if proc.returncode != 0:
         errors.append("gtest exited with %d" % proc.returncode)
     if parsed["failed"]:
         errors.append("%d gtest failures" % parsed["failed"])
-    if csv_executed != EXPECTED_CSV_CASES:
-        errors.append("executed csv cases %d != expected %d" % (csv_executed, EXPECTED_CSV_CASES))
+    if observed != expected:
+        errors.append("CSV test mismatch: missing %s; unexpected or repeated %s"
+                      % (", ".join(sorted(expected - observed)), ", ".join(sorted(observed - expected))))
     passed = parsed["passed"]
     if passed is None or passed < EXPECTED_CSV_CASES + EXPECTED_FIXED_TESTS:
         errors.append("gtest passed count %s is below %d" % (passed, EXPECTED_CSV_CASES + EXPECTED_FIXED_TESTS))
@@ -110,7 +116,7 @@ def main():
         LOGGER.error("crot_test.csv not found")
         return 2
 
-    statistics, errors = check_csv(csv_path)
+    statistics, errors, csv_names = check_csv(csv_path)
     summary.update(statistics)
     if errors:
         summary["errors"] = errors
@@ -124,7 +130,7 @@ def main():
     proc = run_binary([str(binary)], repo, env, args.timeout)
     parsed = parse_gtest_output(proc.stdout)
     perf_rows = parse_perf(proc.stdout)
-    csv_executed, errors = check_run(proc, parsed, perf_rows)
+    csv_executed, errors = check_run(proc, parsed, perf_rows, csv_names)
 
     summary.update({
         "return_code": proc.returncode,
