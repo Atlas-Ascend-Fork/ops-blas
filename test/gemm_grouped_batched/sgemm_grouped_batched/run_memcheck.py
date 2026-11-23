@@ -27,13 +27,11 @@ def parse_args():
 
 def audit_memcheck(text, run_text):
     starts, clean = text.count("Start memcheck"), text.count("No error detected")
-    clean_line = re.compile(
-        r".*(?:No error detected|(?:ERROR|WARNING)\s*[:=]\s*0|\b0\s+(?:errors|warnings))\s*$", re.I)
+    benign = r"No error detected\.?|\b(?:ERROR|WARNING)\s*[:=]\s*0\b|\b0\s+(?:errors|warnings)\b"
     suspect = []
     for line in text.splitlines():
-        if clean_line.fullmatch(line):
-            continue
-        if re.search(r"\b(error|warning|failed)\b|out.of.bounds|race condition", line, re.I):
+        remaining = re.sub(benign, "", line, flags=re.I)
+        if re.search(r"\b(error|warning|failed)\b|out.of.bounds|race condition", remaining, re.I):
             suspect.append(line)
     if re.search(r"stop(?:ping)? DBI|failed to create|instrumentation.*fail|CPU_MODEL_PASS", run_text, re.I):
         raise RuntimeError("Missing instrumentation or CPU mock detected")
