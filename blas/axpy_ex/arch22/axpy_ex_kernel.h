@@ -11,8 +11,9 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 
 #include "axpy_ex_tiling_data.h"
 
-void axpy_ex_kernel_do(
+aclError axpy_ex_kernel_do(
     uint8_t* x, uint8_t* y, void* alpha, const AxpyExTilingData& tiling, uint32_t numBlocks, void* stream);

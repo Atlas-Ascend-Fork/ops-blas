@@ -41,8 +41,8 @@ aclblasStatus_t ValidateAxpyExTypes(
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
     if (!IsSupportedAxpyExVecType(xType) || !IsSupportedAxpyExVecType(yType) || xType != yType) {
-        OP_LOGE(OP_TAG, "xType(%d)/yType(%d) unsupported or mismatch", static_cast<int>(xType),
-            static_cast<int>(yType));
+        OP_LOGE(
+            OP_TAG, "xType(%d)/yType(%d) unsupported or mismatch", static_cast<int>(xType), static_cast<int>(yType));
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
     return ACLBLAS_STATUS_SUCCESS;
@@ -92,8 +92,8 @@ AxpyExTilingData CalAxpyExTilingData(
 } // namespace
 
 aclblasStatus_t aclblasAxpyEx(
-    aclblasHandle_t handle, int n, const void* alpha, aclDataType alphaType, const void* x, aclDataType xType,
-    int incx, void* y, aclDataType yType, int incy, aclDataType executionType)
+    aclblasHandle_t handle, int n, const void* alpha, aclDataType alphaType, const void* x, aclDataType xType, int incx,
+    void* y, aclDataType yType, int incy, aclDataType executionType)
 {
     if (handle == nullptr) {
         OP_LOGE(OP_TAG, "handle is nullptr");
@@ -106,8 +106,8 @@ aclblasStatus_t aclblasAxpyEx(
     if (n == 0) {
         return ACLBLAS_STATUS_SUCCESS;
     }
-    const aclblasStatus_t status = ValidateAxpyExParams(
-        n, alpha, alphaType, x, xType, incx, y, yType, incy, executionType);
+    const aclblasStatus_t status =
+        ValidateAxpyExParams(n, alpha, alphaType, x, xType, incx, y, yType, incy, executionType);
     if (status != ACLBLAS_STATUS_SUCCESS) {
         return status;
     }
@@ -128,14 +128,19 @@ aclblasStatus_t aclblasAxpyEx(
 
     const uint32_t totalN = static_cast<uint32_t>(n);
     const uint32_t numBlocks = std::max(1U, std::min(CeilDiv(totalN, AXPY_EX_MIN_ELEMS_PER_CORE), aivCoreNum));
-    const AxpyExTilingData tiling = CalAxpyExTilingData(
-        n, incx, incy, numBlocks, static_cast<uint32_t>(xType), alphaHost, alphaIsDevice);
+    const AxpyExTilingData tiling =
+        CalAxpyExTilingData(n, incx, incy, numBlocks, static_cast<uint32_t>(xType), alphaHost, alphaIsDevice);
 
-    OP_LOGD(OP_TAG, "launching kernel: n=%u blocks=%u incx=%d incy=%d xType=%u", totalN, numBlocks, incx, incy,
+    OP_LOGD(
+        OP_TAG, "launching kernel: n=%u blocks=%u incx=%d incy=%d xType=%u", totalN, numBlocks, incx, incy,
         tiling.xType);
     void* alphaPtr = alphaIsDevice ? const_cast<void*>(alpha) : nullptr;
-    axpy_ex_kernel_do(
+    const aclError launchErr = axpy_ex_kernel_do(
         const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(x)), reinterpret_cast<uint8_t*>(y), alphaPtr, tiling,
         numBlocks, handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "axpy_ex_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }

@@ -137,8 +137,7 @@ private:
 
     template <typename T>
     __aicore__ inline void LoadStridedTile(
-        GlobalTensor<T>& gm, int64_t startOff, int64_t inc, uint32_t tileStart, uint32_t count,
-        LocalTensor<T>& ubDst)
+        GlobalTensor<T>& gm, int64_t startOff, int64_t inc, uint32_t tileStart, uint32_t count, LocalTensor<T>& ubDst)
     {
         DataCopyPadExtParams<T> noPad{false, 0U, 0U, static_cast<T>(0.0F)};
         if (inc == 1) {
@@ -175,8 +174,7 @@ private:
 
     template <typename T>
     __aicore__ inline void StoreStridedTile(
-        GlobalTensor<T>& gm, int64_t startOff, int64_t inc, uint32_t tileStart, uint32_t count,
-        LocalTensor<T>& ubSrc)
+        GlobalTensor<T>& gm, int64_t startOff, int64_t inc, uint32_t tileStart, uint32_t count, LocalTensor<T>& ubSrc)
     {
         if (inc == 1) {
             AxpyExWaitEvent(HardEvent::V_MTE3, pipe_);
@@ -271,8 +269,12 @@ extern "C" __global__ __aicore__ void axpy_ex_arch22_kernel(
     op.Process();
 }
 
-void axpy_ex_kernel_do(
+aclError axpy_ex_kernel_do(
     uint8_t* x, uint8_t* y, void* alpha, const AxpyExTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    // Drain any stale thread-level error so the post-launch check only reports
+    // this launch's own failure (issue #1181 precedent).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     axpy_ex_arch22_kernel<<<numBlocks, nullptr, stream>>>(x, y, static_cast<uint8_t*>(alpha), tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
