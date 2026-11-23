@@ -28,14 +28,15 @@
 bash build.sh --pkg --soc=${soc_version} --ops=scopy
 ```
 
-${soc_version}设置方法如下：
+本节用 scopy 进行编译与运行，请按以下平台设置 `${soc_version}`。
 
 访问[CANN下载中心](https://www.hiascend.com/cann/download)，根据页面提示复制硬件查询命令，在当前环境中执行，返回芯片ID信息，再回填到官网按Enter键获取产品名，产品名对应的${soc_version}取值如下，请按实际场景传参。
 
 - Atlas A2 训练系列产品/Atlas A2 推理系列产品：取值为ascend910b
 - Atlas A3 训练系列产品/Atlas A3 推理系列产品：取值为ascend910_93
 - 950系列产品：取值为ascend950
-- Ascend 310P 系列产品（如 Atlas 300I 推理卡）：取值为ascend310p
+
+Ascend 310P 对应 `arch20`。本节 scopy 的算子与测试使用 `arch22` 或 `arch35`，请使用上述支持的平台。后续修改 Kernel 的示例以 A2/A3 为例。完整支持范围见 [Copy 算子](../blas/copy/README.md)。
 
 <img src="./zh/figures/socInfo.png" alt="芯片版本" width="800px" height="160px">
 
