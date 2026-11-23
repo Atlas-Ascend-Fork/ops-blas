@@ -22,7 +22,9 @@ endif()
 function(_ops_blas_has_blas_op_sources op_name out_var)
     set(has_sources FALSE)
 
-    # 列表驱动：遍历 TENSOR_API_OPS，低版本时跳过对应算子的实现与测试
+    # 列表驱动：遍历 TENSOR_API_OPS，低版本时仅跳过 arch35 的 tensor_api 源码目录，
+    # 不影响非 arch35（如 arch22）的独立实现，也不在多架构构建时误跳过非 arch35 实现。
+    set(_skip_arch35_tensor_op FALSE)
     foreach(entry ${TENSOR_API_OPS})
         string(REPLACE "|" ";" _fields "${entry}")
         list(GET _fields 0 _var_suffix)
@@ -31,14 +33,20 @@ function(_ops_blas_has_blas_op_sources op_name out_var)
             string(REPLACE "," ";" _test_name_list "${_test_names}")
             foreach(_tn ${_test_name_list})
                 if(op_name STREQUAL "${_tn}")
-                    set(${out_var} FALSE PARENT_SCOPE)
-                    return()
+                    set(_skip_arch35_tensor_op TRUE)
+                    break()
                 endif()
             endforeach()
+        endif()
+        if(_skip_arch35_tensor_op)
+            break()
         endif()
     endforeach()
 
     foreach(arch_dir ${SOC_ARCH_DIRS})
+        if(_skip_arch35_tensor_op AND arch_dir STREQUAL "arch35")
+            continue()
+        endif()
         file(GLOB arch_dir_srcs ${CMAKE_SOURCE_DIR}/blas/${op_name}/${arch_dir}/*.cpp
                                   ${CMAKE_SOURCE_DIR}/blas/*/${op_name}/${arch_dir}/*.cpp
                                   ${CMAKE_SOURCE_DIR}/blas/*/${arch_dir}/${op_name}_*.cpp
@@ -53,6 +61,9 @@ function(_ops_blas_has_blas_op_sources op_name out_var)
     if(NOT has_sources AND op_name MATCHES "^[a-zA-Z]")
         string(SUBSTRING "${op_name}" 1 -1 _stripped)
         foreach(arch_dir ${SOC_ARCH_DIRS})
+            if(_skip_arch35_tensor_op AND arch_dir STREQUAL "arch35")
+                continue()
+            endif()
             file(GLOB arch_dir_srcs ${CMAKE_SOURCE_DIR}/blas/${_stripped}/${arch_dir}/*.cpp
                                      ${CMAKE_SOURCE_DIR}/extensions/${_stripped}/${arch_dir}/*.cpp)
             if(arch_dir_srcs)
@@ -61,7 +72,7 @@ function(_ops_blas_has_blas_op_sources op_name out_var)
             endif()
         endforeach()
     endif()
-    if(NOT has_sources)
+    if(NOT has_sources AND NOT _skip_arch35_tensor_op)
         file(GLOB base_srcs ${CMAKE_SOURCE_DIR}/blas/${op_name}/*.cpp
                               ${CMAKE_SOURCE_DIR}/blas/*/${op_name}/*.cpp
                               ${CMAKE_SOURCE_DIR}/extensions/${op_name}/*.cpp
