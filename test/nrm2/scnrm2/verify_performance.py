@@ -46,7 +46,7 @@ EXPECTED_CASES = 200
 ARCH_BY_SOC = {"ascend950": "arch35", "ascend910b3": "arch22", "ascend910b4": "arch22"}
 STRICT_RE = re.compile(
     r"\[STRICT_PERF\]\s+case=(\S+)\s+n=(\d+)\s+incx=(-?\d+)\s+"
-    r"warmup=(\d+)\s+samples=(\d+)\s+average_us=([0-9.eE+-]+)"
+    r"warmup=(\d+)\s+samples=(\d+)\s+average_us=([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)(?=\s|$)"
 )
 
 
