@@ -70,6 +70,8 @@ def check_run(proc, parsed, tool):
     if len(parsed["executed"]) < MIN_EXECUTED_CASES:
         errors.append("only %d cases executed, expected at least %d kernel-launching cases"
                       % (len(parsed["executed"]), MIN_EXECUTED_CASES))
+    if parsed["passed"] != len(parsed["executed"]):
+        errors.append("gtest passed %s of %d started cases" % (parsed["passed"], len(parsed["executed"])))
     if tool and tool[0].endswith("msmemcheck") and "No error detected" not in proc.stdout:
         errors.append("mssanitizer did not report 'No error detected'")
     return errors
