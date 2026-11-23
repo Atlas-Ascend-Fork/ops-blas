@@ -65,7 +65,9 @@ def check_xml(path, expected):
     actual = [t.attrib["classname"] + "." + t.attrib["name"] for t in tests]
     if len(actual) != len(expected) or set(actual) != set(expected):
         raise ValueError("Executed tests do not match expected names/count")
-    if any(t.find("failure") is not None or t.find("skipped") is not None
+    if any(t.find("failure") is not None or t.find("error") is not None
+           or t.find("skipped") is not None
+           or t.attrib.get("status", "run") != "run"
            or t.attrib.get("result") != "completed" for t in tests):
         raise ValueError("Failed, skipped or incomplete test")
     return len(tests)
