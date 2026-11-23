@@ -65,12 +65,16 @@ def load_csv_cases(csv_path):
     """Return (all_case_names, perf_case_names) from the CSV data rows."""
     names = []
     perf = []
+    seen = set()
     with open(csv_path, "r", encoding="utf-8-sig", newline="") as fh:
         reader = csv.DictReader(fh)
         for row in reader:
             name = (row.get("case_name") or "").strip()
             if not name:
-                continue
+                raise ValueError(f"Missing case_name on CSV line {reader.line_num}")
+            if name in seen:
+                raise ValueError(f"Duplicate case_name on CSV line {reader.line_num}: {name}")
+            seen.add(name)
             names.append(name)
             if name.startswith(PERF_PREFIX):
                 perf.append(name)
@@ -125,7 +129,11 @@ def main():
     if test_bin is None:
         return 2
 
-    csv_names, csv_perf = load_csv_cases(args.csv)
+    try:
+        csv_names, csv_perf = load_csv_cases(args.csv)
+    except ValueError as error:
+        log.error("[FAIL] %s", error)
+        return 1
     if not csv_names:
         log.info("[FAIL] no cases loaded from %s", args.csv)
         return 2
