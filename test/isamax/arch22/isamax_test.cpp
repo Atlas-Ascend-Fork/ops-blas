@@ -133,8 +133,8 @@ int TestQuickReturn(aclblasHandle_t handle, aclrtStream stream, int n, int incx,
         std::cout << "[Success] " << testName << " passed." << std::endl;
         return 0;
     }
-    std::cout << "[Failed] " << testName << " failed (API status: " << statusRet
-              << ", sync/copy status: " << aclRet << ")." << std::endl;
+    std::cout << "[Failed] " << testName << " failed (API status: " << statusRet << ", sync/copy status: " << aclRet
+              << ")." << std::endl;
     return 1;
 }
 
@@ -154,6 +154,26 @@ int TestNullHandle()
     return 1;
 }
 
+int TestStrideUnsupported(aclblasHandle_t handle)
+{
+    // issue #1148: the arch22 kernel reads x contiguously, so a stride greater than 1
+    // must be rejected with INVALID_VALUE instead of silently computing on x[0..n-1].
+    // No kernel is launched on rejection, so plain host pointers suffice here (the
+    // same pattern as TestNullHandle).
+    std::cout << "\n========== Testing incx>1 Rejection ==========" << std::endl;
+    float x = 1.0f;
+    int32_t result = -1;
+    auto statusRet = aclblasIsamax(handle, 1, &x, 2, &result);
+    bool pass = (statusRet == ACLBLAS_STATUS_INVALID_VALUE);
+    std::cout << "Status: " << statusRet << std::endl;
+    if (pass) {
+        std::cout << "[Success] incx>1 rejection passed." << std::endl;
+        return 0;
+    }
+    std::cout << "[Failed] incx>1 rejection failed (expected INVALID_VALUE)." << std::endl;
+    return 1;
+}
+
 int32_t main(int32_t argc, char* argv[])
 {
     int32_t deviceId = 0;
@@ -167,9 +187,11 @@ int32_t main(int32_t argc, char* argv[])
 
     aclrtStream stream = nullptr;
     aclError aclRet = aclrtCreateStream(&stream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtCreateStream failed. ERROR: %d\n", aclRet); aclblasDestroy(handle);
-        return aclRet);
+    if (aclRet != ACL_SUCCESS) {
+        LOG_PRINT("aclrtCreateStream failed. ERROR: %d\n", aclRet);
+        aclblasDestroy(handle);
+        return aclRet;
+    }
     ret = aclblasSetStream(handle, stream);
     CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSetStream failed. ERROR: %d\n", ret); return ret);
 
@@ -177,6 +199,7 @@ int32_t main(int32_t argc, char* argv[])
     testRet |= TestNullHandle();
     testRet |= TestQuickReturn(handle, stream, 0, 1, "n=0 Quick Return");
     testRet |= TestQuickReturn(handle, stream, 1, 0, "incx=0 Quick Return");
+    testRet |= TestStrideUnsupported(handle);
     testRet |= TestBasicRealFloat(handle, stream);
 
     aclblasDestroy(handle);

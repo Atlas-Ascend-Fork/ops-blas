@@ -24,8 +24,7 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
-void isamax_kernel_do(uint8_t* x, uint8_t* y, uint8_t* workspace, uint8_t* tiling,
-                      uint32_t numBlocks, void *stream);
+void isamax_kernel_do(uint8_t* x, uint8_t* y, uint8_t* workspace, uint8_t* tiling, uint32_t numBlocks, void* stream);
 
 constexpr int32_t MAXNUMF32ELEEACHCORE = 23040;
 constexpr int32_t BYTESPERREPEAT = 256;
@@ -126,8 +125,7 @@ TilingCommonParams CalcIsamaxCommonParams(uint32_t n)
     return params;
 }
 
-void CalcCoreTiling(uint32_t i, TilingCommonParams &params,
-                    CoreTilingBuffers &buf)
+void CalcCoreTiling(uint32_t i, TilingCommonParams& params, CoreTilingBuffers& buf)
 {
     uint32_t minEleEachCore = ELEMENTS_PER_REPEAT;
     uint32_t eleLenEachCore = params.minEleRepeatsNumberEachCore * minEleEachCore;
@@ -168,21 +166,19 @@ void CalcCoreTiling(uint32_t i, TilingCommonParams &params,
     buf.rmdRptLenNor[i] = buf.rptBatchCntNorRemainder[i] * ELEMENTS_PER_REPEAT;
 }
 
-void CopyCoreTilingToOutput(const CoreTilingBuffers &buf, IsamaxTilingData &tiling)
+void CopyCoreTilingToOutput(const CoreTilingBuffers& buf, IsamaxTilingData& tiling)
 {
     std::copy(buf.startOffset.begin(), buf.startOffset.end(), tiling.startOffset);
     std::copy(buf.eleTotalEachCore.begin(), buf.eleTotalEachCore.end(), tiling.eleTotalEachCore);
     std::copy(buf.dealTimesEachCore.begin(), buf.dealTimesEachCore.end(), tiling.dealTimesEachCore);
     std::copy(buf.dealLenEachTime.begin(), buf.dealLenEachTime.end(), tiling.dealLenEachTime);
-    std::copy(buf.reduceMaxRstsLenEachCore.begin(), buf.reduceMaxRstsLenEachCore.end(),
-              tiling.reduceMaxRstsLenEachCore);
+    std::copy(
+        buf.reduceMaxRstsLenEachCore.begin(), buf.reduceMaxRstsLenEachCore.end(), tiling.reduceMaxRstsLenEachCore);
     std::copy(buf.dealLenUpBlockEachTime.begin(), buf.dealLenUpBlockEachTime.end(), tiling.dealLenUpBlockEachTime);
     std::copy(buf.totalRptCntNor.begin(), buf.totalRptCntNor.end(), tiling.totalRptCntNor);
-    std::copy(buf.totalRptCntNorRemainder.begin(), buf.totalRptCntNorRemainder.end(),
-              tiling.totalRptCntNorRemainder);
+    std::copy(buf.totalRptCntNorRemainder.begin(), buf.totalRptCntNorRemainder.end(), tiling.totalRptCntNorRemainder);
     std::copy(buf.rptBatchCntNor.begin(), buf.rptBatchCntNor.end(), tiling.rptBatchCntNor);
-    std::copy(buf.rptBatchCntNorRemainder.begin(), buf.rptBatchCntNorRemainder.end(),
-              tiling.rptBatchCntNorRemainder);
+    std::copy(buf.rptBatchCntNorRemainder.begin(), buf.rptBatchCntNorRemainder.end(), tiling.rptBatchCntNorRemainder);
     std::copy(buf.rmdRptLenNor.begin(), buf.rmdRptLenNor.end(), tiling.rmdRptLenNor);
 }
 
@@ -209,7 +205,7 @@ IsamaxTilingData CalIsamaxTilingData(uint32_t n, uint32_t incx)
 }
 
 static aclblasStatus_t ValidateIsamaxParams(
-    aclblasHandle_t handle, int n, const float* x, int incx, int* result, bool &earlyReturn)
+    aclblasHandle_t handle, int n, const float* x, int incx, int* result, bool& earlyReturn)
 {
     earlyReturn = false;
     if (handle == nullptr) {
@@ -223,24 +219,30 @@ static aclblasStatus_t ValidateIsamaxParams(
             return ACLBLAS_STATUS_INVALID_VALUE;
         }
         aclError aclRet = aclrtMemsetAsync(result, sizeof(int32_t), 0, sizeof(int32_t), handle->stream);
-        CHECK_RET(
-            aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemsetAsync failed. ERROR: %d\n", aclRet);
-            return ACLBLAS_STATUS_EXECUTION_FAILED);
+        CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemsetAsync failed. ERROR: %d\n", aclRet);
+                  return ACLBLAS_STATUS_EXECUTION_FAILED);
         aclRet = aclrtSynchronizeStream(handle->stream);
-        CHECK_RET(
-            aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
-            return ACLBLAS_STATUS_EXECUTION_FAILED);
+        CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+                  return ACLBLAS_STATUS_EXECUTION_FAILED);
         earlyReturn = true;
         return ACLBLAS_STATUS_SUCCESS;
     }
     if (x == nullptr || result == nullptr) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    // issue #1148: the arch22 kernel reads x contiguously, the incx parsed from tiling
+    // never participates in addressing, so a stride greater than 1 would compute on
+    // x[0..n-1] instead of x[0], x[incx], ... and report success. Reject it explicitly
+    // instead of silently mis-computing; the incx < 1 quick-return contract above and
+    // the arch35 strided path are unchanged.
+    if (incx > 1) {
+        OP_LOGE("aclblasIsamax", "arch22 supports incx = 1 only, got incx=%d", incx);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static aclblasStatus_t LaunchIsamax(
-    aclrtStream useStream, const float* x, int* result, const IsamaxTilingData &tiling)
+static aclblasStatus_t LaunchIsamax(aclrtStream useStream, const float* x, int* result, const IsamaxTilingData& tiling)
 {
     uint32_t numBlocks = CeilA2B(tiling.needVecCoreNum, 2);
     if (numBlocks == 0) {
@@ -252,27 +254,24 @@ static aclblasStatus_t LaunchIsamax(
     size_t workspaceSize = 16 * 1024 * 1024 + MAXVECTORNUM * GM_RESULT_LEN * BYTE_LEN_4;
 
     aclError aclRet = aclrtMalloc((void**)&workspaceDevice, workspaceSize, ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(IsamaxTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(workspaceDevice);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet); aclrtFree(workspaceDevice);
+              return ACLBLAS_STATUS_ALLOC_FAILED);
 
-    aclRet =
-        aclrtMemcpy(tilingDevice, sizeof(IsamaxTilingData), &tiling, sizeof(IsamaxTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(workspaceDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    aclRet = aclrtMemcpy(
+        tilingDevice, sizeof(IsamaxTilingData), &tiling, sizeof(IsamaxTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
+              aclrtFree(workspaceDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
-    isamax_kernel_do(reinterpret_cast<uint8_t*>(const_cast<float*>(x)), reinterpret_cast<uint8_t*>(result),
-                     workspaceDevice, tilingDevice, numBlocks, useStream);
+    isamax_kernel_do(
+        reinterpret_cast<uint8_t*>(const_cast<float*>(x)), reinterpret_cast<uint8_t*>(result), workspaceDevice,
+        tilingDevice, numBlocks, useStream);
     aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        aclrtFree(workspaceDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
+    CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet);
+              aclrtFree(tilingDevice); aclrtFree(workspaceDevice); return ACLBLAS_STATUS_INTERNAL_ERROR);
 
     aclrtFree(workspaceDevice);
     aclrtFree(tilingDevice);
