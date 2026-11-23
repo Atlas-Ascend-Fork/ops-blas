@@ -8,8 +8,8 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # ----------------------------------------------------------------------------------------------------------
 
-# axpy_ex 仅支持 arch35 (ascend950)
-if(SOC_VERSION STREQUAL "ascend950")
+# axpy_ex 支持 arch35 (ascend950) 与 arch22 (A2/A3)
+if(SOC_VERSION STREQUAL "ascend950" OR "arch22" IN_LIST SOC_ARCH_DIRS)
     ops_blas_add_gtest_tests(${OPS_BLAS} axpy_ex_test)
 else()
     ops_blas_add_tests(${OPS_BLAS})
