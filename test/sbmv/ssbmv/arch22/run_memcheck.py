@@ -136,8 +136,8 @@ def main():
     errors = sum(item["errors"] for item in results)
     failed = sum(item["failed"] for item in results)
     rc_bad = [item["pattern"] for item in results if item["rc"] != 0]
-    no_kernel = [item["pattern"] for item in results if item["kernels"] == 0]
-    ok = (not rc_bad) and errors == 0 and failed == 0 and kernels > 0 and clean == kernels
+    no_kernel = [item["pattern"] for item in results if item["ok"] and item["kernels"] == 0]
+    ok = all(item["ok"] for item in results) and kernels > 0
     if no_kernel:
         LOGGER.info("[memcheck] note: no kernel launched by %s (validation-only cases)", no_kernel)
     LOGGER.info(
