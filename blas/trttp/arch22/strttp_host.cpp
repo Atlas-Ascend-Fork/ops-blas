@@ -75,8 +75,7 @@ aclblasStatus_t CalStrttpTilingData(StrttpTilingData* tiling, uint32_t n, uint32
 
 } // namespace
 
-aclblasStatus_t aclblasStrttp(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* A, int lda, float* AP)
+aclblasStatus_t aclblasStrttp(aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* A, int lda, float* AP)
 {
     const aclblasStatus_t status = ValidateStrttpParams(handle, n, uplo, lda, A, AP);
     if (status != ACLBLAS_STATUS_SUCCESS || n == 0) {
@@ -91,8 +90,12 @@ aclblasStatus_t aclblasStrttp(
         return tilingStatus;
     }
 
-    strttp_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<float*>(A)), reinterpret_cast<uint8_t*>(AP), tiling,
-        tiling.useCoreNum, handle->stream);
+    const aclError launchErr = strttp_kernel_do(
+        reinterpret_cast<uint8_t*>(const_cast<float*>(A)), reinterpret_cast<uint8_t*>(AP), tiling, tiling.useCoreNum,
+        handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "strttp_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }

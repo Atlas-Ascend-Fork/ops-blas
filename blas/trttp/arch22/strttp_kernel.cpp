@@ -105,8 +105,7 @@ private:
                 chunkSize = STRTTP_MAX_CHUNK_SIZE;
             }
             const uint32_t remainder = chunkSize % STRTTP_ELEMENTS_PER_BLOCK;
-            const uint8_t padNum =
-                (remainder != 0U) ? static_cast<uint8_t>(STRTTP_ELEMENTS_PER_BLOCK - remainder) : 0U;
+            const uint8_t padNum = (remainder != 0U) ? static_cast<uint8_t>(STRTTP_ELEMENTS_PER_BLOCK - remainder) : 0U;
             const uint32_t blockBytes = chunkSize * static_cast<uint32_t>(sizeof(float));
             DataCopyExtParams cp{1U, blockBytes, 0U, 0U, 0U};
             DataCopyPadExtParams<float> pp{true, 0U, padNum, 0.0F};
@@ -144,7 +143,11 @@ extern "C" __global__ __aicore__ void strttp_kernel_impl(GM_ADDR aFull, GM_ADDR 
     op.Process();
 }
 
-void strttp_kernel_do(uint8_t* a, uint8_t* ap, const StrttpTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError strttp_kernel_do(uint8_t* a, uint8_t* ap, const StrttpTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    // Drain any stale thread-level error so the post-launch check only reports
+    // this launch's own failure (issue #1181 precedent).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     strttp_kernel_impl<<<numBlocks, nullptr, stream>>>(a, ap, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
