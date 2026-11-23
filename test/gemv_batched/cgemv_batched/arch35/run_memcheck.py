@@ -85,7 +85,7 @@ def parse_args():
     parser.add_argument(
         "--skip-tool",
         action="store_true",
-        help="only verify the case filter resolves to a non-empty set (no NPU run)",
+        help="run selected NPU tests without mssanitizer",
     )
     parser.add_argument(
         "--extra-args",
