@@ -139,13 +139,13 @@ blas/<operator_name>/
 
 ### 原始参考算子
 
-> 注：以下算子是历史遗留的 3 层目录结构（`blas/{family}/{op}/`），仅供**算法思路**参考（Tiling 切分、计算逻辑）。**新算子必须按新工作流的 2 层目录 + kernel.h + host 拆分结构开发**，禁止复制其代码骨架或目录布局。
+> 注：以下位置是当前仓库中的参考实现，仅供**算法思路**参考（Tiling 切分、计算逻辑）。**新算子必须按新工作流的 2 层目录 + kernel.h + host 拆分结构开发**，禁止复制其代码骨架或目录布局。
 
 | 编程模型 | 参考算子 | 路径 |
 |---------|---------|------|
-| SIMD membase | sswap | `blas/swap/sswap/arch35/` |
-| SIMD membase | sdot | `blas/dot/sdot/arch35/` |
+| SIMD membase | sswap | `blas/swap/arch35/sswap_host.cpp` |
+| SIMD membase | sdot | `blas/dot/arch35/sdot_host.cpp` |
 | SIMD regbase | gemv_batched | `blas/gemv_batched/arch35/` |
-| SIMT | sspmv | `blas/spmv/sspmv/arch35/` |
-| SIMT | sgemv | `blas/gemv/sgemv/arch35/` |
+| SIMT | sspmv | `blas/spmv/arch35/sspmv_host.cpp` |
+| SIMT | sgemv | `blas/gemv/arch35/sgemv_host.cpp` |
 | **SIMT** | **getri_batched** | **`blas/getri_batched/arch35/`**（新结构标杆算子，host.cpp/kernel.h/kernel.cpp/tiling_data.h 拆分完整） |
