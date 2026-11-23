@@ -17,19 +17,34 @@ import re
 from run_self_test import audit_csvs, check_mapping, check_xml, environment, list_tests, run_suite
 
 
+KERNEL_NAME_PATTERN = r'(?:"([^"\r\n]+)"|([^\r\n]+?))'
+START_KERNEL_RE = re.compile(
+    r"Start memcheck sanitizer on kernel\s+" + KERNEL_NAME_PATTERN + r"\s*$", re.MULTILINE
+)
+CLEAN_FINISH_RE = re.compile(
+    r"Sanitizer finished on kernel\s+" + KERNEL_NAME_PATTERN + r"\. No error detected\."
+)
+
+
+def _extract_kernel_events(text):
+    events = [(m.start(), True, (m.group(1) or m.group(2)).strip()) for m in START_KERNEL_RE.finditer(text)]
+    events += [(m.start(), False, (m.group(1) or m.group(2)).strip()) for m in CLEAN_FINISH_RE.finditer(text)]
+    events.sort(key=lambda item: item[0])
+    return events
+
+
 def audit_memcheck(text):
-    starts = re.findall(r"Start memcheck sanitizer on kernel\s+([^\s.]+)", text)
-    clean = re.findall(r"Sanitizer finished on kernel\s+([^\s.]+)\. No error detected\.", text)
+    events = _extract_kernel_events(text)
+    starts = [name for _, is_start, name in events if is_start]
+    clean = [name for _, is_start, name in events if not is_start]
     pending = {}
-    for match in re.finditer(r"Start memcheck sanitizer on kernel\s+([^\s.]+)|"
-                             r"Sanitizer finished on kernel\s+([^\s.]+)\. No error detected\.", text):
-        start, end = match.groups()
-        if start:
-            pending[start] = pending.get(start, 0) + 1
-        elif not pending.get(end, 0):
+    for _, is_start, name in events:
+        if is_start:
+            pending[name] = pending.get(name, 0) + 1
+        elif not pending.get(name, 0):
             raise ValueError("Memcheck completion without a matching start")
         else:
-            pending[end] -= 1
+            pending[name] -= 1
     suspect = []
     for line in text.splitlines():
         if "No error detected" in line:
