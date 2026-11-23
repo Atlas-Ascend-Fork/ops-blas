@@ -26,22 +26,32 @@
 
 set -euo pipefail
 
+ORIG_PWD=$(pwd)
 ROOT_PATH=$(cd "$(dirname "$0")"/../.. && pwd)
-cd "${ROOT_PATH}"
 
 if [ $# -lt 1 ]; then
     echo "Usage: $0 <pr_filelist.txt>"
+    echo "       $0 --files <file1> [file2 ...]"
     exit 1
 fi
 
 if [ "$1" = "--files" ]; then
     shift
+    if [ $# -lt 1 ]; then
+        echo "Error: --files requires at least one file path."
+        exit 1
+    fi
     pr_filelist=$(mktemp)
     trap 'rm -f "$pr_filelist"' EXIT
     printf '%s\n' "$@" > "$pr_filelist"
 else
     pr_filelist=$1
+    if [[ "$pr_filelist" != /* ]] && [ -f "${ORIG_PWD}/${pr_filelist}" ]; then
+        pr_filelist="${ORIG_PWD}/${pr_filelist}"
+    fi
 fi
+
+cd "${ROOT_PATH}"
 
 if [ ! -f "$pr_filelist" ]; then
     echo "Error: File $pr_filelist not found"
