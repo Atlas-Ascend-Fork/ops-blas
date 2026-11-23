@@ -136,6 +136,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     args = parse_args()
     summary = {"passed": False, "expected_rows": EXPECTED_ROWS}
+    output_created = False
     try:
         csv_path, rows = read_cases()
         expected = expected_tests(rows)
@@ -157,6 +158,7 @@ def main():
             raise FileNotFoundError(args.binary)
         args.output = args.output.resolve()
         args.output.mkdir(parents=True, exist_ok=False)
+        output_created = True
         args.output.chmod(0o750)
         xml = args.output / "results.xml"
         log = args.output / "run.log"
@@ -176,7 +178,7 @@ def main():
         summary["passed"] = True
     except (ValueError, OSError, ET.ParseError) as error:
         summary["first_failure"] = str(error)
-    if not args.dry_run:
+    if output_created:
         (args.output / "self_test_summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     logging.info("%s", json.dumps(summary, indent=2))
     return 0 if summary["passed"] else 1
