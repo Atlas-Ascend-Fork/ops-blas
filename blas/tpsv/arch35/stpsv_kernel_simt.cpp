@@ -13,7 +13,9 @@
  * \brief SIMT VF kernel for tpsv (n >= 128). Parallel inner product with tree reduction.
  */
 
+#include <cstddef>
 #include <cstdint>
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
@@ -31,8 +33,8 @@ constexpr uint32_t UB_PARTIALS_FLOATS = 2048;
 
 template <bool UPLO_IS_UPPER, bool DIAG_IS_UNIT>
 __simt_callee__ inline void StpsvSimtReduceAndUpdate(
-    float partial, float sum, uint32_t xOff, uint32_t row, uint32_t n,
-    __gm__ const float* apGm, __gm__ float* xGm, __ubuf__ float* partialSums)
+    float partial, float sum, uint32_t xOff, uint32_t row, uint32_t n, __gm__ const float* apGm, __gm__ float* xGm,
+    __ubuf__ float* partialSums)
 {
     partialSums[threadIdx.x] = partial;
     asc_syncthreads();
@@ -65,8 +67,8 @@ __simt_callee__ inline void StpsvSimtForward(
     uint32_t n, int64_t incx, __gm__ const float* apGm, __gm__ float* xGm, __ubuf__ float* partialSums)
 {
     for (uint32_t row = 0; row < n; ++row) {
-        uint32_t xOff = (incx >= 0) ? (row * static_cast<uint32_t>(incx))
-                                    : ((n - 1 - row) * static_cast<uint32_t>(-incx));
+        uint32_t xOff =
+            (incx >= 0) ? (row * static_cast<uint32_t>(incx)) : ((n - 1 - row) * static_cast<uint32_t>(-incx));
         float sum = xGm[xOff];
 
         float partial = 0.0f;
@@ -77,13 +79,12 @@ __simt_callee__ inline void StpsvSimtForward(
             } else {
                 aVal = apGm[TpsvPackedUpperIdxSimt(j, row)];
             }
-            uint32_t xjOff = (incx >= 0) ? (j * static_cast<uint32_t>(incx))
-                                         : ((n - 1 - j) * static_cast<uint32_t>(-incx));
+            uint32_t xjOff =
+                (incx >= 0) ? (j * static_cast<uint32_t>(incx)) : ((n - 1 - j) * static_cast<uint32_t>(-incx));
             partial += aVal * xGm[xjOff];
         }
 
-        StpsvSimtReduceAndUpdate<UPLO_IS_UPPER, DIAG_IS_UNIT>(
-            partial, sum, xOff, row, n, apGm, xGm, partialSums);
+        StpsvSimtReduceAndUpdate<UPLO_IS_UPPER, DIAG_IS_UNIT>(partial, sum, xOff, row, n, apGm, xGm, partialSums);
     }
 }
 
@@ -91,9 +92,9 @@ template <bool UPLO_IS_UPPER, bool DIAG_IS_UNIT>
 __simt_callee__ inline void StpsvSimtBackward(
     uint32_t n, int64_t incx, __gm__ const float* apGm, __gm__ float* xGm, __ubuf__ float* partialSums)
 {
-    for (uint32_t row = n; row-- > 0; ) {
-        uint32_t xOff = (incx >= 0) ? (row * static_cast<uint32_t>(incx))
-                                    : ((n - 1 - row) * static_cast<uint32_t>(-incx));
+    for (uint32_t row = n; row-- > 0;) {
+        uint32_t xOff =
+            (incx >= 0) ? (row * static_cast<uint32_t>(incx)) : ((n - 1 - row) * static_cast<uint32_t>(-incx));
         float sum = xGm[xOff];
 
         float partial = 0.0f;
@@ -104,13 +105,12 @@ __simt_callee__ inline void StpsvSimtBackward(
             } else {
                 aVal = apGm[TpsvPackedLowerIdxSimt(j, row, n)];
             }
-            uint32_t xjOff = (incx >= 0) ? (j * static_cast<uint32_t>(incx))
-                                         : ((n - 1 - j) * static_cast<uint32_t>(-incx));
+            uint32_t xjOff =
+                (incx >= 0) ? (j * static_cast<uint32_t>(incx)) : ((n - 1 - j) * static_cast<uint32_t>(-incx));
             partial += aVal * xGm[xjOff];
         }
 
-        StpsvSimtReduceAndUpdate<UPLO_IS_UPPER, DIAG_IS_UNIT>(
-            partial, sum, xOff, row, n, apGm, xGm, partialSums);
+        StpsvSimtReduceAndUpdate<UPLO_IS_UPPER, DIAG_IS_UNIT>(partial, sum, xOff, row, n, apGm, xGm, partialSums);
     }
 }
 
@@ -182,7 +182,18 @@ __global__ __aicore__ void stpsv_simt_kernel(StpsvTilingData tiling)
 //  SIMT kernel launch wrapper — called from stpsv_kernel_do
 // ==========================================================================
 
-void stpsv_simt_kernel_do(const StpsvTilingData &tiling, void* stream)
+// issue #1181: launch through aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs
+// so the runtime status of the launch is returned to the caller.
+aclError stpsv_simt_kernel_do(const StpsvTilingData& tiling, void* stream)
 {
-    stpsv_simt_kernel<<<1, nullptr, stream>>>(tiling);
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(reinterpret_cast<const void*>(stpsv_simt_kernel), &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        StpsvTilingData tiling;
+    } args{tiling};
+    static_assert(sizeof(Arguments) == sizeof(StpsvTilingData), "kernel ABI mismatch");
+    return aclrtLaunchKernelWithHostArgs(function, 1U, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }

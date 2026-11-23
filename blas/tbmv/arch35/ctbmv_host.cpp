@@ -27,26 +27,22 @@
 #include "ctbmv_common.h"
 
 static aclblasStatus_t ValidateCtbmvParams(
-    aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n, int k,
-    const aclblasComplex* a, int lda, const aclblasComplex* x, int incx)
+    aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n, int k, const aclblasComplex* a,
+    int lda, const aclblasComplex* x, int incx)
 {
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE("aclblasCtbmv", "invalid uplo=%d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_ENUM);
-    CHECK_RET(
-        trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
-        OP_LOGE("aclblasCtbmv", "invalid trans=%d", static_cast<int>(trans));
-        return ACLBLAS_STATUS_INVALID_ENUM);
-    CHECK_RET(
-        diag == ACLBLAS_UNIT || diag == ACLBLAS_NON_UNIT,
-        OP_LOGE("aclblasCtbmv", "invalid diag=%d", static_cast<int>(diag));
-        return ACLBLAS_STATUS_INVALID_ENUM);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE("aclblasCtbmv", "invalid uplo=%d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_ENUM);
+    CHECK_RET(trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
+              OP_LOGE("aclblasCtbmv", "invalid trans=%d", static_cast<int>(trans));
+              return ACLBLAS_STATUS_INVALID_ENUM);
+    CHECK_RET(diag == ACLBLAS_UNIT || diag == ACLBLAS_NON_UNIT,
+              OP_LOGE("aclblasCtbmv", "invalid diag=%d", static_cast<int>(diag));
+              return ACLBLAS_STATUS_INVALID_ENUM);
     CHECK_RET(n >= 0, OP_LOGE("aclblasCtbmv", "invalid n=%d", n); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(k >= 0, OP_LOGE("aclblasCtbmv", "invalid k=%d", k); return ACLBLAS_STATUS_INVALID_VALUE);
     // k + 1 can overflow when k is INT_MAX; for non-negative k, lda > k is equivalent.
-    CHECK_RET(
-        lda > k, OP_LOGE("aclblasCtbmv", "invalid lda=%d, k=%d", lda, k); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(lda > k, OP_LOGE("aclblasCtbmv", "invalid lda=%d, k=%d", lda, k); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasCtbmv", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(a != nullptr, OP_LOGE("aclblasCtbmv", "a must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(x != nullptr, OP_LOGE("aclblasCtbmv", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
@@ -66,8 +62,8 @@ static CtbmvTilingData CalCtbmvTilingData(
     tilingData.rowsPerBlock = CeilDiv<uint32_t>(nValue, useNumBlocks);
     // Unit-stride small vectors also fit in UB; use the parallel small-shape
     // kernel instead of the serial Netlib fallback.
-    tilingData.useUb = (incx == 1 && nValue <= CTBMV_UB_X_ELEMS &&
-        tilingData.rowsPerBlock + kValue <= CTBMV_UB_X_ELEMS) ? 1U : 0U;
+    tilingData.useUb =
+        (incx == 1 && nValue <= CTBMV_UB_X_ELEMS && tilingData.rowsPerBlock + kValue <= CTBMV_UB_X_ELEMS) ? 1U : 0U;
     tilingData.n = nValue;
     tilingData.k = kValue;
     tilingData.lda = static_cast<uint32_t>(lda);
@@ -92,11 +88,10 @@ static CtbmvTilingData PlanCtbmvTiling(
     useNumBlocks =
         std::max<uint32_t>(std::min(CeilDiv<uint32_t>(static_cast<uint32_t>(n), SIMT_MIN_THREAD_NUM), aivCoreNum), 1);
     CtbmvTilingData tilingData = CalCtbmvTilingData(useNumBlocks, n, k, lda, uplo, trans, diag, incx);
-
     // Narrow bands only: a wide band leaves every row a long serial chain, which
     // one block cannot hide (see the wide-band spread below).
-    if (tilingData.useUb != 0U && tilingData.n <= CTBMV_SINGLE_BLOCK_UB_N &&
-        tilingData.k < CTBMV_WIDE_BAND_MIN_K && useNumBlocks != 1U) {
+    if (tilingData.useUb != 0U && tilingData.n <= CTBMV_SINGLE_BLOCK_UB_N && tilingData.k < CTBMV_WIDE_BAND_MIN_K &&
+        useNumBlocks != 1U) {
         useNumBlocks = 1U;
         tilingData = CalCtbmvTilingData(useNumBlocks, n, k, lda, uplo, trans, diag, incx);
     }
@@ -105,8 +100,8 @@ static CtbmvTilingData PlanCtbmvTiling(
     // a narrow window instead. At or below CTBMV_NETLIB_SMALL_N the kernel
     // dispatches to the serial Netlib path and ignores the block count, so the
     // spread only applies above that size.
-    if (tilingData.useUb != 0U && tilingData.n <= CTBMV_SINGLE_BLOCK_UB_N &&
-        tilingData.n > CTBMV_NETLIB_SMALL_N && tilingData.k >= CTBMV_WIDE_BAND_MIN_K) {
+    if (tilingData.useUb != 0U && tilingData.n <= CTBMV_SINGLE_BLOCK_UB_N && tilingData.n > CTBMV_NETLIB_SMALL_N &&
+        tilingData.k >= CTBMV_WIDE_BAND_MIN_K) {
         const uint32_t smallWideBlocks = std::max<uint32_t>(
             std::min(CeilDiv<uint32_t>(tilingData.n, CTBMV_SMALL_WIDEBAND_ROWS_PER_BLOCK), aivCoreNum), 1U);
         if (smallWideBlocks > useNumBlocks) {
@@ -124,10 +119,8 @@ static CtbmvTilingData PlanCtbmvTiling(
     } else if (k >= CTBMV_WIDE_BAND_MEDIUM_MIN_K) {
         wideBandRowsPerBlock = CTBMV_WIDE_BAND_MEDIUM_ROWS_PER_BLOCK;
     }
-    if (tilingData.useUb != 0U && tilingData.n > wideBandRowsPerBlock &&
-        tilingData.k >= CTBMV_WIDE_BAND_MIN_K) {
-        const uint32_t wideBandBlocks =
-            std::min(CeilDiv<uint32_t>(tilingData.n, wideBandRowsPerBlock), aivCoreNum);
+    if (tilingData.useUb != 0U && tilingData.n > wideBandRowsPerBlock && tilingData.k >= CTBMV_WIDE_BAND_MIN_K) {
+        const uint32_t wideBandBlocks = std::min(CeilDiv<uint32_t>(tilingData.n, wideBandRowsPerBlock), aivCoreNum);
         if (wideBandBlocks > useNumBlocks) {
             useNumBlocks = wideBandBlocks;
             tilingData = CalCtbmvTilingData(useNumBlocks, n, k, lda, uplo, trans, diag, incx);
@@ -147,11 +140,13 @@ static aclblasStatus_t LaunchCtbmvKernel(
     const CtbmvTilingData& tilingData, uint32_t useNumBlocks)
 {
     OP_LOGD(
-        "aclblasCtbmv",
-        "tiling: n=%u k=%u lda=%u uplo=%u trans=%u diag=%u incx=%ld numBlocks=%u numThreads=%u",
-        tilingData.n, tilingData.k, tilingData.lda, tilingData.uplo, tilingData.trans, tilingData.diag,
-        tilingData.incx, tilingData.numBlocks, tilingData.numThreads);
-    ctbmv_arch35_kernel_do(A, x, workspaceDevice, tilingData, useNumBlocks, h->stream);
+        "aclblasCtbmv", "tiling: n=%u k=%u lda=%u uplo=%u trans=%u diag=%u incx=%ld numBlocks=%u numThreads=%u",
+        tilingData.n, tilingData.k, tilingData.lda, tilingData.uplo, tilingData.trans, tilingData.diag, tilingData.incx,
+        tilingData.numBlocks, tilingData.numThreads);
+    // issue #1181: a failed launch must not be reported as SUCCESS with x stale.
+    const aclError launch = ctbmv_arch35_kernel_do(A, x, workspaceDevice, tilingData, useNumBlocks, h->stream);
+    CHECK_RET(launch == ACL_SUCCESS, OP_LOGE("aclblasCtbmv", "ctbmv_arch35_kernel_do failed: %d", launch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -171,8 +166,8 @@ aclblasStatus_t aclblasCtbmv(
     }
     auto* h = handle;
     uint32_t aivCoreNum = GetAivCoreCount();
-    CHECK_RET(
-        aivCoreNum > 0, OP_LOGE("aclblasCtbmv", "GetAivCoreCount failed"); return ACLBLAS_STATUS_EXECUTION_FAILED);
+    CHECK_RET(aivCoreNum > 0, OP_LOGE("aclblasCtbmv", "GetAivCoreCount failed");
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     uint32_t useNumBlocks = 0;
     CtbmvTilingData tilingData = PlanCtbmvTiling(aivCoreNum, n, k, lda, uplo, trans, diag, incx, useNumBlocks);
@@ -180,12 +175,10 @@ aclblasStatus_t aclblasCtbmv(
     size_t workspaceSize = (k > 0) ? static_cast<size_t>(n) * sizeof(aclblasComplex) : 0;
     uint8_t* workspaceDevice = nullptr;
     if (k > 0) {
-        CHECK_RET(
-            workspaceSize <= GetEffectiveWorkspaceSize(h),
-            OP_LOGE("aclblasCtbmv", "workspace %zu > handle %zu", workspaceSize, GetEffectiveWorkspaceSize(h));
-            return ACLBLAS_STATUS_EXECUTION_FAILED);
+        CHECK_RET(workspaceSize <= GetEffectiveWorkspaceSize(h),
+                  OP_LOGE("aclblasCtbmv", "workspace %zu > handle %zu", workspaceSize, GetEffectiveWorkspaceSize(h));
+                  return ACLBLAS_STATUS_EXECUTION_FAILED);
         workspaceDevice = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
     }
     return LaunchCtbmvKernel(h, A, x, workspaceDevice, tilingData, useNumBlocks);
 }
-

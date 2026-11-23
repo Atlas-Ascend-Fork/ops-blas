@@ -10,7 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
-
+#include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "ctpttr_kernel.h"
 #include "common/helper/host_utils.h"
@@ -63,6 +63,10 @@ extern "C" aclblasStatus_t aclblasCtpttr(
     }
     const auto tiling =
         MakeCtpttrTiling(static_cast<uint32_t>(n), static_cast<uint32_t>(lda), uplo == ACLBLAS_UPPER, cores);
-    ctpttr_kernel_do(reinterpret_cast<const uint8_t*>(AP), reinterpret_cast<uint8_t*>(A), tiling, stream);
+    // issue #1181: a failed launch must not be reported as SUCCESS with A stale.
+    const aclError launch =
+        ctpttr_kernel_do(reinterpret_cast<const uint8_t*>(AP), reinterpret_cast<uint8_t*>(A), tiling, stream);
+    CHECK_RET(launch == ACL_SUCCESS, OP_LOGE("aclblasCtpttr", "ctpttr_kernel_do failed: %d", launch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
     return ACLBLAS_STATUS_SUCCESS;
 }

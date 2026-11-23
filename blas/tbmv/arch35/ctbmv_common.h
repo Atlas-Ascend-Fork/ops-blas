@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "acl/acl.h"
 
 #include "cann_ops_blas_common.h"
 
@@ -66,8 +67,6 @@ struct CtbmvTilingData {
     int64_t incx;
 };
 
-void ctbmv_arch35_kernel_do(
+aclError ctbmv_arch35_kernel_do(
     const aclblasComplex* a, aclblasComplex* x, uint8_t* workspace, const CtbmvTilingData& tilingData,
     uint32_t numBlocks, void* stream);
-
-

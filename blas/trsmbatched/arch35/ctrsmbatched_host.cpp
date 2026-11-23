@@ -9,6 +9,7 @@
  */
 
 #include <algorithm>
+#include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
@@ -55,8 +56,21 @@ uint64_t VectorWork(const CtrsmBatchedTilingData& t)
     return CeilDiv(CeilDiv(rhs, plan.width / plan.groups) * t.batchCount, plan.groups);
 }
 
+// Returns EXECUTION_FAILED when the launch that just completed reported a
+// thread-level error; ACLBLAS_STATUS_SUCCESS otherwise (issue #1181).
+static aclblasStatus_t CheckCtrsmLaunchStatus(const char* what)
+{
+    if (aclrtPeekAtLastError(ACL_RT_THREAD_LEVEL) != ACL_SUCCESS) {
+        OP_LOGE("aclblasCtrsmBatched", "%s launch failed", what);
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 // ALLOC_FAILED means the caller can use the workspace-free vector solve.
-// Other runtime errors must be returned to the user unchanged.
+// EXECUTION_FAILED means the cube pipeline failed to launch and the caller
+// falls back to the vector path (issue #1181). Other runtime errors must be
+// returned to the user unchanged.
 aclblasStatus_t TryLaunchCube(
     aclblasHandle_t handle, uint8_t* a, uint8_t* b, const CtrsmBatchedTilingData& t, uint32_t aiv)
 {
@@ -80,10 +94,13 @@ aclblasStatus_t TryLaunchCube(
     if (status != ACLBLAS_STATUS_SUCCESS) {
         return status;
     }
+    // Drain any stale thread-level error so the post-launch peek only reports
+    // this pipeline's own launch failures (issue #1181).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     ctrsm_batched_cube_do(
         a, b, reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(handle)), t, kp, rp, aiv, GetAicCoreCount(),
         handle->stream);
-    return ACLBLAS_STATUS_SUCCESS;
+    return CheckCtrsmLaunchStatus("cube pipeline");
 }
 } // namespace
 
@@ -119,14 +136,20 @@ aclblasStatus_t aclblasCtrsmBatched(
     if (IsSquareFastPath(t)) {
         const uint32_t groups = m == 8 ? (batchCount <= 256 ? 8 : 32) : (m == 16 ? 8 : 4);
         const uint32_t blocks = std::min<uint64_t>(cores, CeilDiv(t.batchCount, groups));
+        // Drain stale thread-level errors so the post-launch peek is authoritative.
+        (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
         ctrsm_batched_square_do(a, b, t, blocks, handle->stream);
-        return ACLBLAS_STATUS_SUCCESS;
+        return CheckCtrsmLaunchStatus("square fast path");
     }
+    // issue #1181: a cube-pipeline launch failure falls back to the workspace-free
+    // vector solve instead of surfacing an unexplained failure code. The stale cube
+    // error is drained before the vector launch so the fallback can succeed.
     const auto cubeStatus = TryLaunchCube(handle, a, b, t, cores);
-    if (cubeStatus != ACLBLAS_STATUS_ALLOC_FAILED) {
+    if (cubeStatus != ACLBLAS_STATUS_ALLOC_FAILED && cubeStatus != ACLBLAS_STATUS_EXECUTION_FAILED) {
         return cubeStatus;
     }
     const uint32_t blocks = std::min<uint64_t>(cores, VectorWork(t));
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     ctrsm_batched_kernel_do(a, b, t, blocks, handle->stream);
-    return ACLBLAS_STATUS_SUCCESS;
+    return CheckCtrsmLaunchStatus("vector path");
 }

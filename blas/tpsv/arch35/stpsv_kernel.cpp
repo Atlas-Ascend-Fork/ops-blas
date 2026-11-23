@@ -15,7 +15,9 @@
  * For n >= 128, stpsv_kernel_simt.cpp provides a SIMT VF parallelized kernel.
  */
 
+#include <cstddef>
 #include <cstdint>
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
 #include "stpsv_tiling_data.h"
@@ -222,44 +224,53 @@ DEFINE_TPSV_KERNEL(UPPER, TRANS, UNIT, stpsv_kernel_upper_trans_unit)
 //  Kernel dispatcher
 // ==========================================================================
 
-void stpsv_simt_kernel_do(const StpsvTilingData& tiling, void* stream);
+aclError stpsv_simt_kernel_do(const StpsvTilingData& tiling, void* stream);
 
-void stpsv_kernel_do(const StpsvTilingData& tiling, void* stream)
+// issue #1181: launch through aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs
+// so the runtime status of the launch is returned to the caller: the <<<>>>
+// statement form discards it (same direct-return pattern as stbmv fastpath).
+aclError LaunchStpsv(const void* symbol, void* stream, const StpsvTilingData& tiling)
+{
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(symbol, &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        StpsvTilingData tiling;
+    } args{tiling};
+    static_assert(sizeof(Arguments) == sizeof(StpsvTilingData), "kernel ABI mismatch");
+    return aclrtLaunchKernelWithHostArgs(function, 1U, stream, nullptr, &args, sizeof(args), nullptr, 0U);
+}
+
+aclError stpsv_kernel_do(const StpsvTilingData& tiling, void* stream)
 {
     // SIMT path: dispatch to kernel in stpsv_kernel_simt.cpp for n >= 128
     if (tiling.numThreads > 0) {
-        stpsv_simt_kernel_do(tiling, stream);
-        return;
+        return stpsv_simt_kernel_do(tiling, stream);
     }
 
     // Scalar path: n < 128
     if (tiling.uplo == ACLBLAS_LOWER) {
         if (tiling.trans == ACLBLAS_OP_N) {
             if (tiling.diag == ACLBLAS_NON_UNIT) {
-                stpsv_kernel_lower_no_trans_non_unit<<<1, nullptr, stream>>>(tiling);
-            } else {
-                stpsv_kernel_lower_no_trans_unit<<<1, nullptr, stream>>>(tiling);
+                return LaunchStpsv(reinterpret_cast<const void*>(stpsv_kernel_lower_no_trans_non_unit), stream, tiling);
             }
-        } else {
-            if (tiling.diag == ACLBLAS_NON_UNIT) {
-                stpsv_kernel_lower_trans_non_unit<<<1, nullptr, stream>>>(tiling);
-            } else {
-                stpsv_kernel_lower_trans_unit<<<1, nullptr, stream>>>(tiling);
-            }
+            return LaunchStpsv(reinterpret_cast<const void*>(stpsv_kernel_lower_no_trans_unit), stream, tiling);
         }
-    } else {
-        if (tiling.trans == ACLBLAS_OP_N) {
-            if (tiling.diag == ACLBLAS_NON_UNIT) {
-                stpsv_kernel_upper_no_trans_non_unit<<<1, nullptr, stream>>>(tiling);
-            } else {
-                stpsv_kernel_upper_no_trans_unit<<<1, nullptr, stream>>>(tiling);
-            }
-        } else {
-            if (tiling.diag == ACLBLAS_NON_UNIT) {
-                stpsv_kernel_upper_trans_non_unit<<<1, nullptr, stream>>>(tiling);
-            } else {
-                stpsv_kernel_upper_trans_unit<<<1, nullptr, stream>>>(tiling);
-            }
+        if (tiling.diag == ACLBLAS_NON_UNIT) {
+            return LaunchStpsv(reinterpret_cast<const void*>(stpsv_kernel_lower_trans_non_unit), stream, tiling);
         }
+        return LaunchStpsv(reinterpret_cast<const void*>(stpsv_kernel_lower_trans_unit), stream, tiling);
     }
+    if (tiling.trans == ACLBLAS_OP_N) {
+        if (tiling.diag == ACLBLAS_NON_UNIT) {
+            return LaunchStpsv(reinterpret_cast<const void*>(stpsv_kernel_upper_no_trans_non_unit), stream, tiling);
+        }
+        return LaunchStpsv(reinterpret_cast<const void*>(stpsv_kernel_upper_no_trans_unit), stream, tiling);
+    }
+    if (tiling.diag == ACLBLAS_NON_UNIT) {
+        return LaunchStpsv(reinterpret_cast<const void*>(stpsv_kernel_upper_trans_non_unit), stream, tiling);
+    }
+    return LaunchStpsv(reinterpret_cast<const void*>(stpsv_kernel_upper_trans_unit), stream, tiling);
 }

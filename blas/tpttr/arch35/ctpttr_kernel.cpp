@@ -11,7 +11,9 @@
 #ifndef CTPTTR_KERNEL_IMPL_H
 #define CTPTTR_KERNEL_IMPL_H
 
+#include <cstddef>
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "ctpttr_kernel.h"
 
@@ -106,9 +108,24 @@ extern "C" __global__ __aicore__ void ctpttr_aiv_kernel(GM_ADDR source, GM_ADDR 
     op.Process();
 }
 
-void ctpttr_kernel_do(const uint8_t* source, uint8_t* destination, const CtpttrTilingData& tiling, void* stream)
+// issue #1181: launch through aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs
+// so the runtime status of the launch is returned to the caller: the <<<>>>
+// statement form discards it (same pattern as stbmv/chbmv direct-return).
+aclError ctpttr_kernel_do(const uint8_t* source, uint8_t* destination, const CtpttrTilingData& tiling, void* stream)
 {
-    ctpttr_aiv_kernel<<<tiling.useCoreNum, nullptr, stream>>>(const_cast<uint8_t*>(source), destination, tiling);
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(reinterpret_cast<const void*>(ctpttr_aiv_kernel), &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        uint8_t* source;
+        uint8_t* destination;
+        CtpttrTilingData tiling;
+    } args{const_cast<uint8_t*>(source), destination, tiling};
+    static_assert(offsetof(Arguments, tiling) == 2U * sizeof(uint8_t*), "kernel ABI mismatch");
+    return aclrtLaunchKernelWithHostArgs(
+        function, tiling.useCoreNum, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }
 
 #endif // CTPTTR_KERNEL_IMPL_H

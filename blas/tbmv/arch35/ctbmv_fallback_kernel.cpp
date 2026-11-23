@@ -13,8 +13,10 @@
  * \brief single-precision complex triangular band matrix-vector multiply SIMT fallback kernels for ascend950
  */
 
+#include <cstddef>
 #include <cstdint>
 
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "common/helper/kernel_constant.h"
 #include "kernel_operator.h"
@@ -27,8 +29,7 @@
 __simt_callee__ __aicore__ __inline__ int64_t CtbmvVectorIndex(uint32_t idx, uint32_t n, int64_t incx)
 {
     int64_t stride = incx;
-    return (stride > 0) ? static_cast<int64_t>(idx) * stride :
-                          static_cast<int64_t>(n - 1U - idx) * (-stride);
+    return (stride > 0) ? static_cast<int64_t>(idx) * stride : static_cast<int64_t>(n - 1U - idx) * (-stride);
 }
 
 __simt_callee__ __aicore__ __inline__ void CtbmvComplexMac(
@@ -187,8 +188,7 @@ __simt_callee__ __aicore__ __inline__ void CtbmvNetlibUpdate(
 
 template <bool UPLO_IS_UPPER>
 __simt_callee__ __aicore__ __inline__ void CtbmvNetlibScale(
-    uint32_t row, uint32_t k, uint32_t lda, bool conj,
-    __gm__ const aclblasComplex* aGm, float& valueRe, float& valueIm)
+    uint32_t row, uint32_t k, uint32_t lda, bool conj, __gm__ const aclblasComplex* aGm, float& valueRe, float& valueIm)
 {
     float aRe = 0.0F;
     float aIm = 0.0F;
@@ -208,8 +208,8 @@ __simt_callee__ __aicore__ __inline__ void CtbmvNetlibScale(
 // register: the whole matrix column is consumed before it is written back.
 template <bool UPLO_IS_UPPER>
 __simt_callee__ __aicore__ __inline__ void CtbmvNetlibFold(
-    uint32_t row, uint32_t col, uint32_t k, uint32_t lda, uint32_t n, int64_t incx, bool conj,
-    float& tempRe, float& tempIm, __gm__ const aclblasComplex* aGm, __gm__ const aclblasComplex* xGm)
+    uint32_t row, uint32_t col, uint32_t k, uint32_t lda, uint32_t n, int64_t incx, bool conj, float& tempRe,
+    float& tempIm, __gm__ const aclblasComplex* aGm, __gm__ const aclblasComplex* xGm)
 {
     float aRe = 0.0F;
     float aIm = 0.0F;
@@ -243,8 +243,8 @@ __simt_callee__ __aicore__ __inline__ void CtbmvNetlibAxpyUpper(
         // to propagate as NaN.
         const int rowStart = (j > kValue) ? (j - kValue) : 0;
         for (int row = rowStart; row < j; ++row) {
-            CtbmvNetlibUpdate<true>(static_cast<uint32_t>(row), static_cast<uint32_t>(j), k, lda, n, incx, tempRe,
-                tempIm, aGm, xGm);
+            CtbmvNetlibUpdate<true>(
+                static_cast<uint32_t>(row), static_cast<uint32_t>(j), k, lda, n, incx, tempRe, tempIm, aGm, xGm);
         }
         if (nonUnit) {
             CtbmvNetlibScale<true>(static_cast<uint32_t>(j), k, lda, false, aGm, tempRe, tempIm);
@@ -268,8 +268,8 @@ __simt_callee__ __aicore__ __inline__ void CtbmvNetlibAxpyLower(
         int rowEnd = j + kValue;
         rowEnd = (rowEnd < nValue) ? rowEnd : nValue - 1;
         for (int row = rowEnd; row > j; --row) {
-            CtbmvNetlibUpdate<false>(static_cast<uint32_t>(row), static_cast<uint32_t>(j), k, lda, n, incx, tempRe,
-                tempIm, aGm, xGm);
+            CtbmvNetlibUpdate<false>(
+                static_cast<uint32_t>(row), static_cast<uint32_t>(j), k, lda, n, incx, tempRe, tempIm, aGm, xGm);
         }
         if (nonUnit) {
             CtbmvNetlibScale<false>(static_cast<uint32_t>(j), k, lda, false, aGm, tempRe, tempIm);
@@ -292,8 +292,8 @@ __simt_callee__ __aicore__ __inline__ void CtbmvNetlibDotUpper(
         }
         const int rowStart = (j > kValue) ? (j - kValue) : 0;
         for (int row = j - 1; row >= rowStart; --row) {
-            CtbmvNetlibFold<true>(static_cast<uint32_t>(row), static_cast<uint32_t>(j), k, lda, n, incx, conj, tempRe,
-                tempIm, aGm, xGm);
+            CtbmvNetlibFold<true>(
+                static_cast<uint32_t>(row), static_cast<uint32_t>(j), k, lda, n, incx, conj, tempRe, tempIm, aGm, xGm);
         }
         xGm[xjIdx].real = tempRe;
         xGm[xjIdx].imag = tempIm;
@@ -314,8 +314,8 @@ __simt_callee__ __aicore__ __inline__ void CtbmvNetlibDotLower(
         int rowEnd = j + kValue;
         rowEnd = (rowEnd < nValue) ? rowEnd : nValue - 1;
         for (int row = j + 1; row <= rowEnd; ++row) {
-            CtbmvNetlibFold<false>(static_cast<uint32_t>(row), static_cast<uint32_t>(j), k, lda, n, incx, conj, tempRe,
-                tempIm, aGm, xGm);
+            CtbmvNetlibFold<false>(
+                static_cast<uint32_t>(row), static_cast<uint32_t>(j), k, lda, n, incx, conj, tempRe, tempIm, aGm, xGm);
         }
         xGm[xjIdx].real = tempRe;
         xGm[xjIdx].imag = tempIm;
@@ -324,8 +324,8 @@ __simt_callee__ __aicore__ __inline__ void CtbmvNetlibDotLower(
 
 template <bool UPLO_IS_UPPER>
 __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void CtbmvComputeNetlibSmall(
-    uint32_t n, uint32_t k, uint32_t lda, uint32_t trans, uint32_t diag, int64_t incx,
-    __gm__ const aclblasComplex* aGm, __gm__ aclblasComplex* xGm)
+    uint32_t n, uint32_t k, uint32_t lda, uint32_t trans, uint32_t diag, int64_t incx, __gm__ const aclblasComplex* aGm,
+    __gm__ aclblasComplex* xGm)
 {
     const bool nonUnit = diag == ACLBLAS_NON_UNIT;
     const int nValue = static_cast<int>(n);
@@ -347,11 +347,10 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void CtbmvComput
     }
 }
 
-
 template <bool UPLO_IS_UPPER, bool TRANS_IS_N, bool CONJ, bool DIAG_IS_UNIT>
-__simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void CtbmvComputeGm(uint32_t n, uint32_t k,
-    uint32_t lda, int64_t incx, __gm__ const aclblasComplex* aGm, __gm__ const aclblasComplex* xGm,
-    __gm__ aclblasComplex* midOutGm)
+__simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void CtbmvComputeGm(
+    uint32_t n, uint32_t k, uint32_t lda, int64_t incx, __gm__ const aclblasComplex* aGm,
+    __gm__ const aclblasComplex* xGm, __gm__ aclblasComplex* midOutGm)
 {
     for (uint32_t row = blockIdx.x * blockDim.x + threadIdx.x; row < n; row += gridDim.x * blockDim.x) {
         uint32_t colStart = 0;
@@ -387,9 +386,9 @@ __simt_callee__ __aicore__ __inline__ float CtbmvWarpReduceSum(float value)
 // writes the reduced result to workspace. x is already cached before this
 // function is entered, so the in-place public API remains race-free.
 template <bool UPLO_IS_UPPER, bool TRANS_IS_N, bool CONJ, bool DIAG_IS_UNIT>
-__simt_callee__ __aicore__ __inline__ void CtbmvComputeWideBandWarpUb(uint32_t n, uint32_t k, uint32_t lda,
-    __gm__ const aclblasComplex* aGm, __ubuf__ const float* xUbRe, __ubuf__ const float* xUbIm,
-    __gm__ aclblasComplex* midOutGm, uint32_t rowStart, uint32_t rowEnd, uint32_t xBase)
+__simt_callee__ __aicore__ __inline__ void CtbmvComputeWideBandWarpUb(
+    uint32_t n, uint32_t k, uint32_t lda, __gm__ const aclblasComplex* aGm, __ubuf__ const float* xUbRe,
+    __ubuf__ const float* xUbIm, __gm__ aclblasComplex* midOutGm, uint32_t rowStart, uint32_t rowEnd, uint32_t xBase)
 {
     const uint32_t laneId = threadIdx.x & (CTBMV_WARP_SIZE - 1U);
     const uint32_t warpId = threadIdx.x / CTBMV_WARP_SIZE;
@@ -407,11 +406,9 @@ __simt_callee__ __aicore__ __inline__ void CtbmvComputeWideBandWarpUb(uint32_t n
         // the constant lane stride; recomputing the index per coefficient
         // makes the scalar unit the instruction-issue bottleneck.
         const uint32_t firstCol = colStart + laneId;
-        int64_t aIdx = CtbmvBandIndex<UPLO_IS_UPPER>(
-            TRANS_IS_N ? row : firstCol, TRANS_IS_N ? firstCol : row, k, lda);
-        const int64_t aIdxStep = TRANS_IS_N ?
-            static_cast<int64_t>(CTBMV_WARP_SIZE) * (static_cast<int64_t>(lda) - 1) :
-            static_cast<int64_t>(CTBMV_WARP_SIZE);
+        int64_t aIdx = CtbmvBandIndex<UPLO_IS_UPPER>(TRANS_IS_N ? row : firstCol, TRANS_IS_N ? firstCol : row, k, lda);
+        const int64_t aIdxStep = TRANS_IS_N ? static_cast<int64_t>(CTBMV_WARP_SIZE) * (static_cast<int64_t>(lda) - 1) :
+                                              static_cast<int64_t>(CTBMV_WARP_SIZE);
         for (uint32_t col = firstCol; col < colEnd; col += CTBMV_WARP_SIZE, aIdx += aIdxStep) {
             float aRe = 0.0f;
             float aIm = 0.0f;
@@ -430,9 +427,9 @@ __simt_callee__ __aicore__ __inline__ void CtbmvComputeWideBandWarpUb(uint32_t n
 }
 
 template <bool UPLO_IS_UPPER, bool TRANS_IS_N, bool CONJ, bool DIAG_IS_UNIT>
-__simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void CtbmvComputeUb(uint32_t n, uint32_t k,
-    uint32_t lda, __gm__ const aclblasComplex* aGm, __gm__ const aclblasComplex* xGm, __gm__ aclblasComplex* midOutGm,
-    uint32_t rowStart, uint32_t rowEnd, uint32_t xBase, uint32_t xLen)
+__simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void CtbmvComputeUb(
+    uint32_t n, uint32_t k, uint32_t lda, __gm__ const aclblasComplex* aGm, __gm__ const aclblasComplex* xGm,
+    __gm__ aclblasComplex* midOutGm, uint32_t rowStart, uint32_t rowEnd, uint32_t xBase, uint32_t xLen)
 {
     __ubuf__ float xUbRe[CTBMV_UB_X_ELEMS];
     __ubuf__ float xUbIm[CTBMV_UB_X_ELEMS];
@@ -459,8 +456,7 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void CtbmvComput
         float accIm = 0.0f;
         // Same affine-address hoisting as the warp-reduction path: advance a
         // register per column instead of recomputing the 64-bit band index.
-        int64_t aIdx = CtbmvBandIndex<UPLO_IS_UPPER>(
-            TRANS_IS_N ? row : colStart, TRANS_IS_N ? colStart : row, k, lda);
+        int64_t aIdx = CtbmvBandIndex<UPLO_IS_UPPER>(TRANS_IS_N ? row : colStart, TRANS_IS_N ? colStart : row, k, lda);
         const int64_t aIdxStep = TRANS_IS_N ? (static_cast<int64_t>(lda) - 1) : 1;
         for (uint32_t col = colStart; col < colEnd; ++col, aIdx += aIdxStep) {
             float aRe = 0.0f;
@@ -540,8 +536,9 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void CtbmvDiagSc
 }
 
 template <bool UPLO_IS_UPPER, bool TRANS_IS_N, bool CONJ>
-__aicore__ __inline__ void CtbmvDispatchDiagGm(uint32_t diag, const CtbmvTilingData& tdata,
-    __gm__ const aclblasComplex* aGm, __gm__ const aclblasComplex* xGm, __gm__ aclblasComplex* midOutGm)
+__aicore__ __inline__ void CtbmvDispatchDiagGm(
+    uint32_t diag, const CtbmvTilingData& tdata, __gm__ const aclblasComplex* aGm, __gm__ const aclblasComplex* xGm,
+    __gm__ aclblasComplex* midOutGm)
 {
     if (diag == ACLBLAS_UNIT) {
         asc_vf_call<CtbmvComputeGm<UPLO_IS_UPPER, TRANS_IS_N, CONJ, true>>(
@@ -553,16 +550,18 @@ __aicore__ __inline__ void CtbmvDispatchDiagGm(uint32_t diag, const CtbmvTilingD
 }
 
 template <bool UPLO_IS_UPPER, bool TRANS_IS_N, bool CONJ>
-__aicore__ __inline__ void CtbmvDispatchDiagUb(uint32_t diag, const CtbmvTilingData& tdata,
-    __gm__ const aclblasComplex* aGm, __gm__ const aclblasComplex* xGm, __gm__ aclblasComplex* midOutGm,
-    uint32_t rowStart, uint32_t rowEnd, uint32_t xBase, uint32_t xLen)
+__aicore__ __inline__ void CtbmvDispatchDiagUb(
+    uint32_t diag, const CtbmvTilingData& tdata, __gm__ const aclblasComplex* aGm, __gm__ const aclblasComplex* xGm,
+    __gm__ aclblasComplex* midOutGm, uint32_t rowStart, uint32_t rowEnd, uint32_t xBase, uint32_t xLen)
 {
     if (diag == ACLBLAS_UNIT) {
-        asc_vf_call<CtbmvComputeUb<UPLO_IS_UPPER, TRANS_IS_N, CONJ, true>>(dim3{tdata.numThreads, 1, 1},
-            tdata.n, tdata.k, tdata.lda, aGm, xGm, midOutGm, rowStart, rowEnd, xBase, xLen);
+        asc_vf_call<CtbmvComputeUb<UPLO_IS_UPPER, TRANS_IS_N, CONJ, true>>(
+            dim3{tdata.numThreads, 1, 1}, tdata.n, tdata.k, tdata.lda, aGm, xGm, midOutGm, rowStart, rowEnd, xBase,
+            xLen);
     } else {
-        asc_vf_call<CtbmvComputeUb<UPLO_IS_UPPER, TRANS_IS_N, CONJ, false>>(dim3{tdata.numThreads, 1, 1},
-            tdata.n, tdata.k, tdata.lda, aGm, xGm, midOutGm, rowStart, rowEnd, xBase, xLen);
+        asc_vf_call<CtbmvComputeUb<UPLO_IS_UPPER, TRANS_IS_N, CONJ, false>>(
+            dim3{tdata.numThreads, 1, 1}, tdata.n, tdata.k, tdata.lda, aGm, xGm, midOutGm, rowStart, rowEnd, xBase,
+            xLen);
     }
 }
 
@@ -575,8 +574,9 @@ __aicore__ __inline__ void CtbmvDispatchComputeGm(
 }
 
 template <bool UPLO_IS_UPPER, bool TRANS_IS_N, bool CONJ>
-__aicore__ __inline__ void CtbmvDispatchComputeUb(const CtbmvTilingData& tdata, __gm__ const aclblasComplex* aGm,
-    __gm__ const aclblasComplex* xGm, __gm__ aclblasComplex* midOutGm)
+__aicore__ __inline__ void CtbmvDispatchComputeUb(
+    const CtbmvTilingData& tdata, __gm__ const aclblasComplex* aGm, __gm__ const aclblasComplex* xGm,
+    __gm__ aclblasComplex* midOutGm)
 {
     uint32_t blkIdx = static_cast<uint32_t>(AscendC::GetBlockIdx());
     uint32_t rowStart = blkIdx * tdata.rowsPerBlock;
@@ -647,8 +647,8 @@ __global__ __aicore__ void ctbmv_compute_kernel(
 }
 
 template <bool UPLO_IS_UPPER, bool TRANS_IS_N, bool CONJ>
-__aicore__ __inline__ void CtbmvDispatchSmallUb(uint32_t diag, const CtbmvTilingData& tdata,
-    __gm__ const aclblasComplex* aGm, __gm__ aclblasComplex* xGm)
+__aicore__ __inline__ void CtbmvDispatchSmallUb(
+    uint32_t diag, const CtbmvTilingData& tdata, __gm__ const aclblasComplex* aGm, __gm__ aclblasComplex* xGm)
 {
     if (diag == ACLBLAS_UNIT) {
         asc_vf_call<CtbmvComputeSmallUb<UPLO_IS_UPPER, TRANS_IS_N, CONJ, true>>(
@@ -714,24 +714,83 @@ __global__ __aicore__ void ctbmv_diag_kernel(
     asc_vf_call<CtbmvDiagScale>(dim3{tdata.numThreads, 1, 1}, tdata.n, tdata.lda, tdata.incx, tdata.trans, aGm, xGm);
 }
 
-void ctbmv_arch35_kernel_do(
+// issue #1181: launch through aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs
+// so the runtime status of the launch is returned to the caller: the <<<>>>
+// statement form discards it (same direct-return pattern as stbmv fastpath).
+namespace {
+// Shared tail of the ctbmv launch wrappers below: resolve the kernel symbol to
+// a function handle and launch the caller-prepared argument block, returning
+// the runtime status of either step.
+aclError LaunchCtbmvBySymbol(const void* symbol, uint32_t blocks, void* stream, void* args, size_t argsSize)
+{
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(symbol, &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    return aclrtLaunchKernelWithHostArgs(function, blocks, stream, nullptr, args, argsSize, nullptr, 0U);
+}
+
+aclError LaunchCtbvmAx(
+    const void* symbol, uint32_t blocks, void* stream, const aclblasComplex* a, aclblasComplex* x,
+    const CtbmvTilingData& tilingData)
+{
+    struct Arguments {
+        const aclblasComplex* a;
+        aclblasComplex* x;
+        CtbmvTilingData tiling;
+    } args{a, x, tilingData};
+    static_assert(offsetof(Arguments, tiling) == 2U * sizeof(void*), "kernel ABI mismatch");
+    return LaunchCtbmvBySymbol(symbol, blocks, stream, &args, sizeof(args));
+}
+
+aclError LaunchCtbvmAxWs(
+    const void* symbol, uint32_t blocks, void* stream, const aclblasComplex* a, aclblasComplex* x, uint8_t* workspace,
+    const CtbmvTilingData& tilingData)
+{
+    struct Arguments {
+        const aclblasComplex* a;
+        aclblasComplex* x;
+        uint8_t* workspace;
+        CtbmvTilingData tiling;
+    } args{a, x, workspace, tilingData};
+    static_assert(offsetof(Arguments, tiling) == 3U * sizeof(void*), "kernel ABI mismatch");
+    return LaunchCtbmvBySymbol(symbol, blocks, stream, &args, sizeof(args));
+}
+
+aclError LaunchCtbvmXWs(
+    const void* symbol, uint32_t blocks, void* stream, aclblasComplex* x, uint8_t* workspace,
+    const CtbmvTilingData& tilingData)
+{
+    struct Arguments {
+        aclblasComplex* x;
+        const uint8_t* workspace;
+        CtbmvTilingData tiling;
+    } args{x, workspace, tilingData};
+    static_assert(offsetof(Arguments, tiling) == 2U * sizeof(void*), "kernel ABI mismatch");
+    return LaunchCtbmvBySymbol(symbol, blocks, stream, &args, sizeof(args));
+}
+} // namespace
+
+aclError ctbmv_arch35_kernel_do(
     const aclblasComplex* a, aclblasComplex* x, uint8_t* workspace, const CtbmvTilingData& tilingData,
     uint32_t numBlocks, void* stream)
 {
     if (tilingData.k == 0U) {
-        ctbmv_diag_kernel<<<numBlocks, nullptr, stream>>>(a, x, tilingData);
-        return;
+        return LaunchCtbvmAx(reinterpret_cast<const void*>(ctbmv_diag_kernel), numBlocks, stream, a, x, tilingData);
     }
-    if (tilingData.n <= CTBMV_SINGLE_BLOCK_UB_N && tilingData.useUb != 0U &&
-        tilingData.numBlocks == 1U) {
-        ctbmv_small_ub_kernel<<<1, nullptr, stream>>>(a, x, tilingData);
-        return;
+    if (tilingData.n <= CTBMV_SINGLE_BLOCK_UB_N && tilingData.useUb != 0U && tilingData.numBlocks == 1U) {
+        return LaunchCtbvmAx(reinterpret_cast<const void*>(ctbmv_small_ub_kernel), 1U, stream, a, x, tilingData);
     }
     if (tilingData.n <= CTBMV_NETLIB_SMALL_N) {
-        ctbmv_netlib_small_kernel<<<1, nullptr, stream>>>(a, x, tilingData);
-        return;
+        return LaunchCtbvmAx(reinterpret_cast<const void*>(ctbmv_netlib_small_kernel), 1U, stream, a, x, tilingData);
     }
-    ctbmv_compute_kernel<<<numBlocks, nullptr, stream>>>(a, x, workspace, tilingData);
-    ctbmv_copy_kernel<<<numBlocks, nullptr, stream>>>(x, workspace, tilingData);
+    // issue #1181: a failed compute launch must not trigger the copy stage.
+    const aclError computeLaunch = LaunchCtbvmAxWs(
+        reinterpret_cast<const void*>(ctbmv_compute_kernel), numBlocks, stream, a, x, workspace, tilingData);
+    if (computeLaunch != ACL_SUCCESS) {
+        return computeLaunch;
+    }
+    return LaunchCtbvmXWs(
+        reinterpret_cast<const void*>(ctbmv_copy_kernel), numBlocks, stream, x, workspace, tilingData);
 }
-

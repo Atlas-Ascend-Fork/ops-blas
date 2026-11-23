@@ -26,7 +26,7 @@
 
 struct CtpsvTilingData;
 
-void ctpsv_kernel_do(const CtpsvTilingData& tiling, void* stream);
+aclError ctpsv_kernel_do(const CtpsvTilingData& tiling, void* stream);
 
 static constexpr uint32_t SIMT_THRESHOLD = 128;
 static constexpr uint32_t SIMT_MAX_BLOCKS = 8;
@@ -54,18 +54,15 @@ static aclblasStatus_t ValidateCtpsvParams(
     aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n, int incx, const aclblasComplex* AP,
     const aclblasComplex* x)
 {
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE("aclblasCtpsv", "invalid uplo=%d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
-        OP_LOGE("aclblasCtpsv", "invalid trans=%d", static_cast<int>(trans));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        diag == ACLBLAS_NON_UNIT || diag == ACLBLAS_UNIT,
-        OP_LOGE("aclblasCtpsv", "invalid diag=%d", static_cast<int>(diag));
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE("aclblasCtpsv", "invalid uplo=%d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(trans == ACLBLAS_OP_N || trans == ACLBLAS_OP_T || trans == ACLBLAS_OP_C,
+              OP_LOGE("aclblasCtpsv", "invalid trans=%d", static_cast<int>(trans));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(diag == ACLBLAS_NON_UNIT || diag == ACLBLAS_UNIT,
+              OP_LOGE("aclblasCtpsv", "invalid diag=%d", static_cast<int>(diag));
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasCtpsv", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(AP != nullptr, OP_LOGE("aclblasCtpsv", "AP must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(x != nullptr, OP_LOGE("aclblasCtpsv", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
@@ -120,7 +117,10 @@ aclblasStatus_t aclblasCtpsv(
         tiling.uplo, tiling.trans, tiling.diag, tiling.incx, tiling.numThreads, tiling.numBlocks);
     OP_LOGI("aclblasCtpsv", "launching kernel");
 
-    ctpsv_kernel_do(tiling, h->stream);
+    // issue #1181: a failed launch must not be reported as SUCCESS with x stale.
+    const aclError launch = ctpsv_kernel_do(tiling, h->stream);
+    CHECK_RET(launch == ACL_SUCCESS, OP_LOGE("aclblasCtpsv", "ctpsv_kernel_do failed: %d", launch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     return ACLBLAS_STATUS_SUCCESS;
 }

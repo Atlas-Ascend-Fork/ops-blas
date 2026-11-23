@@ -15,7 +15,9 @@
  * For n >= 128, ctpsv_kernel_simt.cpp provides a SIMT VF parallelized kernel.
  */
 
+#include <cstddef>
 #include <cstdint>
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
 #include "ctpsv_tiling_data.h"
@@ -225,23 +227,39 @@ DEFINE_CTPSV_KERNEL(UPPER, CONJ_TRANS, UNIT, ctpsv_kernel_upper_conj_trans_unit)
 //  Kernel dispatcher
 // ==========================================================================
 
-void ctpsv_simt_kernel_do(const CtpsvTilingData& tiling, void* stream);
+aclError ctpsv_simt_kernel_do(const CtpsvTilingData& tiling, void* stream);
 
-#define CTPSV_LAUNCH(uploTag, transTag)                                                     \
-    do {                                                                                    \
-        if (tiling.diag == ACLBLAS_NON_UNIT) {                                              \
-            ctpsv_kernel_##uploTag##_##transTag##_non_unit<<<1, nullptr, stream>>>(tiling); \
-        } else {                                                                            \
-            ctpsv_kernel_##uploTag##_##transTag##_unit<<<1, nullptr, stream>>>(tiling);     \
-        }                                                                                   \
+// issue #1181: launch through aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs
+// so the runtime status of the launch is returned to the caller: the <<<>>>
+// statement form discards it (same direct-return pattern as stbmv fastpath).
+aclError LaunchCtpsv(const void* symbol, void* stream, const CtpsvTilingData& tiling)
+{
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(symbol, &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        CtpsvTilingData tiling;
+    } args{tiling};
+    static_assert(sizeof(Arguments) == sizeof(CtpsvTilingData), "kernel ABI mismatch");
+    return aclrtLaunchKernelWithHostArgs(function, 1U, stream, nullptr, &args, sizeof(args), nullptr, 0U);
+}
+
+#define CTPSV_LAUNCH(uploTag, transTag)                                                                                \
+    do {                                                                                                               \
+        if (tiling.diag == ACLBLAS_NON_UNIT) {                                                                         \
+            return LaunchCtpsv(                                                                                        \
+                reinterpret_cast<const void*>(ctpsv_kernel_##uploTag##_##transTag##_non_unit), stream, tiling);        \
+        }                                                                                                              \
+        return LaunchCtpsv(reinterpret_cast<const void*>(ctpsv_kernel_##uploTag##_##transTag##_unit), stream, tiling); \
     } while (0)
 
-void ctpsv_kernel_do(const CtpsvTilingData& tiling, void* stream)
+aclError ctpsv_kernel_do(const CtpsvTilingData& tiling, void* stream)
 {
     // SIMT path: dispatch to kernel in ctpsv_kernel_simt.cpp for n >= 128
     if (tiling.numThreads > 0) {
-        ctpsv_simt_kernel_do(tiling, stream);
-        return;
+        return ctpsv_simt_kernel_do(tiling, stream);
     }
 
     // Scalar path: n < 128

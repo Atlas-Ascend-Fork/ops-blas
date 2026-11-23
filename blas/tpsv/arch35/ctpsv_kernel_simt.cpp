@@ -29,7 +29,9 @@
  * (one addition per element) instead of being recomputed from the quadratic packed formula.
  */
 
+#include <cstddef>
 #include <cstdint>
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
@@ -402,7 +404,18 @@ __global__ __aicore__ void ctpsv_simt_kernel(CtpsvTilingData tiling)
 //  SIMT kernel launch wrapper — called from ctpsv_kernel_do
 // ==========================================================================
 
-void ctpsv_simt_kernel_do(const CtpsvTilingData& tiling, void* stream)
+// issue #1181: launch through aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs
+// so the runtime status of the launch is returned to the caller.
+aclError ctpsv_simt_kernel_do(const CtpsvTilingData& tiling, void* stream)
 {
-    ctpsv_simt_kernel<<<tiling.numBlocks, nullptr, stream>>>(tiling);
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(reinterpret_cast<const void*>(ctpsv_simt_kernel), &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        CtpsvTilingData tiling;
+    } args{tiling};
+    static_assert(sizeof(Arguments) == sizeof(CtpsvTilingData), "kernel ABI mismatch");
+    return aclrtLaunchKernelWithHostArgs(function, tiling.numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }

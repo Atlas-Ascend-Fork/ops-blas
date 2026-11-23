@@ -26,7 +26,7 @@
 
 struct StpsvTilingData;
 
-void stpsv_kernel_do(const StpsvTilingData& tiling, void* stream);
+aclError stpsv_kernel_do(const StpsvTilingData& tiling, void* stream);
 
 static constexpr uint32_t SIMT_THRESHOLD = 128;
 
@@ -99,7 +99,10 @@ aclblasStatus_t aclblasStpsv(
         tiling.trans, tiling.diag, tiling.incx, tiling.numThreads);
     OP_LOGI("aclblasStpsv", "launching kernel");
 
-    stpsv_kernel_do(tiling, h->stream);
+    // issue #1181: a failed launch must not be reported as SUCCESS with x stale.
+    const aclError launch = stpsv_kernel_do(tiling, h->stream);
+    CHECK_RET(launch == ACL_SUCCESS, OP_LOGE("aclblasStpsv", "stpsv_kernel_do failed: %d", launch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     return ACLBLAS_STATUS_SUCCESS;
 }
