@@ -77,6 +77,7 @@ aclblasStatus_t aclblasGemmBatchedEx(aclblasHandle_t handle, aclblasOperation_t 
 - transb == N 时 ldb >= max(1, k)；transb == T 或 C 时 ldb >= max(1, n)
 - ldc >= max(1, m)
 - algo 当前仅支持 ACLBLAS_GEMM_DEFAULT
+- alpha/beta 标量恒为 float（FP32）指针，包括 COMPUTE_16F 组合（实现按 float 解引用，与 gemm_ex 同一口径）；按 half 语义传入会读到错误系数
 - FP8 输入必须使用 ACLBLAS_COMPUTE_32F，否则返回 ACLBLAS_STATUS_NOT_SUPPORTED
 - 不在支持表中的 Atype/Btype/Ctype/computeType 组合将返回 ACLBLAS_STATUS_NOT_SUPPORTED
 
@@ -84,7 +85,7 @@ aclblasStatus_t aclblasGemmBatchedEx(aclblasHandle_t handle, aclblasOperation_t 
 
 | 序号 | Atype | Btype | Ctype | computeType | alpha/beta 宿主类型 | 说明 |
 |------|-------|-------|-------|-------------|-------------------|------|
-| 1 | ACL_FLOAT16 | ACL_FLOAT16 | ACL_FLOAT16 | ACLBLAS_COMPUTE_16F | half (FP16) | FP16 纯精度计算 |
+| 1 | ACL_FLOAT16 | ACL_FLOAT16 | ACL_FLOAT16 | ACLBLAS_COMPUTE_16F | float (FP32) | FP16 纯精度计算 |
 | 2 | ACL_FLOAT16 | ACL_FLOAT16 | ACL_FLOAT16 | ACLBLAS_COMPUTE_32F | float (FP32) | FP16 输入，FP32 累加 |
 | 3 | ACL_BF16 | ACL_BF16 | ACL_BF16 | ACLBLAS_COMPUTE_32F | float (FP32) | BF16 输入，FP32 累加 |
 | 4 | ACL_FLOAT8_E4M3FN | ACL_FLOAT8_E4M3FN | ACL_FLOAT16 | ACLBLAS_COMPUTE_32F | float (FP32) | FP8 E4M3 输入，FP16 输出 |
