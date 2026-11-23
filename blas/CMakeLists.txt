@@ -93,7 +93,7 @@ if(DEFINED TEST_NAMES AND NOT "${TEST_NAMES}" STREQUAL "")
     # arch22 的 cgemv_batched host 逐 batch 调用单矩阵 aclblasCgemv（其 host 定义于
     # blas/gemv/arch22/cgemv_host.cpp），单算子构建时同样需要保留该源文件，
     # 以及它链接的两个 kernel launch 函数所在的 cgemv_{no_,}trans_kernel.cpp。
-    set(_GEMMV_HOST_DEP_OPS "cgemv_batched")
+    set(_GEMMV_HOST_DEP_OPS "cgemv_batched" "gemv_batched")
     set(_KEEP_GEMMV_HOST FALSE)
     foreach(_t ${TEST_NAMES})
         if(_t IN_LIST _GEMMV_HOST_DEP_OPS)
