@@ -14,7 +14,7 @@ set -euo pipefail
 
 # issue #728: 三个位置参数缺一不可，无参/漏参调用时空变量会拼出 /version.info
 # 尝试写文件系统根目录；此处显式校验并给出用法后退出
-if [ "$#" -ne 3 ]; then
+if [ "$#" -ne 3 ] || [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
     echo "Usage: $0 <ascend_install_dir> <gen_file_dir> <ops_blas_version>" >&2
     exit 1
 fi
