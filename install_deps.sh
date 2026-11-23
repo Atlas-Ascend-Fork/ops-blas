@@ -31,19 +31,48 @@ run_command() {
 }
 
 version_ge() {
-    # Version comparison, format: xx.xx.xx
-    IFS='.' read -r -a curr_arr <<< "$1"
-    IFS='.' read -r -a req_arr <<< "$2"
+    # Version comparison, format: xx.xx.xx (base-10, pre-release aware, Bash 3.2 safe)
+    local curr_core="${1%%[-+~]*}"
+    local req_core="${2%%[-+~]*}"
+    curr_core="${curr_core:-0}"
+    req_core="${req_core:-0}"
+    local -a curr_arr=() req_arr=()
+    IFS='.' read -r -a curr_arr <<< "$curr_core"
+    IFS='.' read -r -a req_arr <<< "$req_core"
 
-    for ((i=0; i<${#req_arr[@]}; i++)); do
-        curr=${curr_arr[i]:-0}
-        req=${req_arr[i]}
-        if (( curr > req )); then
-            return 0
-        elif (( curr < req )); then
-            return 1
+    local max_len=${#req_arr[@]}
+    if (( ${#curr_arr[@]} > max_len )); then
+        max_len=${#curr_arr[@]}
+    fi
+
+    local i curr req zeros
+    for ((i=0; i<max_len; i++)); do
+        curr="${curr_arr[i]:-0}"
+        curr="${curr%%[^0-9]*}"
+        zeros="${curr%%[!0]*}"
+        curr="${curr#${zeros}}"
+        curr="${curr:-0}"
+
+        req="${req_arr[i]:-0}"
+        req="${req%%[^0-9]*}"
+        zeros="${req%%[!0]*}"
+        req="${req#${zeros}}"
+        req="${req:-0}"
+
+        if (( ${#curr} != ${#req} )); then
+            (( ${#curr} > ${#req} )) && return 0 || return 1
+        elif [[ "$curr" != "$req" ]]; then
+            [[ "$curr" > "$req" ]] && return 0 || return 1
         fi
     done
+
+    local curr_l req_l
+    curr_l=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    req_l=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+    local pre_re='(^|[-.~_+0-9])(alpha|beta|rc|dev|pre)([0-9._-]|$)'
+    if [[ "$curr_l" =~ $pre_re ]] && ! [[ "$req_l" =~ $pre_re ]]; then
+        return 1
+    fi
     return 0
 }
 
