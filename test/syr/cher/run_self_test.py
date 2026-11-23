@@ -72,12 +72,16 @@ def main():
     m = re.search(r"\[==========\] (\d+) tests from \d+ test suites? ran", text)
     ran = int(m.group(1)) if m else -1
     failed = len(re.findall(r"^\[  FAILED  \]", text, re.M))
+    expected = {row["case_name"] for row in rows}
+    passed_cases = set(re.findall(r"^\[\s*OK\s*\]\s+Cher/CherArch35Test\.CsvDriven/(\S+)\s+\(", text, re.M))
+    missing_cases = sorted(expected - passed_cases)
     summary = {
         "csv_cases": len(rows),
         "expected_cases": EXPECTED_CASES,
         "expected_perf": EXPECTED_PERF,
         "tests_ran": ran,
         "failed_cases": failed,
+        "missing_csv_cases": missing_cases,
         "exit_code": proc.returncode,
         "cmd": binary,
     }
@@ -88,7 +92,7 @@ def main():
     LOG.info("%s", json.dumps(summary, indent=2))
 
     # CSV-driven suite plus fixed contract tests (CsvCaseCount / NullHandle / ...).
-    ok = ran >= len(rows) and failed == 0 and proc.returncode == 0
+    ok = ran >= len(rows) and not missing_cases and failed == 0 and proc.returncode == 0
     LOG.info("RESULT: %s", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
