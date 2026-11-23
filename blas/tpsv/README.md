@@ -53,6 +53,7 @@ aclblasStatus_t aclblasStpsv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 - trans 必须为 ACLBLAS_OP_N、ACLBLAS_OP_T 或 ACLBLAS_OP_C
 - diag 必须为 ACLBLAS_NON_UNIT 或 ACLBLAS_UNIT
 - incx != 0（可正可负）
+- arch35（Ascend 950PR / Ascend 950DT）要求 x 的索引跨度 `(n - 1) * |incx| < UINT32_MAX`；跨度达到或超过 `UINT32_MAX` 时返回 `ACLBLAS_STATUS_NOT_SUPPORTED`，避免设备侧 uint32 索引回绕
 - n > 0 时 AP、x 不可为 nullptr
 - 不做奇异/近奇异检测：diag = ACLBLAS_NON_UNIT 时调用方须保证对角元非零
 
@@ -64,6 +65,7 @@ aclblasStatus_t aclblasStpsv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 | handle 为 nullptr | `ACLBLAS_STATUS_HANDLE_IS_NULLPTR` |
 | n < 0 / incx == 0 / uplo、trans、diag 非法枚举值 / n > 0 时 AP 或 x 为 nullptr | `ACLBLAS_STATUS_INVALID_VALUE` |
 | arch22 实现：n > 32768（整解向量 UB 常驻策略的容量上界） | `ACLBLAS_STATUS_NOT_SUPPORTED` |
+| arch35 实现：`(n - 1) * abs(incx) >= UINT32_MAX`（x 索引跨度达到设备 uint32 表示上限） | `ACLBLAS_STATUS_NOT_SUPPORTED` |
 
 > arch22（Atlas A2 / Atlas A3）实现采用「整解向量 UB 常驻」策略，受 UB 容量约束存在阶数上界
 > `n <= 32768`；超出时 host 侧直接返回 `ACLBLAS_STATUS_NOT_SUPPORTED`，不产生 UB 溢出。
