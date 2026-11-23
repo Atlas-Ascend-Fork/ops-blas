@@ -72,11 +72,12 @@ class UtilizationInfo(ctypes.Structure):
 def resolve_lib_path(explicit=None):
     if explicit:
         return explicit
-    home = os.environ.get("ASCEND_HOME_PATH")
-    if home:
-        cand = os.path.join(home, "lib64", "libascendcl.so")
-        if os.path.isfile(cand):
-            return cand
+    for env_key in ("ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME"):
+        home = os.environ.get(env_key)
+        if home:
+            cand = os.path.join(home, "lib64", "libascendcl.so")
+            if os.path.isfile(cand):
+                return cand
     return DEFAULT_LIB_FALLBACK
 
 
