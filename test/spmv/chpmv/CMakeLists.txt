@@ -11,4 +11,6 @@
 if("arch35" IN_LIST SOC_ARCH_DIRS)
     ops_blas_add_gtest_tests(${OPS_BLAS} chpmv_test)
     target_link_libraries(chpmv_test PRIVATE ${CMAKE_DL_LIBS})
+elseif("arch22" IN_LIST SOC_ARCH_DIRS)
+    ops_blas_add_gtest_tests(${OPS_BLAS} chpmv_test)
 endif()
