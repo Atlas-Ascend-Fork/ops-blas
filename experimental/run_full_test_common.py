@@ -232,8 +232,10 @@ class Harness:
         prec_ok = self.run_precision() if do_prec else True
         perf_ok = self.run_perf() if do_perf else True
 
+        prec_status = ("PASS" if prec_ok else "FAIL") if do_prec else "skip"
+        perf_status = ("PASS" if perf_ok else "FAIL") if do_perf else "skip"
         logging.info("=" * 72)
         logging.info(f"DONE in {time.time()-t0:.1f}s | "
-                     f"Precision: {'PASS' if prec_ok else 'FAIL' if do_prec else 'skip'} | "
-                     f"Perf: {'PASS' if perf_ok else 'FAIL' if do_perf else 'skip'}")
+                     f"Precision: {prec_status} | "
+                     f"Perf: {perf_status}")
         return 0 if (prec_ok and perf_ok) else 1
