@@ -126,6 +126,34 @@ for arg in "$@"; do
     esac
 done
 
+normalize_nonneg_int() {
+    local raw="$1"
+    if ! [[ "${raw}" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+    local stripped="${raw#"${raw%%[!0]*}"}"
+    stripped="${stripped:-0}"
+    if [ "${#stripped}" -gt 10 ] || {
+        [ "${#stripped}" -eq 10 ] && [[ "${stripped}" > "2147483647" ]];
+    }; then
+        return 1
+    fi
+    printf '%s\n' "${stripped}"
+}
+
+if ! normalized_dev=$(normalize_nonneg_int "${TEST_DEVICE_ID}"); then
+    print_error "Invalid --device value '${TEST_DEVICE_ID}': expected integer in [0, 2147483647]."
+    exit 1
+fi
+TEST_DEVICE_ID="${normalized_dev}"
+
+if ! normalized_cnt=$(normalize_nonneg_int "${TEST_DEVICE_COUNT}") ||
+   [ "${normalized_cnt}" -lt 1 ]; then
+    print_error "Invalid --devices value '${TEST_DEVICE_COUNT}': expected integer in [1, 2147483647]."
+    exit 1
+fi
+TEST_DEVICE_COUNT="${normalized_cnt}"
+
 # 默认 SOC_VERSION
 if [ -z "${SOC_VERSION}" ]; then
     SOC_VERSION="ascend910b3"
@@ -516,6 +544,12 @@ if [ "${RUN_TEST}" == "ON" ]; then
         local -a pids=()
         local -a shard_ops_list=()
         local base=${#shard_ops[@]}
+        if [ "${base}" -eq 0 ]; then
+            return 0
+        fi
+        if [ "${n_shards}" -gt "${base}" ]; then
+            n_shards=${base}
+        fi
         local per=$(( (base + n_shards - 1) / n_shards ))
         rm -rf "${BUILD_DIR}/shard_status" && mkdir -p "${BUILD_DIR}/shard_status"
 
