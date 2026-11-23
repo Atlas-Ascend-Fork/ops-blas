@@ -8,6 +8,6 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 # -----------------------------------------------------------------------------------------------------------
 
-if("arch35" IN_LIST SOC_ARCH_DIRS)
+if("arch35" IN_LIST SOC_ARCH_DIRS OR "arch22" IN_LIST SOC_ARCH_DIRS)
     ops_blas_add_gtest_tests(${OPS_BLAS} chpr2_test)
 endif()
