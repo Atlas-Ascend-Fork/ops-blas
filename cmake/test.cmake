@@ -228,6 +228,13 @@ function(_ops_blas_ensure_gtest_found)
         find_path(GTEST_INCLUDE_DIR gtest/gtest.h PATHS /usr/local/include /usr/include)
         find_library(GTEST_LIB gtest PATHS /usr/local/lib /usr/lib)
     endif()
+    if(NOT GTEST_INCLUDE_DIR OR NOT GTEST_LIB)
+        message(FATAL_ERROR
+            "GoogleTest (gtest/gtest.h / libgtest) not found. Install via:\n"
+            "  Debian/Ubuntu:         apt-get install libgtest-dev\n"
+            "  RHEL/CentOS/openEuler: dnf install gtest-devel\n"
+            "Or pass -DGTEST_INCLUDE_DIR=<dir> -DGTEST_LIB=<lib>.")
+    endif()
 endfunction()
 
 # Locate reference BLAS (CBLAS) and LAPACK once per configure.
