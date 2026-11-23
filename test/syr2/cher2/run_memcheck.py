@@ -10,6 +10,7 @@
 
 import argparse
 from collections import Counter
+from fnmatch import fnmatchcase
 import json
 import logging
 import os
@@ -44,14 +45,19 @@ def test_groups():
     ]
 
 
-def check_xml(xml, expected):
+def check_xml(xml, expected, selected):
     if not xml.exists():
         return False
     try:
         tests = ET.parse(xml).getroot().findall(".//testcase")
     except ET.ParseError:
         return False
-    return len(tests) == expected and all(
+    names = [test.get("classname", "") + "." + test.get("name", "") for test in tests]
+    if len(names) != expected or len(set(names)) != expected:
+        return False
+    if not all(any(fnmatchcase(name, selector) for selector in selected) for name in names):
+        return False
+    return all(
         test.attrib.get("result") == "completed"
         and test.find("failure") is None
         and test.find("skipped") is None
@@ -59,7 +65,7 @@ def check_xml(xml, expected):
     )
 
 
-def check_group(name, expected, required, returncode, text, xml):
+def check_group(name, expected, required, returncode, text, xml_clean):
     passed = re.findall(r"\[\s*PASSED\s*\]\s*(\d+) tests?\.", text)
     diagnostics = [
         line for line in text.splitlines()
@@ -70,7 +76,7 @@ def check_group(name, expected, required, returncode, text, xml):
     starts = Counter(re.findall(r"Start memcheck sanitizer on kernel " + kernel, text))
     finished = Counter(re.findall(r"Sanitizer finished on kernel " + kernel + r"\. No error detected\.", text))
     kernels_clean = required.issubset(starts) and starts == finished
-    tests_clean = bool(passed) and all(int(value) == expected for value in passed) and check_xml(xml, expected)
+    tests_clean = bool(passed) and all(int(value) == expected for value in passed) and xml_clean
     clean = returncode == 0 and tests_clean and kernels_clean and not diagnostics
     return dict(
         group=name, passed=clean, expected_tests=expected, reported_tests=passed,
@@ -96,7 +102,8 @@ def run_group(args, name, selected, expected, required, env):
     text = log.read_text(encoding="utf-8", errors="replace")
     if detail.exists():
         text += "\n" + detail.read_text(encoding="utf-8", errors="replace")
-    return check_group(name, expected, required, result.returncode, text, xml)
+    xml_clean = check_xml(xml, expected, selected)
+    return check_group(name, expected, required, result.returncode, text, xml_clean)
 
 
 def main():
