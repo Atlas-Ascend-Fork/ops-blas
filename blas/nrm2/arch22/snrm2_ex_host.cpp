@@ -115,10 +115,15 @@ aclblasStatus_t aclblasSnrm2Ex(
         return ACLBLAS_STATUS_ALLOC_FAILED;
     }
     auto* wsDevice = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(handle));
-    OP_LOGD(OP_TAG, "launching kernel: n=%u blocks=%u incx=%lld xtype=%u", totalN, numBlocks,
-        static_cast<long long>(incx), tiling.xType);
-    snrm2_ex_kernel_do(
+    OP_LOGD(
+        OP_TAG, "launching kernel: n=%u blocks=%u incx=%lld xtype=%u", totalN, numBlocks, static_cast<long long>(incx),
+        tiling.xType);
+    const aclError launchErr = snrm2_ex_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<void*>(x)), reinterpret_cast<uint8_t*>(result), wsDevice, tiling,
         numBlocks, handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "snrm2_ex_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }

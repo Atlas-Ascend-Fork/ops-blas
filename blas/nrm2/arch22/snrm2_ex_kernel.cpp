@@ -321,9 +321,17 @@ extern "C" __global__ __aicore__ void snrm2_ex_reduce_arch22_kernel(
     op.ProcessReduce();
 }
 
-void snrm2_ex_kernel_do(
+aclError snrm2_ex_kernel_do(
     uint8_t* x, uint8_t* result, uint8_t* workSpace, const Snrm2ExTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    // Drain any stale thread-level error so the post-launch check only reports
+    // this pipeline's own launch failures (issue #1181 precedent).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     snrm2_ex_partial_arch22_kernel<<<numBlocks, nullptr, stream>>>(x, workSpace, tiling);
+    const aclError partialErr = aclrtGetLastError(ACL_RT_THREAD_LEVEL);
+    if (partialErr != ACL_SUCCESS) {
+        return partialErr;
+    }
     snrm2_ex_reduce_arch22_kernel<<<1U, nullptr, stream>>>(workSpace, result, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

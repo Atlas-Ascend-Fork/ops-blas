@@ -11,9 +11,9 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 
 #include "snrm2_ex_tiling_data.h"
 
-void snrm2_ex_kernel_do(
-    uint8_t* x, uint8_t* result, uint8_t* workSpace, const Snrm2ExTilingData& tiling, uint32_t numBlocks,
-    void* stream);
+aclError snrm2_ex_kernel_do(
+    uint8_t* x, uint8_t* result, uint8_t* workSpace, const Snrm2ExTilingData& tiling, uint32_t numBlocks, void* stream);
