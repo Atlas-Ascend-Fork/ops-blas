@@ -141,8 +141,15 @@ def profile_batch(a, app, batch, offset, env):
     if "[ERROR]" in text:
         raise RuntimeError("msprof reported an error; inspect " + str(prefix / "msprof.log"))
     tests = ET.parse(xml).getroot().findall(".//testcase")
-    if len(tests) != len(batch) or any(t.find("failure") is not None or t.find("skipped") is not None for t in tests):
-        raise RuntimeError("Missing or failed PF GTest")
+    expected = sorted("CsvDriven/" + row["case_name"] for row in batch)
+    reported = sorted(test.get("name", "") for test in tests)
+    if reported != expected or any(
+        test.get("classname") != "Cher2/Cher2Test"
+        or test.get("result") != "completed"
+        or any(test.find(tag) is not None for tag in ("failure", "error", "skipped"))
+        for test in tests
+    ):
+        raise RuntimeError("Missing, unexpected or failed PF GTest")
     raw = read_durations(prefix / "raw")
     return prefix, text, raw
 
@@ -153,9 +160,10 @@ def collect_batch_samples(batch, offset, baseline, prefix, text, raw):
     for index, row in enumerate(batch, offset):
         name = row["case_name"]
         calls = re.findall(
-            r"\[PERF_CALL\] case=" + re.escape(name) + r" sample=(\d+) phase=(?:warmup|sample) status=0", text
+            r"\[PERF_CALL\] case=" + re.escape(name) + r" sample=(\d+) phase=(warmup|sample) status=0\b", text
         )
-        if list(map(int, calls)) != list(range(65)):
+        expected_calls = [(str(i), "warmup" if i < 5 else "sample") for i in range(65)]
+        if calls != expected_calls:
             raise RuntimeError("Missing successful API calls: " + name)
         k = kernel(row)
         begin = used.get(k, 0)
