@@ -33,6 +33,7 @@ def parse_args():
     parser.add_argument("--binary", type=Path, default=default_binary)
     parser.add_argument("--tool", default="mssanitizer")
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--timeout", type=int, default=3600)
     return parser.parse_args()
 
 
@@ -103,22 +104,41 @@ def run_group(args, name, selected, expected, required, env):
     # This tool version parses application flags as its own options. GTest
     # environment variables preserve both the filter and XML output contract.
     child_env = dict(env, GTEST_FILTER=":".join(selected), GTEST_OUTPUT="xml:" + str(xml))
-    with log.open("w", encoding="utf-8") as output:
-        result = subprocess.run(command, env=child_env, stdout=output, stderr=subprocess.STDOUT, timeout=3600)
-    text = log.read_text(encoding="utf-8", errors="replace")
+    timed_out = False
+    launch_error = None
+    try:
+        with log.open("w", encoding="utf-8") as output:
+            result = subprocess.run(command, env=child_env, stdout=output, stderr=subprocess.STDOUT,
+                                    timeout=args.timeout, check=False)
+        returncode = result.returncode
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        returncode = 124
+    except OSError as exc:
+        launch_error = str(exc)
+        returncode = 127
+    text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
     if detail.exists():
         text += "\n" + detail.read_text(encoding="utf-8", errors="replace")
-    record = check_group(name, expected, required, result.returncode, text, xml)
-    try:
-        verify_xml(xml, selected)
-    except Exception as error:
-        record.update(passed=False, error=str(error))
+    record = check_group(name, expected, required, returncode, text, xml)
+    record["timed_out"] = timed_out
+    if timed_out:
+        record.update(passed=False, error=f"Timed out after {args.timeout}s")
+    elif launch_error is not None:
+        record.update(passed=False, error=launch_error)
+    else:
+        try:
+            verify_xml(xml, selected)
+        except Exception as error:
+            record.update(passed=False, error=str(error))
     return record
 
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = parse_args()
+    if args.timeout <= 0:
+        raise ValueError("timeout must be positive")
     tool = shutil.which(args.tool)
     if tool is None:
         raise RuntimeError("mssanitizer executable not found: " + args.tool)
