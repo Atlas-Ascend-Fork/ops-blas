@@ -177,23 +177,20 @@ static std::string BuildCaseFilter()
         return filter;
     }
 
-    // 单算子模式（与原行为一致）：匹配到本算子则按用例子串过滤
+    // 单算子模式：遇到裸 ALL 或本算子的 ALL 时全量运行，并合并同算子的多个条目
     for (const auto& e : ParseCaseEntries(raw)) {
+        if (e.op == "ALL" && e.cases.size() == 1 && e.cases[0] == "ALL") {
+            return "";
+        }
         if (e.op != exeName) {
             continue;
         }
-        bool all = false;
         for (const auto& c : e.cases) {
             if (c == "ALL") {
-                all = true;
-                break;
+                return "";
             }
             append("*" + c + "*");
         }
-        if (all) {
-            return "";
-        }
-        break;
     }
     return filter;
 }
