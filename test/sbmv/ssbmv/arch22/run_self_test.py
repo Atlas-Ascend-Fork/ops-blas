@@ -103,6 +103,10 @@ def main():
 
     listed = listed_test_count(binary)
     expected_run = listed - perf
+    if expected_run < EXPECTED_ACCURACY:
+        LOGGER.error("[self-test] FAIL: gtest lists only %d accuracy tests, expected at least %d",
+                     expected_run, EXPECTED_ACCURACY)
+        return 1
     LOGGER.info("[self-test] gtest lists %d tests; accuracy run is expected to execute %d", listed, expected_run)
 
     returncode, passed, failed, output = run_accuracy(binary, args.device)
