@@ -147,7 +147,7 @@ def run_accuracy(binary, filter_str, device, timeout):
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     except subprocess.TimeoutExpired:
         logger.info(f"  超时 ({timeout}s)，大尺寸用例较慢，请加大 --timeout")
-        return 0, 0, []
+        return 0, 1, [("FAIL", f"<timeout:{timeout}s>", 0)]
     details = []
     for line in r.stdout.splitlines():
         m = re.match(r"\[\s+OK\s+\]\s+\S+/(\S+)\s+\((\d+)\s*ms\)", line)
@@ -159,6 +159,9 @@ def run_accuracy(binary, filter_str, device, timeout):
             details.append(("FAIL", m.group(1), 0))
     passed = sum(1 for s, _, _ in details if s == "PASS")
     failed = sum(1 for s, _, _ in details if s == "FAIL")
+    if r.returncode != 0 and failed == 0:
+        details.append(("FAIL", f"<exit:{r.returncode}>", 0))
+        failed += 1
     return passed, failed, details
 
 
@@ -201,7 +204,9 @@ def main_accuracy(op, title, test_dir):
         logger.info("  结论: ALL PASS")
     elif failed > 0:
         logger.info(f"  结论: {failed} FAILURES")
-    return 0 if failed == 0 else 1
+    else:
+        logger.info("  结论: NO TESTS RAN")
+    return 0 if failed == 0 and passed > 0 else 1
 
 
 # --------------------------------------------------------------------------
@@ -282,7 +287,9 @@ def summarize(results, csv_params, baseline, keyer):
         base = baseline.get(keyer.key_fn(p, m_val, n_val))
         npu = res["npu_ms"]
         ratio = 0
-        if base is not None and npu > 0:
+        if res.get("status") == "failed":
+            verdict = "FAIL"
+        elif base is not None and npu > 0:
             ratio = base / npu
             verdict = "PASS" if ratio >= keyer.perf_threshold else "FAIL"
         else:
@@ -375,7 +382,9 @@ def main_perf(cfg):
     keyer = Keyer(cfg.key_fn, cfg.extra_fn, cfg.perf_threshold)
     out_rows = summarize(results, csv_params, baseline, keyer)
     n_fail = print_report(out_csv, out_rows)
-    return 0 if n_fail == 0 and len(out_rows) > 0 else 1
+    if r.returncode != 0:
+        logger.info(f"  测试进程异常退出 (returncode={r.returncode})")
+    return 0 if r.returncode == 0 and n_fail == 0 and len(out_rows) > 0 else 1
 
 
 # --------------------------------------------------------------------------
