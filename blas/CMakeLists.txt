@@ -146,7 +146,10 @@ if(DEFINED TEST_NAMES AND NOT "${TEST_NAMES}" STREQUAL "")
             if(_src_file MATCHES "/${_test_name}/")
                 set(_keep_src TRUE)
             endif()
-            if(_src_name MATCHES "^${_test_name}_")
+            # /gemm_ex/ sources are coupled as a unit (and gated on gemm_ex_matmul_kernel.cpp
+            # for CATLASS setup); keep them only via the explicit gemm/gemm_ex/sgemm_ex/cgemm_ex
+            # rules above so --ops=cgemm or --ops=sgemm does not pull partial gemm_ex sources.
+            if(_src_name MATCHES "^${_test_name}_" AND NOT _src_file MATCHES "/gemm_ex/")
                 set(_keep_src TRUE)
             endif()
             if(_test_name MATCHES "^[a-zA-Z]")
