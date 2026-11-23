@@ -55,7 +55,6 @@ cmake-build-release
 *.tmp
 *.temp
 
-
 # UT report file
 ut_report.txt
 
@@ -85,6 +84,6 @@ oat_reports/
 log/
 
 # Local model config (generated from template)
-agent/agents/model_config.json
+.agent/agents/model_config.json
 operators/
 outbox/
