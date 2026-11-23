@@ -166,7 +166,7 @@ restore_permissions() {
     i=$((i - 1))
     local dir="${DIRS_GRANTED_WRITE[$i]}"
     if [ -d "${dir}" ]; then
-      chmod u-w "${dir}" 2>/dev/null
+      chmod u-w "${dir}" 2>/dev/null || true
     fi
   done
   DIRS_GRANTED_WRITE=()
@@ -242,7 +242,10 @@ do_install() {
 
   # 复制 version.info 等
   if [ -d "${src_info}" ]; then
-    cp -rf "${src_info}"/* "${target_info}/" 2>/dev/null || true
+    for f in "${src_info}"/*; do
+      [ -e "$f" ] || continue
+      cp -rf "$f" "${target_info}/"
+    done
   fi
 
   # 恢复被临时修改的目录权限
