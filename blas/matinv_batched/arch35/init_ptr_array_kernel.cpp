@@ -16,7 +16,9 @@
  * inside the flat matTmpBuf buffer.
  */
 
+#include <cstddef>
 #include <cstdint>
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
@@ -34,8 +36,7 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(INIT_PTR_ARRAY_SIMT_MAX_THREADS) inline void
     uint64_t stride = static_cast<uint64_t>(n) * static_cast<uint64_t>(n);
     for (uint32_t b = threadIdx.x; b < numBatch; b += blockDim.x) {
         uint32_t batchIdx = startBatch + b;
-        ptrArr[batchIdx] = reinterpret_cast<uint64_t>(
-            matBuf + static_cast<uint64_t>(batchIdx) * stride);
+        ptrArr[batchIdx] = reinterpret_cast<uint64_t>(matBuf + static_cast<uint64_t>(batchIdx) * stride);
     }
 }
 
@@ -64,8 +65,24 @@ extern "C" __global__ __aicore__ void init_ptr_array_kernel(
         dim3{INIT_PTR_ARRAY_SIMT_MAX_THREADS, 1, 1}, n, numBatch, startBatch, ptrArray, flatBuf);
 }
 
-void init_ptr_array_kernel_do(
+// issue #1180: launch through aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs
+// so the runtime status of the launch is returned to the caller: the <<<>>>
+// statement form discards it. Same pattern as the gemm_batched arch35 launchers.
+aclError init_ptr_array_kernel_do(
     uint8_t* ptrArray, uint8_t* flatBuf, uint32_t n, uint32_t batchSize, uint32_t numBlocks, void* stream)
 {
-    init_ptr_array_kernel<<<numBlocks, nullptr, stream>>>(ptrArray, flatBuf, n, batchSize, numBlocks);
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(reinterpret_cast<const void*>(init_ptr_array_kernel), &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        GM_ADDR ptrArray;
+        GM_ADDR flatBuf;
+        uint32_t n;
+        uint32_t batchSize;
+        uint32_t numBlocks;
+    } args{ptrArray, flatBuf, n, batchSize, numBlocks};
+    static_assert(offsetof(Arguments, n) == 2U * sizeof(uint8_t*), "kernel ABI mismatch");
+    return aclrtLaunchKernelWithHostArgs(function, numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }

@@ -11,7 +11,9 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "matinv_batched_tiling_data.h"
 
-void copy_kernel_do(
-    const uint8_t* srcArray, uint8_t* dstArray, const SmatinvBatchedTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError copy_kernel_do(
+    const uint8_t* srcArray, uint8_t* dstArray, const SmatinvBatchedTilingData& tiling, uint32_t numBlocks,
+    void* stream);

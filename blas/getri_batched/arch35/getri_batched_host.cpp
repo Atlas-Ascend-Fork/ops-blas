@@ -92,11 +92,14 @@ static aclblasStatus_t LaunchGetriBatchedKernel(
     OP_LOGI("aclblasSgetriBatched", "launching kernel: blocks=%u, cores=%u", usedCoreNum, coreNum);
 
     auto* h = handle;
-    sgetri_batched_kernel_do(
+    // issue #1180: a failed launch must not be reported as SUCCESS.
+    const aclError launch = sgetri_batched_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<const float**>(Aarray)),
         reinterpret_cast<uint8_t*>(const_cast<int*>(PivotArray)),
         reinterpret_cast<uint8_t*>(const_cast<float**>(Carray)), reinterpret_cast<uint8_t*>(infoArray), tiling,
         usedCoreNum, h->stream);
+    CHECK_RET(launch == ACL_SUCCESS, OP_LOGE("aclblasSgetriBatched", "sgetri_batched_kernel_do failed: %d", launch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     return ACLBLAS_STATUS_SUCCESS;
 }

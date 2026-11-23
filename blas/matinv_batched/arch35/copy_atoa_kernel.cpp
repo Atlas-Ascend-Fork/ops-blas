@@ -16,7 +16,9 @@
  * Used by matinv_batched host as Step 1 (A -> Ainv) and Step 3 (Ainv LU -> matTmpBuf).
  */
 
+#include <cstddef>
 #include <cstdint>
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
@@ -35,8 +37,8 @@ __simt_callee__ __aicore__ inline __gm__ float* ReadPtrFromArray(GM_ADDR arrayBa
 }
 
 // Reads a device-side const float pointer from a const pointer array stored in GM.
-__simt_callee__ __aicore__ inline const __gm__ float* ReadPtrFromConstArray(const __gm__ uint8_t* arrayBase,
-                                                                            uint32_t batchIdx)
+__simt_callee__ __aicore__ inline const __gm__ float* ReadPtrFromConstArray(
+    const __gm__ uint8_t* arrayBase, uint32_t batchIdx)
 {
     const __gm__ uint64_t* addrSlot = reinterpret_cast<const __gm__ uint64_t*>(arrayBase) + batchIdx;
     uint64_t rawAddr = *addrSlot;
@@ -95,13 +97,28 @@ extern "C" __global__ __aicore__ void copy_atoa_kernel(
         return;
     }
 
-    asc_vf_call<CopyMatrixVf>(dim3{COPY_ATOA_SIMT_MAX_THREADS, 1, 1}, tiling.n, tiling.lda, tiling.ldaInv, numBatch,
-                              startBatch, srcArray, dstArray);
+    asc_vf_call<CopyMatrixVf>(
+        dim3{COPY_ATOA_SIMT_MAX_THREADS, 1, 1}, tiling.n, tiling.lda, tiling.ldaInv, numBatch, startBatch, srcArray,
+        dstArray);
 }
 
-void copy_kernel_do(
+// issue #1180: launch through aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs
+// so the runtime status of the launch is returned to the caller: the <<<>>>
+// statement form discards it. Same pattern as the gemm_batched arch35 launchers.
+aclError copy_kernel_do(
     const uint8_t* srcArray, uint8_t* dstArray, const SmatinvBatchedTilingData& tiling, uint32_t numBlocks,
     void* stream)
 {
-    copy_atoa_kernel<<<numBlocks, nullptr, stream>>>(srcArray, dstArray, tiling);
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(reinterpret_cast<const void*>(copy_atoa_kernel), &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        const uint8_t* srcArray;
+        uint8_t* dstArray;
+        SmatinvBatchedTilingData tiling;
+    } args{srcArray, dstArray, tiling};
+    static_assert(offsetof(Arguments, tiling) == 2U * sizeof(uint8_t*), "kernel ABI mismatch");
+    return aclrtLaunchKernelWithHostArgs(function, numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }

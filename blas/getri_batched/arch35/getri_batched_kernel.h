@@ -11,8 +11,9 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "getri_batched_tiling_data.h"
 
-void sgetri_batched_kernel_do(
+aclError sgetri_batched_kernel_do(
     uint8_t* aarray, uint8_t* pivotArray, uint8_t* carray, uint8_t* infoArray, const SgetriBatchedTilingData& tiling,
     uint32_t numBlocks, void* stream);

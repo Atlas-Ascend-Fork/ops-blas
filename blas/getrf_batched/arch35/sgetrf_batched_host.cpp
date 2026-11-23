@@ -20,14 +20,9 @@
 #include "cann_ops_blas.h"
 #include "cann_ops_blas_common.h"
 #include "sgetrf_batched_tiling_data.h"
+#include "sgetrf_batched_kernel.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
-
-struct SgetrfBatchedTilingData;
-
-void sgetrf_batched_kernel_do(
-    uint8_t* aarray, uint8_t* pivotArray, uint8_t* infoArray,
-    const SgetrfBatchedTilingData &tiling, uint32_t numBlocks, void *stream);
 
 static aclblasStatus_t ValidateGetrfBatchedParams(
     int n, float* const Aarray[], int lda, int* pivotArray, int* infoArray, int batchSize)
@@ -110,9 +105,12 @@ aclblasStatus_t aclblasSgetrfBatched(
         tiling.lda, tiling.usedCoreNum, tiling.batchPerCore, tiling.batchTail, tiling.usePivot);
     OP_LOGI("aclblasSgetrfBatched", "launching kernel: blocks=%u, cores=%u", usedCoreNum, coreNum);
 
-    sgetrf_batched_kernel_do(
+    // issue #1180: a failed launch must not be reported as SUCCESS.
+    const aclError launch = sgetrf_batched_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float**>(Aarray)), reinterpret_cast<uint8_t*>(PivotArray),
         reinterpret_cast<uint8_t*>(infoArray), tiling, usedCoreNum, h->stream);
+    CHECK_RET(launch == ACL_SUCCESS, OP_LOGE("aclblasSgetrfBatched", "sgetrf_batched_kernel_do failed: %d", launch);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     return ACLBLAS_STATUS_SUCCESS;
 }

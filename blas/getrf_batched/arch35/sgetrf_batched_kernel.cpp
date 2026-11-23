@@ -13,7 +13,9 @@
  * \brief Kernel-side implementation for batched single-precision LU factorization (SIMT).
  */
 
+#include <cstddef>
 #include <cstdint>
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
@@ -220,9 +222,24 @@ extern "C" __global__ __aicore__ void sgetrf_batched_kernel(
     }
 }
 
-void sgetrf_batched_kernel_do(
+// issue #1180: launch through aclrtGetFuncBySymbol + aclrtLaunchKernelWithHostArgs
+// so the runtime status of the launch is returned to the caller: the <<<>>>
+// statement form discards it. Same pattern as the gemm_batched arch35 launchers.
+aclError sgetrf_batched_kernel_do(
     GM_ADDR aarray, GM_ADDR pivotArray, GM_ADDR infoArray, const SgetrfBatchedTilingData& tiling, uint32_t numBlocks,
     void* stream)
 {
-    sgetrf_batched_kernel<<<numBlocks, nullptr, stream>>>(aarray, pivotArray, infoArray, tiling);
+    aclrtFuncHandle function = nullptr;
+    const aclError lookup = aclrtGetFuncBySymbol(reinterpret_cast<const void*>(sgetrf_batched_kernel), &function);
+    if (lookup != ACL_SUCCESS) {
+        return lookup;
+    }
+    struct Arguments {
+        GM_ADDR aarray;
+        GM_ADDR pivotArray;
+        GM_ADDR infoArray;
+        SgetrfBatchedTilingData tiling;
+    } args{aarray, pivotArray, infoArray, tiling};
+    static_assert(offsetof(Arguments, tiling) == 3U * sizeof(uint8_t*), "kernel ABI mismatch");
+    return aclrtLaunchKernelWithHostArgs(function, numBlocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }

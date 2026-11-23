@@ -97,17 +97,18 @@ static aclblasStatus_t CheckAndPartitionWorkspace(
 {
     out.totalWsBytes = 0;
     size_t ptrArrayBytes = static_cast<size_t>(batchSize) * sizeof(float*);
-    size_t matTmpBytes = static_cast<size_t>(n) * static_cast<size_t>(n) * static_cast<size_t>(batchSize) *
-                         sizeof(float);
+    size_t matTmpBytes =
+        static_cast<size_t>(n) * static_cast<size_t>(n) * static_cast<size_t>(batchSize) * sizeof(float);
     size_t pivBytes = static_cast<size_t>(n) * static_cast<size_t>(batchSize) * sizeof(int);
     out.totalWsBytes = ptrArrayBytes + matTmpBytes + pivBytes;
 
     size_t availableBytes = GetEffectiveWorkspaceSize(h);
     if (out.totalWsBytes > availableBytes) {
-        OP_LOGE(TAG,
-                "workspace required %zu bytes (ptrArray=%zu + matTmp=%zu + piv=%zu), "
-                "but only %zu available. Call aclblasSetWorkspace(h, ws, %zu).",
-                out.totalWsBytes, ptrArrayBytes, matTmpBytes, pivBytes, availableBytes, out.totalWsBytes);
+        OP_LOGE(
+            TAG,
+            "workspace required %zu bytes (ptrArray=%zu + matTmp=%zu + piv=%zu), "
+            "but only %zu available. Call aclblasSetWorkspace(h, ws, %zu).",
+            out.totalWsBytes, ptrArrayBytes, matTmpBytes, pivBytes, availableBytes, out.totalWsBytes);
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
 
@@ -120,15 +121,15 @@ static aclblasStatus_t CheckAndPartitionWorkspace(
 }
 
 struct MatinvTilingBundle {
-SmatinvBatchedTilingData base{};
-SmatinvBatchedTilingData step3{};
-SgetrfBatchedTilingData getrf{};
-SgetriBatchedTilingData getri{};
+    SmatinvBatchedTilingData base{};
+    SmatinvBatchedTilingData step3{};
+    SgetrfBatchedTilingData getrf{};
+    SgetriBatchedTilingData getri{};
 };
 
 static void BuildAllTiling(
-    uint32_t uN, uint32_t lda, uint32_t ldaInv, uint32_t usedCoreNum, uint32_t batchPerCore,
-    uint32_t batchTail, uint32_t uBatchSize, MatinvTilingBundle& out)
+    uint32_t uN, uint32_t lda, uint32_t ldaInv, uint32_t usedCoreNum, uint32_t batchPerCore, uint32_t batchTail,
+    uint32_t uBatchSize, MatinvTilingBundle& out)
 {
     out.base = {};
     out.base.n = uN;
@@ -161,36 +162,48 @@ static void BuildAllTiling(
     out.getri.usePivot = 1u;
 }
 
-static void ExecuteFiveStepKernel(
-    _aclblas_handle* h, uint32_t usedCoreNum,
-    const float* const A[], float* const Ainv[], int* info,
-    const MatinvWorkspacePartitions& ws, const MatinvTilingBundle& tiling,
-    uint32_t uN, uint32_t uBatchSize)
+static aclblasStatus_t ExecuteFiveStepKernel(
+    _aclblas_handle* h, uint32_t usedCoreNum, const float* const A[], float* const Ainv[], int* info,
+    const MatinvWorkspacePartitions& ws, const MatinvTilingBundle& tiling, uint32_t uN, uint32_t uBatchSize)
 {
     OP_LOGD(TAG, "Step 0: init_ptr_array_kernel_do, blocks=%u", usedCoreNum);
-    init_ptr_array_kernel_do(ws.matPtrArray, ws.matTmpBuf, uN, uBatchSize, usedCoreNum, h->stream);
+    // issue #1180: any failed launch aborts the pipeline instead of surfacing
+    // as SUCCESS with stale/partial results in Ainv and info.
+    const aclError launch0 =
+        init_ptr_array_kernel_do(ws.matPtrArray, ws.matTmpBuf, uN, uBatchSize, usedCoreNum, h->stream);
+    CHECK_RET(launch0 == ACL_SUCCESS, OP_LOGE(TAG, "init_ptr_array_kernel_do failed: %d", launch0);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     OP_LOGD(TAG, "Step 1: copy_kernel_do A->Ainv, blocks=%u", usedCoreNum);
-    copy_kernel_do(reinterpret_cast<const uint8_t*>(A),
-                   reinterpret_cast<uint8_t*>(const_cast<void*>(static_cast<const void*>(Ainv))), tiling.base,
-                   usedCoreNum, h->stream);
+    const aclError launch1 = copy_kernel_do(
+        reinterpret_cast<const uint8_t*>(A),
+        reinterpret_cast<uint8_t*>(const_cast<void*>(static_cast<const void*>(Ainv))), tiling.base, usedCoreNum,
+        h->stream);
+    CHECK_RET(launch1 == ACL_SUCCESS, OP_LOGE(TAG, "copy_kernel_do(A->Ainv) failed: %d", launch1);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     OP_LOGD(TAG, "Step 2: sgetrf_batched_kernel_do on Ainv, blocks=%u", usedCoreNum);
-    sgetrf_batched_kernel_do(
+    const aclError launch2 = sgetrf_batched_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<void*>(static_cast<const void*>(Ainv))),
-        reinterpret_cast<uint8_t*>(ws.pivBuf), reinterpret_cast<uint8_t*>(info), tiling.getrf,
-        usedCoreNum, h->stream);
+        reinterpret_cast<uint8_t*>(ws.pivBuf), reinterpret_cast<uint8_t*>(info), tiling.getrf, usedCoreNum, h->stream);
+    CHECK_RET(launch2 == ACL_SUCCESS, OP_LOGE(TAG, "sgetrf_batched_kernel_do failed: %d", launch2);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     OP_LOGD(TAG, "Step 3: copy_kernel_do Ainv->matTmpBuf, blocks=%u", usedCoreNum);
-    copy_kernel_do(
-        reinterpret_cast<const uint8_t*>(Ainv),
-        reinterpret_cast<uint8_t*>(ws.matPtrArray), tiling.step3, usedCoreNum, h->stream);
+    const aclError launch3 = copy_kernel_do(
+        reinterpret_cast<const uint8_t*>(Ainv), reinterpret_cast<uint8_t*>(ws.matPtrArray), tiling.step3, usedCoreNum,
+        h->stream);
+    CHECK_RET(launch3 == ACL_SUCCESS, OP_LOGE(TAG, "copy_kernel_do(Ainv->tmp) failed: %d", launch3);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
 
     OP_LOGD(TAG, "Step 4: sgetri_batched_kernel_do, blocks=%u", usedCoreNum);
-    sgetri_batched_kernel_do(
+    const aclError launch4 = sgetri_batched_kernel_do(
         reinterpret_cast<uint8_t*>(ws.matPtrArray), reinterpret_cast<uint8_t*>(ws.pivBuf),
-        reinterpret_cast<uint8_t*>(const_cast<void*>(static_cast<const void*>(Ainv))),
-        reinterpret_cast<uint8_t*>(info), tiling.getri, usedCoreNum, h->stream);
+        reinterpret_cast<uint8_t*>(const_cast<void*>(static_cast<const void*>(Ainv))), reinterpret_cast<uint8_t*>(info),
+        tiling.getri, usedCoreNum, h->stream);
+    CHECK_RET(launch4 == ACL_SUCCESS, OP_LOGE(TAG, "sgetri_batched_kernel_do failed: %d", launch4);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
 static aclblasStatus_t LaunchSmatinvBatchedKernel(
@@ -218,19 +231,23 @@ static aclblasStatus_t LaunchSmatinvBatchedKernel(
 
     uint32_t uN = static_cast<uint32_t>(n);
     MatinvTilingBundle tiling{};
-    BuildAllTiling(uN, static_cast<uint32_t>(lda), static_cast<uint32_t>(lda_inv), usedCoreNum, batchPerCore,
-                   batchTail, uBatchSize, tiling);
+    BuildAllTiling(
+        uN, static_cast<uint32_t>(lda), static_cast<uint32_t>(lda_inv), usedCoreNum, batchPerCore, batchTail,
+        uBatchSize, tiling);
 
     OP_LOGI(TAG, "launching: n=%u batchSize=%u cores=%u wsBytes=%zu", uN, uBatchSize, usedCoreNum, ws.totalWsBytes);
-    OP_LOGD(TAG, "tiling base: n=%u lda=%u ldaInv=%u usedCoreNum=%u batchPerCore=%u batchTail=%u", tiling.base.n,
-            tiling.base.lda, tiling.base.ldaInv, tiling.base.usedCoreNum, tiling.base.batchPerCore,
-            tiling.base.batchTail);
+    OP_LOGD(
+        TAG, "tiling base: n=%u lda=%u ldaInv=%u usedCoreNum=%u batchPerCore=%u batchTail=%u", tiling.base.n,
+        tiling.base.lda, tiling.base.ldaInv, tiling.base.usedCoreNum, tiling.base.batchPerCore, tiling.base.batchTail);
 
-    ExecuteFiveStepKernel(h, usedCoreNum, A, Ainv, info, ws, tiling, uN, uBatchSize);
+    const aclblasStatus_t pipeStatus = ExecuteFiveStepKernel(h, usedCoreNum, A, Ainv, info, ws, tiling, uN, uBatchSize);
+    if (pipeStatus != ACLBLAS_STATUS_SUCCESS) {
+        return pipeStatus;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-}  // namespace
+} // namespace
 
 aclblasStatus_t aclblasSmatinvBatched(
     aclblasHandle_t handle, int n, const float* const A[], int lda, float* const Ainv[], int lda_inv, int* info,
@@ -242,8 +259,7 @@ aclblasStatus_t aclblasSmatinvBatched(
     }
 
     // Full parameter validation (must be done BEFORE any early returns to detect invalid arguments)
-    aclblasStatus_t validationStatus =
-        ValidateSmatinvBatchedParams(n, lda, lda_inv, batchSize, A, Ainv, info);
+    aclblasStatus_t validationStatus = ValidateSmatinvBatchedParams(n, lda, lda_inv, batchSize, A, Ainv, info);
     if (validationStatus != ACLBLAS_STATUS_SUCCESS) {
         return validationStatus;
     }

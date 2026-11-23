@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 
-void init_ptr_array_kernel_do(
+aclError init_ptr_array_kernel_do(
     uint8_t* ptrArray, uint8_t* flatBuf, uint32_t n, uint32_t batchSize, uint32_t numBlocks, void* stream);
