@@ -436,6 +436,11 @@ int TestStrmvNegative()
         std::cout << "[FAIL] zero incx: expected " << ACLBLAS_STATUS_INVALID_VALUE << " got " << ret << std::endl;
         ++failed;
     }
+    ret = aclblasStrmv(handle, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, &dummy, 8, &dummy, -1);
+    if (ret != ACLBLAS_STATUS_INVALID_VALUE) {
+        std::cout << "[FAIL] negative incx: expected " << ACLBLAS_STATUS_INVALID_VALUE << " got " << ret << std::endl;
+        ++failed;
+    }
     // A 为空
     ret = aclblasStrmv(handle, ACLBLAS_UPPER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, nullptr, 8, &dummy, 1);
     if (ret != ACLBLAS_STATUS_INVALID_VALUE) {

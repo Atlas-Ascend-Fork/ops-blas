@@ -45,12 +45,12 @@ aclblasStatus_t aclblasStrmv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 | A | 输入 | const float*（FP32） | 三角矩阵数组，维度为 lda x n，Device 内存 |
 | lda | 输入 | int | 矩阵 A 存储的主维长度，lda >= n，Host 内存 |
 | x | 输入/输出 | float*（FP32） | 向量，包含 n 个元素。输入为原始向量，输出为计算结果（原地覆盖），Device 内存 |
-| incx | 输入 | int | x 中连续元素之间的步长，不可为 0，Host 内存 |
+| incx | 输入 | int | x 中连续元素之间的步长，Host 内存。Arch22 要求为正数；Arch35 支持任意非零步长，负值表示反向遍历 |
 
 #### 约束说明
 
 - n >= 0
-- incx != 0
+- Arch22：incx > 0；Arch35：incx != 0，负步长表示反向遍历
 - lda >= n
 
 #### 调用示例
@@ -223,12 +223,12 @@ aclblasStatus_t aclblasCtrmv(aclblasHandle_t handle, aclblasFillMode_t uplo, acl
 | A | 输入 | const aclblasComplex*（COMPLEX64） | 复数三角矩阵，按列主序以 lda x n 全存储，仅 uplo 指定三角被引用，Device 内存 |
 | lda | 输入 | int | 矩阵 A 的主维度，lda >= max(1, n)，Host 内存 |
 | x | 输入/输出 | aclblasComplex*（COMPLEX64） | 复数向量，逻辑长度 n。输入为原始向量，输出为计算结果（原地覆写），Device 内存 |
-| incx | 输入 | int | x 中连续元素之间的步长，不可为 0（可为负，反向遍历），Host 内存 |
+| incx | 输入 | int | x 中连续元素之间的步长，Host 内存。Arch22 要求为正数；Arch35 支持任意非零步长，负值表示反向遍历 |
 
 #### 约束说明
 
 - n >= 0；n = 0 为合法 no-op，返回 ACLBLAS_STATUS_SUCCESS 且不执行计算；但 uplo/trans/diag 枚举、incx、lda 等参数校验先于 n = 0 快速返回执行，n = 0 且 incx = 0 仍返回 ACLBLAS_STATUS_INVALID_VALUE（与 stpmv #748 契约一致）
-- incx != 0（负步长合法）
+- Arch22：incx > 0；Arch35：incx != 0，负步长表示反向遍历
 - lda >= max(1, n)
 - 仅引用 uplo 指定三角，另一部分不读取；diag = ACLBLAS_UNIT 时不访问对角元素
 - 接口声明与 cuBLAS `cublasCtrmv` 语义对齐（Netlib `ctrmv`）

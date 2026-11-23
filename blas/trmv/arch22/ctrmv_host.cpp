@@ -134,8 +134,8 @@ aclblasStatus_t ValidateCtrmvArgs(
         LOG_PRINT("aclblasCtrmv: invalid lda=%d, n=%d\n", lda, n);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
-    if (incx == 0) {
-        LOG_PRINT("aclblasCtrmv: incx must not be zero\n");
+    if (incx <= 0) {
+        LOG_PRINT("aclblasCtrmv: incx must be positive on arch22\n");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (A == nullptr || x == nullptr) {

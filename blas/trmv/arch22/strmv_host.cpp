@@ -56,9 +56,12 @@ static float* CreateUploMatrix(int64_t uplo)
     return uploData;
 }
 
-aclblasStatus_t aclblasStrmv(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
-    const float* A, int lda, float* x, int incx)
+// Validates aclblasStrmv parameters, in the same order as the original inline checks:
+// handle/uplo/trans/diag/n, with n == 0 returning SUCCESS before the lda/incx/pointer checks,
+// so the original early-return behavior for n == 0 is preserved.
+static aclblasStatus_t ValidateStrmvParams(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n, int lda,
+    const float* A, float* x, int incx)
 {
     // issue #580: handle 未判空即解引用会主机侧段错误；arch35 入口已有同款校验（含参数校验），
     // arch22 入口对齐补齐。
@@ -93,9 +96,27 @@ aclblasStatus_t aclblasStrmv(
         LOG_PRINT("aclblasStrmv: incx must not be zero\n");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    if (incx < 0) {
+        LOG_PRINT("aclblasStrmv: negative incx is not supported on arch22\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     if (A == nullptr || x == nullptr) {
         LOG_PRINT("aclblasStrmv: A and x must not be nullptr\n");
         return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+aclblasStatus_t aclblasStrmv(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
+    const float* A, int lda, float* x, int incx)
+{
+    aclblasStatus_t param_status = ValidateStrmvParams(handle, uplo, trans, diag, n, lda, A, x, incx);
+    if (param_status != ACLBLAS_STATUS_SUCCESS) {
+        return param_status;
+    }
+    if (n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
     }
 
     auto* h = handle;

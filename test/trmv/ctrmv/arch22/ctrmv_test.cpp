@@ -148,6 +148,9 @@ static int32_t TestCtrmvNegative(aclblasHandle_t handle)
         aclblasCtrmv(handle, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, &dummy, 8, &dummy, 0),
         ACLBLAS_STATUS_INVALID_VALUE, "zero incx");
     expect(
+        aclblasCtrmv(handle, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, &dummy, 8, &dummy, -1),
+        ACLBLAS_STATUS_INVALID_VALUE, "negative incx on arch22");
+    expect(
         aclblasCtrmv(handle, ACLBLAS_LOWER, ACLBLAS_OP_N, ACLBLAS_NON_UNIT, 8, nullptr, 8, &dummy, 1),
         ACLBLAS_STATUS_INVALID_VALUE, "null A");
     expect(
