@@ -241,6 +241,7 @@ aclblasStatus_t aclblasIcamax(
 - 含 NaN 时遵循 Netlib：第一项的比较值为 NaN 则返回 1；否则忽略后续 NaN，在其余元素中选择最先出现的最大值。参考库配置见 `test/iamax/icamax/README.md`。
 - 多个 Inf 并列时返回第一个 Inf。
 - 读取 result 前，调用方需要同步 handle 绑定的 stream。
+- 当 `n > 0` 且 `incx > 0` 时，若 `(n - 1) * incx` 超过 `INT32_MAX`，返回 `ACLBLAS_STATUS_INVALID_VALUE`，不启动 kernel。
 
 #### 调用示例
 
@@ -378,4 +379,3 @@ int main()
     return 0;
 }
 ```
-- 当 `n > 0` 且 `incx > 0` 时，若 `(n - 1) * incx` 超过 `INT32_MAX`，返回 `ACLBLAS_STATUS_INVALID_VALUE`，不启动 kernel。
