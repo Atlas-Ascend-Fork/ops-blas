@@ -59,7 +59,7 @@ aclblasStatus_t aclblasSdgmm(aclblasHandle_t handle, aclblasSideMode_t mode, int
 | A | 输入 | const float*（FP32） | 输入矩阵，列主序存储，维度 m×n，Device 内存 |
 | lda | 输入 | int | 矩阵 A 的主维（leading dimension），lda >= max(1, m)，Host 内存 |
 | x | 输入 | const float*（FP32） | 对角向量，mode=LEFT 时长度为 m，mode=RIGHT 时长度为 n，Device 内存 |
-| incx | 输入 | int | x 中相邻元素的步长，可为任意整数（包括 0，incx==0 时等价于标量乘法 C = x[0] * A），可为负数表示反向访问 x，Host 内存 |
+| incx | 输入 | int | x 中相邻元素的步长，不可为 0（incx==0 返回 ACLBLAS_STATUS_INVALID_VALUE），可为负数表示反向访问 x，Host 内存 |
 | C | 输出 | float*（FP32） | 输出矩阵，列主序存储，维度 m×n，Device 内存 |
 | ldc | 输入 | int | 矩阵 C 的主维（leading dimension），ldc >= max(1, m)，Host 内存 |
 
@@ -70,7 +70,7 @@ aclblasStatus_t aclblasSdgmm(aclblasHandle_t handle, aclblasSideMode_t mode, int
 - m >= 0, n >= 0，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 - m == 0 或 n == 0 时为 no-op，直接返回 ACLBLAS_STATUS_SUCCESS（跳过以下所有校验）
 - 以下约束仅在 m > 0 且 n > 0 时生效：
-- incx 可为任意整数（包括 0，incx==0 时等价于标量乘法 C = x[0] * A），可为负数表示反向访问 x
+- incx 不可为 0（incx==0 返回 ACLBLAS_STATUS_INVALID_VALUE），可为负数表示反向访问 x
 - lda >= max(1, m)，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 - ldc >= max(1, m)，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 - A、x、C 不能为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE
