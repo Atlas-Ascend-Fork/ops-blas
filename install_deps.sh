@@ -496,20 +496,18 @@ install_googletest() {
     fi
 
     echo "Installing googletest (release-${req_ver})..."
-    local gtest_tmp_dir
-    gtest_tmp_dir=$(mktemp -d)
-    # issue #843: 注册 EXIT trap 保证失败路径也清理——下方任一 run_command 失败
-    # 即 exit（set -e 语义），跳过函数末尾的 rm，源码+构建临时目录（数百 MB）
-    # 每次失败重试都会向 /tmp 遗留一份；成功路径末尾的显式 rm 保留（幂等）。
-    trap 'rm -rf "${gtest_tmp_dir}"' EXIT
+    GTEST_TMP_DIR=$(mktemp -d)
+    # Use a non-local variable so the EXIT trap remains valid after return under set -u.
+    trap 'rm -rf "${GTEST_TMP_DIR:-}"' EXIT
 
     case "$OS" in
         debian|rhel|euler)
             run_command git clone --depth 1 --branch "release-${req_ver}" \
-                "https://gitcode.com/google/googletest.git" "${gtest_tmp_dir}/googletest"
-            run_command cmake -S "${gtest_tmp_dir}/googletest" -B "${gtest_tmp_dir}/build" -DCMAKE_INSTALL_PREFIX=/usr/local
-            run_command cmake --build "${gtest_tmp_dir}/build" -j$(nproc 2>/dev/null || echo 4)
-            run_command sudo cmake --install "${gtest_tmp_dir}/build"
+                "https://gitcode.com/google/googletest.git" "${GTEST_TMP_DIR}/googletest"
+            run_command cmake -S "${GTEST_TMP_DIR}/googletest" -B "${GTEST_TMP_DIR}/build" \
+                -DCMAKE_INSTALL_PREFIX=/usr/local
+            run_command cmake --build "${GTEST_TMP_DIR}/build" -j$(nproc 2>/dev/null || echo 4)
+            run_command sudo cmake --install "${GTEST_TMP_DIR}/build"
             run_command sudo ldconfig
             ;;
         macos)
@@ -517,7 +515,9 @@ install_googletest() {
             ;;
     esac
 
-    rm -rf "${gtest_tmp_dir}"
+    rm -rf "${GTEST_TMP_DIR}"
+    GTEST_TMP_DIR=""
+    trap - EXIT
 
     if [[ -f "/usr/local/include/gtest/gtest.h" ]] || [[ -f "/usr/include/gtest/gtest.h" ]] || [[ -n "${HOMEBREW_PREFIX:-}" && -f "${HOMEBREW_PREFIX:-}/include/gtest/gtest.h" ]]; then
         echo "googletest installed successfully"
