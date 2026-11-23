@@ -77,10 +77,10 @@ python verify_accuracy.py --repo /path/to/ops-blas --soc ascend950 --skip-build 
 ### 4.3 方式三：直接执行 GTest（过滤用例）
 
 ```bash
-./build_out/cher2k_test --gtest_filter='CsvDriven/0'            # 全部
-./build_out/cher2k_test --gtest_filter='*TC_L0*'                # 冒烟 8 条
-./build_out/cher2k_test --gtest_filter='-*TC_PF*'               # 排除性能
-./build_out/cher2k_test --gtest_filter='*TC_PF_1001*'           # 单条性能 case
+./build/test/her2k/cher2k/cher2k_test                                      # 全部
+./build/test/her2k/cher2k/cher2k_test --gtest_filter='*TC_L0*'                # 冒烟 8 条
+./build/test/her2k/cher2k/cher2k_test --gtest_filter='-*TC_PF*'               # 排除性能
+./build/test/her2k/cher2k/cher2k_test --gtest_filter='*TC_PF_1001*'           # 单条性能 case
 ```
 
 ## 5. 用例说明与判定口径
