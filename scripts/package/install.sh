@@ -253,6 +253,17 @@ do_install() {
   logandprint "[INFO]: Headers:   ${target_include}/"
 }
 
+remove_uninstall_paths() {
+  local description="$1"
+  shift
+  if rm "$@"; then
+    return 0
+  fi
+  restore_permissions
+  logandprint "[ERROR]: Failed to remove ${description}; ops_blas uninstall is incomplete."
+  return 1
+}
+
 do_uninstall() {
   local target_dir
   target_dir=$(get_target_version_dir)
@@ -290,13 +301,13 @@ do_uninstall() {
   grant_write_if_needed "${target_info}"
 
   if [ -d "${real_lib64}" ]; then
-    rm -f "${real_lib64}"/libops_blas*.so 2>/dev/null || true
+    remove_uninstall_paths "blas libraries" -f "${real_lib64}"/libops_blas*.so
   fi
   if [ -d "${real_include}" ]; then
-    rm -f "${real_include}"/cann_ops_blas*.h 2>/dev/null || true
+    remove_uninstall_paths "blas headers" -f "${real_include}"/cann_ops_blas*.h
   fi
   if [ -d "${target_info}" ]; then
-    rm -rf "${target_info}"
+    remove_uninstall_paths "blas metadata" -rf "${target_info}"
   fi
 
   restore_permissions
