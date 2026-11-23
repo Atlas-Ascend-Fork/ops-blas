@@ -139,6 +139,25 @@ def check_xml(xml, case):
     return len(tests)
 
 
+TIMEOUT_EXIT_CODE = 124
+LAUNCH_ERROR_EXIT_CODE = 127
+
+
+def _execute_sanitizer(command, env, log, timeout):
+    with log.open("w", encoding="utf-8") as output:
+        try:
+            result = subprocess.run(
+                command, env=dict(env), stdout=output, stderr=subprocess.STDOUT, timeout=timeout
+            )
+            return result.returncode, False, None
+        except subprocess.TimeoutExpired:
+            output.write("\nRUNNER_TIMEOUT\n")
+            return TIMEOUT_EXIT_CODE, True, None
+        except OSError as error:
+            output.write(f"\nRUNNER_LAUNCH_ERROR: {error}\n")
+            return LAUNCH_ERROR_EXIT_CODE, False, str(error)
+
+
 def run_case(args, case, env, require_kernel):
     stage = args.output / case
     stage.mkdir(mode=0o750)
@@ -157,17 +176,21 @@ def run_case(args, case, env, require_kernel):
     ]
     record = {"case": case, "require_kernel": require_kernel, "command": command, "passed": False}
     (stage / "command.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-    with log.open("w", encoding="utf-8") as output:
-        result = subprocess.run(command, env=dict(env), stdout=output, stderr=subprocess.STDOUT, timeout=args.timeout)
-    record["returncode"] = result.returncode
-    text = log.read_text(encoding="utf-8", errors="replace")
+    returncode, timed_out, launch_error = _execute_sanitizer(command, env, log, args.timeout)
+    record["returncode"] = returncode
+    record["timed_out"] = timed_out
+    text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
     if detail.is_file():
         text += "\n" + detail.read_text(encoding="utf-8", errors="replace")
     (stage / "combined.log").write_text(text, encoding="utf-8")
     record["sanitizer"] = sanitizer_result(text)
     try:
+        if timed_out:
+            raise ValueError(f"Test process timed out after {args.timeout}s")
+        if launch_error is not None:
+            raise ValueError(f"Failed to launch sanitizer process: {launch_error}")
         check_xml(xml, case)
-        if result.returncode != 0:
+        if returncode != 0:
             raise ValueError("Test process returned nonzero")
         if not record["sanitizer"]["passed"]:
             raise ValueError("Sanitizer reported diagnostics or incomplete kernel instrumentation")
