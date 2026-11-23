@@ -59,8 +59,8 @@ aclblasStatus_t aclblasIsamin(aclblasHandle_t handle, int n, const float *x, int
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
 #### 函数原型
 
@@ -83,9 +83,9 @@ aclblasStatus_t aclblasIcamin(aclblasHandle_t handle, int n, const aclblasComple
 - n < 0 时返回 ACLBLAS_STATUS_INVALID_VALUE
 - n = 0 或 incx < 1 时 result 写 0，返回 ACLBLAS_STATUS_SUCCESS
 - handle 不可为 nullptr
-- x、result 不可为 nullptr
+- result 不可为 nullptr；n > 0 且 incx >= 1 时 x 不可为 nullptr
 - 当 `(n-1)*incx` 超出 int32 可表示范围时返回 ACLBLAS_STATUS_INVALID_VALUE
-- 模值比较采用严格小于（与 cblas `icamin` 一致）：NaN 模永不更新结果；首元素模为 NaN 时结果为 1
+- 模值比较采用严格小于（与测试工程的 CPU 参考循环一致）：NaN 模永不更新结果；首元素模为 NaN 时结果为 1
 - 当多个元素模值相同时，返回索引最小的元素
 
 #### 调用示例
