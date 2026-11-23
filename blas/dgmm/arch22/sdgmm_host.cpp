@@ -43,8 +43,8 @@ aclblasStatus_t ValidateSdgmmDimsAndMode(aclblasSideMode_t mode, int m, int n)
 aclblasStatus_t ValidateSdgmmBodyParams(
     aclblasSideMode_t mode, int m, int n, const float* A, int lda, const float* x, int incx, const float* C, int ldc)
 {
-    if (incx == INT_MIN) {
-        OP_LOGE(OP_TAG, "incx must not be INT_MIN");
+    if (incx == INT_MIN || incx == 0) {
+        OP_LOGE(OP_TAG, "incx must not be 0 or INT_MIN");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (lda < std::max(1, m) || ldc < std::max(1, m)) {

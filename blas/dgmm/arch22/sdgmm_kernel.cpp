@@ -25,9 +25,6 @@ constexpr uint32_t ALIGN_ELEMS = 8U;
 
 __aicore__ inline uint64_t CalcXIndex(uint32_t logicalIdx, uint32_t xLen, int32_t incx)
 {
-    if (incx == 0) {
-        return 0ULL;
-    }
     if (incx > 0) {
         return static_cast<uint64_t>(logicalIdx) * static_cast<uint64_t>(incx);
     }
@@ -70,13 +67,6 @@ __aicore__ inline void LoadXSegment(
         WaitEvent(HardEvent::MTE2_V, pipe);
         return;
     }
-    if (tiling.incx == 0) {
-        const float x0 = xGm.GetValue(0ULL);
-        WaitEvent(HardEvent::S_V, pipe);
-        Duplicate(ubX, x0, curM);
-        PipeBarrier<PIPE_V>();
-        return;
-    }
     const uint64_t idxFirst = CalcXIndex(rowOffset, tiling.m, tiling.incx);
     const uint64_t idxLast = CalcXIndex(rowOffset + curM - 1U, tiling.m, tiling.incx);
     const uint64_t winStart = (idxFirst < idxLast) ? idxFirst : idxLast;
@@ -102,8 +92,7 @@ class SdgmmKernel {
 public:
     __aicore__ inline SdgmmKernel() = default;
 
-    __aicore__ inline void Init(
-        GM_ADDR x, GM_ADDR A, GM_ADDR C, const SdgmmTilingData& tiling, TPipe* pipe)
+    __aicore__ inline void Init(GM_ADDR x, GM_ADDR A, GM_ADDR C, const SdgmmTilingData& tiling, TPipe* pipe)
     {
         tiling_ = tiling;
         pipe_ = pipe;
@@ -118,13 +107,13 @@ public:
             active_ = false;
             return;
         }
-        startCol_ = colBlockIdx * tiling_.perCoreN +
-            ((colBlockIdx < tiling_.remainder) ? colBlockIdx : tiling_.remainder);
+        startCol_ =
+            colBlockIdx * tiling_.perCoreN + ((colBlockIdx < tiling_.remainder) ? colBlockIdx : tiling_.remainder);
         const uint32_t colCount = tiling_.perCoreN + ((colBlockIdx < tiling_.remainder) ? 1U : 0U);
         endCol_ = startCol_ + colCount;
 
         const uint32_t startTile = mBlockIdx * tiling_.perCoreMTile +
-            ((mBlockIdx < tiling_.mTileRemainder) ? mBlockIdx : tiling_.mTileRemainder);
+                                   ((mBlockIdx < tiling_.mTileRemainder) ? mBlockIdx : tiling_.mTileRemainder);
         const uint32_t tileCount = tiling_.perCoreMTile + ((mBlockIdx < tiling_.mTileRemainder) ? 1U : 0U);
         startM_ = startTile * tiling_.tileM;
         endM_ = startM_ + tileCount * tiling_.tileM;
@@ -240,8 +229,7 @@ private:
 
 } // namespace
 
-extern "C" __global__ __aicore__ void sdgmm_arch22_kernel(
-    GM_ADDR x, GM_ADDR A, GM_ADDR C, const SdgmmTilingData tiling)
+extern "C" __global__ __aicore__ void sdgmm_arch22_kernel(GM_ADDR x, GM_ADDR A, GM_ADDR C, const SdgmmTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     TPipe pipe;
@@ -253,6 +241,5 @@ extern "C" __global__ __aicore__ void sdgmm_arch22_kernel(
 void sdgmm_kernel_do(
     const uint8_t* x, const uint8_t* A, uint8_t* C, const SdgmmTilingData& tiling, uint32_t numBlocks, void* stream)
 {
-    sdgmm_arch22_kernel<<<numBlocks, nullptr, stream>>>(
-        const_cast<uint8_t*>(x), const_cast<uint8_t*>(A), C, tiling);
+    sdgmm_arch22_kernel<<<numBlocks, nullptr, stream>>>(const_cast<uint8_t*>(x), const_cast<uint8_t*>(A), C, tiling);
 }

@@ -20,7 +20,7 @@
 #include "sdgmm_golden.h"
 #include "sdgmm_npu_wrapper.h"
 
-class SdgmmTest : public BlasTest<SdgmmParam> { };
+class SdgmmTest : public BlasTest<SdgmmParam> {};
 
 TEST_F(SdgmmTest, NullHandle)
 {
@@ -80,8 +80,8 @@ TEST_F(SdgmmTest, InPlaceLdaNeLdc)
         return;
     }
     aclblasStatus_t dgmmRet = aclblasSdgmm(
-        SdgmmTest::handle_, ACLBLAS_SIDE_LEFT, m, n, static_cast<const float*>(dAC), lda,
-        static_cast<const float*>(dX), incx, static_cast<float*>(dAC), ldc);
+        SdgmmTest::handle_, ACLBLAS_SIDE_LEFT, m, n, static_cast<const float*>(dAC), lda, static_cast<const float*>(dX),
+        incx, static_cast<float*>(dAC), ldc);
     EXPECT_EQ(static_cast<int>(dgmmRet), static_cast<int>(ACLBLAS_STATUS_INVALID_VALUE));
     aclrtFree(dX);
     aclrtFree(dAC);
@@ -106,8 +106,8 @@ TEST_F(SdgmmTest, InPlaceLdaEqLdc)
         return;
     }
     aclblasStatus_t dgmmRet = aclblasSdgmm(
-        SdgmmTest::handle_, ACLBLAS_SIDE_LEFT, m, n, static_cast<const float*>(dAC), lda,
-        static_cast<const float*>(dX), incx, static_cast<float*>(dAC), ldc);
+        SdgmmTest::handle_, ACLBLAS_SIDE_LEFT, m, n, static_cast<const float*>(dAC), lda, static_cast<const float*>(dX),
+        incx, static_cast<float*>(dAC), ldc);
     EXPECT_EQ(static_cast<int>(dgmmRet), static_cast<int>(ACLBLAS_STATUS_SUCCESS));
     if (dgmmRet != ACLBLAS_STATUS_SUCCESS) {
         aclrtFree(dX);
@@ -120,8 +120,7 @@ TEST_F(SdgmmTest, InPlaceLdaEqLdc)
     std::vector<float> goldenC(acElems, kBlasSentinel);
     EXPECT_EQ(
         static_cast<int>(aclblasSdgmm_cpu(
-            SdgmmTest::handle_, ACLBLAS_SIDE_LEFT, m, n, aHost.data(), lda, xHost.data(), incx, goldenC.data(),
-            ldc)),
+            SdgmmTest::handle_, ACLBLAS_SIDE_LEFT, m, n, aHost.data(), lda, xHost.data(), incx, goldenC.data(), ldc)),
         static_cast<int>(ACLBLAS_STATUS_SUCCESS));
     VerifyConfig cfg;
     applyMixedTolerance(cfg, ACL_FLOAT, goldenC.data(), goldenC.size());
@@ -130,9 +129,37 @@ TEST_F(SdgmmTest, InPlaceLdaEqLdc)
     aclrtFree(dAC);
 }
 
+static void SdgmmIncxZeroRejected(aclblasHandle_t handle, aclblasSideMode_t mode)
+{
+    constexpr int m = 4;
+    constexpr int n = 4;
+    constexpr int lda = 4;
+    constexpr int ldc = 4;
+    const size_t acElems = static_cast<size_t>(lda) * static_cast<size_t>(n);
+    const size_t acBytes = acElems * sizeof(float);
+    const size_t xBytes = static_cast<size_t>(m) * sizeof(float);
+
+    std::vector<float> xHost = makeBlasStrided(m, 1, "RANDOM_NORM_5_5", 42);
+    std::vector<float> aHost = makeBlasMatrix(m, n, lda, "RANDOM_NORM_5_5", 42);
+    void* dX = nullptr;
+    void* dAC = nullptr;
+    if (!SdgmmInPlaceSetup(&dX, &dAC, xHost, aHost, xBytes, acBytes, acBytes)) {
+        return;
+    }
+    aclblasStatus_t dgmmRet = aclblasSdgmm(
+        handle, mode, m, n, static_cast<const float*>(dAC), lda, static_cast<const float*>(dX), 0,
+        static_cast<float*>(dAC), ldc);
+    EXPECT_EQ(static_cast<int>(dgmmRet), static_cast<int>(ACLBLAS_STATUS_INVALID_VALUE));
+    aclrtFree(dX);
+    aclrtFree(dAC);
+}
+
+TEST_F(SdgmmTest, IncxZeroRejectedLeft) { SdgmmIncxZeroRejected(handle_, ACLBLAS_SIDE_LEFT); }
+
+TEST_F(SdgmmTest, IncxZeroRejectedRight) { SdgmmIncxZeroRejected(handle_, ACLBLAS_SIDE_RIGHT); }
+
 INSTANTIATE_TEST_SUITE_P(
-    Sdgmm, SdgmmTest,
-    ::testing::ValuesIn(GetCasesFromCsv<SdgmmParam>(ReplaceFileExtension2Csv(__FILE__))),
+    Sdgmm, SdgmmTest, ::testing::ValuesIn(GetCasesFromCsv<SdgmmParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<SdgmmParam>);
 
 TEST_P(SdgmmTest, CsvDriven)
@@ -161,8 +188,8 @@ TEST_P(SdgmmTest, CsvDriven)
     const float* xPtr = xHost.empty() ? nullptr : xHost.data();
     const float* aPtr = aHost.empty() ? nullptr : aHost.data();
     float* cPtr = cHost.empty() ? nullptr : cHost.data();
-    aclblasStatus_t ret = aclblasSdgmm_npu(
-        SdgmmTest::handle_, p.mode, p.m, p.n, aPtr, p.lda, xPtr, p.incx, cPtr, p.ldc);
+    aclblasStatus_t ret =
+        aclblasSdgmm_npu(SdgmmTest::handle_, p.mode, p.m, p.n, aPtr, p.lda, xPtr, p.incx, cPtr, p.ldc);
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS || p.m == 0 || p.n == 0) {
         return;
@@ -170,8 +197,8 @@ TEST_P(SdgmmTest, CsvDriven)
 
     std::vector<float> goldenC(cHost.size(), kBlasSentinel);
     EXPECT_EQ(
-        static_cast<int>(aclblasSdgmm_cpu(
-            SdgmmTest::handle_, p.mode, p.m, p.n, aPtr, p.lda, xPtr, p.incx, goldenC.data(), p.ldc)),
+        static_cast<int>(
+            aclblasSdgmm_cpu(SdgmmTest::handle_, p.mode, p.m, p.n, aPtr, p.lda, xPtr, p.incx, goldenC.data(), p.ldc)),
         static_cast<int>(ACLBLAS_STATUS_SUCCESS));
     VerifyConfig cfg;
     applyMixedTolerance(cfg, ACL_FLOAT, goldenC.data(), cHost.size());

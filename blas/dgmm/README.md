@@ -26,7 +26,7 @@ RIGHT 模式： C = A * diag(x)，  C[i,j] = A[i,j] * x[j]    （x 长度为 n�
 |--------|--------------|--------------|
 | 数据类型 | FP32 实数 | Complex32 复数 |
 | 支持模式 | LEFT / RIGHT | 仅 LEFT（RIGHT 返回 ACLBLAS_STATUS_NOT_SUPPORTED） |
-| incx == 0 | 允许，等价于标量乘法 C = x[0] * A | 拒绝，返回 ACLBLAS_STATUS_INVALID_VALUE |
+| incx == 0 | 拒绝，返回 ACLBLAS_STATUS_INVALID_VALUE | 拒绝，返回 ACLBLAS_STATUS_INVALID_VALUE |
 | 存储布局 | 列主序（column-major） | 行主序（row-major），与 cuBLAS cublasCdgmm 的列主序语义存在差异 |
 | 产品支持 | Ascend 950PR / Ascend 950DT | Atlas A2 / Atlas A3 系列 |
 
