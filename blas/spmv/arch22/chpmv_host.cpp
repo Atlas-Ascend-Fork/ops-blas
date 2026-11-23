@@ -69,7 +69,12 @@ aclblasStatus_t LaunchChpmvScaleOnly(
     tiling.incy = static_cast<int64_t>(incy);
 
     OP_LOGI(OP_TAG, "launching scale-only kernel: blocks=%u", reduceBlocks);
-    chpmv_scale_kernel_do(reinterpret_cast<uint8_t*>(y), tiling, reduceBlocks, handle->stream);
+    const aclError scaleErr =
+        chpmv_scale_kernel_do(reinterpret_cast<uint8_t*>(y), tiling, reduceBlocks, handle->stream);
+    if (scaleErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "chpmv_scale_kernel_do launch failed: %d", static_cast<int>(scaleErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -108,10 +113,19 @@ aclblasStatus_t LaunchChpmvTwoStage(
         OP_TAG, "tiling: n=%u nPad=%u uplo=%u accumBlocks=%u reduceBlocks=%u", tiling.n, tiling.nPad, tiling.uplo,
         accumBlocks, reduceBlocks);
     OP_LOGI(OP_TAG, "launching two-stage kernels: accum=%u reduce=%u", accumBlocks, reduceBlocks);
-    chpmv_accum_kernel_do(
+    const aclError accumErr = chpmv_accum_kernel_do(
         reinterpret_cast<const uint8_t*>(ap), reinterpret_cast<const uint8_t*>(x), wsPtr, tiling, accumBlocks,
         handle->stream);
-    chpmv_reduce_kernel_do(wsPtr, reinterpret_cast<uint8_t*>(y), tiling, reduceBlocks, handle->stream);
+    if (accumErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "chpmv_accum_kernel_do launch failed: %d", static_cast<int>(accumErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
+    const aclError reduceErr =
+        chpmv_reduce_kernel_do(wsPtr, reinterpret_cast<uint8_t*>(y), tiling, reduceBlocks, handle->stream);
+    if (reduceErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "chpmv_reduce_kernel_do launch failed: %d", static_cast<int>(reduceErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 

@@ -16,14 +16,14 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "chpmv_tiling_data.h"
 
-void chpmv_accum_kernel_do(
+aclError chpmv_accum_kernel_do(
     const uint8_t* ap, const uint8_t* x, uint8_t* workSpace, const ChpmvTilingData& tiling, uint32_t numBlocks,
     void* stream);
 
-void chpmv_reduce_kernel_do(
+aclError chpmv_reduce_kernel_do(
     const uint8_t* workSpace, uint8_t* y, const ChpmvTilingData& tiling, uint32_t numBlocks, void* stream);
 
-void chpmv_scale_kernel_do(uint8_t* y, const ChpmvTilingData& tiling, uint32_t numBlocks, void* stream);
-
+aclError chpmv_scale_kernel_do(uint8_t* y, const ChpmvTilingData& tiling, uint32_t numBlocks, void* stream);

@@ -82,8 +82,7 @@ __aicore__ inline uint64_t ChpmvColBase(bool upper, uint32_t j, uint32_t n)
     return col * (2ULL * static_cast<uint64_t>(n) - col + 1ULL) / 2ULL;
 }
 
-__aicore__ inline void BuildChpmvAccumTables(
-    const LocalTensor<int32_t>& shiftIdx, const LocalTensor<int32_t>& splitIdx)
+__aicore__ inline void BuildChpmvAccumTables(const LocalTensor<int32_t>& shiftIdx, const LocalTensor<int32_t>& splitIdx)
 {
     CreateVecIndex(shiftIdx, 0, CHPMV_BUF_FLOATS);
     PipeBarrier<PIPE_V>();
@@ -527,11 +526,10 @@ public:
             return;
         }
         BuildChpmvTables(
-            bufShiftIdx_.Get<int32_t>(), bufSplitIdx_.Get<int32_t>(), bufPackIdx_.Get<int32_t>(),
-            bufIo_.Get<int32_t>(), bufOutPlanes_.Get<int32_t>());
+            bufShiftIdx_.Get<int32_t>(), bufSplitIdx_.Get<int32_t>(), bufPackIdx_.Get<int32_t>(), bufIo_.Get<int32_t>(),
+            bufOutPlanes_.Get<int32_t>());
         for (uint32_t off = 0U; off < count_; off += CHPMV_ARCH22_TILE_ROWS) {
-            const uint32_t cur =
-                ((count_ - off) > CHPMV_ARCH22_TILE_ROWS) ? CHPMV_ARCH22_TILE_ROWS : (count_ - off);
+            const uint32_t cur = ((count_ - off) > CHPMV_ARCH22_TILE_ROWS) ? CHPMV_ARCH22_TILE_ROWS : (count_ - off);
             if (scaleOnly) {
                 ScaleSegment(start_ + off, cur);
             } else {
@@ -669,21 +667,29 @@ extern "C" __global__ __aicore__ void chpmv_scale_arch22_kernel(GM_ADDR y, const
     op.Process(true);
 }
 
-void chpmv_accum_kernel_do(
+aclError chpmv_accum_kernel_do(
     const uint8_t* ap, const uint8_t* x, uint8_t* workSpace, const ChpmvTilingData& tiling, uint32_t numBlocks,
     void* stream)
 {
+    // Drain any stale thread-level error so the post-launch check only reports
+    // this launch's own failure (issue #1181 precedent).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chpmv_accum_arch22_kernel<<<numBlocks, nullptr, stream>>>(
         const_cast<uint8_t*>(ap), const_cast<uint8_t*>(x), workSpace, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 
-void chpmv_reduce_kernel_do(
+aclError chpmv_reduce_kernel_do(
     const uint8_t* workSpace, uint8_t* y, const ChpmvTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chpmv_reduce_arch22_kernel<<<numBlocks, nullptr, stream>>>(const_cast<uint8_t*>(workSpace), y, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 
-void chpmv_scale_kernel_do(uint8_t* y, const ChpmvTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError chpmv_scale_kernel_do(uint8_t* y, const ChpmvTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chpmv_scale_arch22_kernel<<<numBlocks, nullptr, stream>>>(y, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
