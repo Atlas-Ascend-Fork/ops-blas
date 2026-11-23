@@ -20,6 +20,15 @@ import xml.etree.ElementTree as ET
 import run_self_test as self_test
 
 
+KERNEL_NAME_PATTERN = r'(?:"([^"\r\n]+)"|([^\r\n]+?))'
+START_KERNEL_RE = re.compile(
+    r"Start memcheck sanitizer on kernel\s+" + KERNEL_NAME_PATTERN + r"\s*$", re.MULTILINE
+)
+CLEAN_FINISH_RE = re.compile(
+    r"Sanitizer finished on kernel\s+" + KERNEL_NAME_PATTERN + r"\. No error detected\."
+)
+
+
 def sanitizer_result(report, application_log):
     kernel_log = report.read_text() if report.exists() else ""
     diagnostics = re.compile(r"^\s*\[mssanitizer\]\s*(?:warning|warn|error|fatal)\b.*$", re.I | re.M)
@@ -27,8 +36,8 @@ def sanitizer_result(report, application_log):
     messages += [line for line in diagnostics.findall(application_log.read_text()) if line not in set(messages)]
     errors = [line for line in messages if re.search(r"\]\s*(?:error|fatal)\b", line, re.I)]
     warnings = [line for line in messages if re.search(r"\]\s*warn(?:ing)?\b", line, re.I)]
-    starts = re.findall(r'Start memcheck sanitizer on kernel "([^\n]+)"', kernel_log)
-    finishes = re.findall(r'Sanitizer finished on kernel "([^\n]+)"', kernel_log)
+    starts = [(m.group(1) or m.group(2)).strip() for m in START_KERNEL_RE.finditer(kernel_log)]
+    finishes = [(m.group(1) or m.group(2)).strip() for m in CLEAN_FINISH_RE.finditer(kernel_log)]
     return dict(errors=len(errors), warnings=len(warnings), diagnostics=messages, scanned_kernels=len(starts),
                 kernel_names=sorted(set(starts)), completed_kernels=len(finishes),
                 scan_complete=bool(starts) and starts == finishes)
