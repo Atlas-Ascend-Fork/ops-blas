@@ -38,10 +38,14 @@ def read_cases():
 
 def validate_xml(xml, cases):
     root = ET.parse(xml).getroot()
-    # 全量运行：每条 CSV 用例一个 CsvDriven 测试 + 4 条专项 TEST_F（NulLHandle /
-    # NulLHandleTakesPrecedenceOverQuickReturn / QuickReturnSkipsDataPointerValidation /
-    # CsvCompositionAssert）。总数随 CSV 用例数变化，故不硬编码。
-    expected_total = len(cases) + 4
+    contract_cases = [
+        "NullHandle",
+        "NullHandleTakesPrecedenceOverQuickReturn",
+        "QuickReturnSkipsDataPointerValidation",
+        "CsvCompositionAssert",
+    ]
+    expected = Counter([*cases, *contract_cases])
+    expected_total = len(cases) + len(contract_cases)
     if int(root.attrib.get('tests', -1)) != expected_total:
         raise ValueError('Unexpected test count: expected %d' % expected_total)
     if any(int(root.attrib.get(key, -1)) != 0 for key in ('failures', 'disabled', 'errors')):
@@ -51,9 +55,8 @@ def validate_xml(xml, cases):
         seen.append(case.attrib.get('name', '').split('/')[-1])
         if case.attrib.get('status') != 'run' or case.attrib.get('result') != 'completed':
             raise ValueError('An accuracy test did not complete')
-    expected = set(cases)
-    if Counter(name for name in seen if name in expected) != Counter(cases):
-        raise ValueError('CSV coverage mismatch')
+    if Counter(seen) != expected:
+        raise ValueError('CSV or contract test coverage mismatch')
 
 
 def accuracy_summary(log, returncode, csv_cases):
