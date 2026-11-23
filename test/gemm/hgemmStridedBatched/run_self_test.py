@@ -87,14 +87,18 @@ def merge_shards(args, out):
 
 def parse_cases(out, merge_error):
     observed, failed, skipped = [], [], []
-    parse_error = merge_error
+    if merge_error is not None:
+        return observed, failed, skipped, merge_error
+    parse_error = None
     try:
         for case in ET.parse(out / "gtest.xml").iter("testcase"):
             name = case.attrib["name"].split("/")[-1]
             observed.append(name)
             if case.find("failure") is not None or case.find("error") is not None:
                 failed.append(name)
-            if case.find("skipped") is not None or case.attrib.get("result") == "suppressed":
+            not_run = case.attrib.get("status", "run") != "run"
+            not_completed = case.attrib.get("result", "completed") != "completed"
+            if case.find("skipped") is not None or not_run or not_completed:
                 skipped.append(name)
     except (OSError, ET.ParseError) as exc:
         parse_error = str(exc)
@@ -197,6 +201,8 @@ def main():
     args = ap.parse_args()
     if not 1 <= args.workers <= 16:
         raise ValueError("--workers must be between 1 and 16")
+    if args.timeout <= 0 or args.device < 0:
+        raise ValueError("--timeout must be positive and --device nonnegative")
     repo, csv_path, out = args.repo.resolve(), args.csv.resolve(), args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     rows = list(csv.DictReader(csv_path.open(encoding="utf-8-sig")))
