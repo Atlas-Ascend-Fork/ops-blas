@@ -253,7 +253,11 @@ extern "C" __global__ __aicore__ void scalex_kernel_impl(GM_ADDR x, GM_ADDR alph
     op.Process();
 }
 
-void scalex_kernel_do(uint8_t* x, void* alpha, const ScalexTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError scalex_kernel_do(uint8_t* x, void* alpha, const ScalexTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    // Drain any stale thread-level error so the post-launch check only reports
+    // this launch's own failure (issue #1181 precedent).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     scalex_kernel_impl<<<numBlocks, nullptr, stream>>>(x, static_cast<uint8_t*>(alpha), tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

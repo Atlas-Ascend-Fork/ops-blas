@@ -119,9 +119,14 @@ aclblasStatus_t aclblasScalex(
 
     const uint32_t maxUseful = CeilDiv<uint32_t>(static_cast<uint32_t>(n), SCALEX_MIN_ELEMS_PER_CORE);
     const uint32_t numBlocks = std::min(aivCoreNum, std::max(1U, maxUseful));
-    const ScalexTilingData tiling = CalScalexTilingData(
-        n, incx, numBlocks, static_cast<uint32_t>(xType), alphaHost, alphaIsDevice);
+    const ScalexTilingData tiling =
+        CalScalexTilingData(n, incx, numBlocks, static_cast<uint32_t>(xType), alphaHost, alphaIsDevice);
     void* alphaPtr = alphaIsDevice ? const_cast<void*>(alpha) : nullptr;
-    scalex_kernel_do(reinterpret_cast<uint8_t*>(x), alphaPtr, tiling, numBlocks, handle->stream);
+    const aclError launchErr =
+        scalex_kernel_do(reinterpret_cast<uint8_t*>(x), alphaPtr, tiling, numBlocks, handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "scalex_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }

@@ -16,6 +16,7 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "scalex_tiling_data.h"
 
-void scalex_kernel_do(uint8_t* x, void* alpha, const ScalexTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError scalex_kernel_do(uint8_t* x, void* alpha, const ScalexTilingData& tiling, uint32_t numBlocks, void* stream);
