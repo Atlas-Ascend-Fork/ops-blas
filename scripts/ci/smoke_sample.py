@@ -95,13 +95,13 @@ def sample_op(op, soc_arch):
     if not csv_path:
         return None
     try:
-        with open(csv_path, encoding="utf-8-sig", errors="ignore") as f:
+        with open(csv_path, encoding="utf-8-sig", newline="") as f:
             lines = (line for line in f if line.strip() and not line.lstrip().startswith("#"))
-            reader = csv.DictReader(lines)
+            reader = csv.DictReader(lines, strict=True)
             if reader.fieldnames:
                 reader.fieldnames = [name.strip() for name in reader.fieldnames]
             rows = list(reader)
-    except OSError:
+    except (OSError, UnicodeError, csv.Error):
         return None
     if not rows:
         return None
