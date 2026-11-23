@@ -31,6 +31,7 @@
 #include "gemm_batched_host_common.h"
 
 constexpr const char* SG_OP_NAME = "aclblasSgemmBatched";
+constexpr const char* CG_OP_NAME = "aclblasCgemmBatched";
 
 // ============================================================================
 // Workspace management
@@ -96,13 +97,13 @@ static aclblasStatus_t ValidateSgemmBatchedParams(
 // Tiling computation (delegates to shared GEMM-batched helpers)
 // ============================================================================
 static aclblasStatus_t CalcGemmTiling(
-    int m, int n, int k, int batchCount, int lda, int ldb, int ldc, bool isTransA, bool isTransB, uint32_t cubeCoreNum,
-    GemmBatchedGemmTilingData& tiling)
+    const char* opName, int m, int n, int k, int batchCount, int lda, int ldb, int ldc, bool isTransA, bool isTransB,
+    uint32_t cubeCoreNum, GemmBatchedGemmTilingData& tiling)
 {
     // Keep the original minimal-divisible-wave search for the FLOAT32 path.
     constexpr bool useTrailingWaveBalance = false;
     return GemmBatchedCalcGemmTiling(
-        SG_OP_NAME, GEMM_BATCHED_DTYPE_FP32, useTrailingWaveBalance, m, n, k, batchCount, lda, ldb, ldc, isTransA,
+        opName, GEMM_BATCHED_DTYPE_FP32, useTrailingWaveBalance, m, n, k, batchCount, lda, ldb, ldc, isTransA,
         isTransB, cubeCoreNum, tiling);
 }
 
@@ -132,9 +133,9 @@ static void LaunchAlphaBetaPostProcess(
 // ============================================================================
 // Main execution
 // ============================================================================
-static aclblasStatus_t ValidateCoreCounts(uint32_t& cubeCoreNum, uint32_t& aivCoreNum)
+static aclblasStatus_t ValidateCoreCounts(const char* opName, uint32_t& cubeCoreNum, uint32_t& aivCoreNum)
 {
-    return GemmBatchedValidateCoreCounts(SG_OP_NAME, cubeCoreNum, aivCoreNum);
+    return GemmBatchedValidateCoreCounts(opName, cubeCoreNum, aivCoreNum);
 }
 
 static aclblasStatus_t ExecuteSgemmBatched(
@@ -150,14 +151,14 @@ static aclblasStatus_t ExecuteSgemmBatched(
 
     uint32_t cubeCoreNum = 0;
     uint32_t aivCoreNum = 0;
-    aclblasStatus_t coreRet = ValidateCoreCounts(cubeCoreNum, aivCoreNum);
+    aclblasStatus_t coreRet = ValidateCoreCounts(SG_OP_NAME, cubeCoreNum, aivCoreNum);
     if (coreRet != ACLBLAS_STATUS_SUCCESS) {
         return coreRet;
     }
 
     GemmBatchedGemmTilingData tilingData{};
     aclblasStatus_t tilingRet =
-        CalcGemmTiling(m, n, k, batchCount, lda, ldb, ldc, isTransA, isTransB, cubeCoreNum, tilingData);
+        CalcGemmTiling(SG_OP_NAME, m, n, k, batchCount, lda, ldb, ldc, isTransA, isTransB, cubeCoreNum, tilingData);
     if (tilingRet != ACLBLAS_STATUS_SUCCESS) {
         return tilingRet;
     }
@@ -645,8 +646,8 @@ static aclblasStatus_t LaunchCgemmDeinterleaveAndGemm(
     bool isRealTransB = (realTransB != ACLBLAS_OP_N);
     int ldcTemp = static_cast<int>(ctx.tempRowStride);
     GemmBatchedGemmTilingData realGemmTiling{};
-    aclblasStatus_t tilingRet =
-        CalcGemmTiling(m, n, k, batchCount, lda, ldb, ldcTemp, isRealTransA, isRealTransB, cubeCoreNum, realGemmTiling);
+    aclblasStatus_t tilingRet = CalcGemmTiling(
+        CG_OP_NAME, m, n, k, batchCount, lda, ldb, ldcTemp, isRealTransA, isRealTransB, cubeCoreNum, realGemmTiling);
     if (tilingRet != ACLBLAS_STATUS_SUCCESS) {
         return tilingRet;
     }
@@ -1380,7 +1381,8 @@ static void SetClampedRealifiedGrid(
 static aclblasStatus_t InitializeRealifiedGemmTiling(const CgemmRealifiedParams& p, CgemmRealifiedPlan& plan)
 {
     const aclblasStatus_t status = CalcGemmTiling(
-        2 * p.m, p.n, 2 * p.k, p.batchCount, 2 * p.m, 2 * p.k, 2 * p.ldc, false, false, p.cubeCoreNum, plan.gemmTiling);
+        CG_OP_NAME, 2 * p.m, p.n, 2 * p.k, p.batchCount, 2 * p.m, 2 * p.k, 2 * p.ldc, false, false, p.cubeCoreNum,
+        plan.gemmTiling);
     if (status != ACLBLAS_STATUS_SUCCESS) {
         return status;
     }
@@ -1769,7 +1771,7 @@ static aclblasStatus_t DispatchCgemmBatched(
 
     uint32_t cubeCoreNum = 0;
     uint32_t aivCoreNum = 0;
-    aclblasStatus_t coreRet = ValidateCoreCounts(cubeCoreNum, aivCoreNum);
+    aclblasStatus_t coreRet = ValidateCoreCounts(CG_OP_NAME, cubeCoreNum, aivCoreNum);
     if (coreRet != ACLBLAS_STATUS_SUCCESS) {
         return coreRet;
     }
