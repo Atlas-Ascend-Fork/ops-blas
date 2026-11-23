@@ -3,7 +3,9 @@
 从 ops-blas 仓库根目录运行，使用 Ascend 950PR 和 CANN 9.1。
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
+# 将 CANN_HOME 改为本机 set_env.sh 所在的目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/set_env.sh"
 TRIANGULAR_VERIFY_PERF=1 bash build.sh --ops=ctpttr --soc=ascend950 --run
 ```
 

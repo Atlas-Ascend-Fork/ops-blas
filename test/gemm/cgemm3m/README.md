@@ -39,7 +39,9 @@
 从 ops-blas 根目录执行，先安装编译器、GTest、OpenBLAS/LAPACK 开发包：
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
+# 将 CANN_HOME 改为本机 set_env.sh 所在的目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/set_env.sh"
 CMAKE_INCLUDE_PATH=/usr/include/openblas CMAKE_LIBRARY_PATH=/usr/lib64 \
   bash build.sh --ops=cgemm3m,cgemm --soc=ascend950
 ```

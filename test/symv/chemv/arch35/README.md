@@ -20,7 +20,9 @@ CPU 参考使用 Netlib BLAS/CBLAS 3.10.0 的 `cblas_chemv`。
 在仓库根目录运行，环境脚本路径按实际安装位置调整：
 
 ```bash
-source /usr/local/Ascend/cann-9.1.0/set_env.sh
+# 将 CANN_HOME 改为本机 set_env.sh 所在的目录。
+CANN_HOME=/usr/local/Ascend/cann-9.1.0
+source "$CANN_HOME/set_env.sh"
 export CHEMV_REF_DIR="$(pwd)/../chemv-netlib310"
 python3 test/symv/chemv/prepare_netlib.py \
   --archive /path/to/lapack-3.10.0.tar.gz --work-dir "$CHEMV_REF_DIR"
