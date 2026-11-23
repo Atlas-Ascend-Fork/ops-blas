@@ -77,6 +77,7 @@ def run_group(args, name, selected, env, required):
     env['GTEST_FILTER'] = ':'.join(selected)
     log = args.output / (name + '.log')
     detail = args.output.resolve() / (name + '_detail.log')
+    detail.unlink(missing_ok=True)
     command = [args.tool, '--tool=memcheck', '--leak-check=yes', '--log-file=' + str(detail),
                str(args.binary.resolve())]
     with log.open('w') as output:
