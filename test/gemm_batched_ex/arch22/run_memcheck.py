@@ -45,8 +45,10 @@ def representative_rows(suite, rows):
 
 
 def sanitizer_result(text):
-    starts = re.findall(r'Start memcheck sanitizer on kernel\s+(\S+)', text)
-    finished = re.findall(r'Sanitizer finished on kernel\s+(\S+)\. No error detected\.', text)
+    start_pattern = r'Start memcheck sanitizer on kernel[ \t]+([^\r\n]+)'
+    finish_pattern = r'Sanitizer finished on kernel[ \t]+([^\r\n]+?)\. No error detected\.'
+    starts = [name.strip().strip('"') for name in re.findall(start_pattern, text)]
+    finished = [name.strip().strip('"') for name in re.findall(finish_pattern, text)]
     diagnostics = []
     for line in text.splitlines():
         if re.search(r'\b(?:WARNING|ERROR|FATAL)\b', line) and 'No error detected.' not in line:
