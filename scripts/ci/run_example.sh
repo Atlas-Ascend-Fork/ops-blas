@@ -101,7 +101,9 @@ resolve_diff_base() {
 # 2) 用例执行按 diff 从头文件中提取新增/修改的 API 函数名 → 推导算子名，
 #    仅运行这些算子的用例；提取不到（如纯注释/格式化）时保守回退全量。
 include_ops=""
-while IFS= read -r filepath; do
+while IFS= read -r filepath || [ -n "$filepath" ]; do
+    filepath=${filepath%$'\r'}
+    [ -z "$filepath" ] && continue
     if [[ "$filepath" == *.md ]]; then
         continue
     fi
