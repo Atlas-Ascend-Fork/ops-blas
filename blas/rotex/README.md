@@ -86,8 +86,8 @@ aclblasStatus_t aclblasRotEx(
 - `n >= 0`，否则返回 `ACLBLAS_STATUS_INVALID_VALUE`
 - `n == 0` 时直接返回 `ACLBLAS_STATUS_SUCCESS`，不启动 Kernel
 - `n > 0` 时 `x != nullptr`、`y != nullptr`、`c != nullptr`、`s != nullptr`，否则返回 `ACLBLAS_STATUS_INVALID_VALUE`
-- `incx != 0`，否则返回 `ACLBLAS_STATUS_INVALID_VALUE`
-- `incy != 0`，否则返回 `ACLBLAS_STATUS_INVALID_VALUE`
+- `incx != 0`、`incy != 0`，否则返回 `ACLBLAS_STATUS_INVALID_VALUE`
+- 步长的 `INT_MIN` 取值存在跨架构差异：Atlas A2/A3（arch22）对 `incx == INT_MIN` 或 `incy == INT_MIN` 同样返回 `ACLBLAS_STATUS_INVALID_VALUE`；Ascend 950PR/950DT（arch35）入口仅拒绝零步长，`INT_MIN` 可通过参数校验，kernel 以 int64_t 计算元素下标。调用方对同一份代码跨 SoC 运行时须按此分支处理（口径同 `rot` 算子的 per-arch 步长声明）
 - `executionType` 必须为 FP32（arch35 仅支持 S 组），否则返回 `ACLBLAS_STATUS_NOT_SUPPORTED`
 - `xType`、`yType` 和 `csType` 必须相同（仅对称类型），且必须为 FP32 / FP16 / BF16 之一，否则返回 `ACLBLAS_STATUS_NOT_SUPPORTED`
 - c/s 标量指针可为 Host 或 Device 内存，运行时自动检测并处理；Device 标量经 handle 绑定 stream 上的异步拷贝并流同步后读回（issue #1082），因此同 stream 上先前提交的算子（如 aclblasRotg 输出 c/s）对该调用可见，不会读到旧值
