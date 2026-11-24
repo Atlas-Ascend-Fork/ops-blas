@@ -31,7 +31,7 @@ A := alpha * x * x^T + A
 #### 函数原型
 
 ```cpp
-aclblasStatus_t aclblasSsyr(aclblasHandle_t handle, aclblasFillMode uplo, const int n, const float* alpha, const float* x, const int incx, float* A, const int lda)
+aclblasStatus_t aclblasSsyr(aclblasHandle_t handle, aclblasFillMode_t uplo, const int n, const float* alpha, const float* x, const int incx, float* A, const int lda)
 ```
 
 #### 参数说明
@@ -39,7 +39,7 @@ aclblasStatus_t aclblasSsyr(aclblasHandle_t handle, aclblasFillMode uplo, const 
 | 参数名 | 输入/输出 | 参数类型 | 说明 |
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
-| uplo | 输入 | aclblasFillMode | ACLBLAS_UPPER(121) 或 ACLBLAS_LOWER(122)，指定更新的三角区域，Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | ACLBLAS_UPPER(121) 或 ACLBLAS_LOWER(122)，指定更新的三角区域，Host 内存 |
 | n | 输入 | int | 矩阵阶数，n >= 0，Host 内存 |
 | alpha | 输入 | const float*（FP32） | 标量乘数指针，Host/Device 内存 |
 | x | 输入 | const float*（FP32） | 输入向量指针，长度至少 1 + (n-1) * abs(incx)，Device 内存 |
