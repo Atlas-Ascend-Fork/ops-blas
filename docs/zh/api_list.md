@@ -898,7 +898,7 @@ Level 1 接口在向量之间进行运算，典型操作包括向量缩放（sca
 | [aclblasSaxpy](../../blas/axpy/README.md) | 单精度浮点 AXPY（y = αx + y） |
 | [aclblasCaxpy](../../blas/axpy/README.md) | 复数 AXPY |
 | [aclblasAxpyEx](../../blas/axpy_ex/README.md) | 混合精度向量 AXPY（alpha 为 FP32，x/y 支持 FP16/BF16/FP32） |
-| [aclblasCdgmm](../../blas/dgmm/README.md) | 行主序单精度复数对角矩阵左乘 |
+| [aclblasCdgmm](../../blas/dgmm/README.md) | 单精度复数对角缩放。950PR 支持列主序 LEFT / RIGHT，Atlas A2 / Atlas A3 支持行主序 LEFT。 |
 | [aclblasSdgmm](../../blas/dgmm/README.md) | 单精度实数对角矩阵乘法 |
 | [aclblasComplexMatDot](../../extensions/complexmatdot/README.md) | 复数矩阵逐元素点乘 |
 | [aclblasScopy](../../blas/copy/README.md) | 单精度浮点向量拷贝 |

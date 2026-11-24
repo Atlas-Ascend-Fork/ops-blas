@@ -16,19 +16,23 @@ RIGHT 模式： C = A * diag(x)，  C[i,j] = A[i,j] * x[j]    （x 长度为 n�
 | 接口名 | 功能简述 |
 |--------|---------|
 | aclblasSdgmm | 单精度实数对角矩阵乘法 |
-| aclblasCdgmm | 单精度复数对角矩阵乘法，当前仅支持 LEFT 模式，RIGHT 模式暂未实现 |
+| aclblasCdgmm | 单精度复数对角矩阵乘法；950PR 支持 LEFT/RIGHT，A2/A3 沿用 LEFT |
 
 ### sdgmm 与 cdgmm 差异
 
-两个接口均为对角矩阵乘法，但存在以下行为差异，使用时需注意：
+同名接口在不同产品线采用不同的存储和参数契约，调用时需按产品线准备数据。
 
-| 差异项 | aclblasSdgmm | aclblasCdgmm |
-|--------|--------------|--------------|
-| 数据类型 | FP32 实数 | Complex32 复数 |
-| 支持模式 | LEFT / RIGHT | 仅 LEFT（RIGHT 返回 ACLBLAS_STATUS_NOT_SUPPORTED） |
-| incx == 0 | 拒绝，返回 ACLBLAS_STATUS_INVALID_VALUE | 拒绝，返回 ACLBLAS_STATUS_INVALID_VALUE |
-| 存储布局 | 列主序（column-major） | 行主序（row-major），与 cuBLAS cublasCdgmm 的列主序语义存在差异 |
-| 产品支持 | Ascend 950PR / Ascend 950DT | Atlas A2 / Atlas A3 系列 |
+| 差异项 | aclblasSdgmm（950） | aclblasCdgmm（950PR） | aclblasCdgmm（A2/A3 原有产品线） |
+|---|---|---|---|
+| 数据类型 | FP32 | complex64 | complex64 |
+| mode | LEFT / RIGHT | LEFT / RIGHT | LEFT；RIGHT 返回 NOT_SUPPORTED |
+| 存储布局 | 列主序 | 列主序 | 行主序 |
+| lda / ldc | 至少 max(1,m) | 至少 max(1,m) | 至少 max(1,n) |
+| incx==0 | INVALID_VALUE | INVALID_VALUE | INVALID_VALUE |
+| incx<0 | 支持 | 支持，原始指针从尾部反向取数 | 沿用现有产品线契约 |
+| 非法 mode | INVALID_ENUM | INVALID_VALUE | 沿用现有产品线契约 |
+| 空矩阵 | 原有产品线契约 | 校验 mode、维度、incx 和前导维后返回 SUCCESS | 原有产品线契约 |
+| 产品支持 | Ascend 950PR / Ascend 950DT | Ascend 950PR | Atlas A2 / Atlas A3 系列 |
 
 ## 算子执行接口
 
@@ -265,11 +269,10 @@ C[1,2] = 24.000000
 C[2,2] = 36.000000
 ```
 
-### aclblasCdgmm
+### aclblasCdgmm（Atlas A2 / Atlas A3）
 
 #### 产品支持情况
 
-- Ascend 950PR / Ascend 950DT：不支持
 - Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
 - Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
@@ -312,4 +315,57 @@ aclblasStatus_t aclblasCdgmm(aclblasHandle_t handle, aclblasSideMode_t mode, int
 - 支持独立 `lda`、`ldc`（lda != ldc）
 - C 的 padding 区域（C[i*ldc+n ... i*ldc+ldc-1]）不被修改
 - 支持 `A == C && lda == ldc` 的原地执行；`A == C && lda != ldc` 返回 `ACLBLAS_STATUS_INVALID_VALUE`
-- arch22 支持；arch35 暂不支持 Cdgmm
+- Atlas A2 / Atlas A3 使用 arch22 实现。Ascend 950PR 使用 arch35 实现，接口约定见下方 950PR 小节。
+
+### aclblasCdgmm（Ascend 950PR）
+
+#### 产品支持情况
+
+- Ascend 950PR：支持（arch35，CANN 9.1.0）。
+- Ascend 950DT：本次任务未验证。
+- Atlas A2 / Atlas A3 系列：沿用原有 arch22 实现。
+
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasCdgmm(
+    aclblasHandle_t handle,
+    aclblasSideMode_t mode,
+    int m,
+    int n,
+    const aclblasComplex* A,
+    int lda,
+    const aclblasComplex* x,
+    int incx,
+    aclblasComplex* C,
+    int ldc);
+```
+
+#### 950PR 参数说明
+
+| 参数 | 说明 |
+|---|---|
+| handle | 有效 ops-blas 句柄，携带调用 stream |
+| mode | LEFT 按行缩放，RIGHT 按列缩放 |
+| m / n | 非负行列数，任意一个为 0 时可合法早返回 |
+| A | complex64 输入，列主序地址 A[i+j*lda]，Device 内存 |
+| lda | 输入前导维，至少 max(1,m) |
+| x | LEFT 逻辑长度 m，RIGHT 逻辑长度 n，Device 内存 |
+| incx | 非零正负步长；正数取 x[k*incx]，负数取 x[(L-1-k)*abs(incx)] |
+| C | complex64 输出，列主序地址 C[i+j*ldc]，Device 内存 |
+| ldc | 输出前导维，至少 max(1,m) |
+
+#### 950PR 约束与错误码
+
+- 校验顺序：handle、mode、m、n、incx、lda、ldc；随后处理空矩阵，再检查 A/x/C 指针及原地条件。
+- 空 handle 返回 HANDLE_IS_NULLPTR；非法 mode、负维度、incx=0、非法前导维及非空矩阵的空指针返回 INVALID_VALUE。
+- m=0 或 n=0 时，A/x/C 可以为空，仍须通过前述标量校验。例如 n=0、lda=0 返回 INVALID_VALUE。
+- A==C 支持原地计算，必须 lda==ldc；否则返回 INVALID_VALUE。C 不与 x 共享存储，部分重叠不在支持契约内。
+- 仅写 C 的 m*n 逻辑元素，保留 ldc padding；A 和 x 只读。
+- 复数乘法为 `(ar*xr-ai*xi, ar*xi+ai*xr)`，按 float32 运算，实部、虚部分别验证精度。
+- 调用异步使用 handle 绑定 stream，读取结果前由调用者同步。
+
+A2/A3 的同名接口沿用原有行主序、LEFT 契约，不能将上述 950PR 列主序数据布局直接用于该产品线。本任务不修改 arch22 实现。
+
+测试与复现步骤见 [arch35 测试说明](../../test/dgmm/cdgmm/arch35/README.md)。
