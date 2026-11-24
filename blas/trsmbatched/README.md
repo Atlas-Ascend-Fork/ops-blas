@@ -18,7 +18,7 @@ side='R': X[i] * op(A[i]) = alpha * B[i]
 | 接口名 | 功能简述 |
 |--------|---------|
 | aclblasStrsmBatched | 单精度浮点批量三角求解 |
-| [aclblasCtrsmBatched](#aclblasctrsmbatchedcomplex64) | 单精度复数批量三角求解（Atlas A2/A3：arch22；Atlas 950PR：arch35） |
+| [aclblasCtrsmBatched](#aclblasctrsmbatchedcomplex64arch35) | 单精度复数批量三角求解（Atlas A2/A3：arch22；Atlas 950PR：arch35） |
 
 ## 算子执行接口
 
