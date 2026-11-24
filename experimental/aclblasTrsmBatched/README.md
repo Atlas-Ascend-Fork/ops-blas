@@ -22,12 +22,12 @@ aclblasStatus_t aclblasStrsmBatchedEx(
     aclblasHandle_t handle,
     aclblasSideMode_t side,
     aclblasFillMode_t uplo,
-    aclblasOperation_t transa,
+    aclblasOperation_t trans,
     aclblasDiagType_t diag,
     int64_t m, int64_t n,
     const float* alpha,
-    const float* const aArray[], int64_t lda,
-    float* const bArray[], int64_t ldb,
+    const float* const A[], int64_t lda,
+    float* const B[], int64_t ldb,
     int64_t batchCount)
 ```
 
