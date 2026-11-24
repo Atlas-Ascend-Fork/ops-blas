@@ -303,12 +303,12 @@ int main()
 
 #### 产品支持情况
 
-- Ascend 950PR：支持
-- Ascend 950DT：未验证
+- Ascend 950PR / Ascend 950DT：支持（arch35 实现）
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持（arch22 实现）
 - Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
 
-> Ascend 950PR 实现位于 `blas/syr2k/arch35/`，依赖 CANN asc-devkit 9.1 或更高版本。
+> 两套架构实现并存：`arch22/` 面向 Atlas A2，`arch35/` 面向 Ascend 950PR。
+> 两者接口签名一致，但 `trans` 取值域不同，见下方「约束说明」。
 
 #### 函数原型
 
@@ -338,17 +338,24 @@ aclblasStatus_t aclblasCsyr2k(
 #### 约束说明
 
 - `uplo` 为 `ACLBLAS_UPPER` 或 `ACLBLAS_LOWER`，仅指定三角被更新；另一三角值语义不变，但并非「零访问」：uplo='L' 时对角块的非 uplo（严格上）段按 C 旧值恒等回写（语义上不修改），uplo='U' 时非 uplo 段不写出。
-- `trans` 支持 `ACLBLAS_OP_N`、`ACLBLAS_OP_T` 和 `ACLBLAS_OP_C`；OP_C 按无共轭 OP_T 处理。
+- `trans` 支持 `ACLBLAS_OP_N`、`ACLBLAS_OP_T` 和 `ACLBLAS_OP_C`；OP_C 按无共轭 OP_T 处理（arch22 与 arch35 口径一致）。
 - trans=N 时 `lda, ldb >= max(1,n)`；trans=T/C 时 `lda, ldb >= max(1,k)`；`ldc >= max(1,n)`。
-- `alpha`、`beta` 和 C 不可为空；k>0 时 A、B 不可为空。
+- `alpha`、`beta` 支持 Host 与 Device 内存指针，`alpha`、`beta` 和 C 不可为空；k>0 时 A、B 不可为空。
 - C 是复数对称矩阵而非 Hermitian 矩阵；非对角元素不共轭，对角元素虚部不强制为零。
 - n=0 为合法 no-op；alpha=0 或 k=0 时仅按 beta 更新指定三角。
+- arch22 实现只写出 uplo 指定三角，另一三角保持调用方传入值不变（逐位，含 NaN/Inf）；leading-dimension padding 同样不被访问。
+- arch22 实现内部把 A、B 拆分为实部/虚部两个实数平面后执行 8 次半三角 GEMM，工作区需求约为 `4*k*n + 3*n*n` 个 float；超出 `ACLBLAS_MAX_WORKSPACE_SIZE`（2 GiB）时返回 `ACLBLAS_STATUS_ALLOC_FAILED`。
 
 #### 编译与测试
 
 ```bash
+# Ascend 950PR / 950DT（arch35）
 bash build.sh --ops=csyr2k --soc=ascend950
 bash build.sh --ops=csyr2k --soc=ascend950 --run --device=0
+
+# Atlas A2 训练系列（arch22）
+bash build.sh --ops=csyr2k --soc=ascend910b3
+bash build.sh --ops=csyr2k --soc=ascend910b3 --run --device=0
 ```
 
-测试代码和官方 CSV 位于 `test/syr2k/csyr2k/`，详细步骤见该目录的 README。
+测试代码和 CSV 位于 `test/syr2k/csyr2k/`（arch35 官方 1200 条用例 + arch22 79 条用例），详细步骤见该目录的 README。
