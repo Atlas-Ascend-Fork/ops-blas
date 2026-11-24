@@ -17,7 +17,7 @@ result = sum(|x[i]|) for i = 0 to n-1
 | 接口名 | 功能简述 |
 |--------|---------|
 | aclblasSasum | 实数向量绝对值之和 |
-| aclblasScasum | 复数（complex64）向量绝对值分量之和（新算子，950PR 支持） |
+| aclblasScasum | 复数（complex64）向量绝对值分量之和 |
 
 ## 算子执行接口
 
@@ -239,8 +239,8 @@ int aclblasScasumTestDemo()
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持
 
 #### 函数原型
 
@@ -258,7 +258,6 @@ aclblasStatus_t aclblasScasum(aclblasHandle_t handle, int n, const aclblasComple
 | incx | 输入 | int | x 中相邻复数元素之间的步长（以复数元素为单位），Host 内存 |
 | result | 输出 | float*（FP32） | 各元素绝对值分量之和 Σ(\|Re\|+\|Im\|)，Device 内存 |
 
-- Atlas A2/A3（arch22）：`n` 必须非负；`n == 0` 时返回成功并将 `result` 置为 0；`n > 0` 时要求 `incx > 0`，非正 `incx` 不适用零值快速返回语义。
-- Ascend 950PR/950DT（arch35）：`n <= 0` 或 `incx <= 0` 时，`result` 被置为 0 并返回成功。
-- n > 0 且 incx > 0 时，Arch22 会在返回前同步 handle 绑定的 stream；Ascend 950PR/950DT（Arch35）异步提交计算。Arch35 调用方应在其他 stream 消费 result 前建立依赖；从 Host 读取 result 前应等待 handle stream 完成。
-- n > 0 且 incx > 0 时，计算异步提交到 handle 绑定的 stream。调用方应在其他 stream 消费 result 前建立依赖；从 Host 读取 result 前应等待 handle stream 完成。
+- Atlas A2/A3（arch22）与 Ascend 950PR/950DT（arch35）：`n <= 0` 或 `incx <= 0` 时，`result` 置为 0.0f 并返回成功（本算子实现遵循 cuBLAS/Netlib `scasum` 语义）。
+- 跨度上限：`2 × (n-1) × |incx| > UINT32_MAX` 时返回 `ACLBLAS_STATUS_INVALID_VALUE`
+- `n > 0` 且 `incx > 0` 时，计算异步提交到 handle 绑定的 stream。调用方应在其他 stream 消费 result 前建立依赖；从 Host 读取 result 前应等待 handle stream 完成。
