@@ -49,7 +49,7 @@ aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, 
 **Ascend 950PR / Ascend 950DT（arch35）：**
 
 - n 为整数；n <= 0 时为 no-op（直接返回 ACLBLAS_STATUS_SUCCESS，不修改 x）
-- incx 为整数；incx <= 0 时为 no-op（不修改 x，对齐参考 BLAS cblas_sscal 的 IF (INCX.LE.0) RETURN 语义）；incx > 0 时支持任意步长
+- incx 为整数；incx < 0 返回 ACLBLAS_STATUS_NOT_SUPPORTED，incx == 0 返回 ACLBLAS_STATUS_INVALID_VALUE，incx > 0 时支持任意步长（issue #1093：不再把 incx<=0 静默视为 no-op）
 - handle 不能为 nullptr，否则返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR
 - n > 0 时 alpha、x 不能为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE
 - arch35 支持 alpha 指针 Host/Device 双位置：Host 指针直接读取，Device 指针经同步 D2H 读取（对齐 scalex 同族口径）

@@ -134,8 +134,18 @@ aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, 
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
 
-    if (n <= 0 || incx <= 0) {
+    // issue #1093: n<=0 先短路为合法空操作（对齐 scalex/csscal 同族口径与 cblas_sscal），
+    // 再对非法 incx 显式拒绝：incx<0 -> NOT_SUPPORTED，incx==0 -> INVALID_VALUE。
+    if (n <= 0) {
         return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (incx < 0) {
+        OP_LOGE("aclblasSscal", "negative incx is not supported, got incx=%d", incx);
+        return ACLBLAS_STATUS_NOT_SUPPORTED;
+    }
+    if (incx == 0) {
+        OP_LOGE("aclblasSscal", "incx must not be zero");
+        return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
     if (alpha == nullptr) {
