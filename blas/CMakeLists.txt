@@ -109,7 +109,7 @@ if(DEFINED TEST_NAMES AND NOT "${TEST_NAMES}" STREQUAL "")
         # blas/scal/arch22（blas/gemm/arch22/gemm_host.cpp beta 回退调用
         # aclblasSscal）中，须一并保留，否则 libops_blas.so 缺符号导致
         # gemm_test / blas_all_test 链接失败（PreSmoke_A2 冒烟子集构建同理）
-        if(("gemm" IN_LIST TEST_NAMES OR "gemm_ex" IN_LIST TEST_NAMES OR "sgemm_ex" IN_LIST TEST_NAMES OR "cgemm_ex" IN_LIST TEST_NAMES)
+        if(("gemm" IN_LIST TEST_NAMES OR "gemm_ex" IN_LIST TEST_NAMES OR "sgemm_ex" IN_LIST TEST_NAMES OR "cgemm_ex" IN_LIST TEST_NAMES OR "cgemm" IN_LIST TEST_NAMES OR "sgemm_batched" IN_LIST TEST_NAMES)
            AND _src_file MATCHES "/scal/arch22/")
             set(_keep_src TRUE)
         endif()
@@ -139,6 +139,11 @@ if(DEFINED TEST_NAMES AND NOT "${TEST_NAMES}" STREQUAL "")
         endif()
         # Csyrkx reuses only the generic complex GEMM preprocessing/products.
         if("csyrkx" IN_LIST TEST_NAMES AND _src_file MATCHES "/gemm/arch35/cgemm_(kernel|compute_kernel)[.]cpp$")
+            set(_keep_src TRUE)
+        endif()
+        # arch22 的 cgemm host 通过子句柄把四个实数乘积交给 arch22 aclblasSgemmEx
+        # （定义于 blas/gemm_ex/arch22/），单算子构建时须保留该后端源文件。
+        if("cgemm" IN_LIST TEST_NAMES AND _src_file MATCHES "/gemm_ex/arch22/")
             set(_keep_src TRUE)
         endif()
         get_filename_component(_src_name "${_src_file}" NAME)

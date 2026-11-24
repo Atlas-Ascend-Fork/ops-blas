@@ -330,9 +330,9 @@ result C (column-major):
 
 #### 产品支持情况
 
-- Ascend 950PR / Ascend 950DT：支持
+- Ascend 950PR / Ascend 950DT：支持（arch35 实现）
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持（arch22 实现）
 - Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
 
 #### Ascend 950PR 实现说明
 
@@ -342,6 +342,18 @@ result C (column-major):
 - 存储格式：BLAS 列主序，支持 `N`、`T`、`C` 全部转置组合
 - 自测目录：`test/gemm/cgemm/arch35/`
 - 精度测试：`./build/test/gemm/cgemm/cgemm_test`
+
+#### Atlas A2/A3 实现说明
+
+- 实现目录：`blas/gemm/arch22/`
+- 实现方式：三阶段管线。Phase 0 把 A/B 拆为实部/虚部实数平面；Phase 1 通过子句柄把四个实数乘积交给同目录的 `aclblasSgemm`；Phase 2 做复数 alpha/beta 组装写回 C。
+- 共轭由 Phase 1 四个实数乘积的标量符号承载（`s_a`/`s_b` 对共轭操作数取 -1），因此 Phase 0 不需要区分 `OP_T` 与 `OP_C`，四种转置/共轭组合共用同一套拆分与发射表。
+- 数据类型与存储格式同 arch35：`aclblasComplex`、BLAS 列主序，支持 `N`、`T`、`C`。
+- 自测目录：`test/gemm/cgemm/arch22/`
+- 精度测试：`./build/test/gemm/cgemm/cgemm_test`
+- 工作区约为 `2*(m*k + k*n + 2*m*n)` 个 float 加 4MiB 余量；超出 `ACLBLAS_MAX_WORKSPACE_SIZE`（2 GiB）时返回 `ACLBLAS_STATUS_ALLOC_FAILED`。
+- `alpha=(0,0)` 或 `k=0` 时跳过全部实数乘积，仅按 `beta` 更新 C；`alpha=(0,0)` 且 `beta=(1,0)` 时直接返回，不发射任何 kernel。
+- **K 分块**：arch22 实数入口在 `K > 1024` 且 `M/N` 均小于 wholegrid 门限时计算结果错误（[ops-blas#1077](https://gitcode.com/cann/ops-blas/issues/1077)，910B3 实测 512×512×1536 有 262123/262144 个元素错误）。本实现因此把归约长度按 1024 切块后逐块累加到同一实部/虚部平面——累加是精确的 fp32 加法，精度不低于单次长归约。#1077 修复后可移除此分块。
 
 #### 函数原型
 
