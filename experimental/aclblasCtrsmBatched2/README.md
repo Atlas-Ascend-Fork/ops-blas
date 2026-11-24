@@ -22,12 +22,12 @@ aclblasStatus_t aclblasCtrsmBatched(
     aclblasHandle_t handle,
     aclblasSideMode_t side,
     aclblasFillMode_t uplo,
-    aclblasOperation_t transa,
+    aclblasOperation_t trans,
     aclblasDiagType_t diag,
     int64_t m, int64_t n,
     const std::complex<float>* alpha,
-    const std::complex<float>* const aArray[], int64_t lda,
-    std::complex<float>* const bArray[], int64_t ldb,
+    const std::complex<float>* const A[], int64_t lda,
+    std::complex<float>* const B[], int64_t ldb,
     int64_t batchCount)
 ```
 
