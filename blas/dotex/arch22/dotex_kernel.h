@@ -11,9 +11,10 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 
 #include "dotex_tiling_data.h"
 
-void dotex_kernel_do(
+aclError dotex_kernel_do(
     uint8_t* x, uint8_t* y, uint8_t* result, const DotexTilingData& tiling, uint8_t* workSpace, uint32_t numBlocks,
     void* stream);

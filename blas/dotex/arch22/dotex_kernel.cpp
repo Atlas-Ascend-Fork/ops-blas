@@ -317,10 +317,18 @@ extern "C" __global__ __aicore__ void dotex_reduce_arch22_kernel(
     op.ProcessReduce();
 }
 
-void dotex_kernel_do(
+aclError dotex_kernel_do(
     uint8_t* x, uint8_t* y, uint8_t* result, const DotexTilingData& tiling, uint8_t* workSpace, uint32_t numBlocks,
     void* stream)
 {
+    // Drain any stale thread-level error so the post-launch check only reports
+    // this pipeline's own launch failures (issue #1181 precedent).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     dotex_partial_arch22_kernel<<<numBlocks, nullptr, stream>>>(x, y, workSpace, tiling);
+    const aclError partialErr = aclrtGetLastError(ACL_RT_THREAD_LEVEL);
+    if (partialErr != ACL_SUCCESS) {
+        return partialErr;
+    }
     dotex_reduce_arch22_kernel<<<1U, nullptr, stream>>>(workSpace, result, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

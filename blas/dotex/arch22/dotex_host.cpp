@@ -142,8 +142,12 @@ aclblasStatus_t aclblasDotEx(
     OP_LOGD(
         OP_TAG, "launching kernel: n=%u blocks=%u incx=%d incy=%d xType=%u", totalN, numBlocks, incx, incy,
         tiling.xType);
-    dotex_kernel_do(
+    const aclError launchErr = dotex_kernel_do(
         const_cast<uint8_t*>(static_cast<const uint8_t*>(x)), const_cast<uint8_t*>(static_cast<const uint8_t*>(y)),
         static_cast<uint8_t*>(result), tiling, wsDevice, numBlocks, handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "dotex_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
