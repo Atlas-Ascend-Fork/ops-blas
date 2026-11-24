@@ -74,6 +74,26 @@ static bool HasStrsvSpanOverflow(int n, int lda, int incx)
     return static_cast<uint64_t>(n) * static_cast<uint64_t>(lda) > UINT32_MAX || extent > UINT32_MAX;
 }
 
+// issue #1098: kernel 侧按 BUFFER_NUM × n × sizeof(float) 字节申请 UB
+//（strsv_kernel.cpp UB_SIZE=192KB），n 超过 24572 时 InitBuffer 触发设备侧失败。
+// host 侧提前拒绝，返回参数错误而非执行期错误。
+static bool HasStrsvUbOverflow(int n)
+{
+    constexpr uint64_t kStrsvUbSize = 192 * 1024;
+    constexpr uint64_t kStrsvBufferNum = 2;
+    constexpr uint64_t kStrsvElementBytes = 4;
+    constexpr uint64_t kStrsvUbAlignBytes = 32;
+    // 按 UB 32B 块对齐逐 buffer 计算：kernel 侧 aQueue/xQueue 均以 BUFFER_NUM 个
+    // InitBuffer 申请，每块在 UB 上按 32B 对齐（strsv_kernel.cpp）。原实现仅从
+    // 192KB 减一个 32B 块，边界 n=24569~24572 仍被放行却在设备侧 InitBuffer 失败。
+    auto alignUp32 = [](uint64_t bytes) -> uint64_t {
+        return (bytes + kStrsvUbAlignBytes - 1) / kStrsvUbAlignBytes * kStrsvUbAlignBytes;
+    };
+    const uint64_t aQueueBytes = kStrsvBufferNum * alignUp32(static_cast<uint64_t>(n) * kStrsvElementBytes);
+    const uint64_t xQueueBytes = kStrsvBufferNum * alignUp32(kStrsvElementBytes);
+    return aQueueBytes + xQueueBytes > kStrsvUbSize;
+}
+
 static aclblasStatus_t ValidateStrsvParams(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int n,
     const float* A, int lda, const float* x, int incx)
@@ -109,6 +129,10 @@ static aclblasStatus_t ValidateStrsvParams(
     }
     if (HasStrsvSpanOverflow(n, lda, incx)) {
         OP_LOGE("aclblasStrsv", "matrix or vector extent exceeds uint32 range: n=%d lda=%d incx=%d", n, lda, incx);
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (HasStrsvUbOverflow(n)) {
+        OP_LOGE("aclblasStrsv", "n exceeds UB capacity of the kernel: n=%d", n);
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
     return ACLBLAS_STATUS_SUCCESS;
