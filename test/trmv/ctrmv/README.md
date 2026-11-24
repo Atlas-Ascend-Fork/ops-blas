@@ -69,7 +69,7 @@ python3 verify_performance.py --repo /path/to/ops-blas --soc ascend950
 - Accuracy: `[  PASSED  ] 1004 tests.` (precision cases only; 200 perf cases excluded)
 - Perf (task spec §3.3 baseline, warmup + >50 samples avg):
   | case | n | uplo | trans | diag | baseline (us) | measured (us) | verdict |
-  |---|---|---|---|---|---|---|
+  |---|---|---|---|---|---|---|---|
   | 1 | 512 | UPPER | N | NON_UNIT | 74.12 | ~59.2 | PASS |
   | 2 | 1024 | LOWER | T | NON_UNIT | 224.36 | ~90.4 | PASS |
   | 3 | 2048 | UPPER | C | UNIT | 472.42 | ~186.3 | PASS |
