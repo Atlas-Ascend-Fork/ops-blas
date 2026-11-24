@@ -312,7 +312,7 @@ int main()
 #### 函数原型
 
 ```cpp
-aclblasStatus_t aclblasStpmv_legacy(aclblasHandle_t handle, aclblasFillMode uplo, aclblasOperation trans, aclblasDiagType diag, int64_t n, const float *aPacked, const float *x, float *y, int64_t incx)
+aclblasStatus_t aclblasStpmv_legacy(aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, aclblasDiagType_t diag, int64_t n, const float *aPacked, const float *x, float *y, int64_t incx)
 ```
 
 #### 参数说明
@@ -320,9 +320,9 @@ aclblasStatus_t aclblasStpmv_legacy(aclblasHandle_t handle, aclblasFillMode uplo
 | 参数名 | 输入/输出 | 参数类型 | 说明 |
 |--------|----------|---------|------|
 | handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存 |
-| uplo | 输入 | aclblasFillMode | 矩阵填充类型：ACLBLAS_UPPER 或 ACLBLAS_LOWER，Host 内存 |
-| trans | 输入 | aclblasOperation | 矩阵操作类型，Host 内存 |
-| diag | 输入 | aclblasDiagType | 对角线类型，Host 内存 |
+| uplo | 输入 | aclblasFillMode_t | 矩阵填充类型：ACLBLAS_UPPER 或 ACLBLAS_LOWER，Host 内存 |
+| trans | 输入 | aclblasOperation_t | 矩阵操作类型，Host 内存 |
+| diag | 输入 | aclblasDiagType_t | 对角线类型，Host 内存 |
 | n | 输入 | int64_t | 三角压缩矩阵 A 的行数和列数，Host 内存 |
 | aPacked | 输入 | const float*（FP32） | 三角压缩矩阵 float 数组，Device 内存 |
 | x | 输入 | const float*（FP32） | float 输入向量，包含 n 个元素，Device 内存 |
