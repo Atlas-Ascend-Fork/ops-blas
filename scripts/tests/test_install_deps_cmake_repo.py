@@ -22,7 +22,17 @@ PKG_MANAGER=apt
 grep() { if [ "$*" = '-q Ubuntu 18.04 /etc/os-release' ]; then return 0; fi; command grep "$@"; }
 cmake() { if [ -e "$CASE_ROOT/installed" ]; then echo 'cmake version 3.20.0'; else echo 'cmake version 3.10.0'; fi; }
 wget() { if [ "$FAIL_DOWNLOAD" = 1 ]; then return 7; fi; printf 'MOCK-PUBLIC-KEY\n'; }
-gpg() { IFS= read -r key || return 1; if [ "$PERMISSIVE_GPG" != 1 ]; then [ "$key" = MOCK-PUBLIC-KEY ] || return 1; fi; printf 'MOCK-KEYRING\n'; }
+gpg() {
+    # 指纹解析调用（--with-colons）只回固定主密钥指纹，其余行为不变
+    if [ "$1" = --batch ] && [ "$2" = --with-colons ]; then
+        cat > /dev/null
+        printf 'pub:u:4096:1:9E92FDC6C5B9BA75:0:0:::::::\nfpr:::::::::4DBEBE3EEC96E7B8C6EC5BE99E92FDC6C5B9BA75:\n'
+        return 0
+    fi
+    IFS= read -r key || return 1
+    if [ "$PERMISSIVE_GPG" != 1 ]; then [ "$key" = MOCK-PUBLIC-KEY ] || return 1; fi
+    printf 'MOCK-KEYRING\n'
+}
 sudo() {
     if [ "$1" = tee ]; then
         case "$2" in *keyrings*) cat > "$CASE_ROOT/keyring" ;; *) cat > "$CASE_ROOT/repo" ;; esac
