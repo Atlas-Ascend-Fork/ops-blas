@@ -36,6 +36,9 @@ case "$mode" in
     memcheck)
         # Build this binary and its kernels with --cce-enable-sanitizer first.
         command -v mssanitizer >/dev/null
+        # 旧产物必须先清除：新一轮未落报告时，残留的旧 XML/日志
+        # 会通过下方 -s 与 -nt 新鲜度校验，掩盖本次运行失败（#1133）
+        rm -f "$report_dir/memcheck.xml" "$report_dir/memcheck-report.log"
         scan_marker=$(mktemp "$report_dir/memcheck-start.XXXXXX")
         export GTEST_FILTER='*MemorySanitizerPaths'
         export GTEST_OUTPUT="xml:$report_dir/memcheck.xml"

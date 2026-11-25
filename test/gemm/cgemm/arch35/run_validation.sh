@@ -34,6 +34,9 @@ case "$mode" in
         # pre-fix overflow landed silently in adjacent queue buffers. Only a
         # device memcheck over the m>128 cases proves the UB is gone.
         command -v mssanitizer >/dev/null
+        # 旧产物必须先清除：新一轮未落报告时，残留的旧 XML/日志
+        # 会通过下方 -s 与 -nt 新鲜度校验，掩盖本次运行失败（#1133）
+        rm -f "$report_dir/memcheck.xml" "$report_dir/memcheck-report.log"
         scan_marker=$(mktemp "$report_dir/memcheck-start.XXXXXX")
         export GTEST_FILTER="$GTEST_FILTER"
         export GTEST_OUTPUT="xml:$report_dir/memcheck.xml"
