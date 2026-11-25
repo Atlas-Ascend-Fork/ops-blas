@@ -114,6 +114,33 @@ def load_cases():
     return rows, baseline
 
 
+def build_environment():
+    env = dict(os.environ)
+    for key in [key for key in env if key.startswith("GTEST_")]:
+        env.pop(key, None)
+    env.pop("BLAS_TEST_CASES", None)
+    env.update(CHER2_PROFILE="1", CHER2_PROFILE_RANGE="1")
+    return env
+
+
+def validate_profile_xml(xml, batch):
+    root = ET.parse(xml).getroot()
+    for key in ("failures", "errors", "disabled", "skipped"):
+        if int(root.attrib.get(key, 0)) != 0:
+            raise RuntimeError(f"PF GTest XML reports non-zero {key} count")
+    tests = root.findall(".//testcase")
+    expected = sorted("CsvDriven/" + row["case_name"] for row in batch)
+    reported = sorted(test.get("name", "") for test in tests)
+    if reported != expected or any(
+        test.get("classname") != "Cher2/Cher2Test"
+        or test.get("status") != "run"
+        or test.get("result") != "completed"
+        or any(test.find(tag) is not None for tag in ("failure", "error", "skipped"))
+        for test in tests
+    ):
+        raise RuntimeError("Missing, unexpected or failed PF GTest")
+
+
 def profile_batch(a, app, batch, offset, env):
     prefix = a.output / ("batch_" + str(offset // a.batch_size))
     prefix.mkdir()
@@ -140,16 +167,7 @@ def profile_batch(a, app, batch, offset, env):
     text = (prefix / "msprof.log").read_text(encoding="utf-8")
     if "[ERROR]" in text:
         raise RuntimeError("msprof reported an error; inspect " + str(prefix / "msprof.log"))
-    tests = ET.parse(xml).getroot().findall(".//testcase")
-    expected = sorted("CsvDriven/" + row["case_name"] for row in batch)
-    reported = sorted(test.get("name", "") for test in tests)
-    if reported != expected or any(
-        test.get("classname") != "Cher2/Cher2Test"
-        or test.get("result") != "completed"
-        or any(test.find(tag) is not None for tag in ("failure", "error", "skipped"))
-        for test in tests
-    ):
-        raise RuntimeError("Missing, unexpected or failed PF GTest")
+    validate_profile_xml(xml, batch)
     raw = read_durations(prefix / "raw")
     return prefix, text, raw
 
@@ -229,12 +247,13 @@ def main():
     p.add_argument("--timeout", type=int, default=1800)
     p.add_argument("--batch-size", type=int, default=16, choices=range(1, 17))
     a = p.parse_args()
+    if a.timeout <= 0:
+        p.error("--timeout must be a positive integer")
     a.binary, a.output = a.binary.resolve(), a.output.resolve()
     rows, baseline = load_cases()
     a.output.mkdir(parents=True, exist_ok=False)
     app = prepare_app(a.binary, a.output, a.container_device_fix)
-    env = dict(os.environ, CHER2_PROFILE="1", CHER2_PROFILE_RANGE="1")
-    env.pop("BLAS_TEST_CASES", None)
+    env = build_environment()
     all_samples, results = [], []
     for offset in range(0, len(rows), a.batch_size):
         end = offset + a.batch_size
