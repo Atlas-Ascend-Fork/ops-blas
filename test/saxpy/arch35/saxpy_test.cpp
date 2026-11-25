@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <algorithm>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,26 @@ TEST_F(SaxpyArch35Test, NullAlpha)
     float y[5] = {1, 2, 3, 4, 5};
     aclblasStatus_t ret = aclblasSaxpy_npu(SaxpyArch35Test::handle_, 5, nullptr, x, 1, y, 1);
     EXPECT_EQ(ret, ACLBLAS_STATUS_INVALID_VALUE);
+}
+
+// BLAS Level 1 quick return: alpha == 0 must not read x or touch y,
+// so NaN/Inf in x must not pollute y (matches cblas_saxpy semantics)
+TEST_F(SaxpyArch35Test, AlphaZeroQuickReturnKeepsYUntouched)
+{
+    const float nanValue = std::numeric_limits<float>::quiet_NaN();
+    const float infValue = std::numeric_limits<float>::infinity();
+    const int n = 8;
+    float x[n] = {nanValue, infValue, -infValue, 1, 2, 3, 4, 5};
+    float y[n] = {1, 1, 1, 1, 1, 1, 1, 1};
+    float alpha = 0.0f;
+
+    aclblasStatus_t ret = aclblasSaxpy_npu(SaxpyArch35Test::handle_, n, &alpha, x, 1, y, 1);
+    EXPECT_EQ(ret, ACLBLAS_STATUS_SUCCESS);
+
+    const float expected[n] = {1, 1, 1, 1, 1, 1, 1, 1};
+    for (int i = 0; i < n; i++) {
+        EXPECT_EQ(y[i], expected[i]) << "y[" << i << "] was modified by alpha==0 axpy";
+    }
 }
 
 INSTANTIATE_TEST_SUITE_P(

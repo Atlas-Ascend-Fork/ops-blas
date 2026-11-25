@@ -168,6 +168,12 @@ aclblasStatus_t aclblasSaxpy(aclblasHandle_t handle, int n, const float* alpha, 
         return validRet;
     }
 
+    // BLAS Level 1 quick return: alpha == 0 must not read x or touch y,
+    // otherwise NaN/Inf in x would pollute y via 0*NaN/0*Inf (matches cblas_saxpy)
+    if (*alpha == 0.0f) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+
     OP_LOGI("aclblasSaxpy", "n=%d, incx=%d, incy=%d, alpha=%.6f", n, incx, incy, static_cast<double>(*alpha));
 
     return LaunchSaxpyKernel(handle, n, incx, incy, alpha, x, y);
