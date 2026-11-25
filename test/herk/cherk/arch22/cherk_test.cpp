@@ -142,7 +142,7 @@ TEST_P(CherkTest, CsvDriven)
     // path is exercised. The alpha value in p.alpha is irrelevant in that case.
     aclblasStatus_t ret = aclblasCherk_npu(
         CherkTest::handle_, p.uplo, p.trans, p.n, p.k, &p.alpha, d.aPtr, p.lda, p.nullBeta ? nullptr : &p.beta, d.cPtr,
-        p.ldc, p.nullAlpha);
+        p.ldc, p.nullAlpha, p.expectResult == ACLBLAS_STATUS_SUCCESS);
 
     EXPECT_EQ(static_cast<int>(ret), static_cast<int>(p.expectResult));
     if (p.expectResult != ACLBLAS_STATUS_SUCCESS || p.n == 0 || d.cPtr == nullptr) {
@@ -175,7 +175,8 @@ static void RunArch22GoldenRegression(aclblasHandle_t handle, const CherkParam& 
     ASSERT_TRUE(PrepareHostData(p, d, true));
 
     ASSERT_EQ(
-        aclblasCherk_npu(handle, p.uplo, p.trans, p.n, p.k, &p.alpha, d.aPtr, p.lda, &p.beta, d.cPtr, p.ldc),
+        aclblasCherk_npu(
+            handle, p.uplo, p.trans, p.n, p.k, &p.alpha, d.aPtr, p.lda, &p.beta, d.cPtr, p.ldc, false, true),
         ACLBLAS_STATUS_SUCCESS);
     VerifyCherkFp64(p, d);
 }

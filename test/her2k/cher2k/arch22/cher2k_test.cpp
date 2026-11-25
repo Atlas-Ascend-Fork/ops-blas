@@ -245,8 +245,9 @@ static void RunCher2kAccuracyCase(aclblasHandle_t handle, aclrtStream stream, co
     const aclblasComplex* bPtr = p.nullB || b.empty() ? nullptr : b.data();
     aclblasComplex* cPtr = p.nullC || c.empty() ? nullptr : c.data();
 
-    const aclblasStatus_t status =
-        aclblasCher2k_npu(handle, p.uplo, p.trans, p.n, p.k, alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc);
+    const bool verifySnapshot = p.expectResult == ACLBLAS_STATUS_SUCCESS && !performanceCase;
+    const aclblasStatus_t status = aclblasCher2k_npu(
+        handle, p.uplo, p.trans, p.n, p.k, alphaPtr, aPtr, p.lda, bPtr, p.ldb, betaPtr, cPtr, p.ldc, verifySnapshot);
     CompleteCher2kCase(handle, stream, p, status, alphaPtr, aPtr, bPtr, betaPtr, cPtr, golden, a, b, perfIterations);
 }
 

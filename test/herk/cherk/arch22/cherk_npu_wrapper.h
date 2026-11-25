@@ -16,6 +16,7 @@
 #include <thread>
 
 #include "../cherk_npu_common.h"
+#include "../../../syr2/csyr2/arch22/device_matrix_snapshot.h"
 
 // Repeat-window target for performance measurement. Sizing the window by a
 // probe keeps short shapes from being dominated by launch jitter while long
@@ -122,7 +123,7 @@ static aclblasStatus_t CherkRunAndTime(RunFn&& runOnce, bool perfMode, double& m
 inline aclblasStatus_t aclblasCherk_npu(
     aclblasHandle handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const float* alpha,
     const aclblasComplex* A, int lda, const float* beta, aclblasComplex* C, int ldc, bool nullAlpha = false,
-    double* opMs = nullptr, bool perfMode = false, int* perfIters = nullptr)
+    bool verifySnapshot = false, double* opMs = nullptr, bool perfMode = false, int* perfIters = nullptr)
 {
     if (handle == nullptr || n <= 0) {
         return aclblasCherk(handle, uplo, trans, n, k, (nullAlpha ? nullptr : alpha), A, lda, beta, C, ldc);
@@ -133,6 +134,13 @@ inline aclblasStatus_t aclblasCherk_npu(
     const aclblasStatus_t upRet = CherkUploadInputs(inputs, A, beta, C, bufs);
     if (upRet != ACLBLAS_STATUS_SUCCESS) {
         return upRet;
+    }
+
+    if (verifySnapshot && !perfMode) {
+        const auto snapshotRet = triangle_test::VerifyDeviceMatrixSnapshot(bufs.dC, C, inputs.cBytes);
+        if (snapshotRet != ACLBLAS_STATUS_SUCCESS) {
+            return snapshotRet;
+        }
     }
 
     const auto runOnce = [&]() {

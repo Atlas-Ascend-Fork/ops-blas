@@ -29,6 +29,7 @@
 #include "../csyr2_golden.h"
 #include "csyr2_npu_wrapper.h"
 #include "csyr2_test_resources.h"
+#include "device_matrix_snapshot.h"
 #include "triangle_preservation.h"
 #include "triangle_fp64_reference.h"
 
@@ -263,6 +264,7 @@ static void RunAccuracy(
     ASSERT_EQ(aclrtMemcpy(dx, xb, x.data(), xb, ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
     ASSERT_EQ(aclrtMemcpy(dy, yb, y.data(), yb, ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
     ASSERT_EQ(aclrtMemcpy(dA, ab, original.data(), ab, ACL_MEMCPY_HOST_TO_DEVICE), ACL_SUCCESS);
+    ASSERT_EQ(triangle_test::VerifyDeviceMatrixSnapshot(dA, original.data(), ab), ACLBLAS_STATUS_SUCCESS);
 
     EXPECT_EQ(
         Csyr2Npu(

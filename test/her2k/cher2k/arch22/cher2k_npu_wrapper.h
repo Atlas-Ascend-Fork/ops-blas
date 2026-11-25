@@ -12,6 +12,7 @@
 
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
+#include "../../../syr2/csyr2/arch22/device_matrix_snapshot.h"
 
 struct Cher2kDeviceBuffers {
     void* alpha = nullptr;
@@ -100,7 +101,8 @@ inline bool Cher2kNeedsPassthrough(
 
 inline aclblasStatus_t aclblasCher2k_npu(
     aclblasHandle_t handle, aclblasFillMode_t uplo, aclblasOperation_t trans, int n, int k, const aclblasComplex* alpha,
-    const aclblasComplex* a, int lda, const aclblasComplex* b, int ldb, const float* beta, aclblasComplex* c, int ldc)
+    const aclblasComplex* a, int lda, const aclblasComplex* b, int ldb, const float* beta, aclblasComplex* c, int ldc,
+    bool verifySnapshot = false)
 {
     if (Cher2kNeedsPassthrough(handle, uplo, trans, n, k, alpha, beta)) {
         return aclblasCher2k(handle, uplo, trans, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
@@ -114,6 +116,13 @@ inline aclblasStatus_t aclblasCher2k_npu(
     aclblasStatus_t status = Cher2kPrepareDeviceBuffers(buffers, alpha, a, aBytes, b, bBytes, beta, c, cBytes);
     if (status != ACLBLAS_STATUS_SUCCESS)
         return status;
+
+    if (verifySnapshot) {
+        status = triangle_test::VerifyDeviceMatrixSnapshot(buffers.c, c, cBytes);
+        if (status != ACLBLAS_STATUS_SUCCESS) {
+            return status;
+        }
+    }
 
     status = aclblasCher2k(
         handle, uplo, trans, n, k, buffers.alpha ? static_cast<const aclblasComplex*>(buffers.alpha) : alpha,
