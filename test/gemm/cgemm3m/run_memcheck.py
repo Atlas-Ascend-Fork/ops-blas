@@ -117,7 +117,7 @@ def main():
             selected = [name for name in names if name.startswith(CSV_PREFIX + f"TC_{category}_")]
             if len(selected) != count:
                 raise RuntimeError(f"{category} contract count mismatch: {len(selected)} != {count}")
-            record_group(summary["groups"], category.lower(), lambda: run_group(
+            record_group(summary["groups"], category.lower(), lambda category=category, selected=selected: run_group(
                 args, env, output, category.lower(), selected, memcheck=True))
         for case in SMOKE:
             summary["groups"][case.lower()] = run_case(
