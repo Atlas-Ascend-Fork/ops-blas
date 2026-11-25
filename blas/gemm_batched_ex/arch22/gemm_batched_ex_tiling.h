@@ -7,49 +7,29 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
+
 #pragma once
 #include <cstdint>
-#include <cstddef>
 
-struct GemmBatchedEx22Tiling {
-    int32_t m, n, k, lda, ldb, ldc;
-    int32_t transA, transB, outputLd;
-    uint32_t firstBatch, batches;
+enum class GemmBatchedExRoute : uint32_t { Regular, MacroRing, RowStrips, ExactSmall, ReferenceOrder };
+
+struct GemmBatchedExArch22Tiling {
+    int32_t m, n, k, lda, ldb, ldc, batchCount;
+    int32_t transA, transB, tileM, tileN;
+    int32_t packed, originalK, originalLda, originalLdb;
+    uint32_t vectorBlocks;
+    GemmBatchedExRoute route;
+    uint64_t packAElements, packBElements, productOffset;
+    int32_t productLd;
+    int32_t alphaDevice, betaDevice, temporary;
     float alpha, beta;
-    bool temporaryOutput;
-    uint32_t splitK = 0, parts = 0, taskCount = 0;
-    uint64_t firstTask = 0;
-    uint64_t policy = 0;
-    uint32_t policyCores = 0;
-    uint32_t taskRotation = 0; // Reuses the original four bytes of tail padding.
+    uint64_t alphaAddress, betaAddress, tasks;
+    uint64_t policy;
+    uint64_t syncAddress;
+    uint64_t referenceFirst;
+    uint64_t referenceLast;
 };
 
-static_assert(sizeof(GemmBatchedEx22Tiling) == 96);
-static_assert(offsetof(GemmBatchedEx22Tiling, firstTask) == 72);
-static_assert(offsetof(GemmBatchedEx22Tiling, policy) == 80);
-static_assert(offsetof(GemmBatchedEx22Tiling, policyCores) == 88);
-static_assert(offsetof(GemmBatchedEx22Tiling, taskRotation) == 92);
-
-#ifndef GM_ADDR
-#define GM_ADDR uint8_t*
-#endif
-
-void GemmBatchedEx22Cube(
-    uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, GemmBatchedEx22Tiling tiling);
-void GemmBatchedEx22Vector(
-    uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, GemmBatchedEx22Tiling tiling,
-    bool combine);
-
-void GemmBatchedEx22Policy(
-    uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GemmBatchedEx22Tiling tiling, bool finalize);
-void GemmBatchedEx22Reference(
-    uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling tiling);
-
-void GemmBatchedEx22PolicyReference(
-    uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling tiling);
-
-void GemmBatchedEx22PolicyFused(
-    uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling tiling);
-
-void GemmBatchedEx22Overlap(
-    uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling tiling);
+int32_t GemmBatchedExArch22Launch(
+    uint32_t blocks, void* stream, const void* a, const void* b, const void* c, void* workspace,
+    GemmBatchedExArch22Tiling tiling, bool scaleOnly);

@@ -7,443 +7,337 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
+
 #include <algorithm>
 #include <limits>
-
 #include "cann_ops_blas.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 #include "gemm_batched_ex_tiling.h"
 
-void GemmBatchedEx34DecisionOverlap(uint32_t, void*, GM_ADDR, GM_ADDR, GM_ADDR, GemmBatchedEx22Tiling);
-void GemmBatchedEx46FixedNT(uint32_t, void*, GM_ADDR, GM_ADDR, GM_ADDR, GemmBatchedEx22Tiling);
-void GemmBatchedEx47FixedNT(uint32_t, void*, GM_ADDR, GM_ADDR, GM_ADDR, GemmBatchedEx22Tiling);
-
-void GemmBatchedEx48Tiny(uint32_t, void*, GM_ADDR, GM_ADDR, GM_ADDR, GemmBatchedEx22Tiling);
-
 namespace {
-constexpr uint32_t MAX_AIV = 40;
-constexpr uint32_t MAX_AIC = 20;
-
-bool ValidOperation(aclblasOperation_t operation)
-{
-    return operation == ACLBLAS_OP_N || operation == ACLBLAS_OP_T || operation == ACLBLAS_OP_C;
-}
-
-aclblasStatus_t ReadScalar(const void* pointer, float& value, aclrtStream stream)
-{
-    bool device = false;
-    const auto status = CheckPtrLocation(pointer, &device);
-    if (status != ACLBLAS_STATUS_SUCCESS)
-        return status;
-    if (device) {
-        return ReadHostScalarFromDevice(static_cast<const float*>(pointer), value, stream, "aclblasGemmBatchedEx");
-    }
-    value = *static_cast<const float*>(pointer);
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-bool CanRotateTail(const GemmBatchedEx22Tiling& t, uint32_t cores)
-{
-    return cores != 0 && cores <= MAX_AIC && t.transA && t.transB && t.alpha == 1.0f && t.beta == 0.0f && t.k > 0 &&
-           t.k <= 96 && t.m >= 768 && t.n >= 768 && t.batches == 1;
-}
-
-void PrepareTailRotation(GemmBatchedEx22Tiling& t, uint32_t cores)
-{
-    if (cores == 0 || !CanRotateTail(t, cores))
-        return;
-    const uint64_t nr = (static_cast<uint64_t>(t.n) + 511U) / 512U;
-    const uint64_t nc = (static_cast<uint64_t>(t.m) + 63U) / 64U;
-    const uint64_t tasks = nr * nc;
-    if (tasks == 0 || tasks > 128)
-        return;
-    const uint64_t rm = (static_cast<uint64_t>(t.n) + 255U) / 256U;
-    const uint64_t cm = (static_cast<uint64_t>(t.m) + 127U) / 128U;
-    const uint64_t rn = (static_cast<uint64_t>(t.n) + 127U) / 128U;
-    const uint64_t cn = (static_cast<uint64_t>(t.m) + 255U) / 256U;
-    const bool useM = rm * cm <= rn * cn;
-    const uint64_t oldRows = useM ? rm : rn;
-    const uint64_t oldCols = useM ? cm : cn;
-    const uint64_t oldWaves = (oldRows * oldCols + cores - 1U) / cores;
-    const uint64_t waves = (tasks + cores - 1U) / cores;
-    const uint64_t movement = (static_cast<uint64_t>(t.n) * nc + static_cast<uint64_t>(t.m) * nr) * 100U;
-    const uint64_t previousMovement =
-        (static_cast<uint64_t>(t.n) * oldCols + static_cast<uint64_t>(t.m) * oldRows) * 165U;
-    if (waves * 4U > oldWaves * 5U || movement > previousMovement)
-        return;
-    const uint32_t rotation = ((nr - 1U) * nc + tasks - (waves - 1U) * cores) % tasks;
-    if (rotation == 0)
-        return;
-    uint64_t original[MAX_AIC]{};
-    uint64_t rotated[MAX_AIC]{};
-    auto weight = [&](uint64_t task) {
-        const uint64_t rows = std::min<uint64_t>(512, static_cast<uint64_t>(t.n) - task / nc * 512U);
-        const uint64_t cols = std::min<uint64_t>(64, static_cast<uint64_t>(t.m) - task % nc * 64U);
-        return ((rows + 15U) / 16U * 16U) * ((cols + 15U) / 16U * 16U);
-    };
-    for (uint32_t slot = 0; slot < tasks; ++slot) {
-        const uint32_t shifted = slot + rotation;
-        original[slot % cores] += weight(slot);
-        rotated[slot % cores] += weight(shifted < tasks ? shifted : shifted - tasks);
-    }
-    uint64_t oldMax = 0;
-    uint64_t newMax = 0;
-    for (uint32_t core = 0; core < cores; ++core) {
-        oldMax = std::max(oldMax, original[core]);
-        newMax = std::max(newMax, rotated[core]);
-    }
-    if (newMax * 100U <= oldMax * 98U)
-        t.taskRotation = rotation;
-}
-
-bool UseFixedNT5(const GemmBatchedEx22Tiling& t, uint32_t cores)
-{
-    if (cores == 0 || cores > MAX_AIC || t.transA || !t.transB || t.batches != 1 || t.n <= 0 || t.n > 128 ||
-        t.m <= 128 || t.k < 512 || t.k >= 2048)
-        return false;
-    const uint64_t original =
-        ((static_cast<uint64_t>(t.n) + 127U) / 128U) * ((static_cast<uint64_t>(t.m) + 127U) / 128U) * t.batches;
-    if (original > 2U * cores)
-        return false;
-    uint64_t bestTasks = original;
-    const uint64_t originalWaves = (original + cores - 1U) / cores;
-    uint64_t bestWaves = originalWaves;
-    uint64_t bestScore = bestWaves * 128U * 128U;
-    uint32_t best = 10;
-    constexpr uint32_t heights[]{128, 64, 64, 64, 32};
-    constexpr uint32_t widths[]{64, 128, 64, 32, 64};
-    for (uint32_t i = 0; i < 5; ++i) {
-        const uint64_t height = heights[i];
-        const uint64_t width = widths[i];
-        const uint64_t tasks = ((static_cast<uint64_t>(t.n) + height - 1U) / height) *
-                               ((static_cast<uint64_t>(t.m) + width - 1U) / width) * t.batches;
-        const uint64_t waves = (tasks + cores - 1U) / cores;
-        if (waves > originalWaves || waves * (height + width) > originalWaves * 256U)
-            continue;
-        const uint64_t score = waves * height * width;
-        if (score < bestScore ||
-            (score == bestScore && (waves < bestWaves || (waves == bestWaves && tasks < bestTasks)))) {
-            best = i + 5U;
-            bestTasks = tasks;
-            bestWaves = waves;
-            bestScore = score;
-        }
-    }
-    return best == 5;
-}
-
-uint8_t* AsGm(const void* pointer) { return static_cast<uint8_t*>(const_cast<void*>(pointer)); }
-
-using InputAddress = const void*;
-using OutputAddress = void*;
-
-struct GemmInputs {
-    aclblasHandle_t handle;
-    aclblasOperation_t transa;
-    aclblasOperation_t transb;
-    int m;
-    int n;
-    int k;
-    const void* alpha;
-    const InputAddress* Aarray;
-    aclDataType Atype;
-    int lda;
-    const InputAddress* Barray;
-    aclDataType Btype;
-    int ldb;
-    const void* beta;
-    const OutputAddress* Carray;
-    aclDataType Ctype;
-    int ldc;
-    int batchCount;
-    aclblasComputeType_t computeType;
+constexpr const char* OP = "aclblasGemmBatchedEx";
+constexpr uint64_t PACK_LIMIT_BYTES = 256ULL * 1024 * 1024;
+struct Problem {
+    aclblasOperation_t ta, tb;
+    int m, n, k, lda, ldb, ldc, batch;
+    aclDataType aType, bType, cType;
+    aclblasComputeType_t compute;
     aclblasGemmAlgo_t algo;
 };
 
-aclblasStatus_t ValidateGemmShape(const GemmInputs& p)
+aclblasStatus_t Validate(
+    const Problem& p, aclblasHandle_t handle, const void* alpha, const void* beta, const void* a, const void* b,
+    const void* c)
 {
-    if (p.handle == nullptr)
-        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
-    if (!ValidOperation(p.transa) || !ValidOperation(p.transb))
-        return ACLBLAS_STATUS_INVALID_ENUM;
-    if (p.m < 0 || p.n < 0 || p.k < 0 || p.batchCount < 0)
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    const bool ta = p.transa != ACLBLAS_OP_N;
-    const bool tb = p.transb != ACLBLAS_OP_N;
-    if (p.lda < std::max(1, ta ? p.k : p.m) || p.ldb < std::max(1, tb ? p.n : p.k) || p.ldc < std::max(1, p.m)) {
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
+    CHECK_RET(handle, OP_LOGE(OP, "handle is null"); return ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
+    CHECK_RET(alpha && beta, OP_LOGE(OP, "alpha or beta is null"); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(p.ta >= ACLBLAS_OP_N && p.ta <= ACLBLAS_OP_C && p.tb >= ACLBLAS_OP_N && p.tb <= ACLBLAS_OP_C,
+              OP_LOGE(OP, "invalid transa=%d transb=%d", p.ta, p.tb);
+              return ACLBLAS_STATUS_INVALID_ENUM);
+    CHECK_RET(p.m >= 0 && p.n >= 0 && p.k >= 0 && p.batch >= 0,
+              OP_LOGE(OP, "invalid m=%d n=%d k=%d batchCount=%d", p.m, p.n, p.k, p.batch);
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(p.lda >= std::max(1, p.ta == ACLBLAS_OP_N ? p.m : p.k) &&
+                  p.ldb >= std::max(1, p.tb == ACLBLAS_OP_N ? p.k : p.n) && p.ldc >= std::max(1, p.m),
+              OP_LOGE(OP, "invalid lda=%d ldb=%d ldc=%d", p.lda, p.ldb, p.ldc);
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(p.batch == 0 || (a && b && c), OP_LOGE(OP, "null pointer array, batchCount=%d", p.batch);
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(
+        p.aType == ACL_FLOAT && p.bType == ACL_FLOAT && p.cType == ACL_FLOAT && p.compute == ACLBLAS_COMPUTE_32F &&
+            p.algo == ACLBLAS_GEMM_DEFAULT,
+        OP_LOGE(OP, "unsupported types=%d/%d/%d compute=%d algo=%d", p.aType, p.bType, p.cType, p.compute, p.algo);
+        return ACLBLAS_STATUS_NOT_SUPPORTED);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-aclblasStatus_t ValidateGemmOperands(const GemmInputs& p)
+aclblasStatus_t Scalar(const void* ptr, float& value, int32_t& device, uint64_t& address)
 {
-    if (p.alpha == nullptr || p.beta == nullptr || (p.batchCount > 0 && (!p.Aarray || !p.Barray || !p.Carray))) {
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (p.Atype != ACL_FLOAT || p.Btype != ACL_FLOAT || p.Ctype != ACL_FLOAT || p.computeType != ACLBLAS_COMPUTE_32F ||
-        p.algo != ACLBLAS_GEMM_DEFAULT) {
-        return ACLBLAS_STATUS_NOT_SUPPORTED;
-    }
+    bool isDevice = false;
+    aclblasStatus_t status = CheckPtrLocation(ptr, &isDevice);
+    if (status != ACLBLAS_STATUS_SUCCESS)
+        return status;
+    device = isDevice;
+    address = isDevice ? reinterpret_cast<uint64_t>(ptr) : 0;
+    if (!isDevice)
+        value = *static_cast<const float*>(ptr);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-struct GemmExecution {
-    const GemmInputs& p;
-    GemmBatchedEx22Tiling& t;
-    uint32_t vectors;
-    uint32_t cubes = 0;
-    uint8_t* temporary = nullptr;
-    size_t scratchBytes = 0;
-};
-
-bool IsWholeTiny(const GemmBatchedEx22Tiling& t)
+bool PreferDirectInputs(const GemmBatchedExArch22Tiling& t)
 {
-    return t.alpha == 1.0f && t.beta == 0.0f && !t.transA && !t.transB && t.m <= 32 && t.n <= 32 && t.k > 4 &&
-           t.k <= 32 && static_cast<uint64_t>(t.m) * t.n <= 4096U / static_cast<uint32_t>(t.k) &&
-           static_cast<uint64_t>(t.lda) <= UINT32_MAX / 4U && static_cast<uint64_t>(t.ldb) <= UINT32_MAX / 4U &&
-           static_cast<uint64_t>(t.ldc) <= UINT32_MAX / 4U;
+    // Short NN reductions avoid a standalone input pack when direct ND tiles are cheaper.
+    return (!t.transA && !t.transB && t.k > 128 && t.k <= 256 && t.route == GemmBatchedExRoute::Regular) ||
+           (t.k <= 64 && t.n <= 512 && t.ldc % 8 != 0) || t.temporary ||
+           (t.k % 128 == 0 && t.route == GemmBatchedExRoute::Regular) || static_cast<uint64_t>(t.m) * t.n < 16384 ||
+           t.k <= 32;
 }
 
-void LaunchWholeTiny(const GemmExecution& x)
+// Keep the public layouts at the boundary; align the Cube reduction once per batch.
+uint64_t PackInputs(GemmBatchedExArch22Tiling& t, uint64_t capacity)
 {
-    const auto& t = x.t;
-    const auto blocks = std::min(x.vectors, static_cast<uint32_t>(x.p.batchCount));
-    if (t.m == t.n && t.n == t.k && (t.m == 8 || t.m == 16)) {
-        GemmBatchedEx48Tiny(blocks, x.p.handle->stream, AsGm(x.p.Aarray), AsGm(x.p.Barray), AsGm(x.p.Carray), t);
-        return;
+    if (t.lda > UINT32_MAX / sizeof(float) || t.ldb > UINT32_MAX / sizeof(float))
+        return 0;
+    if (PreferDirectInputs(t))
+        return 0;
+    int64_t alignment = t.transA && !t.transB ? 8 : 32;
+    int64_t reduction = (t.k + alignment - 1) / alignment * alignment;
+    if (reduction > INT32_MAX)
+        return 0;
+    int64_t lda = t.transA ? reduction : (t.m + 15LL) / 16 * 16;
+    int64_t ldb = t.transB ? (t.n + 15LL) / 16 * 16 : reduction;
+    if (lda > INT32_MAX || ldb > INT32_MAX)
+        return 0;
+    uint64_t a = lda * (t.transA ? (t.m + 15LL) / 16 * 16 : reduction);
+    uint64_t b = ldb * (t.transB ? reduction : (t.n + 15LL) / 16 * 16);
+    if (a + b > std::min(PACK_LIMIT_BYTES, capacity) / sizeof(float) / t.batchCount)
+        return 0;
+    t.packed = 1;
+    t.originalK = t.k;
+    t.originalLda = t.lda;
+    t.originalLdb = t.ldb;
+    t.k = static_cast<int32_t>(reduction);
+    t.lda = static_cast<int32_t>(lda);
+    t.ldb = static_cast<int32_t>(ldb);
+    t.packAElements = a;
+    t.packBElements = b;
+    t.productOffset = (a + b) * t.batchCount;
+    t.productLd = static_cast<int32_t>((t.m + 15LL) / 16 * 16);
+    t.temporary = 0;
+    return t.productOffset * sizeof(float);
+}
+
+GemmBatchedExArch22Tiling InitialTiling(const Problem& p)
+{
+    GemmBatchedExArch22Tiling t{};
+    const auto [transa, transb, m, n, k, lda, ldb, ldc, batchCount, aType, bType, cType, compute, algo] = p;
+    t.m = m;
+    t.n = n;
+    t.k = k;
+    t.lda = lda;
+    t.ldb = ldb;
+    t.ldc = ldc;
+    t.batchCount = batchCount;
+    t.transA = transa != ACLBLAS_OP_N;
+    t.transB = transb != ACLBLAS_OP_N;
+    return t;
+}
+
+uint64_t PlanRowStrips(uint32_t cubeCores, GemmBatchedExArch22Tiling& t, uint32_t& stripHeight)
+{
+    t.productLd = (t.m + 127LL) / 128 * 128;
+    uint32_t budget = cubeCores / static_cast<uint32_t>(t.batchCount);
+    if (budget == 0)
+        budget = 1;
+    if (t.transA && !t.transB) {
+        t.productLd = (t.m + 255LL) / 256 * 128;
+        budget /= 2;
+        if (budget == 0)
+            budget = 1;
     }
-    GemmBatchedEx22Vector(
-        blocks, x.p.handle->stream, AsGm(x.p.Aarray), AsGm(x.p.Barray), AsGm(x.p.Carray), nullptr, t, false);
-}
-
-bool IsGeneralVector(const GemmBatchedEx22Tiling& t)
-{
-    const uint64_t elements = static_cast<uint64_t>(t.m) * t.n;
-    return t.k == 0 || t.alpha == 0.0f || t.alpha != 1.0f || t.beta != 0.0f ||
-           elements <= 4096U / static_cast<uint32_t>(std::max(1, t.k));
-}
-
-void LaunchGeneralVector(const GemmExecution& x)
-{
-    const auto& t = x.t;
-    const bool preload = t.alpha == 1.0f && t.beta == 0.0f && !t.transA && t.m > 0 && t.m <= 32 && t.k > 0 &&
-                         t.k <= 32 && static_cast<uint64_t>(t.lda) <= UINT32_MAX / 4U &&
-                         (!t.transB || static_cast<uint64_t>(t.ldb) <= UINT32_MAX / 4U);
-    const uint32_t blocks =
-        preload ? static_cast<uint32_t>(std::min<uint64_t>(x.vectors, static_cast<uint64_t>(t.n) * x.p.batchCount)) :
-                  x.vectors;
-    GemmBatchedEx22Vector(
-        blocks, x.p.handle->stream, AsGm(x.p.Aarray), AsGm(x.p.Barray), AsGm(x.p.Carray), nullptr, t, false);
-}
-
-size_t PrepareScratch(GemmBatchedEx22Tiling& t, bool split, bool direct, uint64_t paddedM)
-{
-    size_t scratch = 0;
-    if (split) {
-        t.splitK = 512;
-        t.parts = (static_cast<uint64_t>(t.k) + t.splitK - 1) / t.splitK;
-        scratch = static_cast<size_t>(t.parts) * 128U * 128U * sizeof(float);
-    } else if (!direct) {
-        scratch = paddedM * t.n * sizeof(float);
-        t.outputLd = static_cast<int32_t>(paddedM);
-        t.temporaryOutput = true;
+    const uint32_t alignment = t.transA || t.transB ? 16 : 2;
+    stripHeight = std::min<uint64_t>(128, ((t.n + budget - 1ULL) / budget + alignment - 1) / alignment * alignment);
+    if (static_cast<uint64_t>(stripHeight) * t.productLd > 192 * 512) {
+        t.route = GemmBatchedExRoute::MacroRing;
+        return 0;
     }
-    return scratch;
+    return static_cast<uint64_t>(cubeCores) * 2 * ((stripHeight + 15) / 16 * 16) * t.productLd * sizeof(float);
 }
 
-bool LaunchAdaptivePolicy(GemmExecution& x, bool direct)
+void SelectPackedRoute(const Problem& p, bool scaleOnly, GemmBatchedExArch22Tiling& t)
 {
-    const auto& p = x.p;
-    if (direct && p.batchCount <= 4 && x.vectors == 2U * x.cubes) {
-        if (UseFixedNT5(x.t, x.cubes)) {
-            GemmBatchedEx47FixedNT(x.cubes, p.handle->stream, AsGm(p.Aarray), AsGm(p.Barray), AsGm(p.Carray), x.t);
-            return true;
+    const auto [ta, tb, m, n, k, lda, ldb, ldc, batchCount, aType, bType, cType, compute, algo] = p;
+    t.route = !scaleOnly && !t.temporary && m >= 128 && n >= 128 && ldc <= UINT32_MAX / sizeof(float) && k <= 128 &&
+                      static_cast<uint64_t>(m) * n >= 32768 ?
+                  GemmBatchedExRoute::MacroRing :
+                  GemmBatchedExRoute::Regular;
+    if (k <= 64 && n <= 512 && ldc % 8 != 0)
+        t.route = GemmBatchedExRoute::Regular;
+    if (t.route == GemmBatchedExRoute::MacroRing &&
+        ((k > 64 && n <= 512 && ldc % 8 == 0) || (k <= 64 && t.transA && t.transB)))
+        t.route = GemmBatchedExRoute::RowStrips;
+}
+
+uint64_t PlanWorkspace(
+    const Problem& p, bool scaleOnly, uint32_t cubeCores, GemmBatchedExArch22Tiling& t, uint32_t& stripHeight,
+    uint64_t capacity)
+{
+    const auto [ta, tb, m, n, k, lda, ldb, ldc, batchCount, aType, bType, cType, compute, algo] = p;
+    t.temporary = !scaleOnly && (t.alphaDevice || t.betaDevice || t.alpha != 1.0f || t.beta != 0.0f);
+    // General scalars require SGEMM's K order: scaling a reordered Cube sum
+    // amplifies its rounding error, especially around cancellation.
+    if (t.temporary) {
+        t.route = GemmBatchedExRoute::ReferenceOrder;
+        return 0;
+    }
+    // Small reductions also use the vector path to preserve non-finite BLAS semantics.
+    if (!scaleOnly && ((static_cast<uint64_t>(m) * n <= 8192ULL && k >= 512) || (m <= 32 && n <= 32 && k <= 32))) {
+        t.route = GemmBatchedExRoute::ExactSmall;
+        t.productLd = m;
+        return 0;
+    }
+    uint64_t workspaceBytes = t.temporary ? static_cast<uint64_t>(m) * n * batchCount * sizeof(float) : 0;
+    t.productLd = m;
+    SelectPackedRoute(p, scaleOnly, t);
+    workspaceBytes = std::max(workspaceBytes, scaleOnly ? 0 : PackInputs(t, capacity));
+    t.route = t.packed ? t.route : GemmBatchedExRoute::Regular;
+
+    if (t.route == GemmBatchedExRoute::RowStrips)
+        workspaceBytes += PlanRowStrips(cubeCores, t, stripHeight);
+    if (t.route == GemmBatchedExRoute::MacroRing)
+        workspaceBytes += static_cast<uint64_t>(cubeCores) * 2 * 128 * 512 * sizeof(float);
+    return workspaceBytes;
+}
+
+// Packing is optional. A caller-owned workspace never grows or changes ownership.
+uint64_t PlanAvailableWorkspace(
+    const Problem& p, bool scaleOnly, uint32_t cubeCores, uint32_t vectorCores, GemmBatchedExArch22Tiling& t,
+    uint32_t& stripHeight, uint64_t capacity)
+{
+    const auto original = t;
+    const bool inspect = !scaleOnly && p.k >= 512 && static_cast<uint64_t>(p.m) * p.n > 8192;
+    const uint64_t policyBytes = inspect ? static_cast<uint64_t>(p.batch) * (64 + vectorCores * 32ULL) : 0;
+    if (policyBytes > capacity) {
+        t.route = GemmBatchedExRoute::ReferenceOrder;
+        return 0;
+    }
+    const uint64_t available = (capacity - policyBytes) / 64 * 64;
+    uint64_t required = PlanWorkspace(p, scaleOnly, cubeCores, t, stripHeight, available);
+    if (required > available) {
+        t = original;
+        stripHeight = 0;
+        required = PlanWorkspace(p, scaleOnly, cubeCores, t, stripHeight, 0);
+    }
+    if (required > available) {
+        t = original;
+        t.route = GemmBatchedExRoute::ReferenceOrder;
+        return 0;
+    }
+    if (t.route == GemmBatchedExRoute::ReferenceOrder)
+        return 0;
+    if (inspect) {
+        required = (required + 63) / 64 * 64;
+        // Store the byte offset here; the launch plan replaces it with the allocated address.
+        t.policy = required;
+        return required + policyBytes;
+    }
+    return required;
+}
+
+void PlanCubeTiles(const Problem& p, uint32_t cubeCores, uint32_t stripHeight, GemmBatchedExArch22Tiling& t)
+{
+    const auto [ta, tb, m, n, k, lda, ldb, ldc, batchCount, aType, bType, cType, compute, algo] = p;
+    t.tileM = std::min<int64_t>(256, ((n + 15LL) / 16) * 16);
+    t.tileN = std::min<int64_t>(256, ((m + 15LL) / 16) * 16);
+    uint64_t initialTasks = static_cast<uint64_t>(batchCount) * ((n + 255LL) / 256) * ((m + 255LL) / 256);
+    if (initialTasks < cubeCores && k >= 64) {
+        t.tileM = std::min(t.tileM, m * static_cast<int64_t>(n) < 32768 ? 32 : 64);
+        t.tileN = std::min(t.tileN, m * static_cast<int64_t>(n) < 32768 ? 64 : 128);
+    }
+    if (k <= 128 && static_cast<uint64_t>(m) * n >= 32768) {
+        t.tileM = std::min(t.tileM, 128);
+        t.tileN = std::min(t.tileN, 128);
+        if (m >= 128 && n >= 128) {
+            t.tileM = 128;
+            t.tileN = 128;
         }
-        GemmBatchedEx34DecisionOverlap(x.cubes, p.handle->stream, AsGm(p.Aarray), AsGm(p.Barray), AsGm(p.Carray), x.t);
-        return true;
     }
-    if (p.batchCount <= 4) {
-        GemmBatchedEx22PolicyFused(x.vectors, p.handle->stream, AsGm(p.Aarray), AsGm(p.Barray), AsGm(p.Carray), x.t);
-    } else {
-        GemmBatchedEx22Policy(x.vectors, p.handle->stream, AsGm(p.Aarray), AsGm(p.Barray), x.t, false);
-        GemmBatchedEx22Policy(x.vectors, p.handle->stream, AsGm(p.Aarray), AsGm(p.Barray), x.t, true);
+    if (t.route == GemmBatchedExRoute::MacroRing) {
+        t.tileN = 512;
+        uint64_t columns = (m + 511ULL) / 512;
+        uint64_t targetRows = (2 * cubeCores + static_cast<uint64_t>(batchCount) * columns - 1) /
+                              (static_cast<uint64_t>(batchCount) * columns);
+        t.tileM = std::min<uint64_t>(128, ((n + targetRows - 1ULL) / targetRows + 15) / 16 * 16);
     }
-    return false;
+    if (!t.packed) {
+        t.tileM = std::min<int64_t>(128, (n + 15LL) / 16 * 16);
+        t.tileN = std::min<int64_t>(128, (m + 15LL) / 16 * 16);
+        // Re-apply the small-shape split after the direct-tile cap.
+        uint64_t directTasks =
+            static_cast<uint64_t>(batchCount) * ((n + t.tileM - 1LL) / t.tileM) * ((m + t.tileN - 1LL) / t.tileN);
+        if (directTasks < cubeCores && k >= 64) {
+            t.tileM = std::min<int64_t>(t.tileM, m * static_cast<int64_t>(n) < 32768 ? 32 : 64);
+            t.tileN = std::min<int64_t>(t.tileN, m * static_cast<int64_t>(n) < 32768 ? 64 : 128);
+        }
+    }
+    if (t.route == GemmBatchedExRoute::RowStrips) {
+        t.tileM = stripHeight;
+        t.tileN = t.productLd;
+    }
 }
 
-aclblasStatus_t PrepareGemmWorkspace(GemmExecution& x, size_t scratch, bool direct, bool& completed)
+uint32_t PlanTiles(
+    const Problem& p, bool scaleOnly, uint32_t cubeCores, uint32_t vectorCores, uint32_t stripHeight,
+    GemmBatchedExArch22Tiling& t)
 {
-    const bool adaptive = x.t.k >= 512;
-    const size_t policyBytes = adaptive ? static_cast<size_t>(x.p.batchCount) * (64U + x.vectors * 32U) : 0;
-    const size_t alignmentReserve = adaptive ? 63U : 0;
-    if (scratch > std::numeric_limits<size_t>::max() - policyBytes - alignmentReserve)
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    if (!scratch && !adaptive)
-        return ACLBLAS_STATUS_SUCCESS;
-    const auto status = EnsureDefaultWorkspace(x.p.handle, scratch + policyBytes + alignmentReserve);
-    if (status != ACLBLAS_STATUS_SUCCESS)
-        return status;
-    auto* workspace = static_cast<uint8_t*>(GetEffectiveWorkspace(x.p.handle));
-    const size_t available = GetEffectiveWorkspaceSize(x.p.handle);
-    size_t prefix = 0;
-    if (adaptive) {
-        const uint64_t base = reinterpret_cast<uint64_t>(workspace);
-        const uint64_t aligned = (base + 63U) / 64U * 64U;
-        prefix = static_cast<size_t>(aligned - base) + policyBytes;
-        if (prefix > available || scratch > available - prefix)
-            return ACLBLAS_STATUS_ALLOC_FAILED;
-        x.t.policy = aligned;
-        x.t.policyCores = x.vectors;
-        completed = LaunchAdaptivePolicy(x, direct);
-        if (completed)
-            return ACLBLAS_STATUS_SUCCESS;
+    const auto [ta, tb, m, n, k, lda, ldb, ldc, batchCount, aType, bType, cType, compute, algo] = p;
+    if (t.route == GemmBatchedExRoute::ExactSmall || t.route == GemmBatchedExRoute::ReferenceOrder) {
+        t.tasks = static_cast<uint64_t>(batchCount) * n * ((m + 63LL) / 64);
+        t.vectorBlocks = static_cast<uint32_t>(std::min<uint64_t>(vectorCores, t.tasks));
+        return t.vectorBlocks;
     }
-    x.temporary = workspace + prefix;
-    x.scratchBytes = available - prefix;
-    return ACLBLAS_STATUS_SUCCESS;
-}
+    t.vectorBlocks = vectorCores;
+    uint32_t blocks = t.vectorBlocks;
+    if (!scaleOnly) {
+        PlanCubeTiles(p, cubeCores, stripHeight, t);
+        t.tasks = static_cast<uint64_t>(batchCount) * ((n + t.tileM - 1LL) / t.tileM) * ((m + t.tileN - 1LL) / t.tileN);
 
-void LaunchProductPair(GemmExecution& x)
-{
-    const auto& p = x.p;
-    GemmBatchedEx22Cube(x.cubes, p.handle->stream, AsGm(p.Aarray), AsGm(p.Barray), AsGm(p.Carray), x.temporary, x.t);
-    GemmBatchedEx22Vector(
-        x.vectors, p.handle->stream, AsGm(p.Aarray), AsGm(p.Barray), AsGm(p.Carray), x.temporary, x.t, true);
-}
-
-aclblasStatus_t LaunchSplitProducts(GemmExecution& x, size_t scratch)
-{
-    if (scratch == 0)
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    const uint64_t capacity = x.scratchBytes / scratch;
-    if (capacity == 0)
-        return ACLBLAS_STATUS_ALLOC_FAILED;
-    const uint64_t tiles = ((static_cast<uint64_t>(x.t.m) + 127U) / 128U) *
-                           ((static_cast<uint64_t>(x.t.n) + 127U) / 128U) * x.p.batchCount;
-    for (uint64_t first = 0; first < tiles; first += x.t.taskCount) {
-        x.t.firstTask = first;
-        x.t.taskCount =
-            static_cast<uint32_t>(std::min<uint64_t>(std::min<uint64_t>(capacity, UINT32_MAX), tiles - first));
-        LaunchProductPair(x);
+        blocks = static_cast<uint32_t>(std::min<uint64_t>(cubeCores, t.tasks));
     }
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-aclblasStatus_t LaunchTemporaryProducts(GemmExecution& x, size_t scratch)
-{
-    if (scratch == 0)
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    const uint64_t capacity = std::min<uint64_t>(x.p.batchCount, x.scratchBytes / scratch);
-    if (capacity == 0)
-        return ACLBLAS_STATUS_ALLOC_FAILED;
-    for (uint32_t first = 0; first < static_cast<uint32_t>(x.p.batchCount); first += x.t.batches) {
-        x.t.firstBatch = first;
-        x.t.batches = std::min<uint32_t>(capacity, static_cast<uint32_t>(x.p.batchCount) - first);
-        LaunchProductPair(x);
+    if (t.route != GemmBatchedExRoute::Regular) {
+        if (t.route == GemmBatchedExRoute::RowStrips && t.transB)
+            blocks = cubeCores;
+        t.vectorBlocks = 2 * blocks;
     }
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-aclblasStatus_t LaunchLargeGemm(GemmExecution& x)
-{
-    x.cubes = std::min(MAX_AIC, GetAicCoreCount());
-    if (x.cubes == 0)
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    PrepareTailRotation(x.t, x.cubes);
-    const bool adaptive = x.t.k >= 512;
-    const bool split = x.t.k >= 2048;
-    const bool direct = !split && x.t.beta == 0.0f;
-    const uint64_t paddedM = (static_cast<uint64_t>(x.t.m) + 7U) / 8U * 8U;
-    if (paddedM > INT32_MAX || paddedM * x.t.n > std::numeric_limits<size_t>::max() / sizeof(float))
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    const size_t scratch = PrepareScratch(x.t, split, direct, paddedM);
-    bool completed = false;
-    auto status = PrepareGemmWorkspace(x, scratch, direct, completed);
-    if (status != ACLBLAS_STATUS_SUCCESS || completed)
-        return status;
-    if (split) {
-        status = LaunchSplitProducts(x, scratch);
-    } else if (direct) {
-        GemmBatchedEx22Cube(
-            x.cubes, x.p.handle->stream, AsGm(x.p.Aarray), AsGm(x.p.Barray), AsGm(x.p.Carray), nullptr, x.t);
-    } else {
-        status = LaunchTemporaryProducts(x, scratch);
-    }
-    if (status != ACLBLAS_STATUS_SUCCESS)
-        return status;
-    if (adaptive && x.p.batchCount > 4) {
-        x.t.firstBatch = 0;
-        x.t.batches = static_cast<uint32_t>(x.p.batchCount);
-        GemmBatchedEx22Reference(
-            x.vectors, x.p.handle->stream, AsGm(x.p.Aarray), AsGm(x.p.Barray), AsGm(x.p.Carray), x.t);
-    }
-    return ACLBLAS_STATUS_SUCCESS;
-}
-
-aclblasStatus_t LaunchGemm(GemmExecution& x)
-{
-    if (x.vectors == 0)
-        return ACLBLAS_STATUS_INTERNAL_ERROR;
-    if (IsWholeTiny(x.t)) {
-        LaunchWholeTiny(x);
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-    if (IsGeneralVector(x.t)) {
-        LaunchGeneralVector(x);
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-    return LaunchLargeGemm(x);
+    return blocks;
 }
 
 } // namespace
 
-aclblasStatus_t aclblasGemmBatchedEx(
+extern "C" aclblasStatus_t aclblasGemmBatchedEx(
     aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
     const void* alpha, const void* const Aarray[], aclDataType Atype, int lda, const void* const Barray[],
     aclDataType Btype, int ldb, const void* beta, void* const Carray[], aclDataType Ctype, int ldc, int batchCount,
     aclblasComputeType_t computeType, aclblasGemmAlgo_t algo)
 {
-    const GemmInputs p{handle, transa, transb, m,    n,      k,     alpha, Aarray,     Atype,       lda,
-                       Barray, Btype,  ldb,    beta, Carray, Ctype, ldc,   batchCount, computeType, algo};
-    auto status = ValidateGemmShape(p);
+    Problem p{transa, transb, m, n, k, lda, ldb, ldc, batchCount, Atype, Btype, Ctype, computeType, algo};
+    aclblasStatus_t status = Validate(p, handle, alpha, beta, Aarray, Barray, Carray);
+    if (status != ACLBLAS_STATUS_SUCCESS || m == 0 || n == 0 || batchCount == 0)
+        return status;
+    auto t = InitialTiling(p);
+    status = Scalar(alpha, t.alpha, t.alphaDevice, t.alphaAddress);
     if (status != ACLBLAS_STATUS_SUCCESS)
         return status;
-    status = ValidateGemmOperands(p);
+    status = Scalar(beta, t.beta, t.betaDevice, t.betaAddress);
     if (status != ACLBLAS_STATUS_SUCCESS)
         return status;
-    // Parameter validation precedes every no-op, including pointer checks.
-    if (m == 0 || n == 0 || batchCount == 0)
-        return ACLBLAS_STATUS_SUCCESS;
-    float alphaValue = 0;
-    float betaValue = 0;
-    status = ReadScalar(alpha, alphaValue, handle->stream);
-    if (status != ACLBLAS_STATUS_SUCCESS)
-        return status;
-    status = ReadScalar(beta, betaValue, handle->stream);
-    if (status != ACLBLAS_STATUS_SUCCESS)
-        return status;
-    if ((k == 0 || alphaValue == 0.0f) && betaValue == 1.0f)
+    bool scaleOnly = k == 0 || (!t.alphaDevice && t.alpha == 0.0f);
+    if (scaleOnly && !t.betaDevice && t.beta == 1.0f)
         return ACLBLAS_STATUS_SUCCESS;
     const uint64_t elements = static_cast<uint64_t>(m) * n;
-    if (elements > std::numeric_limits<uint64_t>::max() / static_cast<uint32_t>(batchCount))
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    GemmBatchedEx22Tiling t{
-        m,
-        n,
-        k,
-        lda,
-        ldb,
-        ldc,
-        transa != ACLBLAS_OP_N,
-        transb != ACLBLAS_OP_N,
-        ldc,
-        0,
-        static_cast<uint32_t>(batchCount),
-        alphaValue,
-        betaValue,
-        false};
-    GemmExecution execution{p, t, std::min(MAX_AIV, GetAivCoreCount())};
-    return LaunchGemm(execution);
+    CHECK_RET(elements <= std::numeric_limits<uint64_t>::max() / sizeof(float) / batchCount,
+              OP_LOGE(OP, "matrix extent overflows the address space");
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    const uint32_t cubeCores = GetAicCoreCount();
+    const uint32_t vectorCores = GetAivCoreCount();
+    CHECK_RET(vectorCores > 0 && (scaleOnly || cubeCores > 0), OP_LOGE(OP, "no available cores");
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
+    uint32_t stripHeight = 0;
+    const uint64_t capacity = handle->workspace_owner == AclblasWorkspaceOwner::User ?
+                                  GetEffectiveWorkspaceSize(handle) :
+                                  ACLBLAS_MAX_WORKSPACE_SIZE;
+    uint64_t workspaceBytes = PlanAvailableWorkspace(p, scaleOnly, cubeCores, vectorCores, t, stripHeight, capacity);
+    status = EnsureDefaultWorkspace(handle, workspaceBytes);
+    if (status != ACLBLAS_STATUS_SUCCESS)
+        return status;
+    if (!scaleOnly && k >= 512 && elements > 8192 && t.route != GemmBatchedExRoute::ReferenceOrder)
+        t.policy += reinterpret_cast<uint64_t>(handle->workspace);
+    uint32_t blocks = PlanTiles(p, scaleOnly, cubeCores, vectorCores, stripHeight, t);
+    CHECK_RET(blocks > 0, OP_LOGE(OP, "no available cores"); return ACLBLAS_STATUS_EXECUTION_FAILED);
+    const int32_t launchStatus =
+        GemmBatchedExArch22Launch(blocks, handle->stream, Aarray, Barray, Carray, handle->workspace, t, scaleOnly);
+    CHECK_RET(launchStatus == ACL_SUCCESS, OP_LOGE(OP, "kernel launch failed, ret=%d", launchStatus);
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
+    return ACLBLAS_STATUS_SUCCESS;
 }

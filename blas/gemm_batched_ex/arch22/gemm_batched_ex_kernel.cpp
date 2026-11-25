@@ -7,165 +7,59 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
+
+#define ASCENDC_CUBE_ONLY
+#include "acl/acl.h"
 #include "kernel_operator.h"
-#include "lib/matmul_intf.h"
+#include "adv_api/matmul_intf.h"
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include "gemm_batched_ex_tiling.h"
+#include "gemm_batched_ex_fp32.h"
 
 using namespace AscendC;
-using namespace matmul;
-
 namespace {
-constexpr uint32_t TILE = 128;
-constexpr uint32_t VECTOR_TILE = 256;
-constexpr MatmulShapeParams SHAPE{128, 128, 4096, 128, 128, 64};
+using GemmBatchedExFp32::AccumulateReference;
+using GemmBatchedExFp32::FusedFloat;
+using GemmBatchedExFp32::REFERENCE_CAPACITY;
+using GemmBatchedExFp32::ReferenceScalars;
+using GemmBatchedExFp32::StoreReference;
+using GemmBatchedExFp32::SyncEvent;
+using Matrix = matmul::MatmulType<TPosition::GM, CubeFormat::ND, float>;
+constexpr MatmulShapeParams SHAPE{256, 256, 4096, 128, 128, 32};
 constexpr MatmulFuncParams FUNC{false, false, false, false, 0, IterateOrder::UNDEF, ScheduleType::INNER_PRODUCT,
                                 true,  true};
 constexpr MatmulBiasParams BIAS{false};
 constexpr MatmulConfig CONFIG = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(SHAPE, FUNC, BIAS);
-constexpr MatmulShapeParams SMALL_M_32{128, 32, 32, 128, 32, 32};
-constexpr MatmulShapeParams SMALL_M_64{128, 32, 512, 128, 32, 128};
-constexpr MatmulShapeParams SMALL_N_32{32, 128, 32, 32, 128, 32};
-constexpr MatmulShapeParams SMALL_N_64{32, 128, 512, 32, 128, 128};
-constexpr MatmulConfig CFG_SMALL_M_32 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(SMALL_M_32, FUNC, BIAS);
-constexpr MatmulConfig CFG_SMALL_M_64 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(SMALL_M_64, FUNC, BIAS);
-constexpr MatmulConfig CFG_SMALL_N_32 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(SMALL_N_32, FUNC, BIAS);
-constexpr MatmulConfig CFG_SMALL_N_64 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(SMALL_N_64, FUNC, BIAS);
-constexpr MatmulShapeParams LARGE_M{256, 128, 128, 256, 128, 64};
-constexpr MatmulShapeParams LARGE_N{128, 256, 128, 128, 256, 64};
-constexpr MatmulConfig CFG_LARGE_M = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(LARGE_M, FUNC, BIAS);
-constexpr MatmulConfig CFG_LARGE_N = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(LARGE_N, FUNC, BIAS);
+constexpr MatmulShapeParams RIGHT_SHAPE{256, 256, 4096, 128, 128, 64};
+constexpr MatmulConfig RIGHT_CONFIG = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(RIGHT_SHAPE, FUNC, BIAS);
+template <bool T, bool NZ>
+using Input = matmul::MatmulType<TPosition::GM, NZ ? CubeFormat::NZ : CubeFormat::ND, float, T>;
+constexpr MatmulShapeParams RAW_SHAPE{128, 128, 4096, 128, 128, 64};
+constexpr MatmulConfig RAW_CONFIG = GetMMConfig<MatmulConfigMode::CONFIG_NORM>(RAW_SHAPE, FUNC, BIAS);
+template <bool TA, bool TB, bool NZ>
+constexpr MatmulApiStaticTiling TILING = matmul::GetMatmulApiTiling<Input<TB, NZ>, Input<TA, NZ>, Matrix, Matrix>(
+    !NZ ? RAW_CONFIG : (TA && !TB ? RIGHT_CONFIG : CONFIG));
+template <bool TA, bool TB, bool NZ>
+using MM = matmul::MatmulImpl<Input<TB, NZ>, Input<TA, NZ>, Matrix, Matrix, TILING<TA, TB, NZ>>;
 
-constexpr MatmulShapeParams GRID_5{128, 64, 2048, 128, 64, 128};
-constexpr MatmulConfig CFG_GRID_5 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(GRID_5, FUNC, BIAS);
-constexpr MatmulShapeParams GRID_6{64, 128, 2048, 64, 128, 128};
-constexpr MatmulConfig CFG_GRID_6 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(GRID_6, FUNC, BIAS);
-constexpr MatmulShapeParams GRID_7{64, 64, 2048, 64, 64, 128};
-constexpr MatmulConfig CFG_GRID_7 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(GRID_7, FUNC, BIAS);
-constexpr MatmulShapeParams GRID_8{64, 32, 2048, 64, 32, 128};
-constexpr MatmulConfig CFG_GRID_8 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(GRID_8, FUNC, BIAS);
-constexpr MatmulShapeParams GRID_9{32, 64, 2048, 32, 64, 128};
-constexpr MatmulConfig CFG_GRID_9 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(GRID_9, FUNC, BIAS);
-
-constexpr MatmulShapeParams GRID_10{128, 128, 2048, 128, 128, 128};
-constexpr MatmulConfig CFG_GRID_10 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(GRID_10, FUNC, BIAS);
-constexpr MatmulShapeParams GRID_11{512, 64, 128, 512, 64, 16};
-constexpr MatmulConfig CFG_GRID_11 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(GRID_11, FUNC, BIAS);
-
-constexpr MatmulShapeParams GRID_12{128, 256, 96, 128, 64, 96};
-constexpr MatmulShapeParams GRID_13{256, 128, 96, 128, 64, 96};
-constexpr MatmulFuncParams R41_FUNC{false, false, false, false, 0, IterateOrder::ORDER_M, ScheduleType::OUTER_PRODUCT,
-                                    true,  true};
-constexpr MatmulConfig CFG_GRID_12 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(GRID_12, R41_FUNC, BIAS);
-constexpr MatmulConfig CFG_GRID_13 = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(GRID_13, R41_FUNC, BIAS);
-
-// R47 borrows the public Norm/basicK32 pipeline while retaining the old macro.
-constexpr MatmulShapeParams R47_SHAPE{128, 64, 8192, 128, 64, 64};
-constexpr MatmulConfig R47_NORM = GetMMConfig<MatmulConfigMode::CONFIG_NORM>(R47_SHAPE, FUNC, BIAS);
-
-template <bool TRANS>
-using Input = MatmulType<TPosition::GM, CubeFormat::ND, float, TRANS>;
-using Output = MatmulType<TPosition::GM, CubeFormat::ND, float>;
-template <bool TA, bool TB>
-constexpr MatmulApiStaticTiling TILING = GetMatmulApiTiling<Input<TB>, Input<TA>, Output, Output>(CONFIG);
-template <int ORIENTATION, bool SHORT_K>
-__aicore__ constexpr MatmulConfig CubeConfigBase()
+__aicore__ inline float Alpha(const GemmBatchedExArch22Tiling& t)
 {
-    if constexpr (ORIENTATION == 1)
-        return SHORT_K ? CFG_SMALL_M_32 : CFG_SMALL_M_64;
-    if constexpr (ORIENTATION == 2)
-        return SHORT_K ? CFG_SMALL_N_32 : CFG_SMALL_N_64;
-    if constexpr (ORIENTATION == 3)
-        return CFG_LARGE_M;
-    if constexpr (ORIENTATION == 4)
-        return CFG_LARGE_N;
-    if constexpr (ORIENTATION == 5)
-        return CFG_GRID_5;
-    if constexpr (ORIENTATION == 6)
-        return CFG_GRID_6;
-    if constexpr (ORIENTATION == 7)
-        return CFG_GRID_7;
-    if constexpr (ORIENTATION == 8)
-        return CFG_GRID_8;
-    if constexpr (ORIENTATION == 9)
-        return CFG_GRID_9;
-    if constexpr (ORIENTATION == 10)
-        return CFG_GRID_10;
-    if constexpr (ORIENTATION == 11)
-        return CFG_GRID_11;
-    if constexpr (ORIENTATION == 12)
-        return CFG_GRID_12;
-    if constexpr (ORIENTATION == 13)
-        return CFG_GRID_13;
-    return CONFIG;
+    return t.alphaDevice ? *reinterpret_cast<__gm__ float*>(t.alphaAddress) : t.alpha;
 }
 
-template <int ORIENTATION, bool SHORT_K>
-__aicore__ constexpr MatmulConfig CubeConfig()
+__aicore__ inline float Beta(const GemmBatchedExArch22Tiling& t)
 {
-    if constexpr (ORIENTATION == 14) {
-        auto normal = R47_NORM;
-        normal.enUnitFlag = true;
-        normal.enableKdimReorderLoad = false;
-        return normal;
-    }
-    auto config = CubeConfigBase<ORIENTATION, SHORT_K>();
-    config.enUnitFlag = true;
-    return config;
+    return t.betaDevice ? *reinterpret_cast<__gm__ float*>(t.betaAddress) : t.beta;
 }
 
-template <bool TA, bool TB, int ORIENTATION, bool SHORT_K>
-constexpr MatmulApiStaticTiling CUBE_TILING =
-    GetMatmulApiTiling<Input<TB>, Input<TA>, Output, Output>(CubeConfig<ORIENTATION, SHORT_K>());
-
-constexpr uint32_t CUBE_HEIGHTS[]{128, 128, 32, 256, 128, 128, 64, 64, 64, 32, 128, 512, 128, 256, 128};
-constexpr uint32_t CUBE_WIDTHS[]{128, 32, 128, 128, 256, 64, 128, 64, 32, 64, 128, 64, 256, 128, 64};
-
-template <bool TA, bool TB>
-constexpr bool CheckGeometry11()
+// Explicit register writes disable the compiler's automatic FFTS initialization.
+// Both MIX entries therefore install the runtime address and restore it on exit.
+__aicore__ inline void FinishCrossCore()
 {
-    constexpr auto p = CUBE_TILING<TA, TB, 11, false>;
-    static_assert(p.baseM == 512 && p.baseN == 64 && p.baseK == 16);
-    static_assert(p.cfg.enUnitFlag && !p.cfg.enableKdimReorderLoad);
-    static_assert(p.shareL1Size <= 512 * 1024 - 128 && p.shareL0CSize == 128 * 1024);
-    static_assert(p.dbL0A == 2 && p.dbL0B == 2);
-    static_assert(p.baseM * p.baseK * 4 * p.dbL0A <= 64 * 1024);
-    static_assert(p.baseN * p.baseK * 4 * p.dbL0B <= 64 * 1024);
-    static_assert(p.stepKa * p.baseK >= 128 && p.stepKb * p.baseK >= 128);
-    return true;
-}
-static_assert(
-    CheckGeometry11<false, false>() && CheckGeometry11<false, true>() && CheckGeometry11<true, false>() &&
-    CheckGeometry11<true, true>());
-
-template <int O>
-constexpr bool CheckR41NN()
-{
-    constexpr auto p = CUBE_TILING<false, false, O, false>;
-    static_assert(O == 12 || O == 13);
-    static_assert(p.baseM == 128 && p.baseN == 64 && p.baseK == 96);
-    static_assert(p.cfg.singleCoreK == 96 && p.cfg.basicK == 96);
-    static_assert(p.cfg.scheduleType == ScheduleType::OUTER_PRODUCT && p.cfg.iterateOrder == IterateOrder::ORDER_M);
-    static_assert(p.cfg.enUnitFlag && !p.cfg.enableKdimReorderLoad);
-    static_assert(p.stepM == (O == 12 ? 1 : 2) && p.stepN == (O == 12 ? 4 : 2));
-    static_assert(p.stepKa == 1 && p.stepKb == 1);
-    static_assert(p.depthA1 == (O == 12 ? 1 : 2) && p.depthB1 == (O == 12 ? 4 : 2));
-    static_assert(p.shareL1Size == (O == 12 ? 149504 : 148480));
-    static_assert(p.shareL0CSize == 32768 && p.dbL0C == 1 && p.shareUbSize == 0);
-    static_assert(p.dbL0A == 1 && p.dbL0B == 2);
-    static_assert(p.baseM * p.baseK * 4 * p.dbL0A == 49152);
-    static_assert(p.baseN * p.baseK * 4 * p.dbL0B == 49152);
-    return true;
-}
-static_assert(CheckR41NN<12>() && CheckR41NN<13>());
-
-// A temporary ID is consumed by its matching wait before the next helper call.
-// FetchEventID respects the current TPipe's reservations, including Matmul IDs.
-template <HardEvent Event>
-__aicore__ inline void SyncEvent()
-{
-    const auto event = GetTPipePtr()->FetchEventID(Event);
-    SetFlag<Event>(event);
-    WaitFlag<Event>(event);
+    PipeBarrier<PIPE_ALL>();
+    SetSyncBaseAddr(0);
 }
 
 __aicore__ inline void BindMatrix(GlobalTensor<float>& matrix, const GlobalTensor<uint64_t>& pointers, uint32_t batch)
@@ -173,9 +67,8 @@ __aicore__ inline void BindMatrix(GlobalTensor<float>& matrix, const GlobalTenso
     matrix.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(pointers.GetValue(batch)));
 }
 
-// Policy storage contains one exclusive64-byte flag line per batch,followed
-// by one DMA-only32-byte statistics slot per batch/core. All operands remain
-// on device;this policy never examines test names,seeds,or a Golden output.
+// Each batch owns a 64-byte policy flag followed by per-core statistics.
+// Selection uses only the live device matrices; batches are independent.
 __aicore__ inline bool NonFiniteStatistic(float value)
 {
     union Bits {
@@ -187,7 +80,7 @@ __aicore__ inline bool NonFiniteStatistic(float value)
 }
 
 __aicore__ inline bool ReferenceRequired(
-    const GemmBatchedEx22Tiling& t, uint32_t batch, uint32_t& previousBatch, bool& previousValue)
+    const GemmBatchedExArch22Tiling& t, uint32_t batch, uint32_t& previousBatch, bool& previousValue)
 {
     if (t.policy == 0)
         return false;
@@ -252,18 +145,18 @@ __aicore__ inline void ReadStatistics(
 
 __aicore__ inline bool ReadPolicyDecision(
     const GlobalTensor<float>& statistics, const LocalTensor<float>& input, uint32_t batch,
-    const GemmBatchedEx22Tiling& t)
+    const GemmBatchedExArch22Tiling& t)
 {
-    const DataCopyExtParams copy{1, t.policyCores * 32U, 0, 0, 0};
+    const DataCopyExtParams copy{1, t.vectorBlocks * 32U, 0, 0, 0};
     const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
     SyncEvent<HardEvent::S_MTE2>();
-    DataCopyPad(input, statistics[static_cast<uint64_t>(batch) * t.policyCores * 8U], copy, padding);
+    DataCopyPad(input, statistics[static_cast<uint64_t>(batch) * t.vectorBlocks * 8U], copy, padding);
     SyncEvent<HardEvent::MTE2_S>();
     float sumA = 0;
     float absoluteA = 0;
     float sumB = 0;
     float absoluteB = 0;
-    for (uint32_t core = 0; core < t.policyCores; ++core) {
+    for (uint32_t core = 0; core < t.vectorBlocks; ++core) {
         sumA += input.GetValue(core * 8U);
         absoluteA += input.GetValue(core * 8U + 1);
         sumB += input.GetValue(core * 8U + 2);
@@ -279,46 +172,8 @@ __aicore__ inline bool ReadPolicyDecision(
     return reference;
 }
 
-// Six folds preserve each of the eight statistics lanes across 64 padded rows.
-__aicore__ inline bool ReadPolicyDecisionTree(
-    const GlobalTensor<float>& statistics, const LocalTensor<float>& input, const LocalTensor<float>& work,
-    uint32_t batch, const GemmBatchedEx22Tiling& t)
-{
-    const DataCopyExtParams copy{1, t.policyCores * 32U, 0, 0, 0};
-    const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
-    Duplicate(input, 0.0f, 512);
-    SyncEvent<HardEvent::V_MTE2>();
-    DataCopyPad(input, statistics[static_cast<uint64_t>(batch) * t.policyCores * 8U], copy, padding);
-    SyncEvent<HardEvent::MTE2_V>();
-    Add(work, input, input[256], 256);
-    PipeBarrier<PIPE_V>();
-    Add(input, work, work[128], 128);
-    PipeBarrier<PIPE_V>();
-    Add(work, input, input[64], 64);
-    PipeBarrier<PIPE_V>();
-    Add(input, work, work[32], 32);
-    PipeBarrier<PIPE_V>();
-    Add(work, input, input[16], 16);
-    PipeBarrier<PIPE_V>();
-    Add(input, work, work[8], 8);
-    SyncEvent<HardEvent::V_S>();
-    const float sumA = input.GetValue(0);
-    const float absoluteA = input.GetValue(1);
-    const float sumB = input.GetValue(2);
-    const float absoluteB = input.GetValue(3);
-    const bool nonfinite = NonFiniteStatistic(sumA) || NonFiniteStatistic(absoluteA) || NonFiniteStatistic(sumB) ||
-                           NonFiniteStatistic(absoluteB);
-    const float magnitudeA = sumA < 0.0f ? -sumA : sumA;
-    const float magnitudeB = sumB < 0.0f ? -sumB : sumB;
-    const float ratioA = absoluteA > 0.0f ? magnitudeA / absoluteA : 0.0f;
-    const float ratioB = absoluteB > 0.0f ? magnitudeB / absoluteB : 0.0f;
-    const bool reference = nonfinite || ratioA * ratioB > 0x1p-12f;
-    SyncEvent<HardEvent::S_V>();
-    return reference;
-}
-
 __aicore__ inline void ScanPolicy(
-    GM_ADDR a, GM_ADDR b, const GemmBatchedEx22Tiling& t, const LocalTensor<float>& input,
+    GM_ADDR a, GM_ADDR b, const GemmBatchedExArch22Tiling& t, const LocalTensor<float>& input,
     const LocalTensor<float>& absolute, const LocalTensor<float>& work, const LocalTensor<float>& output,
     const GlobalTensor<float>& statistics)
 {
@@ -326,7 +181,7 @@ __aicore__ inline void ScanPolicy(
     GlobalTensor<uint64_t> bp;
     ap.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(a));
     bp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(b));
-    for (uint32_t batch = 0; batch < t.batches; ++batch) {
+    for (uint32_t batch = 0; batch < t.batchCount; ++batch) {
         GlobalTensor<float> ag;
         GlobalTensor<float> bg;
         BindMatrix(ag, ap, batch);
@@ -335,12 +190,14 @@ __aicore__ inline void ScanPolicy(
         float absoluteA = 0;
         float sumB = 0;
         float absoluteB = 0;
-        ReadStatistics(
-            ag, t.transA ? t.k : t.m, t.transA ? t.m : t.k, t.lda, input, absolute, work, output, sumA, absoluteA,
-            t.policyCores);
-        ReadStatistics(
-            bg, t.transB ? t.n : t.k, t.transB ? t.k : t.n, t.ldb, input, absolute, work, output, sumB, absoluteB,
-            t.policyCores);
+        if (Alpha(t) != 0.0f) {
+            ReadStatistics(
+                ag, t.transA ? t.k : t.m, t.transA ? t.m : t.k, t.lda, input, absolute, work, output, sumA, absoluteA,
+                t.vectorBlocks);
+            ReadStatistics(
+                bg, t.transB ? t.n : t.k, t.transB ? t.k : t.n, t.ldb, input, absolute, work, output, sumB, absoluteB,
+                t.vectorBlocks);
+        }
         for (uint32_t i = 0; i < 8; ++i)
             output.SetValue(i, 0.0f);
         output.SetValue(0, sumA);
@@ -349,1024 +206,18 @@ __aicore__ inline void ScanPolicy(
         output.SetValue(3, absoluteB);
         SyncEvent<HardEvent::S_MTE3>();
         const DataCopyExtParams store{1, 32U, 0, 0, 0};
-        DataCopyPad(statistics[(static_cast<uint64_t>(batch) * t.policyCores + GetBlockIdx()) * 8U], output, store);
+        DataCopyPad(statistics[(static_cast<uint64_t>(batch) * t.vectorBlocks + GetBlockIdx()) * 8U], output, store);
         SyncEvent<HardEvent::MTE3_S>();
     }
-}
-
-__aicore__ inline void ComputePolicy(GM_ADDR a, GM_ADDR b, const GemmBatchedEx22Tiling& t, bool finalize, TPipe& pipe)
-{
-    TBuf<TPosition::VECIN> inputBuffer;
-    TBuf<TPosition::VECCALC> absoluteBuffer;
-    TBuf<TPosition::VECCALC> workBuffer;
-    TBuf<TPosition::VECOUT> outputBuffer;
-    pipe.InitBuffer(inputBuffer, 4096U * 4U);
-    pipe.InitBuffer(absoluteBuffer, 4096U * 4U);
-    pipe.InitBuffer(workBuffer, 64U * 4U);
-    pipe.InitBuffer(outputBuffer, 64U);
-    auto input = inputBuffer.Get<float>();
-    auto absolute = absoluteBuffer.Get<float>();
-    auto work = workBuffer.Get<float>();
-    auto output = outputBuffer.Get<float>();
-    GlobalTensor<float> statistics;
-    statistics.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(t.policy + static_cast<uint64_t>(t.batches) * 64U));
-    if (!finalize) {
-        ScanPolicy(a, b, t, input, absolute, work, output, statistics);
-        return;
-    }
-    GlobalTensor<uint32_t> flags;
-    flags.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t*>(t.policy));
-    for (uint32_t batch = GetBlockIdx(); batch < t.batches; batch += GetBlockNum()) {
-        const bool reference = ReadPolicyDecision(statistics, input, batch, t);
-        auto outputBits = outputBuffer.Get<uint32_t>();
-        for (uint32_t i = 0; i < 16; ++i)
-            outputBits.SetValue(i, 0);
-        outputBits.SetValue(0, reference ? 1U : 0U);
-        SyncEvent<HardEvent::S_MTE3>();
-        const DataCopyExtParams store{1, 64U, 0, 0, 0};
-        DataCopyPad(flags[static_cast<uint64_t>(batch) * 16U], outputBits, store);
-        SyncEvent<HardEvent::MTE3_S>();
-    }
-}
-
-// Each tile owns all its K-segment slots. No atomic accumulation or cross-core
-// handoff is needed: the following vector launch consumes the completed packet.
-template <bool TA, bool TB>
-__aicore__ inline void ComputeSplitCube(
-    GM_ADDR a, GM_ADDR b, GM_ADDR temporary, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    MatmulImpl<Input<TB>, Input<TA>, Output, Output, TILING<TA, TB>> mm;
-    mm.SetSubBlockIdx(0);
-    mm.Init(static_cast<const TCubeTiling*>(nullptr), &pipe);
-    mm.DisableBias();
-    mm.SetHF32(false);
-    GlobalTensor<uint64_t> ap;
-    GlobalTensor<uint64_t> bp;
-    ap.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(a));
-    bp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(b));
-    GlobalTensor<float> partial;
-    partial.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(temporary));
-    const uint64_t rows = (static_cast<uint64_t>(t.n) + TILE - 1) / TILE;
-    const uint64_t cols = (static_cast<uint64_t>(t.m) + TILE - 1) / TILE;
-    uint32_t policyBatch = UINT32_MAX;
-    bool policyValue = false;
-    for (uint64_t local = GetBlockIdx(); local < t.taskCount; local += GetBlockNum()) {
-        const uint64_t task = t.firstTask + local;
-        const uint32_t batch = task / (rows * cols);
-        if (ReferenceRequired(t, batch, policyBatch, policyValue))
-            continue;
-        const uint64_t row = task / cols % rows * TILE;
-        const uint64_t col = task % cols * TILE;
-        GlobalTensor<float> ag;
-        GlobalTensor<float> bg;
-        BindMatrix(ag, ap, batch);
-        BindMatrix(bg, bp, batch);
-        mm.SetOrgShape(TB ? t.ldb : t.n, TA ? t.m : t.lda, TB ? t.k : t.ldb, TA ? t.lda : t.k, TILE);
-        for (uint32_t part = 0; part < t.parts; ++part) {
-            const int64_t start = static_cast<int64_t>(part) * t.splitK;
-            mm.SetSingleShape(
-                t.n - row < TILE ? t.n - row : TILE, t.m - col < TILE ? t.m - col : TILE,
-                t.k - start < t.splitK ? t.k - start : t.splitK);
-            mm.SetTensorA(bg[TB ? start * t.ldb + row : row * t.ldb + start], TB);
-            mm.SetTensorB(ag[TA ? col * t.lda + start : start * t.lda + col], TA);
-            mm.IterateAll(partial[(local * t.parts + part) * TILE * TILE], false);
-            mm.End();
-        }
-    }
-}
-
-__aicore__ inline void SumSplitParts(
-    const GlobalTensor<float>& partial, uint64_t offset, uint32_t count, const GemmBatchedEx22Tiling& t,
-    LocalTensor<float>& sum, LocalTensor<float>& next, const LocalTensor<float>& input,
-    const LocalTensor<float>& correction)
-{
-    const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
-    const DataCopyExtParams load{1, count * 4U, 0, 0, 0};
-    DataCopyPad(sum, partial[offset], load, padding);
-    Duplicate(correction, 0.0f, count);
-    SyncEvent<HardEvent::MTE2_V>();
-    PipeBarrier<PIPE_V>();
-    for (uint32_t part = 1; part < t.parts; ++part) {
-        SyncEvent<HardEvent::V_MTE2>();
-        DataCopyPad(input, partial[offset + static_cast<uint64_t>(part) * TILE * TILE], load, padding);
-        SyncEvent<HardEvent::MTE2_V>();
-        Sub(input, input, correction, count);
-        PipeBarrier<PIPE_V>();
-        Add(next, sum, input, count);
-        PipeBarrier<PIPE_V>();
-        Sub(correction, next, sum, count);
-        PipeBarrier<PIPE_V>();
-        Sub(correction, correction, input, count);
-        PipeBarrier<PIPE_V>();
-        auto previous = sum;
-        sum = next;
-        next = previous;
-    }
-}
-
-__aicore__ inline void StoreSplitPacket(
-    const GlobalTensor<float>& cg, const GemmBatchedEx22Tiling& t, uint64_t row, uint64_t col, uint32_t lines,
-    uint32_t width, uint32_t count, const LocalTensor<float>& input, const LocalTensor<float>& sum)
-{
-    const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
-    if (t.beta != 0.0f) {
-        SyncEvent<HardEvent::V_MTE2>();
-        // Loading one output row at a time keeps its UB pitch exactly128,
-        // including short M tails. beta0 must not read initial C.
-        const DataCopyExtParams oldRow{1, width * 4U, 0, 0, 0};
-        for (uint32_t i = 0; i < lines; ++i) {
-            DataCopyPad(input[i * TILE], cg[(row + i) * t.ldc + col], oldRow, padding);
-        }
-        SyncEvent<HardEvent::MTE2_V>();
-        Axpy(sum, input, t.beta, count);
-    }
-    SyncEvent<HardEvent::V_MTE3>();
-    const DataCopyExtParams store{
-        static_cast<uint16_t>(lines), width * 4U, (TILE - (width + 7U) / 8U * 8U) / 8U,
-        static_cast<uint32_t>((static_cast<uint64_t>(t.ldc) - width) * 4U), 0};
-    DataCopyPad(cg[row * t.ldc + col], sum, store);
-    SyncEvent<HardEvent::MTE3_S>();
-}
-
-__aicore__ inline void MergeSplit(GM_ADDR c, GM_ADDR temporary, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    constexpr uint32_t LINES = 8;
-    constexpr uint32_t COUNT = LINES * TILE;
-    TBuf<TPosition::VECOUT> sumBuffer;
-    TBuf<TPosition::VECOUT> nextBuffer;
-    TBuf<TPosition::VECIN> inputBuffer;
-    TBuf<TPosition::VECIN> correctionBuffer;
-    pipe.InitBuffer(sumBuffer, COUNT * sizeof(float));
-    pipe.InitBuffer(nextBuffer, COUNT * sizeof(float));
-    pipe.InitBuffer(inputBuffer, COUNT * sizeof(float));
-    pipe.InitBuffer(correctionBuffer, COUNT * sizeof(float));
-    auto sum = sumBuffer.Get<float>();
-    auto next = nextBuffer.Get<float>();
-    auto input = inputBuffer.Get<float>();
-    auto correction = correctionBuffer.Get<float>();
-    GlobalTensor<uint64_t> cp;
-    cp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(c));
-    GlobalTensor<float> partial;
-    partial.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(temporary));
-    const uint64_t rows = (static_cast<uint64_t>(t.n) + TILE - 1) / TILE;
-    const uint64_t cols = (static_cast<uint64_t>(t.m) + TILE - 1) / TILE;
-    uint32_t policyBatch = UINT32_MAX;
-    bool policyValue = false;
-    for (uint64_t item = GetBlockIdx(); item < static_cast<uint64_t>(t.taskCount) * (TILE / LINES);
-         item += GetBlockNum()) {
-        const uint64_t local = item / (TILE / LINES);
-        const uint64_t task = t.firstTask + local;
-        const uint32_t batch = task / (rows * cols);
-        if (ReferenceRequired(t, batch, policyBatch, policyValue))
-            continue;
-        const uint32_t line = item % (TILE / LINES) * LINES;
-        const uint64_t row = task / cols % rows * TILE + line;
-        if (row >= static_cast<uint64_t>(t.n))
-            continue;
-        const uint64_t col = task % cols * TILE;
-        const uint32_t lines = t.n - row < LINES ? t.n - row : LINES;
-        const uint32_t width = t.m - col < TILE ? t.m - col : TILE;
-        const uint32_t count = lines * TILE;
-        const uint64_t offset = local * t.parts * TILE * TILE + line * TILE;
-        SumSplitParts(partial, offset, count, t, sum, next, input, correction);
-        GlobalTensor<float> cg;
-        BindMatrix(cg, cp, task / (rows * cols));
-        StoreSplitPacket(cg, t, row, col, lines, width, count, input, sum);
-    }
-}
-
-template <bool TA, bool TB, int ORIENTATION, typename MM>
-__aicore__ inline void ComputeCubeTile(
-    MM& mm, const GlobalTensor<uint64_t>& ap, const GlobalTensor<uint64_t>& bp, const GlobalTensor<uint64_t>& cp,
-    GM_ADDR temporary, const GemmBatchedEx22Tiling& t, uint32_t localBatch, uint32_t batch, uint64_t row, uint64_t col,
-    bool& computed)
-{
-    constexpr uint32_t HEIGHT = CUBE_HEIGHTS[ORIENTATION];
-    constexpr uint32_t WIDTH = CUBE_WIDTHS[ORIENTATION];
-    GlobalTensor<float> ag;
-    GlobalTensor<float> bg;
-    GlobalTensor<float> cg;
-    BindMatrix(ag, ap, batch);
-    BindMatrix(bg, bp, batch);
-    if (t.temporaryOutput) {
-        cg.SetGlobalBuffer(
-            reinterpret_cast<__gm__ float*>(temporary) + static_cast<uint64_t>(localBatch) * t.outputLd * t.n);
-    } else {
-        BindMatrix(cg, cp, batch);
-    }
-    // The public matrices are column-major. Compute their transposed
-    // row-major view: C^T = op(B)^T * op(A)^T, retaining physical strides.
-    mm.SetOrgShape(TB ? t.ldb : t.n, TA ? t.m : t.lda, TB ? t.k : t.ldb, TA ? t.lda : t.k, t.outputLd);
-    for (int64_t start = 0; start < t.k; start += 4096) {
-        mm.SetSingleShape(
-            t.n - row < HEIGHT ? t.n - row : HEIGHT, t.m - col < WIDTH ? t.m - col : WIDTH,
-            t.k - start < 4096 ? t.k - start : 4096);
-        mm.SetTensorA(bg[TB ? start * t.ldb + row : row * t.ldb + start], TB);
-        mm.SetTensorB(ag[TA ? col * t.lda + start : start * t.lda + col], TA);
-        mm.IterateAll(cg[row * t.outputLd + col], start != 0);
-        computed = true;
-    }
-}
-
-template <bool TA, bool TB, int ORIENTATION = 0, bool SHORT_K = false>
-__aicore__ inline void ComputeCube(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    MatmulImpl<Input<TB>, Input<TA>, Output, Output, CUBE_TILING<TA, TB, ORIENTATION, SHORT_K>> mm;
-    mm.SetSubBlockIdx(0);
-    mm.Init(static_cast<const TCubeTiling*>(nullptr), &pipe);
-    mm.DisableBias();
-    mm.SetHF32(false);
-    GlobalTensor<uint64_t> ap;
-    GlobalTensor<uint64_t> bp;
-    GlobalTensor<uint64_t> cp;
-    ap.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(a));
-    bp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(b));
-    cp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(c));
-    constexpr uint32_t HEIGHT = CUBE_HEIGHTS[ORIENTATION];
-    constexpr uint32_t WIDTH = CUBE_WIDTHS[ORIENTATION];
-    const uint64_t rows = (static_cast<uint64_t>(t.n) + HEIGHT - 1) / HEIGHT;
-    const uint64_t cols = (static_cast<uint64_t>(t.m) + WIDTH - 1) / WIDTH;
-    uint32_t policyBatch = UINT32_MAX;
-    bool policyValue = false;
-    bool computed = false;
-    const uint64_t totalTasks = rows * cols * t.batches;
-    for (uint64_t slot = GetBlockIdx(); slot < totalTasks; slot += GetBlockNum()) {
-        uint64_t task = slot;
-        if constexpr (ORIENTATION == 11 && TA && TB) {
-            if (t.taskRotation != 0) {
-                const uint32_t shifted = static_cast<uint32_t>(slot) + t.taskRotation;
-                task = shifted < totalTasks ? shifted : shifted - totalTasks;
-            }
-        }
-        const uint32_t localBatch = task / (rows * cols);
-        const uint32_t batch = t.firstBatch + localBatch;
-        if (ReferenceRequired(t, batch, policyBatch, policyValue))
-            continue;
-        const uint64_t row = task / cols % rows * HEIGHT;
-        const uint64_t col = task % cols * WIDTH;
-        ComputeCubeTile<TA, TB, ORIENTATION>(mm, ap, bp, cp, temporary, t, localBatch, batch, row, col, computed);
-    }
-    // Release this one object after its last completed tile.
-    if (computed)
-        mm.End();
-}
-
-__aicore__ inline uint32_t ChooseMediumCube(const GemmBatchedEx22Tiling& t, uint64_t cores, uint64_t originalGrid)
-{
-    if (cores == 0)
-        return 10;
-    uint64_t bestTasks = originalGrid;
-    const uint64_t originalWaves = (bestTasks + cores - 1U) / cores;
-    uint64_t bestWaves = originalWaves;
-    uint64_t bestScore = bestWaves * 128U * 128U;
-    uint32_t best = 10;
-    for (uint32_t option = 5; option <= 9; ++option) {
-        const uint64_t height = CUBE_HEIGHTS[option];
-        const uint64_t width = CUBE_WIDTHS[option];
-        const uint64_t tasks = ((static_cast<uint64_t>(t.n) + height - 1U) / height) *
-                               ((static_cast<uint64_t>(t.m) + width - 1U) / width) * t.batches;
-        const uint64_t waves = (tasks + cores - 1U) / cores;
-        if (waves > originalWaves || waves * (height + width) > originalWaves * 256U)
-            continue;
-        const uint64_t score = waves * height * width;
-        if (score < bestScore ||
-            (score == bestScore && (waves < bestWaves || (waves == bestWaves && tasks < bestTasks)))) {
-            best = option;
-            bestTasks = tasks;
-            bestWaves = waves;
-            bestScore = score;
-        }
-    }
-    return best;
-}
-
-template <bool TA, bool TB, bool PURE_CUBE>
-__aicore__ inline bool DispatchShortNN(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    if constexpr (PURE_CUBE && !TA && !TB) {
-        if (t.k > 0 && t.k <= 96 && t.m >= 768 && t.n >= 768 && t.batches == 1) {
-            const uint64_t gridM =
-                ((static_cast<uint64_t>(t.n) + 255U) / 256U) * ((static_cast<uint64_t>(t.m) + 127U) / 128U);
-            const uint64_t gridN =
-                ((static_cast<uint64_t>(t.n) + 127U) / 128U) * ((static_cast<uint64_t>(t.m) + 255U) / 256U);
-            if (gridM <= gridN)
-                ComputeCube<TA, TB, 13>(a, b, c, temporary, t, pipe);
-            else
-                ComputeCube<TA, TB, 12>(a, b, c, temporary, t, pipe);
-            return true;
-        }
-    }
-    return false;
-}
-
-template <bool TA, bool TB>
-__aicore__ inline bool DispatchMediumCube(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    const uint64_t cores = GetBlockNum();
-    const uint64_t originalGrid =
-        ((static_cast<uint64_t>(t.n) + 127U) / 128U) * ((static_cast<uint64_t>(t.m) + 127U) / 128U) * t.batches;
-    if (t.k >= 512 && t.k < 2048 && t.batches <= 4 && originalGrid <= 2U * cores) {
-        const uint32_t best = ChooseMediumCube(t, cores, originalGrid);
-        if (best == 10) {
-            ComputeCube<TA, TB, 10>(a, b, c, temporary, t, pipe);
-            return true;
-        }
-        if (best == 5) {
-            ComputeCube<TA, TB, 5>(a, b, c, temporary, t, pipe);
-            return true;
-        }
-        if (best == 6) {
-            ComputeCube<TA, TB, 6>(a, b, c, temporary, t, pipe);
-            return true;
-        }
-        if (best == 7) {
-            ComputeCube<TA, TB, 7>(a, b, c, temporary, t, pipe);
-            return true;
-        }
-        if (best == 8) {
-            ComputeCube<TA, TB, 8>(a, b, c, temporary, t, pipe);
-            return true;
-        }
-        if (best == 9) {
-            ComputeCube<TA, TB, 9>(a, b, c, temporary, t, pipe);
-            return true;
-        }
-    }
-    return false;
-}
-
-template <bool TA, bool TB>
-__aicore__ inline bool DispatchShortTT(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    const uint64_t cores = GetBlockNum();
-    // Short-K narrow ND output: account for task waves and global input reuse.
-    if (TA && TB && t.k > 0 && t.k <= 96 && t.m >= 768 && t.n >= 768 && t.batches == 1) {
-        const uint64_t rowsM = (static_cast<uint64_t>(t.n) + 255U) / 256U;
-        const uint64_t colsM = (static_cast<uint64_t>(t.m) + 127U) / 128U;
-        const uint64_t rowsN = (static_cast<uint64_t>(t.n) + 127U) / 128U;
-        const uint64_t colsN = (static_cast<uint64_t>(t.m) + 255U) / 256U;
-        const bool useM = rowsM * colsM <= rowsN * colsN;
-        const uint64_t oldRows = useM ? rowsM : rowsN;
-        const uint64_t oldCols = useM ? colsM : colsN;
-        const uint64_t newRows = (static_cast<uint64_t>(t.n) + 511U) / 512U;
-        const uint64_t newCols = (static_cast<uint64_t>(t.m) + 63U) / 64U;
-        const uint64_t oldWaves = (oldRows * oldCols + cores - 1U) / cores;
-        const uint64_t newWaves = (newRows * newCols + cores - 1U) / cores;
-        const uint64_t oldInput = static_cast<uint64_t>(t.n) * oldCols + static_cast<uint64_t>(t.m) * oldRows;
-        const uint64_t newInput = static_cast<uint64_t>(t.n) * newCols + static_cast<uint64_t>(t.m) * newRows;
-        if (newWaves * 4U <= oldWaves * 5U && newInput * 100U <= oldInput * 165U) {
-            ComputeCube<TA, TB, 11>(a, b, c, temporary, t, pipe);
-            return true;
-        }
-    }
-    return false;
-}
-
-template <bool TA, bool TB>
-__aicore__ inline bool DispatchNarrowCube(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    const uint64_t minimumGrid = (GetBlockNum() + 1U) / 2U;
-    if (t.k > 0 && t.k < 512 && t.m <= 32 && t.n > 256) {
-        const uint64_t grid =
-            ((static_cast<uint64_t>(t.n) + 127U) / 128U) * ((static_cast<uint64_t>(t.m) + 31U) / 32U) * t.batches;
-        if (grid >= minimumGrid) {
-            if (t.k <= 32)
-                ComputeCube<TA, TB, 1, true>(a, b, c, temporary, t, pipe);
-            else
-                ComputeCube<TA, TB, 1, false>(a, b, c, temporary, t, pipe);
-            return true;
-        }
-    } else if (t.k > 0 && t.k < 512 && t.n <= 32 && t.m > 256) {
-        const uint64_t grid =
-            ((static_cast<uint64_t>(t.n) + 31U) / 32U) * ((static_cast<uint64_t>(t.m) + 127U) / 128U) * t.batches;
-        if (grid >= minimumGrid) {
-            if (t.k <= 32)
-                ComputeCube<TA, TB, 2, true>(a, b, c, temporary, t, pipe);
-            else
-                ComputeCube<TA, TB, 2, false>(a, b, c, temporary, t, pipe);
-            return true;
-        }
-    }
-    return false;
-}
-
-template <bool TA, bool TB, bool PURE_CUBE = false>
-__aicore__ inline void DispatchCube(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    // Never buy a lower nominal volume by adding task waves or nominal
-    // input movement. These filters are a cost hypothesis,not a latency proof.
-    // Full-K/N64 pipeline retains the original macro and each operand's reuse.
-    // OUTER_PRODUCT is instantiated only in the pure-Cube NN entry.
-    if (DispatchShortNN<TA, TB, PURE_CUBE>(a, b, c, temporary, t, pipe))
-        return;
-
-    if (DispatchMediumCube<TA, TB>(a, b, c, temporary, t, pipe))
-        return;
-    if (DispatchShortTT<TA, TB>(a, b, c, temporary, t, pipe))
-        return;
-    if (DispatchNarrowCube<TA, TB>(a, b, c, temporary, t, pipe))
-        return;
-    const uint64_t minimumGrid = (GetBlockNum() + 1U) / 2U;
-    // Both larger configurations use L0C-sized basic blocks. Permit a
-    // partially filled final wave when it avoids an additional task wave.
-    if (t.k > 0 && t.k <= 128 && t.m >= 64 && t.n >= 64) {
-        const uint64_t gridM =
-            ((static_cast<uint64_t>(t.n) + 255U) / 256U) * ((static_cast<uint64_t>(t.m) + 127U) / 128U) * t.batches;
-        const uint64_t gridN =
-            ((static_cast<uint64_t>(t.n) + 127U) / 128U) * ((static_cast<uint64_t>(t.m) + 255U) / 256U) * t.batches;
-        const bool validM = gridM >= minimumGrid;
-        const bool validN = gridN >= minimumGrid;
-        if (validM && (!validN || gridM <= gridN)) {
-            ComputeCube<TA, TB, 3>(a, b, c, temporary, t, pipe);
-            return;
-        }
-        if (validN) {
-            ComputeCube<TA, TB, 4>(a, b, c, temporary, t, pipe);
-            return;
-        }
-    }
-    ComputeCube<TA, TB>(a, b, c, temporary, t, pipe);
-}
-
-// Pure-copy epilogue:8 column blocks share one bounded UB packet. GM strides
-// are bytes;UB rows are rounded to32B. Only logical output elements are stored.
-__aicore__ inline void ProductPacketGeometry(
-    const GemmBatchedEx22Tiling& t, uint32_t& rowsPerPacket, uint32_t& columnsPerPacket, uint64_t& chunks)
-{
-    constexpr uint32_t MAX_ROWS = 4096;
-    constexpr uint32_t MAX_COLUMNS = 64;
-    constexpr uint32_t CAPACITY = 32768;
-    const uint64_t totalColumns = static_cast<uint64_t>(t.n) * t.batches;
-    const uint64_t rowPartitions =
-        totalColumns < GetBlockNum() ? (GetBlockNum() + totalColumns - 1) / totalColumns : 1U;
-    const uint64_t wantedRows = (static_cast<uint64_t>(t.m) + rowPartitions - 1) / rowPartitions;
-    const uint32_t roundedRows = (wantedRows + 7U) / 8U * 8U;
-    rowsPerPacket = roundedRows < MAX_ROWS ? roundedRows : MAX_ROWS;
-    if (rowsPerPacket == 0)
-        return;
-    chunks = (static_cast<uint64_t>(t.m) + rowsPerPacket - 1) / rowsPerPacket;
-    const uint64_t wantedColumns = (totalColumns * chunks + GetBlockNum() - 1) / GetBlockNum();
-    const uint32_t capacityColumns = CAPACITY / rowsPerPacket;
-    columnsPerPacket = wantedColumns < MAX_COLUMNS ? wantedColumns : MAX_COLUMNS;
-    if (columnsPerPacket > capacityColumns)
-        columnsPerPacket = capacityColumns;
-    // A2 multiblock GM stride is uint32 bytes. Single-column packets do not
-    // consume a stride,so retain correctness for unusually large leading dims.
-    if (static_cast<uint64_t>(t.outputLd) > UINT32_MAX / 4U || static_cast<uint64_t>(t.ldc) > UINT32_MAX / 4U)
-        columnsPerPacket = 1;
-}
-
-__aicore__ inline void CopyProduct(GM_ADDR c, GM_ADDR temporary, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    constexpr uint32_t CAPACITY = 32768;
-    TBuf<TPosition::VECOUT> buffer;
-    pipe.InitBuffer(buffer, CAPACITY * sizeof(float));
-    auto packet = buffer.Get<float>();
-    GlobalTensor<float> product;
-    product.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(temporary));
-    GlobalTensor<uint64_t> cp;
-    cp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(c));
-    uint32_t rowsPerPacket = 0;
-    uint32_t columnsPerPacket = 0;
-    uint64_t chunks = 0;
-    ProductPacketGeometry(t, rowsPerPacket, columnsPerPacket, chunks);
-    if (rowsPerPacket == 0 || columnsPerPacket == 0)
-        return;
-    const uint64_t groups = (static_cast<uint64_t>(t.n) + columnsPerPacket - 1) / columnsPerPacket;
-    const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
-    uint32_t policyBatch = UINT32_MAX;
-    bool policyValue = false;
-    for (uint64_t task = GetBlockIdx(); task < chunks * groups * t.batches; task += GetBlockNum()) {
-        const uint64_t row = task % chunks * rowsPerPacket;
-        const uint64_t column = task / chunks % groups * columnsPerPacket;
-        const uint32_t localBatch = task / (chunks * groups);
-        const uint32_t batch = t.firstBatch + localBatch;
-        if (ReferenceRequired(t, batch, policyBatch, policyValue))
-            continue;
-        const uint32_t width = t.m - row < rowsPerPacket ? t.m - row : rowsPerPacket;
-        const uint32_t columns = t.n - column < columnsPerPacket ? t.n - column : columnsPerPacket;
-        const DataCopyExtParams load{
-            static_cast<uint16_t>(columns), width * 4U,
-            static_cast<uint32_t>((static_cast<uint64_t>(t.outputLd) - width) * 4U), 0, 0};
-        DataCopyPad(
-            packet, product[(static_cast<uint64_t>(localBatch) * t.n + column) * t.outputLd + row], load, padding);
-        SyncEvent<HardEvent::MTE2_MTE3>();
-        GlobalTensor<float> cg;
-        BindMatrix(cg, cp, batch);
-        const DataCopyExtParams store{
-            static_cast<uint16_t>(columns), width * 4U, 0,
-            static_cast<uint32_t>((static_cast<uint64_t>(t.ldc) - width) * 4U), 0};
-        DataCopyPad(cg[column * t.ldc + row], packet, store);
-        SyncEvent<HardEvent::MTE3_MTE2>();
-    }
-}
-
-// Tiny NN arithmetic uses separate float product and accumulation, including
-// special values; zero products still propagate Inf/NaN as in Netlib 3.10.
-__aicore__ inline void ComputePreloadedColumn(
-    const GlobalTensor<float>& bg, const GlobalTensor<float>& cg, uint64_t column, const GemmBatchedEx22Tiling& t,
-    const LocalTensor<float>& ac, const LocalTensor<float>& bc, const LocalTensor<float>& work,
-    const LocalTensor<float>& sum)
-{
-    const uint32_t pitch = (t.m + 7U) / 8U * 8U;
-    const uint32_t bPitch = t.transB ? 8U : 1U;
-    const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
-    const DataCopyExtParams store{1, static_cast<uint32_t>(t.m) * 4U, 0, 0, 0};
-    if (t.transB) {
-        const DataCopyExtParams loadB{
-            static_cast<uint16_t>(t.k), 4U, static_cast<uint32_t>((static_cast<uint64_t>(t.ldb) - 1U) * 4U), 0, 0};
-        DataCopyPad(bc, bg[column], loadB, padding);
-    } else {
-        const DataCopyExtParams loadB{1, static_cast<uint32_t>(t.k) * 4U, 0, 0, 0};
-        DataCopyPad(bc, bg[column * t.ldb], loadB, padding);
-    }
-    Duplicate(sum, 0.0f, t.m);
-    SyncEvent<HardEvent::MTE2_S>();
-    PipeBarrier<PIPE_V>();
-    for (int32_t p = 0; p < t.k; ++p) {
-        const float bv = bc.GetValue(p * bPitch);
-
-        Muls(work, ac[p * pitch], bv, t.m);
-        PipeBarrier<PIPE_V>();
-        Add(sum, sum, work, t.m);
-        PipeBarrier<PIPE_V>();
-    }
-    Muls(sum, sum, t.alpha, t.m);
-    SyncEvent<HardEvent::V_MTE3>();
-    DataCopyPad(cg[column * t.ldc], sum, store);
-    SyncEvent<HardEvent::MTE3_S>();
-}
-
-__aicore__ inline void ComputeTinyPreload(GM_ADDR a, GM_ADDR b, GM_ADDR c, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    TBuf<TPosition::VECIN> aBuffer;
-    TBuf<TPosition::VECIN> bBuffer;
-    TBuf<TPosition::VECCALC> workBuffer;
-    TBuf<TPosition::VECOUT> sumBuffer;
-    pipe.InitBuffer(aBuffer, 32U * 32U * sizeof(float));
-    pipe.InitBuffer(bBuffer, 32U * 8U * sizeof(float));
-    pipe.InitBuffer(workBuffer, 32U * sizeof(float));
-    pipe.InitBuffer(sumBuffer, 32U * sizeof(float));
-    auto ac = aBuffer.Get<float>();
-    auto bc = bBuffer.Get<float>();
-    auto work = workBuffer.Get<float>();
-    auto sum = sumBuffer.Get<float>();
-    GlobalTensor<uint64_t> ap;
-    GlobalTensor<uint64_t> bp;
-    GlobalTensor<uint64_t> cp;
-    ap.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(a));
-    bp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(b));
-    cp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(c));
-    GlobalTensor<float> ag;
-    GlobalTensor<float> bg;
-    GlobalTensor<float> cg;
-    const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
-    const DataCopyExtParams loadA{
-        static_cast<uint16_t>(t.k), static_cast<uint32_t>(t.m) * 4U,
-        static_cast<uint32_t>((static_cast<uint64_t>(t.lda) - t.m) * 4U), 0, 0};
-    uint32_t previousBatch = UINT32_MAX;
-    for (uint64_t task = GetBlockIdx(); task < static_cast<uint64_t>(t.n) * t.batches; task += GetBlockNum()) {
-        const uint32_t batch = t.firstBatch + task / t.n;
-        const uint64_t column = task % t.n;
-        if (batch != previousBatch) {
-            BindMatrix(ag, ap, batch);
-            BindMatrix(bg, bp, batch);
-            BindMatrix(cg, cp, batch);
-            DataCopyPad(ac, ag, loadA, padding);
-            SyncEvent<HardEvent::MTE2_V>();
-            previousBatch = batch;
-        }
-        ComputePreloadedColumn(bg, cg, column, t, ac, bc, work, sum);
-    }
-}
-
-// One AIV owns a complete tinyNN batch,including any unsafe-value fallback.
-// The three packet buffers never alias across vector producer/consumer stages.
-struct TinyLocals {
-    LocalTensor<float> ac;
-    LocalTensor<float> bc;
-    LocalTensor<float> broadcast;
-    LocalTensor<float> products;
-    LocalTensor<float> tree;
-    LocalTensor<float> absolute;
-    LocalTensor<float> reduceWork;
-    LocalTensor<float> reduction;
-};
-
-struct TinyStorage {
-    TBuf<TPosition::VECIN> aBuffer;
-    TBuf<TPosition::VECIN> bBuffer;
-    TBuf<TPosition::VECCALC> broadcastBuffer;
-    TBuf<TPosition::VECCALC> treeBuffer;
-    TBuf<TPosition::VECCALC> absoluteBuffer;
-    TBuf<TPosition::VECCALC> reduceWorkBuffer;
-    TBuf<TPosition::VECOUT> productBuffer;
-    TBuf<TPosition::VECOUT> reductionBuffer;
-
-    template <uint32_t INPUT_WORDS, uint32_t PACKET_WORDS>
-    __aicore__ inline void Init(TPipe& pipe)
-    {
-        pipe.InitBuffer(aBuffer, INPUT_WORDS * 4U);
-        pipe.InitBuffer(bBuffer, INPUT_WORDS * 4U);
-        pipe.InitBuffer(broadcastBuffer, PACKET_WORDS * 4U);
-        pipe.InitBuffer(treeBuffer, PACKET_WORDS * 4U);
-        pipe.InitBuffer(productBuffer, PACKET_WORDS * 4U);
-        pipe.InitBuffer(absoluteBuffer, INPUT_WORDS * 4U);
-        pipe.InitBuffer(reduceWorkBuffer, 256U * 4U);
-        pipe.InitBuffer(reductionBuffer, 64U * 4U);
-    }
-    __aicore__ inline TinyLocals Get()
-    {
-        return {aBuffer.Get<float>(),          bBuffer.Get<float>(),        broadcastBuffer.Get<float>(),
-                productBuffer.Get<float>(),    treeBuffer.Get<float>(),     absoluteBuffer.Get<float>(),
-                reduceWorkBuffer.Get<float>(), reductionBuffer.Get<float>()};
-    }
-};
-
-struct TinyGeometry {
-    uint32_t m;
-    uint32_t n;
-    uint32_t k;
-    uint32_t kp;
-    uint32_t pitch;
-    uint32_t plane;
-    uint32_t roundedK;
-    uint32_t columnsPerPacket;
-};
-
-template <uint32_t N>
-__aicore__ inline TinyGeometry MakeTinyGeometry(const GemmBatchedEx22Tiling& t)
-{
-    constexpr uint32_t CAPACITY = N == 0 ? 8192 : N * N * N;
-    TinyGeometry g{};
-    g.m = N == 0 ? static_cast<uint32_t>(t.m) : N;
-    g.n = N == 0 ? static_cast<uint32_t>(t.n) : N;
-    g.k = N == 0 ? static_cast<uint32_t>(t.k) : N;
-    g.kp = 8U;
-    while (g.kp < g.k)
-        g.kp *= 2U;
-    g.pitch = (g.m + 7U) / 8U * 8U;
-    g.plane = g.kp * g.pitch;
-    g.roundedK = (g.k + 7U) / 8U * 8U;
-    g.columnsPerPacket = CAPACITY / g.plane < g.n ? CAPACITY / g.plane : g.n;
-    return g;
-}
-
-__aicore__ inline void LoadTinyBatch(
-    const GlobalTensor<float>& ag, const GlobalTensor<float>& bg, const GemmBatchedEx22Tiling& t, const TinyGeometry& g,
-    const TinyLocals& x)
-{
-    const DataCopyExtParams loadA{
-        static_cast<uint16_t>(g.k), static_cast<uint32_t>(g.m) * 4U,
-        static_cast<uint32_t>((static_cast<uint64_t>(t.lda) - g.m) * 4U), 0, 0};
-    const DataCopyExtParams loadB{
-        static_cast<uint16_t>(g.n), static_cast<uint32_t>(g.k) * 4U,
-        static_cast<uint32_t>((static_cast<uint64_t>(t.ldb) - g.k) * 4U), (g.kp - g.roundedK) / 8U, 0};
-    const DataCopyPadExtParams<float> padA{true, 0, static_cast<uint8_t>(g.pitch - g.m), 0.0f};
-    const DataCopyPadExtParams<float> padB{true, 0, static_cast<uint8_t>(g.roundedK - g.k), 0.0f};
-    Duplicate(x.ac, 0.0f, static_cast<int32_t>(g.kp * g.pitch));
-    Duplicate(x.bc, 0.0f, static_cast<int32_t>(g.n * g.kp));
-    SyncEvent<HardEvent::V_MTE2>();
-    DataCopyPad(x.ac, ag, loadA, padA);
-    DataCopyPad(x.bc, bg, loadB, padB);
-    SyncEvent<HardEvent::MTE2_V>();
-}
-
-__aicore__ inline bool TinyValuesSafe(const TinyGeometry& g, const TinyLocals& x)
-{
-    Abs(x.absolute, x.ac, static_cast<int32_t>(g.kp * g.pitch));
-    PipeBarrier<PIPE_V>();
-    ReduceSum(x.reduction, x.absolute, x.reduceWork, static_cast<int32_t>(g.kp * g.pitch));
-    SyncEvent<HardEvent::V_S>();
-    const float boundA = x.reduction.GetValue(0);
-    SyncEvent<HardEvent::S_V>();
-    Abs(x.absolute, x.bc, static_cast<int32_t>(g.n * g.kp));
-    PipeBarrier<PIPE_V>();
-    ReduceSum(x.reduction, x.absolute, x.reduceWork, static_cast<int32_t>(g.n * g.kp));
-    SyncEvent<HardEvent::V_S>();
-    const float boundB = x.reduction.GetValue(0);
-    SyncEvent<HardEvent::S_V>();
-    return !NonFiniteStatistic(boundA) && !NonFiniteStatistic(boundB) && boundA < 0x1p30f && boundB < 0x1p30f;
-}
-
-__aicore__ inline void ComputeUnsafeTiny(
-    const GlobalTensor<float>& cg, const GemmBatchedEx22Tiling& t, const TinyGeometry& g, const TinyLocals& x)
-{
-    const DataCopyExtParams store{1, static_cast<uint32_t>(g.m) * 4U, 0, 0, 0};
-    for (uint32_t column = 0; column < static_cast<uint32_t>(g.n); ++column) {
-        Duplicate(x.products, 0.0f, g.m);
-        PipeBarrier<PIPE_V>();
-        for (uint32_t k = 0; k < static_cast<uint32_t>(g.k); ++k) {
-            const float value = x.bc.GetValue(column * g.kp + k);
-
-            Muls(x.tree, x.ac[k * g.pitch], value, g.m);
-            PipeBarrier<PIPE_V>();
-            Add(x.products, x.products, x.tree, g.m);
-            PipeBarrier<PIPE_V>();
-        }
-        SyncEvent<HardEvent::V_MTE3>();
-        DataCopyPad(cg[static_cast<uint64_t>(column) * t.ldc], x.products, store);
-        SyncEvent<HardEvent::MTE3_V>();
-    }
-}
-
-__aicore__ inline void MultiplyTinyPacket(uint32_t first, uint32_t columns, const TinyGeometry& g, const TinyLocals& x)
-{
-    const BrcbRepeatParams brcb{static_cast<uint16_t>(g.pitch / 8U), static_cast<uint16_t>(g.pitch)};
-    for (uint32_t column = 0; column < columns; ++column) {
-        for (uint32_t offset = 0; offset < g.pitch; offset += 8U) {
-            Brcb(
-                x.broadcast[column * g.plane + offset], x.bc[(first + column) * g.kp], static_cast<uint8_t>(g.kp / 8U),
-                brcb);
-        }
-    }
-    PipeBarrier<PIPE_V>();
-    const BinaryRepeatParams multiply{
-        1, 1, 1, static_cast<uint8_t>(g.plane / 8U), 0, static_cast<uint8_t>(g.plane / 8U)};
-    for (uint32_t offset = 0; offset < g.plane; offset += 64U) {
-        Mul(x.products[offset], x.ac[offset], x.broadcast[offset], static_cast<uint64_t>(64U),
-            static_cast<uint8_t>(columns), multiply);
-    }
-    PipeBarrier<PIPE_V>();
-}
-
-__aicore__ inline void StoreTinyPacket(
-    const GlobalTensor<float>& cg, uint32_t first, uint32_t columns, const GemmBatchedEx22Tiling& t,
-    const TinyGeometry& g, const TinyLocals& x)
-{
-    auto from = x.products;
-    auto to = x.tree;
-    const BinaryRepeatParams fold{1,
-                                  1,
-                                  1,
-                                  static_cast<uint8_t>(g.plane / 8U),
-                                  static_cast<uint8_t>(g.plane / 8U),
-                                  static_cast<uint8_t>(g.plane / 8U)};
-    for (uint32_t remaining = g.kp / 2U; remaining != 0; remaining /= 2U) {
-        const uint32_t words = remaining * g.pitch;
-        for (uint32_t offset = 0; offset < words; offset += 64U) {
-            const uint32_t count = words - offset < 64U ? words - offset : 64U;
-            Add(to[offset], from[offset], from[words + offset], static_cast<uint64_t>(count),
-                static_cast<uint8_t>(columns), fold);
-        }
-        PipeBarrier<PIPE_V>();
-        auto saved = from;
-        from = to;
-        to = saved;
-    }
-    const DataCopyExtParams store{
-        static_cast<uint16_t>(columns), static_cast<uint32_t>(g.m) * 4U, (g.plane - g.pitch) / 8U,
-        static_cast<uint32_t>((static_cast<uint64_t>(t.ldc) - g.m) * 4U), 0};
-    SyncEvent<HardEvent::V_MTE3>();
-    DataCopyPad(cg[static_cast<uint64_t>(first) * t.ldc], from, store);
-    SyncEvent<HardEvent::MTE3_V>();
-}
-
-__aicore__ inline void ComputeTinyPackets(
-    const GlobalTensor<float>& cg, const GemmBatchedEx22Tiling& t, const TinyGeometry& g, const TinyLocals& x)
-{
-    for (uint32_t first = 0; first < g.n; first += g.columnsPerPacket) {
-        const uint32_t columns = g.n - first < g.columnsPerPacket ? g.n - first : g.columnsPerPacket;
-        MultiplyTinyPacket(first, columns, g, x);
-        StoreTinyPacket(cg, first, columns, t, g, x);
-    }
-}
-
-template <uint32_t N>
-__aicore__ inline void ComputeTinyBatches(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, const GemmBatchedEx22Tiling& t, const TinyLocals& x)
-{
-    const auto g = MakeTinyGeometry<N>(t);
-    GlobalTensor<uint64_t> ap;
-    GlobalTensor<uint64_t> bp;
-    GlobalTensor<uint64_t> cp;
-    ap.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(a));
-    bp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(b));
-    cp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(c));
-    for (uint32_t localBatch = GetBlockIdx(); localBatch < t.batches; localBatch += GetBlockNum()) {
-        const uint32_t batch = t.firstBatch + localBatch;
-        GlobalTensor<float> ag;
-        GlobalTensor<float> bg;
-        GlobalTensor<float> cg;
-        BindMatrix(ag, ap, batch);
-        BindMatrix(bg, bp, batch);
-        BindMatrix(cg, cp, batch);
-        LoadTinyBatch(ag, bg, t, g, x);
-        if (!TinyValuesSafe(g, x)) {
-            ComputeUnsafeTiny(cg, t, g, x);
-            continue;
-        }
-        ComputeTinyPackets(cg, t, g, x);
-    }
-}
-
-__aicore__ inline void ComputeWholeTiny(GM_ADDR a, GM_ADDR b, GM_ADDR c, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    TinyStorage storage;
-    storage.Init<1024, 8192>(pipe);
-    const auto locals = storage.Get();
-    ComputeTinyBatches<0>(a, b, c, t, locals);
-}
-
-__aicore__ inline void AccumulateVector(
-    const GlobalTensor<uint64_t>& ap, const GlobalTensor<uint64_t>& bp, uint32_t batch, uint64_t row, uint64_t col,
-    uint32_t count, const GemmBatchedEx22Tiling& t, const LocalTensor<float>& sum, const LocalTensor<float>& input,
-    const LocalTensor<float>& old)
-{
-    GlobalTensor<float> ag;
-    GlobalTensor<float> bg;
-    const DataCopyExtParams copy{1, count * 4U, 0, 0, 0};
-    const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
-    // Do not even read the A/B pointer-array elements for scale-only calls.
-    if (t.k > 0 && t.alpha != 0.0f) {
-        BindMatrix(ag, ap, batch);
-        BindMatrix(bg, bp, batch);
-        for (int32_t p = 0; p < t.k; ++p) {
-            const float bv = bg.GetValue(t.transB ? static_cast<uint64_t>(p) * t.ldb + col : col * t.ldb + p);
-
-            if (t.transA) {
-                SyncEvent<HardEvent::V_S>();
-                for (uint32_t i = 0; i < count; ++i)
-                    input.SetValue(i, ag.GetValue((row + i) * t.lda + p));
-                SyncEvent<HardEvent::S_V>();
-            } else {
-                SyncEvent<HardEvent::V_MTE2>();
-                DataCopyPad(input, ag[static_cast<uint64_t>(p) * t.lda + row], copy, padding);
-            }
-            if (!t.transA)
-                SyncEvent<HardEvent::MTE2_V>();
-            // Keep finite products from overflowing before the accumulation.
-            const float magnitude = bv < 0.0f ? -bv : bv;
-            const float scale =
-                magnitude > 1.0f && magnitude <= 3.402823466e38f ? (magnitude <= 8.0f ? 8.0f : magnitude) : 1.0f;
-            Muls(sum, sum, 1.0f / scale, count);
-            Duplicate(old, bv / scale, count);
-            PipeBarrier<PIPE_V>();
-            FusedMulAdd(input, old, sum, count);
-            PipeBarrier<PIPE_V>();
-            Muls(sum, input, scale, count);
-            PipeBarrier<PIPE_V>();
-        }
-        Muls(sum, sum, t.alpha, count);
-    }
-}
-
-__aicore__ inline void StoreVector(
-    const GlobalTensor<float>& cg, uint64_t offset, uint32_t count, const GemmBatchedEx22Tiling& t,
-    const LocalTensor<float>& sum, const LocalTensor<float>& old)
-{
-    const DataCopyExtParams copy{1, count * 4U, 0, 0, 0};
-    const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
-    PipeBarrier<PIPE_V>();
-    if (t.beta != 0.0f) {
-        SyncEvent<HardEvent::V_MTE2>();
-        DataCopyPad(old, cg[offset], copy, padding);
-        SyncEvent<HardEvent::MTE2_V>();
-        if (t.k == 0 || t.alpha == 0.0f) {
-            Muls(sum, old, t.beta, count);
-        } else {
-            Axpy(sum, old, t.beta, count);
-        }
-    }
-    SyncEvent<HardEvent::V_MTE3>();
-    DataCopyPad(cg[offset], sum, copy);
-    SyncEvent<HardEvent::MTE3_S>();
-}
-
-template <bool COMBINE>
-__aicore__ inline void ComputeVectorTask(
-    const GlobalTensor<uint64_t>& ap, const GlobalTensor<uint64_t>& bp, const GlobalTensor<uint64_t>& cp,
-    const GlobalTensor<float>& product, const GemmBatchedEx22Tiling& t, uint64_t row, uint64_t col, uint32_t batch,
-    uint32_t localBatch, const LocalTensor<float>& sum, const LocalTensor<float>& input, const LocalTensor<float>& old)
-{
-    const uint32_t count = t.m - row < VECTOR_TILE ? t.m - row : VECTOR_TILE;
-    GlobalTensor<float> cg;
-    BindMatrix(cg, cp, batch);
-    const uint64_t offset = col * t.ldc + row;
-    const DataCopyExtParams copy{1, count * 4U, 0, 0, 0};
-    const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
-    if constexpr (COMBINE) {
-        DataCopyPad(sum, product[(static_cast<uint64_t>(localBatch) * t.n + col) * t.outputLd + row], copy, padding);
-        SyncEvent<HardEvent::MTE2_V>();
-        Muls(sum, sum, t.alpha, count);
-    } else {
-        Duplicate(sum, 0.0f, count);
-        PipeBarrier<PIPE_V>();
-        AccumulateVector(ap, bp, batch, row, col, count, t, sum, input, old);
-    }
-    StoreVector(cg, offset, count, t, sum, old);
-}
-
-template <bool COMBINE>
-__aicore__ inline void ComputeVector(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    if constexpr (COMBINE) {
-        if (t.alpha == 1.0f && t.beta == 0.0f) {
-            CopyProduct(c, temporary, t, pipe);
-            return;
-        }
-    }
-    TBuf<TPosition::VECOUT> sumBuffer;
-    TBuf<TPosition::VECIN> inputBuffer;
-    TBuf<TPosition::VECIN> oldBuffer;
-    pipe.InitBuffer(sumBuffer, VECTOR_TILE * sizeof(float));
-    pipe.InitBuffer(inputBuffer, VECTOR_TILE * sizeof(float));
-    pipe.InitBuffer(oldBuffer, VECTOR_TILE * sizeof(float));
-    auto sum = sumBuffer.Get<float>();
-    auto input = inputBuffer.Get<float>();
-    auto old = oldBuffer.Get<float>();
-    GlobalTensor<uint64_t> ap;
-    GlobalTensor<uint64_t> bp;
-    GlobalTensor<uint64_t> cp;
-    ap.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(a));
-    bp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(b));
-    cp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(c));
-    GlobalTensor<float> product;
-    if constexpr (COMBINE)
-        product.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(temporary));
-    const uint64_t chunks = (static_cast<uint64_t>(t.m) + VECTOR_TILE - 1) / VECTOR_TILE;
-    uint32_t policyBatch = UINT32_MAX;
-    bool policyValue = false;
-    for (uint64_t task = GetBlockIdx(); task < chunks * t.n * t.batches; task += GetBlockNum()) {
-        const uint64_t row = task % chunks * VECTOR_TILE;
-        const uint64_t col = task / chunks % t.n;
-        const uint32_t localBatch = task / (chunks * t.n);
-        const uint32_t batch = t.firstBatch + localBatch;
-        if (ReferenceRequired(t, batch, policyBatch, policyValue))
-            continue;
-        ComputeVectorTask<COMBINE>(ap, bp, cp, product, t, row, col, batch, localBatch, sum, input, old);
-    }
-}
-
-// Match the independent SGEMM reference's rounding order for general alpha.
-// Each output lane traverses K in order. Barriers keep multiply and addition
-// separate; replacing them with MLA changes the required rounding contract.
-__aicore__ inline void AccumulateReference(
-    const GlobalTensor<float>& ag, const GlobalTensor<float>& bg, uint64_t row, uint64_t col, uint32_t rows,
-    uint32_t count, const GemmBatchedEx22Tiling& t, const LocalTensor<float>& sum, const LocalTensor<float>& input)
-{
-    const DataCopyExtParams packed{1, rows * 4U, 0, 0, 0};
-    const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
-    for (int32_t p = 0; p < t.k; ++p) {
-        const float bv = bg.GetValue(t.transB ? static_cast<uint64_t>(p) * t.ldb + col : col * t.ldb + p);
-
-        SyncEvent<HardEvent::V_MTE2>();
-        if (t.transA) {
-            const DataCopyExtParams strided{
-                static_cast<uint16_t>(rows), 4U, static_cast<uint32_t>((static_cast<uint64_t>(t.lda) - 1) * 4U), 0, 0};
-            DataCopyPad(input, ag[row * t.lda + p], strided, padding);
-        } else {
-            DataCopyPad(input, ag[static_cast<uint64_t>(p) * t.lda + row], packed, padding);
-        }
-        SyncEvent<HardEvent::MTE2_V>();
-        const float multiplier = t.transA ? bv : t.alpha * bv;
-        Muls(input, input, multiplier, count);
-        PipeBarrier<PIPE_V>();
-        Add(sum, sum, input, count);
-        PipeBarrier<PIPE_V>();
-    }
-}
-
-__aicore__ inline void StoreReference(
-    const GlobalTensor<float>& cg, uint64_t offset, uint32_t rows, uint32_t count, const GemmBatchedEx22Tiling& t,
-    const LocalTensor<float>& sum, const LocalTensor<float>& old)
-{
-    const DataCopyExtParams packed{1, rows * 4U, 0, 0, 0};
-    const DataCopyExtParams lanes{static_cast<uint16_t>(rows), 4U, 0, 0, 0};
-    const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
-    if (t.transA) {
-        Muls(sum, sum, t.alpha, count);
-        PipeBarrier<PIPE_V>();
-        if (t.beta != 0.0f) {
-            DataCopyPad(old, cg[offset], lanes, padding);
-            SyncEvent<HardEvent::MTE2_V>();
-            Muls(old, old, t.beta, count);
-            PipeBarrier<PIPE_V>();
-            Add(sum, sum, old, count);
-            PipeBarrier<PIPE_V>();
-        }
-        SyncEvent<HardEvent::V_MTE3>();
-        DataCopyPad(cg[offset], sum, lanes);
-    } else {
-        SyncEvent<HardEvent::V_MTE3>();
-        DataCopyPad(cg[offset], sum, packed);
-    }
-    SyncEvent<HardEvent::MTE3_S>();
 }
 
 __aicore__ inline void ComputeReferenceTask(
     const GlobalTensor<uint64_t>& ap, const GlobalTensor<uint64_t>& bp, const GlobalTensor<uint64_t>& cp,
-    const GemmBatchedEx22Tiling& t, uint64_t row, uint64_t col, uint32_t batch, uint32_t tile,
-    const LocalTensor<float>& sum, const LocalTensor<float>& input, const LocalTensor<float>& old)
+    const GemmBatchedExArch22Tiling& t, const ReferenceScalars& scalars, uint64_t row, uint64_t col, uint32_t batch,
+    uint32_t tile, const LocalTensor<float>& sum, const LocalTensor<float>& input, const LocalTensor<float>& old,
+    const LocalTensor<float>& work)
 {
-    const DataCopyPadExtParams<float> padding{false, 0, 0, 0};
+    const DataCopyPadExtParams<float> padding{true, 0, static_cast<uint8_t>(t.transA ? 7 : 0), 0};
     const uint32_t rows = t.m - row < tile ? t.m - row : tile;
     const uint32_t count = t.transA ? rows * 8 : rows;
     const DataCopyExtParams packed{1, rows * 4U, 0, 0, 0};
@@ -1379,413 +230,1726 @@ __aicore__ inline void ComputeReferenceTask(
     const uint64_t offset = col * t.ldc + row;
     Duplicate(sum, 0.0f, count);
     PipeBarrier<PIPE_V>();
-    if (!t.transA && t.beta != 0.0f) {
+    if (!t.transA && scalars.beta != 0.0f) {
         DataCopyPad(old, cg[offset], packed, padding);
         SyncEvent<HardEvent::MTE2_V>();
-        Muls(sum, old, t.beta, count);
+        Muls(sum, old, scalars.beta, count);
         PipeBarrier<PIPE_V>();
     }
-    AccumulateReference(ag, bg, row, col, rows, count, t, sum, input);
-    StoreReference(cg, offset, rows, count, t, sum, old);
+    if (scalars.alpha != 0.0f && t.k != 0)
+        AccumulateReference(ag, bg, row, col, rows, count, t, scalars, sum, input, work);
+    StoreReference(cg, offset, rows, count, t, scalars, sum, old, work);
 }
 
-__aicore__ inline void ComputeReferenceOrder(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, const GemmBatchedEx22Tiling& t, TPipe& pipe, bool useLocalPolicy = false,
-    uint32_t localMask = 0)
+__global__ __aicore__ void GemmBatchedExStatistics(GM_ADDR a, GM_ADDR b, GemmBatchedExArch22Tiling t)
 {
-    constexpr uint32_t CAPACITY = 8192;
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    TPipe pipe;
+    TBuf<TPosition::VECIN> input;
+    TBuf<TPosition::VECCALC> absolute;
+    TBuf<TPosition::VECCALC> work;
+    TBuf<TPosition::VECOUT> output;
+    pipe.InitBuffer(input, 4096U * sizeof(float));
+    pipe.InitBuffer(absolute, 4096U * sizeof(float));
+    pipe.InitBuffer(work, 64U * sizeof(float));
+    pipe.InitBuffer(output, 64U);
+    GlobalTensor<float> statistics;
+    statistics.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(t.policy + static_cast<uint64_t>(t.batchCount) * 64U));
+    ScanPolicy(a, b, t, input.Get<float>(), absolute.Get<float>(), work.Get<float>(), output.Get<float>(), statistics);
+    PipeBarrier<PIPE_ALL>();
+    SetMaskNorm();
+    ResetMask();
+}
+
+__aicore__ inline bool PublishReferencePolicy(
+    const GemmBatchedExArch22Tiling& t, uint32_t batch, const LocalTensor<float>& input,
+    const LocalTensor<uint32_t>& flag)
+{
+    if (t.policy == 0)
+        return true;
+    GlobalTensor<float> statistics;
+    statistics.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(t.policy + static_cast<uint64_t>(t.batchCount) * 64U));
+    const bool reference = ReadPolicyDecision(statistics, input, batch, t);
+    if (GetBlockIdx() == 0) {
+        GlobalTensor<uint32_t> flags;
+        flags.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t*>(t.policy));
+        for (uint32_t i = 0; i < 16; ++i)
+            flag.SetValue(i, 0);
+        flag.SetValue(0, reference ? 1U : 0U);
+        SyncEvent<HardEvent::S_MTE3>();
+        const DataCopyExtParams store{1, 64U, 0, 0, 0};
+        DataCopyPad(flags[static_cast<uint64_t>(batch) * 16U], flag, store);
+        SyncEvent<HardEvent::MTE3_S>();
+    }
+    return reference;
+}
+
+__global__ __aicore__ void GemmBatchedExReference(GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedExArch22Tiling t)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    constexpr uint32_t CAPACITY = REFERENCE_CAPACITY;
+    const uint32_t tile = t.transA ? CAPACITY / 8 : CAPACITY;
+    const uint64_t chunks = (static_cast<uint64_t>(t.m) + tile - 1) / tile;
+    const uint64_t blocks = GetBlockNum();
+    if (blocks == 0 || chunks == 0) {
+        return;
+    }
+    const uint64_t block = GetBlockIdx();
+    TPipe pipe;
     TBuf<TPosition::VECOUT> sumBuffer;
     TBuf<TPosition::VECIN> inputBuffer;
     TBuf<TPosition::VECIN> oldBuffer;
+    TBuf<TPosition::VECOUT> flagsBuffer;
+    TBuf<TPosition::VECCALC> mathBuffer;
     pipe.InitBuffer(sumBuffer, CAPACITY * sizeof(float));
     pipe.InitBuffer(inputBuffer, CAPACITY * sizeof(float));
     pipe.InitBuffer(oldBuffer, CAPACITY * sizeof(float));
-    auto sum = sumBuffer.Get<float>();
-    auto input = inputBuffer.Get<float>();
-    auto old = oldBuffer.Get<float>();
+    pipe.InitBuffer(flagsBuffer, 64U);
+    pipe.InitBuffer(mathBuffer, (5 * CAPACITY + 64) * sizeof(float));
     GlobalTensor<uint64_t> ap;
     GlobalTensor<uint64_t> bp;
     GlobalTensor<uint64_t> cp;
     ap.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(a));
     bp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(b));
     cp.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(c));
-    // A transposed column is strided in GM. DataCopyPad places each 4-byte
-    // row in a 32-byte UB block; only lane i*8 is subsequently written to C.
-    const uint32_t tile = t.transA ? CAPACITY / 8 : CAPACITY;
-    const uint64_t chunks = (static_cast<uint64_t>(t.m) + tile - 1) / tile;
-    const uint32_t referenceCores = t.policy != 0 ? t.policyCores : static_cast<uint32_t>(GetBlockNum());
+    const ReferenceScalars scalars{Alpha(t), Beta(t)};
+    const uint64_t tasksPerBatch = chunks * t.n;
+    for (uint32_t batch = 0; batch < static_cast<uint32_t>(t.batchCount); ++batch) {
+        if (!PublishReferencePolicy(t, batch, inputBuffer.Get<float>(), flagsBuffer.Get<uint32_t>()))
+            continue;
+        const uint64_t batchFirst = batch * tasksPerBatch;
+        const uint64_t begin = max(t.referenceFirst, batchFirst);
+        const uint64_t end = min(t.referenceLast, batchFirst + tasksPerBatch);
+        // Rotate the first task to keep (task - referenceFirst) assigned to the same block across batches.
+        const uint64_t rotation = (begin - t.referenceFirst) % blocks;
+        const uint64_t first = begin + (block >= rotation ? block - rotation : block + blocks - rotation);
+        for (uint64_t globalTask = first; globalTask < end; globalTask += blocks) {
+            const uint64_t task = globalTask - batchFirst;
+            ComputeReferenceTask(
+                ap, bp, cp, t, scalars, task % chunks * tile, task / chunks, batch, tile, sumBuffer.Get<float>(),
+                inputBuffer.Get<float>(), oldBuffer.Get<float>(), mathBuffer.Get<float>());
+        }
+    }
+    PipeBarrier<PIPE_ALL>();
+    SetMaskNorm();
+    ResetMask();
+}
+
+template <bool NZ>
+__aicore__ inline void BindCubeInputs(
+    GlobalTensor<float>& x, GlobalTensor<float>& y, __gm__ float* aPtr, __gm__ float* bPtr,
+    const GemmBatchedExArch22Tiling& t, uint64_t row, uint64_t col)
+{
+    if constexpr (NZ) {
+        uint64_t aRows = t.transA ? (t.m + 15LL) / 16 * 16 : t.k;
+        uint64_t bRows = t.transB ? t.k : (t.n + 15LL) / 16 * 16;
+        x.SetGlobalBuffer(bPtr + (t.transB ? row * bRows : row * 8));
+        y.SetGlobalBuffer(aPtr + (t.transA ? col * 8 : col * aRows));
+    } else {
+        x.SetGlobalBuffer(bPtr + (t.transB ? row : row * t.ldb));
+        y.SetGlobalBuffer(aPtr + (t.transA ? col * t.lda : col));
+    }
+}
+
+template <bool TA, bool TB, bool NZ>
+__aicore__ inline void IterateCubeReduction(
+    MM<TA, TB, NZ>& mm, GlobalTensor<float>& x, GlobalTensor<float>& y, GlobalTensor<float>& z, __gm__ float* aPtr,
+    __gm__ float* bPtr, const GemmBatchedExArch22Tiling& t, uint64_t row, uint64_t col, int tailM, int tailN)
+{
+    for (int32_t first = 0; first < t.k; first += 256) {
+        int32_t count = min(256, t.k - first);
+        x.SetGlobalBuffer(bPtr + (TB ? row + static_cast<uint64_t>(first) * t.ldb : row * t.ldb + first));
+        y.SetGlobalBuffer(aPtr + (TA ? col * t.lda + first : col + static_cast<uint64_t>(first) * t.lda));
+        mm.SetTensorA(x, TB);
+        mm.SetTensorB(y, TA);
+        mm.SetSingleShape(tailM, tailN, count);
+        mm.IterateAll(z, first == 0 ? 0 : 1);
+        if (first + count < t.k)
+            mm.End();
+    }
+}
+
+template <bool TA, bool TB, bool NZ>
+__aicore__ inline void CubeTask(
+    MM<TA, TB, NZ>& mm, GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR workspace, const GemmBatchedExArch22Tiling& t,
+    uint64_t task)
+{
+    uint64_t rows = (t.n + t.tileM - 1LL) / t.tileM;
+    uint64_t cols = (t.m + t.tileN - 1LL) / t.tileN;
+    uint64_t batch = task / (rows * cols);
+    uint64_t row = (task / cols % rows) * t.tileM;
+    uint64_t col = (task % cols) * t.tileN;
+    auto aPtr = reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(a)[batch]);
+    auto bPtr = reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(b)[batch]);
+    auto cPtr = reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(c)[batch]);
+    GlobalTensor<float> x;
+    GlobalTensor<float> y;
+    GlobalTensor<float> z;
+    if (t.packed) {
+        aPtr = reinterpret_cast<__gm__ float*>(workspace) + batch * t.packAElements;
+        bPtr = reinterpret_cast<__gm__ float*>(workspace) + static_cast<uint64_t>(t.batchCount) * t.packAElements +
+               batch * t.packBElements;
+    }
+    BindCubeInputs<NZ>(x, y, aPtr, bPtr, t, row, col);
+    uint64_t stride = t.temporary ? t.productLd : t.ldc;
+    auto out =
+        t.temporary ? reinterpret_cast<__gm__ float*>(workspace) + t.productOffset + batch * t.productLd * t.n : cPtr;
+    z.SetGlobalBuffer(out + row * stride + col);
+    mm.SetOrgShape(
+        t.transB ? t.ldb : t.n, t.transA ? t.m : t.lda, t.transB ? t.k : t.ldb, t.transA ? t.lda : t.k, stride);
+    mm.SetTensorA(x, t.transB);
+    mm.SetTensorB(y, t.transA);
+    int tailM = t.n - row < t.tileM ? t.n - row : t.tileM;
+    int tailN = t.m - col < t.tileN ? t.m - col : t.tileN;
+    mm.SetSingleShape(tailM, tailN, t.k);
+    if constexpr (!TA && !TB && !NZ) {
+        if (t.k >= 4096) {
+            IterateCubeReduction<TA, TB, NZ>(mm, x, y, z, aPtr, bPtr, t, row, col, tailM, tailN);
+            return;
+        }
+    }
+    if constexpr (TA && TB && !NZ) {
+        if (t.temporary && t.n <= 64 && t.k >= 1024) {
+            IterateCubeReduction<TA, TB, NZ>(mm, x, y, z, aPtr, bPtr, t, row, col, tailM, tailN);
+            return;
+        }
+    }
+    mm.IterateAll(z);
+}
+
+template <bool TA, bool TB, bool NZ>
+__global__ __aicore__ void GemmBatchedExCube(
+    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR workspace, GemmBatchedExArch22Tiling t)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIC_ONLY);
+    if (Alpha(t) == 0.0f)
+        return;
+    TPipe pipe;
+    MM<TA, TB, NZ> mm;
+    mm.SetSubBlockIdx(0);
+    mm.Init(static_cast<const AscendC::tiling::TCubeTiling*>(nullptr), &pipe);
+    mm.DisableBias();
+    mm.SetHF32(false);
     uint32_t policyBatch = UINT32_MAX;
     bool policyValue = false;
-    for (uint64_t task = GetBlockIdx(); task < chunks * t.n * t.batches; task += referenceCores) {
-        const uint64_t row = task % chunks * tile;
-        const uint64_t col = task / chunks % t.n;
-        const uint32_t batch = t.firstBatch + task / (chunks * t.n);
-        if (useLocalPolicy) {
-            if ((localMask & (1U << batch)) == 0)
-                continue;
-        } else if (t.policy != 0 && !ReferenceRequired(t, batch, policyBatch, policyValue))
+    const uint64_t batchTasks = ((t.n + t.tileM - 1LL) / t.tileM) * ((t.m + t.tileN - 1LL) / t.tileN);
+    for (uint64_t task = GetBlockIdx(); task < t.tasks; task += GetBlockNum()) {
+        if (ReferenceRequired(t, task / batchTasks, policyBatch, policyValue))
             continue;
-        ComputeReferenceTask(ap, bp, cp, t, row, col, batch, tile, sum, input, old);
+        CubeTask<TA, TB, NZ>(mm, a, b, c, workspace, t, task);
+        if constexpr (!NZ)
+            mm.End();
     }
+    if constexpr (NZ)
+        mm.End();
+    mm.SetHF32(false);
 }
-// Every core derives the same mask from an already-completed scan kernel.
-// Only core0 publishes flags for the later Cube launch. Reference computation
-// reads its own local mask, never another core's newly-written flag.
-__aicore__ inline uint32_t ReadPolicyMask(
-    const GemmBatchedEx22Tiling& t, const LocalTensor<float>& input, const LocalTensor<float>& work,
-    const LocalTensor<uint32_t>& flag)
-{
-    GlobalTensor<float> statistics;
-    statistics.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(t.policy + static_cast<uint64_t>(t.batches) * 64U));
-    GlobalTensor<uint32_t> flags;
-    flags.SetGlobalBuffer(reinterpret_cast<__gm__ uint32_t*>(t.policy));
-    uint32_t localMask = 0;
-    for (uint32_t batch = 0; batch < t.batches; ++batch) {
-        const bool reference = ReadPolicyDecisionTree(statistics, input, work, batch, t);
-        if (reference)
-            localMask |= 1U << batch;
-        if (GetBlockIdx() == 0) {
-            for (uint32_t i = 0; i < 16; ++i)
-                flag.SetValue(i, 0);
-            flag.SetValue(0, reference ? 1U : 0U);
-            SyncEvent<HardEvent::S_MTE3>();
-            const DataCopyExtParams store{1, 64U, 0, 0, 0};
-            DataCopyPad(flags[static_cast<uint64_t>(batch) * 16U], flag, store);
-            SyncEvent<HardEvent::MTE3_S>();
+
+// Preserve each operand's physical orientation. Extra reduction coordinates are zero.
+class Pack {
+public:
+    __aicore__ inline void Init(GM_ADDR a, GM_ADDR b, GM_ADDR workspace, GemmBatchedExArch22Tiling t)
+    {
+        a_ = reinterpret_cast<__gm__ uint64_t*>(a);
+        b_ = reinterpret_cast<__gm__ uint64_t*>(b);
+        workspace_ = reinterpret_cast<__gm__ float*>(workspace);
+        t_ = t;
+        pipe_.InitBuffer(in_, 1, ELEMENTS * 4);
+        pipe_.InitBuffer(out_, 1, ELEMENTS * 4);
+        pipe_.InitBuffer(pad_, ELEMENTS * 4);
+    }
+    __aicore__ inline TPipe& Pipe() { return pipe_; }
+    __aicore__ inline void Process(bool onlyA = false)
+    {
+        Operand(
+            a_, workspace_, t_.transA ? (t_.m + 15LL) / 16 * 16 : t_.k, t_.lda, t_.transA ? t_.m : t_.originalK,
+            t_.transA ? t_.originalK : t_.m, t_.originalLda, t_.packAElements);
+        if (onlyA)
+            return;
+        uint32_t aRows = t_.transA ? (t_.m + 15U) / 16 * 16 : t_.k;
+        uint32_t aTasks = static_cast<uint64_t>(t_.batchCount) * (aRows / ROWS) * ((t_.lda + COLS - 1U) / COLS);
+        Operand(
+            b_, workspace_ + static_cast<uint64_t>(t_.batchCount) * t_.packAElements,
+            t_.transB ? t_.k : (t_.n + 15LL) / 16 * 16, t_.ldb, t_.transB ? t_.originalK : t_.n,
+            t_.transB ? t_.n : t_.originalK, t_.originalLdb, t_.packBElements, aTasks);
+    }
+
+private:
+    __aicore__ inline void LoadTile(
+        GlobalTensor<float> src, uint32_t rows, uint32_t width, uint32_t leading, uint32_t stride)
+    {
+        auto padded = pad_.Get<float>();
+        PipeBarrier<PIPE_V>();
+        Duplicate(padded, 0.0f, ROWS * stride);
+        if (rows && width) {
+            auto in = in_.AllocTensor<float>();
+            DataCopyExtParams read{static_cast<uint16_t>(rows), width * 4U, (leading - width) * 4U, 0, 0};
+            DataCopyPadExtParams<float> pad{true, 0, 0, 0};
+            DataCopyPad(in, src, read, pad);
+            in_.EnQue(in);
+            in = in_.DeQue<float>();
+            uint32_t inWidth = (width + 7) / 8 * 8;
+            CopyRepeatParams repeat{1, 1, static_cast<uint16_t>(stride / 8), static_cast<uint16_t>(inWidth / 8)};
+            PipeBarrier<PIPE_V>();
+            for (uint32_t col = 0; col < width; col += 64) {
+                Copy(
+                    padded[col], in[col], static_cast<uint64_t>(min(64U, width - col)), static_cast<uint8_t>(rows),
+                    repeat);
+            }
+            in_.FreeTensor(in);
+        }
+        PipeBarrier<PIPE_V>();
+    }
+    __aicore__ inline void StoreTile(GlobalTensor<float> dst, uint32_t width, uint32_t height, uint32_t stride)
+    {
+        auto out = out_.AllocTensor<float>();
+        CopyRepeatParams repeat{ROWS, 1, 1, static_cast<uint16_t>(stride / 8)};
+        auto padded = pad_.Get<float>();
+        for (uint32_t col = 0; col < width; col += 64) {
+            Copy(out[col * ROWS], padded[col], static_cast<uint64_t>(min(64U, width - col)), ROWS, repeat);
+        }
+        out_.EnQue(out);
+        out = out_.DeQue<float>();
+        DataCopyExtParams write{static_cast<uint16_t>(width / 8), ROWS * 8 * 4U, 0, (height - ROWS) * 8 * 4U, 0};
+        DataCopyPad(dst, out, write);
+        out_.FreeTensor(out);
+    }
+    __aicore__ inline void Operand(
+        __gm__ uint64_t* pointers, __gm__ float* output, int rows, int width, int realRows, int realWidth, int leading,
+        uint64_t plane, uint32_t firstTask = 0)
+    {
+        uint32_t columns = (width + COLS - 1U) / COLS;
+        uint32_t groups = rows / ROWS;
+        uint32_t tasks = static_cast<uint64_t>(t_.batchCount) * groups * columns;
+        uint32_t shift = firstTask % t_.vectorBlocks;
+        uint32_t first = static_cast<uint32_t>(GetBlockIdx()) >= shift ?
+                             static_cast<uint32_t>(GetBlockIdx()) - shift :
+                             static_cast<uint32_t>(GetBlockIdx()) + t_.vectorBlocks - shift;
+        for (uint32_t task = first; task < tasks; task += t_.vectorBlocks) {
+            uint32_t batch = task / (columns * groups);
+            uint32_t row = task / columns % groups * ROWS;
+            uint32_t col = task % columns * COLS;
+            uint32_t count = min(static_cast<uint32_t>(COLS), width - col);
+            uint32_t validRows = row >= realRows ? 0 : min(static_cast<uint32_t>(ROWS), realRows - row);
+            uint32_t validWidth = col >= realWidth ? 0 : min(static_cast<uint32_t>(count), realWidth - col);
+            GlobalTensor<float> src;
+            GlobalTensor<float> dst;
+            src.SetGlobalBuffer(
+                reinterpret_cast<__gm__ float*>(pointers[batch]) + static_cast<uint64_t>(row) * leading + col);
+            dst.SetGlobalBuffer(output + batch * plane + static_cast<uint64_t>(col) * rows + row * 8);
+            uint32_t stride = count <= 128 ? 128 : COLS;
+            LoadTile(src, validRows, validWidth, leading, stride);
+            StoreTile(dst, count, rows, stride);
         }
     }
-    return localMask;
-}
-
-struct PolicyDecisionStorage {
-    TBuf<TPosition::VECIN> statisticsBuffer;
-    TBuf<TPosition::VECOUT> flagBuffer;
-    TBuf<TPosition::VECCALC> workBuffer;
-
-    __aicore__ inline uint32_t Read(const GemmBatchedEx22Tiling& t, TPipe& pipe)
-    {
-        pipe.InitBuffer(statisticsBuffer, 512U * 4U);
-        pipe.InitBuffer(workBuffer, 512U * 4U);
-        pipe.InitBuffer(flagBuffer, 64U);
-        auto input = statisticsBuffer.Get<float>();
-        auto work = workBuffer.Get<float>();
-        auto flag = flagBuffer.Get<uint32_t>();
-        return ReadPolicyMask(t, input, work, flag);
-    }
+    static constexpr uint32_t ROWS = 16, COLS = 256, ELEMENTS = ROWS * COLS;
+    TPipe pipe_;
+    TQue<QuePosition::VECIN, 1> in_;
+    TQue<QuePosition::VECOUT, 1> out_;
+    TBuf<TPosition::VECCALC> pad_;
+    __gm__ uint64_t *a_, *b_;
+    __gm__ float* workspace_;
+    GemmBatchedExArch22Tiling t_;
 };
 
-__aicore__ inline void ComputePolicyReference(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, const GemmBatchedEx22Tiling& t, TPipe& pipe)
+__global__ __aicore__ void GemmBatchedExPack(GM_ADDR a, GM_ADDR b, GM_ADDR workspace, GemmBatchedExArch22Tiling t)
 {
-    PolicyDecisionStorage storage;
-    const uint32_t localMask = storage.Read(t, pipe);
-    if (localMask != 0)
-        ComputeReferenceOrder(a, b, c, t, pipe, true, localMask);
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    Pack op;
+    op.Init(a, b, workspace, t);
+    op.Process();
+    ResetMask();
 }
 
-__aicore__ inline bool UseWholeTiny(const GemmBatchedEx22Tiling& t)
+class Epilogue {
+public:
+    __aicore__ inline void Init(GM_ADDR c, GM_ADDR workspace, GemmBatchedExArch22Tiling t, bool scaleOnly)
+    {
+        t_ = t;
+        c_ = reinterpret_cast<__gm__ uint64_t*>(c);
+        workspace_ = workspace;
+        alpha_ = Alpha(t);
+        beta_ = Beta(t);
+        scale_ = scaleOnly || alpha_ == 0.0f;
+        pipe_.InitBuffer(in_, 1, TILE * sizeof(float));
+        pipe_.InitBuffer(old_, 1, TILE * sizeof(float));
+        pipe_.InitBuffer(out_, 1, TILE * sizeof(float));
+    }
+    __aicore__ inline void Process()
+    {
+        if (scale_ && beta_ == 1.0f)
+            return;
+        uint64_t tiles = (t_.m + TILE - 1ULL) / TILE;
+        uint64_t count = static_cast<uint64_t>(t_.batchCount) * t_.n * tiles;
+        uint32_t policyBatch = UINT32_MAX;
+        bool policyValue = false;
+        for (uint64_t task = GetBlockIdx(); task < count; task += GetBlockNum()) {
+            uint64_t batch = task / (tiles * t_.n);
+            if (!scale_ && ReferenceRequired(t_, batch, policyBatch, policyValue))
+                continue;
+            uint64_t col = task / tiles % t_.n;
+            uint64_t row = task % tiles * TILE;
+            uint32_t size = t_.m - row < TILE ? t_.m - row : TILE;
+            GlobalTensor<float> c;
+            GlobalTensor<float> product;
+            c.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(c_[batch]) + col * t_.ldc + row);
+            if (!scale_)
+                product.SetGlobalBuffer(
+                    reinterpret_cast<__gm__ float*>(workspace_) + t_.productOffset +
+                    (batch * t_.n + col) * t_.productLd + row);
+            Tile(c, product, size);
+        }
+    }
+
+private:
+    __aicore__ inline void Tile(GlobalTensor<float> c, GlobalTensor<float> product, uint32_t count)
+    {
+        DataCopyExtParams copy{1, count * 4U, 0, 0, 0};
+        DataCopyPadExtParams<float> pad{false, 0, 0, 0};
+        auto x = in_.AllocTensor<float>();
+        auto old = old_.AllocTensor<float>();
+        if (!scale_)
+            DataCopyPad(x, product, copy, pad);
+        if (beta_ != 0.0f)
+            DataCopyPad(old, c, copy, pad);
+        in_.EnQue(x);
+        old_.EnQue(old);
+        x = in_.DeQue<float>();
+        old = old_.DeQue<float>();
+        auto out = out_.AllocTensor<float>();
+        if (scale_) {
+            if (beta_ == 0.0f)
+                Duplicate(out, 0.0f, count);
+            else
+                Muls(out, old, beta_, count);
+        } else {
+            Muls(out, x, alpha_, count);
+            if (beta_ != 0.0f) {
+                Muls(old, old, beta_, count);
+                PipeBarrier<PIPE_V>();
+                Add(out, out, old, count);
+            }
+        }
+        out_.EnQue(out);
+        out = out_.DeQue<float>();
+        DataCopyPad(c, out, copy);
+        in_.FreeTensor(x);
+        old_.FreeTensor(old);
+        out_.FreeTensor(out);
+    }
+    static constexpr uint32_t TILE = 2048;
+    TPipe pipe_;
+    TQue<QuePosition::VECIN, 1> in_, old_;
+    TQue<QuePosition::VECOUT, 1> out_;
+    GemmBatchedExArch22Tiling t_;
+    __gm__ uint64_t* c_;
+    GM_ADDR workspace_;
+    float alpha_, beta_;
+    bool scale_;
+};
+// Short NN reductions load both operands once. Each AIV owns one output
+// column and preserves the sequential BLAS special-value semantics.
+class SmallNN {
+public:
+    __aicore__ inline void Init(TPipe& pipe, const GemmBatchedExArch22Tiling& t)
+    {
+        alpha = Alpha(t);
+        beta = Beta(t);
+        lanes = (t.m + 7) / 8 * 8;
+        pipe.InitBuffer(aq, 1, WIDTH * WIDTH * sizeof(float));
+        pipe.InitBuffer(bq, 1, WIDTH * sizeof(float));
+        pipe.InitBuffer(old, 1, WIDTH * sizeof(float));
+        pipe.InitBuffer(output, 1, WIDTH * sizeof(float));
+        pipe.InitBuffer(broadcastBuffer, WIDTH * 8 * sizeof(float));
+        pipe.InitBuffer(coefficientBuffer, WIDTH * WIDTH * sizeof(float));
+        broadcast = broadcastBuffer.Get<float>();
+        coefficients = coefficientBuffer.Get<float>();
+    }
+
+    __aicore__ inline void Column(GM_ADDR a, GM_ADDR b, GM_ADDR c, const GemmBatchedExArch22Tiling& t, uint64_t task)
+    {
+        DataCopyPadExtParams<float> pad{false, 0, 0, 0};
+        const uint32_t batch = task / t.n;
+        const uint32_t j = task % t.n;
+        GlobalTensor<float> ag;
+        GlobalTensor<float> bg;
+        GlobalTensor<float> cg;
+        ag.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(a)[batch]));
+        bg.SetGlobalBuffer(
+            reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(b)[batch]) +
+            static_cast<uint64_t>(j) * t.ldb);
+        cg.SetGlobalBuffer(
+            reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(c)[batch]) +
+            static_cast<uint64_t>(j) * t.ldc);
+        auto av = aq.AllocTensor<float>();
+        auto bv = bq.AllocTensor<float>();
+        auto cv = old.AllocTensor<float>();
+        auto sum = output.AllocTensor<float>();
+        DataCopyExtParams row{1, static_cast<uint32_t>(t.m) * 4, 0, 0, 0};
+        if (beta != 0.0f) {
+            DataCopyPad(cv, cg, row, pad);
+            old.EnQue(cv);
+            cv = old.DeQue<float>();
+            Muls(sum, cv, beta, t.m);
+        } else
+            Duplicate(sum, 0.0f, t.m);
+        PipeBarrier<PIPE_V>();
+        if (alpha != 0.0f)
+            Accumulate(t, ag, bg, av, bv, sum);
+        aq.FreeTensor(av);
+        bq.FreeTensor(bv);
+        old.FreeTensor(cv);
+        output.EnQue(sum);
+        sum = output.DeQue<float>();
+        DataCopyPad(cg, sum, row);
+        output.FreeTensor(sum);
+    }
+
+private:
+    __aicore__ inline void PrepareCoefficients(const GemmBatchedExArch22Tiling& t, const LocalTensor<float>& bv)
+    {
+        Brcb(broadcast, bv, (t.k + 7) / 8, {1, 8});
+        PipeBarrier<PIPE_V>();
+        const uint32_t elements = t.k * lanes;
+        CopyRepeatParams repeat{1, 0, static_cast<uint16_t>(lanes / 8), 1};
+        Copy(coefficients, broadcast, static_cast<uint64_t>(lanes), static_cast<uint8_t>(t.k), repeat);
+        PipeBarrier<PIPE_V>();
+        if (alpha != 1.0f) {
+            Muls(coefficients, coefficients, alpha, elements);
+            PipeBarrier<PIPE_V>();
+        }
+    }
+
+    __aicore__ inline void Accumulate(
+        const GemmBatchedExArch22Tiling& t, const GlobalTensor<float>& ag, const GlobalTensor<float>& bg,
+        LocalTensor<float>& av, LocalTensor<float>& bv, const LocalTensor<float>& sum)
+    {
+        DataCopyPadExtParams<float> pad{false, 0, 0, 0};
+        DataCopyExtParams acopy{
+            static_cast<uint16_t>(t.k), static_cast<uint32_t>(t.m) * 4, static_cast<uint32_t>(t.lda - t.m) * 4, 0, 0};
+        DataCopyExtParams rightCopy{1, static_cast<uint32_t>(t.k) * 4, 0, 0, 0};
+        DataCopyPad(av, ag, acopy, pad);
+        DataCopyPad(bv, bg, rightCopy, pad);
+        aq.EnQue(av);
+        bq.EnQue(bv);
+        av = aq.DeQue<float>();
+        bv = bq.DeQue<float>();
+        PrepareCoefficients(t, bv);
+        SetMaskNorm();
+        SetVectorMask<float>(0, (1ULL << t.m) - 1);
+        BinaryRepeatParams madd{1, 1, 1, 8, 8, 8};
+#pragma unroll 4
+        for (uint32_t kk = 0; kk < static_cast<uint32_t>(t.k); ++kk) {
+            MulAddDst<float, float, false>(sum, av[kk * lanes], coefficients[kk * lanes], MASK_PLACEHOLDER, 1, madd);
+            PipeBarrier<PIPE_V>();
+        }
+        ResetMask();
+        SetFlag<HardEvent::V_MTE2>(EVENT_ID0);
+        WaitFlag<HardEvent::V_MTE2>(EVENT_ID0);
+    }
+
+    static constexpr uint32_t WIDTH = 32;
+    float alpha;
+    float beta;
+    uint32_t lanes;
+    TQue<QuePosition::VECIN, 1> aq;
+    TQue<QuePosition::VECIN, 1> bq;
+    TQue<QuePosition::VECIN, 1> old;
+    TQue<QuePosition::VECOUT, 1> output;
+    TBuf<TPosition::VECCALC> broadcastBuffer;
+    TBuf<TPosition::VECCALC> coefficientBuffer;
+    LocalTensor<float> broadcast;
+    LocalTensor<float> coefficients;
+};
+
+__global__ __aicore__ void GemmBatchedExSmallNN(GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedExArch22Tiling t)
 {
-    return t.alpha == 1.0f && t.beta == 0.0f && !t.transA && !t.transB && t.m > 0 && t.m <= 32 && t.n > 0 &&
-           t.n <= 32 && t.k > 4 && t.k <= 32 &&
-           static_cast<uint64_t>(t.m) * t.n <= 4096U / static_cast<uint32_t>(t.k) &&
-           static_cast<uint64_t>(t.lda) <= UINT32_MAX / 4U && static_cast<uint64_t>(t.ldb) <= UINT32_MAX / 4U &&
-           static_cast<uint64_t>(t.ldc) <= UINT32_MAX / 4U;
-}
-__aicore__ inline bool UseTinyPreload(const GemmBatchedEx22Tiling& t)
-{
-    return t.alpha == 1.0f && t.beta == 0.0f && !t.transA && t.m > 0 && t.m <= 32 && t.k > 0 && t.k <= 32 &&
-           static_cast<uint64_t>(t.lda) <= UINT32_MAX / 4U &&
-           (!t.transB || static_cast<uint64_t>(t.ldb) <= UINT32_MAX / 4U);
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    TPipe pipe;
+    SmallNN op;
+    op.Init(pipe, t);
+    const uint64_t tasks = static_cast<uint64_t>(t.batchCount) * t.n;
+    for (uint64_t task = GetBlockIdx(); task < tasks; task += GetBlockNum())
+        op.Column(a, b, c, t, task);
+    ResetMask();
 }
 
-} // namespace
+template <uint32_t SIZE>
+__aicore__ inline void ComputeSmallSquare(
+    const LocalTensor<float>& av, const LocalTensor<float>& bv, const LocalTensor<float>& sum,
+    const LocalTensor<float>& products, const LocalTensor<float>& broadcast, const LocalTensor<float>& magnitudes,
+    const LocalTensor<float>& reduced)
+{
+    Abs(magnitudes, av, SIZE * SIZE + SIZE);
+    PipeBarrier<PIPE_V>();
+    ReduceSum(reduced, magnitudes, reduced[32], SIZE * SIZE + SIZE);
+    SetFlag<HardEvent::V_S>(EVENT_ID0);
+    WaitFlag<HardEvent::V_S>(EVENT_ID0);
+    if (reduced.GetValue(0) < 0x1p50f) {
+        Brcb(broadcast, bv, SIZE / 8, {1, 8});
+        PipeBarrier<PIPE_V>();
+        Mul(products, av, broadcast, SIZE, SIZE, {1, 1, 0, SIZE / 8, SIZE / 8, 1});
+        PipeBarrier<PIPE_V>();
+#pragma unroll
+        for (uint32_t rows = SIZE / 2; rows > 1; rows /= 2) {
+            Add(products, products, products[rows * SIZE], rows * SIZE);
+            PipeBarrier<PIPE_V>();
+        }
+        Add(sum, products, products[SIZE], SIZE);
+    } else {
+        for (uint32_t row = 0; row < SIZE; ++row) {
+            float value = 0.0f;
+            for (uint32_t kk = 0; kk < SIZE; ++kk)
+                value = FusedFloat(av.GetValue(kk * SIZE + row), bv.GetValue(kk), value);
+            sum.SetValue(row, value);
+        }
+        SetFlag<HardEvent::S_V>(EVENT_ID0);
+        WaitFlag<HardEvent::S_V>(EVENT_ID0);
+    }
+}
 
-extern "C" __global__ __aicore__ __cube__ void gemm_batched_ex22_cube(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, GemmBatchedEx22Tiling t)
+// A short square NN problem fits entirely in UB. Ordinary finite inputs use
+// a tree reduction; exceptional magnitudes keep BLAS's ordered FMA sequence.
+template <uint32_t SIZE>
+__global__ __aicore__ void GemmBatchedExSmallSquare(GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedExArch22Tiling t)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    TPipe pipe;
+    TBuf<TPosition::VECIN> inputs;
+    TBuf<TPosition::VECOUT> result;
+    TBuf<TPosition::VECCALC> productBuffer;
+    TBuf<TPosition::VECCALC> broadcastBuffer;
+    TBuf<TPosition::VECCALC> magnitudeBuffer;
+    TBuf<TPosition::VECCALC> reduceBuffer;
+    pipe.InitBuffer(inputs, (SIZE * SIZE + SIZE) * sizeof(float));
+    pipe.InitBuffer(result, SIZE * sizeof(float));
+    pipe.InitBuffer(productBuffer, SIZE * SIZE * sizeof(float));
+    pipe.InitBuffer(broadcastBuffer, SIZE * 8 * sizeof(float));
+    pipe.InitBuffer(magnitudeBuffer, (SIZE * SIZE + SIZE) * sizeof(float));
+    pipe.InitBuffer(reduceBuffer, 256);
+    auto av = inputs.Get<float>();
+    auto bv = av[SIZE * SIZE];
+    auto sum = result.Get<float>();
+    auto products = productBuffer.Get<float>();
+    auto broadcast = broadcastBuffer.Get<float>();
+    auto magnitudes = magnitudeBuffer.Get<float>();
+    auto reduced = reduceBuffer.Get<float>();
+    for (uint32_t task = GetBlockIdx(); task < static_cast<uint32_t>(t.batchCount) * SIZE; task += GetBlockNum()) {
+        const uint32_t batch = task / SIZE;
+        const uint32_t j = task % SIZE;
+        GlobalTensor<float> ag;
+        GlobalTensor<float> bg;
+        GlobalTensor<float> cg;
+        ag.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(a)[batch]));
+        bg.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(b)[batch]) + j * SIZE);
+        cg.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(c)[batch]) + j * SIZE);
+        DataCopy(av, ag, SIZE * SIZE);
+        DataCopy(bv, bg, SIZE);
+        SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
+        WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
+        ComputeSmallSquare<SIZE>(av, bv, sum, products, broadcast, magnitudes, reduced);
+        SetFlag<HardEvent::V_MTE3>(EVENT_ID0);
+        WaitFlag<HardEvent::V_MTE3>(EVENT_ID0);
+        DataCopy(cg, sum, SIZE);
+        SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
+        WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
+        SetFlag<HardEvent::V_MTE2>(EVENT_ID0);
+        WaitFlag<HardEvent::V_MTE2>(EVENT_ID0);
+    }
+    ResetMask();
+}
+
+// Follow the sequential fp32 BLAS reduction for small outputs. Output DMA owns
+// disjoint row ranges; scalar GM stores would share cache lines between cores.
+class ExactReduction {
+public:
+    __aicore__ inline void Init(TPipe& pipe, const GemmBatchedExArch22Tiling& t)
+    {
+        alpha = Alpha(t);
+        beta = Beta(t);
+        pipe.InitBuffer(input, 1, ROWS * REDUCTION * sizeof(float));
+        pipe.InitBuffer(old, 1, ROWS * sizeof(float));
+        pipe.InitBuffer(output, 1, ROWS * sizeof(float));
+        pipe.InitBuffer(gathered, ROWS * sizeof(float));
+        pipe.InitBuffer(indices, ROWS * sizeof(uint32_t));
+        av = gathered.Get<float>();
+        offsets = indices.Get<uint32_t>();
+        // Transposed A stores one contiguous reduction per row in UB.
+        if (t.transA && t.k < 512) {
+            for (uint32_t i = 0; i < ROWS; ++i)
+                offsets.SetValue(i, i * REDUCTION * sizeof(float));
+            SetFlag<HardEvent::S_V>(EVENT_ID0);
+            WaitFlag<HardEvent::S_V>(EVENT_ID0);
+        }
+    }
+
+    __aicore__ inline void Task(GM_ADDR a, GM_ADDR b, GM_ADDR c, const GemmBatchedExArch22Tiling& t, uint64_t task)
+    {
+        const uint32_t tiles = (t.m + ROWS - 1) / ROWS;
+        DataCopyPadExtParams<float> pad{false, 0, 0, 0};
+        const uint32_t batch = task / (static_cast<uint64_t>(t.n) * tiles);
+        j = task / tiles % t.n;
+        row = task % tiles * ROWS;
+        count = min(ROWS, static_cast<uint32_t>(t.m) - row);
+        lanes = (count + 7) / 8 * 8;
+        ap = reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(a)[batch]);
+        bp = reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(b)[batch]);
+        GlobalTensor<float> dst;
+        dst.SetGlobalBuffer(
+            reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(c)[batch]) +
+            static_cast<uint64_t>(j) * t.ldc + row);
+        auto sum = output.AllocTensor<float>();
+        auto previous = old.AllocTensor<float>();
+        DataCopyExtParams rowCopy{1, count * 4, 0, 0, 0};
+        if (beta != 0.0f) {
+            DataCopyPad(previous, dst, rowCopy, pad);
+            old.EnQue(previous);
+            previous = old.DeQue<float>();
+        }
+        if (t.transA && t.k >= 512 && alpha != 0.0f)
+            ComputeScalar(t, sum, previous);
+        else
+            ComputeVector(t, sum, previous);
+        old.FreeTensor(previous);
+        output.EnQue(sum);
+        sum = output.DeQue<float>();
+        DataCopyPad(dst, sum, rowCopy);
+        output.FreeTensor(sum);
+    }
+
+private:
+    __aicore__ inline void ComputeScalar(
+        const GemmBatchedExArch22Tiling& t, const LocalTensor<float>& sum, const LocalTensor<float>& previous)
+    {
+        if (beta != 0.0f) {
+            SetFlag<HardEvent::MTE2_S>(EVENT_ID0);
+            WaitFlag<HardEvent::MTE2_S>(EVENT_ID0);
+        }
+        for (uint32_t i = 0; i < count; ++i) {
+            float value = 0.0f;
+            for (uint32_t kk = 0; kk < static_cast<uint32_t>(t.k); ++kk) {
+                float left = ap[static_cast<uint64_t>(row + i) * t.lda + kk];
+                float right =
+                    bp[t.transB ? static_cast<uint64_t>(kk) * t.ldb + j : static_cast<uint64_t>(j) * t.ldb + kk];
+                value = FusedFloat(left, right, value);
+            }
+            volatile float product = alpha * value;
+            sum.SetValue(
+                i, beta == 0.0f ? static_cast<float>(product) :
+                                  FusedFloat(beta, previous.GetValue(i), static_cast<float>(product)));
+        }
+        SetFlag<HardEvent::S_MTE3>(EVENT_ID0);
+        WaitFlag<HardEvent::S_MTE3>(EVENT_ID0);
+    }
+
+    __aicore__ inline void ComputeVector(
+        const GemmBatchedExArch22Tiling& t, const LocalTensor<float>& sum, const LocalTensor<float>& previous)
+    {
+        if ((!t.transA || alpha == 0.0f) && beta != 0.0f)
+            Muls(sum, previous, beta, count);
+        else
+            Duplicate(sum, 0.0f, count);
+        PipeBarrier<PIPE_V>();
+        if (alpha != 0.0f) {
+            for (uint32_t k0 = 0; k0 < static_cast<uint32_t>(t.k); k0 += REDUCTION) {
+                ReduceBlock(t, sum, k0);
+            }
+            if (t.transA) {
+                Muls(sum, sum, alpha, count);
+                PipeBarrier<PIPE_V>();
+                if (beta != 0.0f) {
+                    Axpy(sum, previous, beta, count);
+                    PipeBarrier<PIPE_V>();
+                }
+            }
+        }
+    }
+
+    __aicore__ inline void ReduceBlock(const GemmBatchedExArch22Tiling& t, const LocalTensor<float>& sum, uint32_t k0)
+    {
+        DataCopyPadExtParams<float> pad{false, 0, 0, 0};
+        const uint32_t kc = min(REDUCTION, static_cast<uint32_t>(t.k) - k0);
+        GlobalTensor<float> src;
+        src.SetGlobalBuffer(
+            ap + (t.transA ? static_cast<uint64_t>(row) * t.lda + k0 : static_cast<uint64_t>(k0) * t.lda + row));
+        auto values = input.AllocTensor<float>();
+        DataCopyExtParams read{
+            static_cast<uint16_t>(t.transA ? count : kc), (t.transA ? kc : count) * 4,
+            static_cast<uint32_t>((t.lda - (t.transA ? kc : count)) * 4),
+            static_cast<uint32_t>(t.transA ? (REDUCTION - (kc + 7) / 8 * 8) / 8 : 0), 0};
+        DataCopyPad(values, src, read, pad);
+        input.EnQue(values);
+        values = input.DeQue<float>();
+        ApplyBlock(t, sum, values, k0, kc);
+        SetFlag<HardEvent::V_MTE2>(EVENT_ID0);
+        WaitFlag<HardEvent::V_MTE2>(EVENT_ID0);
+        input.FreeTensor(values);
+    }
+
+    __aicore__ inline void ApplyBlock(
+        const GemmBatchedExArch22Tiling& t, const LocalTensor<float>& sum, const LocalTensor<float>& values,
+        uint32_t k0, uint32_t kc)
+    {
+        for (uint32_t kk = 0; kk < kc; ++kk) {
+            const uint64_t reduction = k0 + kk;
+            const float bv = bp[t.transB ? reduction * t.ldb + j : static_cast<uint64_t>(j) * t.ldb + reduction];
+            if (t.transA) {
+                Gather(av, values, offsets, kk * sizeof(float), count);
+                PipeBarrier<PIPE_V>();
+                Axpy(sum, av, bv, count);
+            } else {
+                volatile float scaled = alpha * bv;
+                Axpy(sum, values[kk * lanes], static_cast<float>(scaled), count);
+            }
+            PipeBarrier<PIPE_V>();
+        }
+    }
+
+    static constexpr uint32_t ROWS = 64;
+    static constexpr uint32_t REDUCTION = 128;
+    float alpha;
+    float beta;
+    uint32_t row;
+    uint32_t j;
+    uint32_t count;
+    uint32_t lanes;
+    __gm__ float* ap;
+    __gm__ float* bp;
+    TQue<QuePosition::VECIN, 1> input;
+    TQue<QuePosition::VECIN, 1> old;
+    TQue<QuePosition::VECOUT, 1> output;
+    TBuf<TPosition::VECCALC> gathered;
+    TBuf<TPosition::VECCALC> indices;
+    LocalTensor<float> av;
+    LocalTensor<uint32_t> offsets;
+};
+
+__global__ __aicore__ void GemmBatchedExExact(GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedExArch22Tiling t)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    TPipe pipe;
+    ExactReduction op;
+    op.Init(pipe, t);
+    const uint32_t tiles = (t.m + 63U) / 64;
+    const uint64_t tasks = static_cast<uint64_t>(t.batchCount) * t.n * tiles;
+    for (uint64_t task = GetBlockIdx(); task < tasks; task += GetBlockNum())
+        op.Task(a, b, c, t, task);
+    ResetMask();
+}
+
+__global__ __aicore__ void GemmBatchedExScale(GM_ADDR c, GM_ADDR workspace, GemmBatchedExArch22Tiling t, bool scaleOnly)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
+    Epilogue op;
+    op.Init(c, workspace, t, scaleOnly);
+    op.Process();
+    ResetMask();
+}
+// Compact per-core ping-pong output hides the AIV scatter behind the next Cube tile.
+// Flag 7: all-AIV Pack barrier. Flags 8/9: Cube output ready. Flags 10/11: AIV slot free.
+// Flags 12/13 mark the first four completed N tiles in the short TT stream.
+// Matmul uses flags 0..3. Tail AIVs still pair every ready/free event.
+using AlignedOutput = matmul::MatmulType<TPosition::GM, CubeFormat::ND, float>;
+constexpr MatmulShapeParams FUSED_SHAPE{128, 512, 128, 128, 128, 32};
+constexpr MatmulFuncParams FUSED_FUNC{false, false, false, false, 2, IterateOrder::ORDER_N, ScheduleType::INNER_PRODUCT,
+                                      true,  true};
+template <bool STRIP, bool TB>
+__aicore__ constexpr MatmulConfig MakeMacroConfig()
+{
+    constexpr MatmulShapeParams strip{128, 4096, 128, 128, TB ? 128 : 256, TB ? 64 : 32};
+    auto cfg = GetMMConfig<MatmulConfigMode::CONFIG_MDL>(STRIP ? strip : FUSED_SHAPE, FUSED_FUNC, BIAS);
+    cfg.enUnitFlag = !(STRIP && TB);
+    return cfg;
+}
+template <bool STRIP, bool TB>
+constexpr MatmulConfig FUSED_CONFIG = MakeMacroConfig<STRIP, TB>();
+template <bool TB, bool STRIP>
+using HybridLeft = matmul::MatmulType<STRIP ? TPosition::A1 : TPosition::GM, CubeFormat::NZ, float, TB>;
+template <bool TA, bool TB, bool STRIP = false>
+__aicore__ constexpr MatmulApiStaticTiling MakeMacroTiling()
+{
+    auto t = matmul::GetMatmulApiTiling<HybridLeft<TB, STRIP>, Input<TA, true>, AlignedOutput, Matrix>(
+        FUSED_CONFIG<STRIP, TB>);
+    if constexpr (STRIP && TA && TB)
+        t.dbL0C = 2;
+    t.stepM = 1;
+    t.stepN = 1;
+    t.stepKa = STRIP && TB ? 2 : 4;
+    t.stepKb = STRIP && TB ? 2 : 4;
+    t.depthA1 = STRIP && TB ? 4 : 8;
+    t.depthB1 = STRIP && TB ? 4 : 8;
+    t.shareL1Size = (128 + (STRIP && !TB ? 256 : 128)) * 128 * 4 * 2;
+    return t;
+}
+template <bool TA, bool TB, bool STRIP = false>
+constexpr MatmulApiStaticTiling FUSED_TILING = MakeMacroTiling<TA, TB, STRIP>();
+template <bool TA, bool TB, bool STRIP = false>
+using FusedMM =
+    matmul::MatmulImpl<HybridLeft<TB, STRIP>, Input<TA, true>, AlignedOutput, Matrix, FUSED_TILING<TA, TB, STRIP>>;
+
+struct RingCoordinates {
+    uint32_t batch, row, col;
+};
+
+__aicore__ inline RingCoordinates DecodeRingTask(
+    uint64_t task, uint32_t rows, uint32_t columns, uint32_t height, uint32_t width)
+{
+    if (rows == 0 || columns == 0)
+        return {};
+    return {
+        static_cast<uint32_t>(task / (static_cast<uint64_t>(rows) * columns)),
+        static_cast<uint32_t>(task / columns % rows * height), static_cast<uint32_t>(task % columns * width)};
+}
+
+using OutputQueue = TQueBind<QuePosition::VECIN, QuePosition::VECOUT, 1>;
+__aicore__ inline void StoreRingTask(
+    OutputQueue& input, GM_ADDR c, __gm__ float* scratch, const GemmBatchedExArch22Tiling& t, uint64_t task,
+    uint64_t round, uint32_t rows, uint32_t columns, uint32_t height, uint32_t WIDTH, uint32_t ELEMENTS)
+{
+    const auto coord = DecodeRingTask(task, rows, columns, height, WIDTH);
+    uint32_t batch = coord.batch;
+    uint32_t rowBase = coord.row;
+    uint32_t subRow = GetSubBlockIdx() * (height / 2);
+    uint32_t row = rowBase + subRow;
+    uint32_t col = coord.col;
+    uint32_t width = min(static_cast<uint32_t>(WIDTH), t.m - col);
+    uint32_t realHeight = min(height, t.n - rowBase);
+    if (subRow < realHeight) {
+        uint16_t outputRows = min(height / 2, realHeight - subRow);
+        GlobalTensor<float> src;
+        GlobalTensor<float> dst;
+        src.SetGlobalBuffer(scratch + (round % 2) * ELEMENTS + subRow * WIDTH);
+        src.SetL2CacheHint(CacheMode::CACHE_MODE_PERSISTENT);
+        auto local = input.AllocTensor<float>();
+        DataCopy(local, src, outputRows * WIDTH);
+        input.EnQue(local);
+        local = input.DeQue<float>();
+        dst.SetGlobalBuffer(
+            reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(c)[batch]) +
+            static_cast<uint64_t>(row) * t.ldc + col);
+        DataCopyExtParams write{outputRows, width * 4U, (WIDTH - (width + 7) / 8 * 8) / 8, (t.ldc - width) * 4U, 0};
+        DataCopyPad(dst, local, write);
+        input.FreeTensor(local);
+    }
+}
+
+__aicore__ inline void StoreRingPiece(
+    OutputQueue& input, GM_ADDR c, __gm__ float* scratch, const GemmBatchedExArch22Tiling& t, uint64_t task,
+    uint64_t round, uint32_t rows, uint32_t height, uint32_t width, uint32_t elements, uint32_t first)
+{
+    const auto coord = DecodeRingTask(task, rows, 1, height, width);
+    uint32_t sub = GetSubBlockIdx() * (height / 2);
+    uint32_t valid = min(height, t.n - coord.row);
+    if (sub < valid) {
+        uint16_t count = min(height / 2, valid - sub);
+        uint32_t columns = min(512U, t.m - first);
+        uint32_t aligned = (columns + 7) / 8 * 8;
+        GlobalTensor<float> src;
+        GlobalTensor<float> dst;
+        src.SetGlobalBuffer(scratch + (round % 2) * elements + sub * width + first);
+        src.SetL2CacheHint(CacheMode::CACHE_MODE_PERSISTENT);
+        dst.SetGlobalBuffer(
+            reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(c)[coord.batch]) +
+            static_cast<uint64_t>(coord.row + sub) * t.ldc + first);
+        auto local = input.AllocTensor<float>();
+        DataCopyParams read{count, static_cast<uint16_t>(aligned / 8), static_cast<uint16_t>((width - aligned) / 8), 0};
+        DataCopy(local, src, read);
+        input.EnQue(local);
+        local = input.DeQue<float>();
+        DataCopyExtParams write{count, columns * 4U, 0, (t.ldc - columns) * 4U, 0};
+        DataCopyPad(dst, local, write);
+        input.FreeTensor(local);
+    }
+}
+
+template <bool TB>
+__aicore__ inline void LoadRingStrip(
+    const LocalTensor<float>& left, GM_ADDR b, const GemmBatchedExArch22Tiling& t, uint32_t batch, uint32_t row,
+    uint32_t height)
+{
+    GlobalTensor<float> original;
+    original.SetGlobalBuffer(
+        reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(b)[batch]) +
+        (TB ? row : static_cast<uint64_t>(row) * t.originalLdb));
+    uint32_t validRows = min(height, t.n - row);
+    Nd2NzParams copy{
+        1,
+        static_cast<uint16_t>(TB ? t.originalK : validRows),
+        static_cast<uint16_t>(TB ? validRows : t.originalK),
+        0,
+        static_cast<uint16_t>(t.originalLdb),
+        static_cast<uint16_t>(TB ? t.k : (height + 15) / 16 * 16),
+        1,
+        0};
+    DataCopy(left, original, copy);
+    SetFlag<HardEvent::MTE2_MTE1>(EVENT_ID6);
+    WaitFlag<HardEvent::MTE2_MTE1>(EVENT_ID6);
+}
+
+template <bool STRIP, bool STREAM, typename Matmul>
+__aicore__ inline void FinishRingProduct(Matmul& mm, const GlobalTensor<float>& z, uint16_t slot)
+{
+    if constexpr (STREAM) {
+        uint32_t piece = 0;
+        while (mm.Iterate()) {
+            mm.GetTensorC(z);
+            if (++piece == 4)
+                CrossCoreSetFlag<2, PIPE_FIX>(12 + slot);
+        }
+    } else {
+        mm.IterateAll(z);
+    }
+    CrossCoreSetFlag<2, PIPE_FIX>(8 + slot);
+    if constexpr (STRIP)
+        mm.End();
+}
+
+template <bool TA, bool TB, bool STRIP, bool STREAM>
+__aicore__ inline void ComputeRingTask(
+    FusedMM<TA, TB, STRIP>& mm, TBuf<TPosition::A1>& leftBuffer, const GemmBatchedExArch22Tiling& t, GM_ADDR b,
+    GM_ADDR workspace, __gm__ float* scratch, uint64_t task, uint64_t round, uint32_t rows, uint32_t columns,
+    uint32_t height, uint32_t WIDTH, uint32_t ELEMENTS)
+{
+    uint16_t slot = round % 2;
+    const auto coord = DecodeRingTask(task, rows, columns, height, WIDTH);
+    uint32_t batch = coord.batch;
+    uint32_t row = coord.row;
+    uint32_t col = coord.col;
+    auto ap = reinterpret_cast<__gm__ float*>(workspace) + static_cast<uint64_t>(batch) * t.packAElements;
+    auto bp = reinterpret_cast<__gm__ float*>(workspace) + static_cast<uint64_t>(t.batchCount) * t.packAElements +
+              static_cast<uint64_t>(batch) * t.packBElements;
+    uint64_t aRows = TA ? (t.m + 15LL) / 16 * 16 : t.k;
+    uint64_t bRows = TB ? t.k : (t.n + 15LL) / 16 * 16;
+    GlobalTensor<float> x;
+    GlobalTensor<float> y;
+    GlobalTensor<float> z;
+    x.SetGlobalBuffer(bp + (TB ? row * bRows : row * 8));
+    y.SetGlobalBuffer(ap + (TA ? col * 8 : col * aRows));
+    z.SetGlobalBuffer(scratch + slot * ELEMENTS);
+    z.SetL2CacheHint(CacheMode::CACHE_MODE_PERSISTENT);
+    if constexpr (STRIP)
+        LoadRingStrip<TB>(leftBuffer.Get<float>(), b, t, batch, row, height);
+    CrossCoreWaitFlag<2>(10 + slot);
+    mm.SetOrgShape(
+        STRIP ? (height + 15) / 16 * 16 : (TB ? t.ldb : t.n), TA ? t.m : t.lda, STRIP ? t.k : (TB ? t.k : t.ldb),
+        TA ? t.lda : t.k, WIDTH);
+    if constexpr (STRIP)
+        mm.SetTensorA(leftBuffer.Get<float>(), TB);
+    else
+        mm.SetTensorA(x, TB);
+    mm.SetTensorB(y, TA);
+    // TT strips retain padded L1 shapes while storing only their logical output.
+    constexpr bool LOGICAL_SHAPE = STRIP && TA && TB;
+    mm.SetSingleShape(
+        LOGICAL_SHAPE ? min(height, t.n - row) : (min(height, t.n - row) + 15) / 16 * 16,
+        LOGICAL_SHAPE ? min(static_cast<uint32_t>(WIDTH), t.m - col) :
+                        (min(static_cast<uint32_t>(WIDTH), t.m - col) + 15) / 16 * 16,
+        LOGICAL_SHAPE ? (t.originalK + 7) / 8 * 8 : t.k);
+    FinishRingProduct<STRIP, STREAM>(mm, z, slot);
+}
+
+template <bool TA, bool TB, bool STRIP, bool STREAM = false>
+__aicore__ inline void ComputeRing(
+    const GemmBatchedExArch22Tiling& t, GM_ADDR b, GM_ADDR workspace, __gm__ float* scratch, uint32_t block,
+    uint64_t rounds, uint32_t rows, uint32_t columns, uint32_t height, uint32_t WIDTH, uint32_t ELEMENTS)
 {
     TPipe pipe;
-    if (t.splitK != 0) {
-        if (t.transA) {
-            if (t.transB)
-                ComputeSplitCube<true, true>(a, b, temporary, t, pipe);
-            else
-                ComputeSplitCube<true, false>(a, b, temporary, t, pipe);
-        } else {
-            if (t.transB)
-                ComputeSplitCube<false, true>(a, b, temporary, t, pipe);
-            else
-                ComputeSplitCube<false, false>(a, b, temporary, t, pipe);
-        }
+    FusedMM<TA, TB, STRIP> mm;
+    mm.SetSubBlockIdx(0);
+    mm.Init(static_cast<const AscendC::tiling::TCubeTiling*>(nullptr), &pipe);
+    mm.DisableBias();
+    mm.SetHF32(false);
+    TBuf<TPosition::A1> leftBuffer;
+    if constexpr (STRIP)
+        pipe.InitBuffer(leftBuffer, ((height + 15) / 16 * 16) * t.k * sizeof(float));
+    for (uint64_t round = 0, task = block; round < rounds; ++round, task += GetBlockNum()) {
+        ComputeRingTask<TA, TB, STRIP, STREAM>(
+            mm, leftBuffer, t, b, workspace, scratch, task, round, rows, columns, height, WIDTH, ELEMENTS);
+    }
+    mm.End();
+    mm.SetHF32(false);
+}
+
+__aicore__ inline void PackTransposeNormalTask(
+    TQue<QuePosition::VECIN, 1>& input, TQue<QuePosition::VECOUT, 1>& output, const LocalTensor<float>& padded,
+    const LocalTensor<int32_t>& index, GM_ADDR a, GM_ADDR workspace, const GemmBatchedExArch22Tiling& t, uint32_t task,
+    uint32_t groups, uint32_t reduction, uint32_t matrixRows)
+{
+    if (groups == 0) {
         return;
     }
-    if (t.transA) {
-        if (t.transB)
-            DispatchCube<true, true, true>(a, b, c, temporary, t, pipe);
-        else
-            DispatchCube<true, false, true>(a, b, c, temporary, t, pipe);
-    } else {
-        if (t.transB)
-            DispatchCube<false, true, true>(a, b, c, temporary, t, pipe);
-        else
-            DispatchCube<false, false, true>(a, b, c, temporary, t, pipe);
+    constexpr uint32_t ROWS = 48;
+    uint32_t batch = task / groups;
+    uint32_t row = task % groups * ROWS;
+    uint16_t valid = min(ROWS, t.m - row);
+    uint16_t stored = min(ROWS, matrixRows - row);
+    GlobalTensor<float> src;
+    GlobalTensor<float> dst;
+    src.SetGlobalBuffer(
+        reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(a)[batch]) +
+        static_cast<uint64_t>(row) * t.originalK);
+    dst.SetGlobalBuffer(
+        reinterpret_cast<__gm__ float*>(workspace) + static_cast<uint64_t>(batch) * t.packAElements + row * 8U);
+    auto data = input.AllocTensor<float>();
+    DataCopyExtParams read{1, static_cast<uint32_t>(valid) * t.originalK * 4U, 0, 0, 0};
+    DataCopyPadExtParams<float> noPad{false, 0, 0, 0};
+    DataCopyPad(data, src, read, noPad);
+    Duplicate(padded, 0.0f, ROWS * reduction);
+    input.EnQue(data);
+    data = input.DeQue<float>();
+    PipeBarrier<PIPE_V>();
+    Gather(
+        padded, data, index.ReinterpretCast<uint32_t>(), 0U, uint64_t(64), static_cast<uint8_t>(valid), reduction / 8);
+    PipeBarrier<PIPE_V>();
+    Gather(
+        padded[64], data, index.ReinterpretCast<uint32_t>(), 64U * sizeof(float),
+        static_cast<uint64_t>(t.originalK - 64), static_cast<uint8_t>(valid), reduction / 8);
+    input.FreeTensor(data);
+    PipeBarrier<PIPE_V>();
+    auto packed = output.AllocTensor<float>();
+    CopyRepeatParams repeat{ROWS, 1, 1, static_cast<uint16_t>(reduction / 8)};
+    for (uint32_t col = 0; col < reduction; col += 64) {
+        Copy(packed[col * ROWS], padded[col], static_cast<uint64_t>(min(64U, reduction - col)), ROWS, repeat);
+    }
+    output.EnQue(packed);
+    packed = output.DeQue<float>();
+    DataCopyExtParams write{
+        static_cast<uint16_t>(reduction / 8), stored * 8U * 4U, ROWS - stored, (matrixRows - stored) * 8U * 4U, 0};
+    DataCopyPad(dst, packed, write);
+    output.FreeTensor(packed);
+}
+
+// Gather contiguous short-K TN rows after one bulk read, then store the Cube NZ layout.
+__aicore__ inline void PackContiguousTransposeNormal(
+    TPipe& pipe, GM_ADDR a, GM_ADDR workspace, const GemmBatchedExArch22Tiling& t)
+{
+    constexpr uint32_t ROWS = 48;
+    uint32_t reduction = (t.originalK + 7U) / 8 * 8;
+    uint32_t matrixRows = (t.m + 15U) / 16 * 16;
+    uint32_t groups = (matrixRows + ROWS - 1U) / ROWS;
+    TQue<QuePosition::VECIN, 1> input;
+    TQue<QuePosition::VECOUT, 1> output;
+    TBuf<TPosition::VECCALC> padBuffer;
+    TBuf<TPosition::VECCALC> indexBuffer;
+    TBuf<TPosition::VECCALC> rowBuffer;
+    pipe.InitBuffer(input, 1, ROWS * 128 * sizeof(float));
+    pipe.InitBuffer(output, 1, ROWS * 128 * sizeof(float));
+    pipe.InitBuffer(padBuffer, ROWS * 128 * sizeof(float));
+    pipe.InitBuffer(indexBuffer, ROWS * 64 * sizeof(int32_t));
+    pipe.InitBuffer(rowBuffer, ROWS * 64 * sizeof(int32_t));
+    auto padded = padBuffer.Get<float>();
+    auto index = indexBuffer.Get<int32_t>();
+    auto rowIndex = rowBuffer.Get<int32_t>();
+    CreateVecIndex(index, int32_t(0), ROWS * 64);
+    PipeBarrier<PIPE_V>();
+    ShiftRight(rowIndex, index, 6, ROWS * 64);
+    PipeBarrier<PIPE_V>();
+    Muls(rowIndex, rowIndex, static_cast<int32_t>(t.originalK - 64), ROWS * 64);
+    PipeBarrier<PIPE_V>();
+    Add(index, index, rowIndex, ROWS * 64);
+    PipeBarrier<PIPE_V>();
+    ShiftLeft(index, index, 2, ROWS * 64);
+    PipeBarrier<PIPE_V>();
+    for (uint32_t task = GetBlockIdx(); task < static_cast<uint64_t>(groups) * t.batchCount; task += t.vectorBlocks) {
+        PackTransposeNormalTask(input, output, padded, index, a, workspace, t, task, groups, reduction, matrixRows);
     }
 }
 
-extern "C" __global__ __aicore__ __vector__ void gemm_batched_ex22_vector(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, GemmBatchedEx22Tiling t, bool combine)
+template <bool HYBRID = false, bool STREAM = false>
+__aicore__ inline void StoreRing(
+    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR workspace, const GemmBatchedExArch22Tiling& t, __gm__ float* scratch,
+    uint32_t block, uint64_t rounds, uint32_t rows, uint32_t columns, uint32_t height, uint32_t WIDTH,
+    uint32_t ELEMENTS)
 {
-    TPipe pipe;
-    if (t.splitK != 0)
-        MergeSplit(c, temporary, t, pipe);
-    else if (combine)
-        ComputeVector<true>(a, b, c, temporary, t, pipe);
-    else if (UseWholeTiny(t)) {
-        ComputeWholeTiny(a, b, c, t, pipe);
-    } else if (UseTinyPreload(t)) {
-        ComputeTinyPreload(a, b, c, t, pipe);
-    } else if (t.k > 0 && t.alpha != 0.0f && (t.alpha != 1.0f || t.beta != 0.0f))
-        ComputeReferenceOrder(a, b, c, t, pipe);
-    else
-        ComputeVector<false>(a, b, c, temporary, t, pipe);
-}
-
-void GemmBatchedEx22Cube(
-    uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, GemmBatchedEx22Tiling t)
-{
-    gemm_batched_ex22_cube<<<blocks, nullptr, stream>>>(a, b, c, temporary, t);
-}
-
-void GemmBatchedEx22Vector(
-    uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR temporary, GemmBatchedEx22Tiling t,
-    bool combine)
-{
-    gemm_batched_ex22_vector<<<blocks, nullptr, stream>>>(a, b, c, temporary, t, combine);
-}
-
-extern "C" __global__ __aicore__ __vector__ void gemm_batched_ex22_policy(
-    GM_ADDR a, GM_ADDR b, GemmBatchedEx22Tiling t, bool finalize)
-{
-    TPipe pipe;
-    ComputePolicy(a, b, t, finalize, pipe);
-}
-
-extern "C" __global__ __aicore__ __vector__ void gemm_batched_ex22_reference(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    TPipe pipe;
-    ComputeReferenceOrder(a, b, c, t, pipe);
-}
-
-void GemmBatchedEx22Policy(uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GemmBatchedEx22Tiling t, bool finalize)
-{
-    gemm_batched_ex22_policy<<<blocks, nullptr, stream>>>(a, b, t, finalize);
-}
-
-void GemmBatchedEx22Reference(uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    gemm_batched_ex22_reference<<<blocks, nullptr, stream>>>(a, b, c, t);
-}
-
-extern "C" __global__ __aicore__ __vector__ void gemm_batched_ex22_policy_reference(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    TPipe pipe;
-    ComputePolicyReference(a, b, c, t, pipe);
-}
-
-void GemmBatchedEx22PolicyReference(
-    uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    gemm_batched_ex22_policy_reference<<<blocks, nullptr, stream>>>(a, b, c, t);
-}
-
-// Batch scheduling admits the complete physical AIV set before this barrier.
-// All cores execute the scan and barrier;the later Cube is a separate launch.
-extern "C" __schedmode__(1) __global__ __aicore__
-    __mix__(0, 1) void gemm_batched_ex22_policy_fused(GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    TPipe pipe;
-    ComputePolicy(a, b, t, false, pipe);
-    SyncAll<true>();
-    ComputePolicyReference(a, b, c, t, pipe);
-}
-
-void GemmBatchedEx22PolicyFused(uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    gemm_batched_ex22_policy_fused<<<blocks, nullptr, stream>>>(a, b, c, t);
-}
-
-namespace {
-__aicore__ inline void DispatchOverlapCube(GM_ADDR a, GM_ADDR b, GM_ADDR c, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    auto cube = t;
-    cube.policy = 0;
-    if (cube.transA) {
-        if (cube.transB)
-            DispatchCube<true, true>(a, b, c, nullptr, cube, pipe);
-        else
-            DispatchCube<true, false>(a, b, c, nullptr, cube, pipe);
+    Pack pack;
+    pack.Init(a, b, workspace, t);
+    if constexpr (HYBRID) {
+        if (t.transA && !t.transB && t.originalLda == t.originalK) {
+            pack.Pipe().Reset();
+            PackContiguousTransposeNormal(pack.Pipe(), a, workspace, t);
+        } else {
+            pack.Process(true);
+        }
     } else {
-        if (cube.transB)
-            DispatchCube<false, true>(a, b, c, nullptr, cube, pipe);
-        else
-            DispatchCube<false, false>(a, b, c, nullptr, cube, pipe);
+        pack.Process();
     }
-    CrossCoreSetFlag<2, PIPE_FIX>(10);
+    CrossCoreSetFlag<0, PIPE_MTE3>(7);
+    CrossCoreWaitFlag<0>(7);
+    // Release the packing buffers before allocating the output conversion buffers.
+    pack.Pipe().Reset();
+    auto& pipe = pack.Pipe();
+    OutputQueue input;
+    pipe.InitBuffer(input, STREAM && height <= 96 ? 2 : 1, height / 2 * (STREAM ? 512 : WIDTH) * sizeof(float));
+    if (rounds > 0)
+        CrossCoreSetFlag<2, PIPE_MTE3>(10);
+    if (rounds > 1)
+        CrossCoreSetFlag<2, PIPE_MTE3>(11);
+    for (uint64_t round = 0, task = block; round < rounds; ++round, task += GetBlockNum()) {
+        uint16_t slot = round % 2;
+        if constexpr (STREAM) {
+            CrossCoreWaitFlag<2>(12 + slot);
+            StoreRingPiece(input, c, scratch, t, task, round, rows, height, WIDTH, ELEMENTS, 0);
+            CrossCoreWaitFlag<2>(8 + slot);
+            StoreRingPiece(input, c, scratch, t, task, round, rows, height, WIDTH, ELEMENTS, 512);
+        } else {
+            CrossCoreWaitFlag<2>(8 + slot);
+            StoreRingTask(input, c, scratch, t, task, round, rows, columns, height, WIDTH, ELEMENTS);
+        }
+        if (round + 2 < rounds)
+            CrossCoreSetFlag<2, PIPE_MTE3>(10 + slot);
+    }
+    ResetMask();
 }
-} // namespace
 
-// The final AIV barrier covers both all statistics and all speculative C stores:
-// every AIV waits for its own AIC before joining the all-AIV barrier.
-extern "C" __schedmode__(1) __global__ __aicore__
-    __mix__(1, 2) void gemm_batched_ex22_overlap(GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
+template <bool TA, bool TB, bool STRIP = false, bool STREAM = false>
+__global__ __aicore__ __schedmode__(1) void GemmBatchedExMacroRing(
+    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR workspace, GemmBatchedExArch22Tiling t)
 {
-    TPipe pipe;
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
+    SetSyncBaseAddr(t.syncAddress);
+    uint32_t WIDTH = STRIP ? t.productLd : 512;
+    uint32_t height = t.tileM;
+    uint32_t ELEMENTS = STRIP ? ((height + 15) / 16 * 16) * WIDTH : 128 * WIDTH;
+    uint32_t block = GetBlockIdx();
+    if ASCEND_IS_AIV {
+        block /= 2;
+    }
+    uint32_t columns = (t.m + WIDTH - 1U) / WIDTH;
+    uint32_t rows = (t.n + height - 1U) / height;
+    uint64_t rounds = (t.tasks + GetBlockNum() - 1 - block) / GetBlockNum();
+    auto scratch =
+        reinterpret_cast<__gm__ float*>(workspace) + t.productOffset + static_cast<uint64_t>(block) * 2 * ELEMENTS;
     if ASCEND_IS_AIC {
-        DispatchOverlapCube(a, b, c, t, pipe);
+        ComputeRing<TA, TB, STRIP, STREAM>(
+            t, b, workspace, scratch, block, rounds, rows, columns, height, WIDTH, ELEMENTS);
     }
     if ASCEND_IS_AIV {
-        ComputePolicy(a, b, t, false, pipe);
+        StoreRing<STRIP, STREAM>(a, b, c, workspace, t, scratch, block, rounds, rows, columns, height, WIDTH, ELEMENTS);
+    }
+    FinishCrossCore();
+}
+
+// Read original A directly into the two Cube L1 slots.
+__aicore__ inline void LoadInputRight(
+    const LocalTensor<float>& right, GM_ADDR workspace, const GemmBatchedExArch22Tiling& t, uint32_t col,
+    uint32_t height, uint32_t reduction)
+{
+    auto event = static_cast<event_t>(4 + (col / 128) % 2);
+    WaitFlag<HardEvent::MTE1_MTE2>(event);
+    GlobalTensor<float> source;
+    uint32_t stride = t.originalK > 48 ? 64 : (t.originalK + 7U) / 8 * 8;
+    source.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(workspace) + col * stride);
+    uint16_t valid = min(128U, static_cast<uint32_t>(t.m) - col);
+    Nd2NzParams read{
+        1, valid, static_cast<uint16_t>(stride), 0, static_cast<uint16_t>(stride), static_cast<uint16_t>(height), 1, 0};
+    DataCopy(right, source, read);
+    SetFlag<HardEvent::MTE2_MTE1>(event);
+}
+
+class InputStream {
+public:
+    __aicore__ inline void Init(TPipe& pipe, GM_ADDR b, const GemmBatchedExArch22Tiling& t, uint32_t row)
+    {
+        height = (t.tileM + 15U) / 16 * 16;
+        reduction = (t.originalK + 63U) / 64 * 64;
+        pipe.InitBuffer(left, height * t.k * sizeof(float));
+        pipe.InitBuffer(right, 2 * 128 * reduction * sizeof(float));
+        pipe.InitBuffer(l0a, height * reduction * sizeof(float));
+        pipe.InitBuffer(l0b, 2 * 128 * reduction * sizeof(float));
+        pipe.InitBuffer(l0c, 2 * height * 128 * sizeof(float));
+        GlobalTensor<float> original;
+        original.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(b)[0]) + row);
+        valid = min(static_cast<uint32_t>(t.tileM), static_cast<uint32_t>(t.n) - row);
+        Nd2NzParams load{
+            1,
+            static_cast<uint16_t>(t.originalK),
+            static_cast<uint16_t>(valid),
+            0,
+            static_cast<uint16_t>(t.originalLdb),
+            static_cast<uint16_t>(t.k),
+            1,
+            0};
+        DataCopy(left.Get<float>(), original, load);
+        SetFlag<HardEvent::MTE2_MTE1>(EVENT_ID6);
+        WaitFlag<HardEvent::MTE2_MTE1>(EVENT_ID6);
+        LoadData3DParamsV2<float> transpose;
+        transpose.l1H = 1;
+        transpose.l1W = t.k;
+        transpose.channelSize = height;
+        transpose.mExtension = reduction;
+        transpose.kExtension = height;
+        transpose.enTranspose = true;
+        LoadData(l0a.Get<float>(), left.Get<float>(), transpose);
+    }
+
+    __aicore__ inline void Process(GM_ADDR workspace, __gm__ float* scratch, const GemmBatchedExArch22Tiling& t)
+    {
+        SetHF32Mode(false);
+        for (uint32_t slot = 0; slot < 2; ++slot) {
+            auto event = static_cast<event_t>(4 + slot);
+            SetFlag<HardEvent::MTE1_MTE2>(event);
+            SetFlag<HardEvent::M_MTE1>(event);
+            SetFlag<HardEvent::FIX_M>(event);
+        }
         CrossCoreWaitFlag<2>(10);
-        CrossCoreSetFlag<0, PIPE_MTE3>(8);
-        CrossCoreWaitFlag<0>(8);
-        ComputePolicyReference(a, b, c, t, pipe);
+        LoadInputRight(right.Get<float>(), workspace, t, 0, min(128U, (t.m + 15U) / 16 * 16), reduction);
+        for (uint32_t col = 0; col < t.m; col += 128) {
+            ComputeColumn(workspace, scratch, t, col);
+        }
+        CrossCoreSetFlag<2, PIPE_FIX>(8);
+        for (uint32_t slot = 0; slot < 2; ++slot) {
+            auto event = static_cast<event_t>(4 + slot);
+            WaitFlag<HardEvent::MTE1_MTE2>(event);
+            WaitFlag<HardEvent::M_MTE1>(event);
+            WaitFlag<HardEvent::FIX_M>(event);
+        }
+        SetHF32Mode(false);
+    }
+
+private:
+    __aicore__ inline void ComputeColumn(
+        GM_ADDR workspace, __gm__ float* scratch, const GemmBatchedExArch22Tiling& t, uint32_t col)
+    {
+        uint32_t slot = col / 128 % 2;
+        auto event = static_cast<event_t>(4 + slot);
+        uint16_t columns = (min(128U, static_cast<uint32_t>(t.m) - col) + 15U) / 16 * 16;
+        auto l1 = right.Get<float>()[slot * 128 * reduction];
+        auto matrixB = l0b.Get<float>()[slot * 128 * reduction];
+        auto matrixC = l0c.Get<float>()[slot * height * 128];
+        WaitFlag<HardEvent::MTE2_MTE1>(event);
+        WaitFlag<HardEvent::M_MTE1>(event);
+        LoadData2DParams copy{0, static_cast<uint8_t>(columns * reduction / 128), 1, 0, 0, false, 0};
+        LoadData(matrixB, l1, copy);
+        SetFlag<HardEvent::MTE1_MTE2>(event);
+        SetFlag<HardEvent::MTE1_M>(event);
+        if (col + 128 < t.m) {
+            uint32_t next = col + 128;
+            uint32_t nextColumns = (min(128U, static_cast<uint32_t>(t.m) - next) + 15U) / 16 * 16;
+            LoadInputRight(
+                right.Get<float>()[((col / 128 + 1) % 2) * 128 * reduction], workspace, t, next, nextColumns,
+                reduction);
+        }
+        WaitFlag<HardEvent::MTE1_M>(event);
+        WaitFlag<HardEvent::FIX_M>(event);
+        MmadParams mad;
+        mad.m = height;
+        mad.n = columns;
+        mad.k = t.originalK;
+        mad.kDirectionAlign = true;
+        Mmad(matrixC, l0a.Get<float>(), matrixB, mad);
+        SetFlag<HardEvent::M_MTE1>(event);
+        SetFlag<HardEvent::M_FIX>(event);
+        WaitFlag<HardEvent::M_FIX>(event);
+        StoreColumn(scratch, matrixC, t, col, columns, event);
+        if (col == 384)
+            CrossCoreSetFlag<2, PIPE_FIX>(12);
+    }
+
+    __aicore__ inline void StoreColumn(
+        __gm__ float* scratch, const LocalTensor<float>& matrixC, const GemmBatchedExArch22Tiling& t, uint32_t col,
+        uint16_t columns, event_t event)
+    {
+        GlobalTensor<float> out;
+        out.SetGlobalBuffer(scratch + col);
+        out.SetL2CacheHint(CacheMode::CACHE_MODE_PERSISTENT);
+        FixpipeParamsV220 store{
+            columns, static_cast<uint16_t>(valid), static_cast<uint16_t>(height), static_cast<uint32_t>(t.productLd),
+            false};
+        Fixpipe(out, matrixC, store);
+        SetFlag<HardEvent::FIX_M>(event);
+    }
+
+    uint32_t height;
+    uint32_t reduction;
+    uint32_t valid;
+    TBuf<TPosition::A1> left;
+    TBuf<TPosition::A1> right;
+    TBuf<TPosition::A2> l0a;
+    TBuf<TPosition::B2> l0b;
+    TBuf<TPosition::CO1> l0c;
+};
+
+__aicore__ inline void ComputeInputStream(
+    GM_ADDR b, GM_ADDR workspace, __gm__ float* scratch, const GemmBatchedExArch22Tiling& t, uint32_t block)
+{
+    uint32_t row = block * t.tileM;
+    if (row < t.n) {
+        TPipe pipe;
+        InputStream op;
+        op.Init(pipe, b, t, row);
+        op.Process(workspace, scratch, t);
+    } else {
+        CrossCoreWaitFlag<2>(10);
+        CrossCoreSetFlag<2, PIPE_FIX>(12);
+        CrossCoreSetFlag<2, PIPE_FIX>(8);
     }
 }
 
-void GemmBatchedEx22Overlap(uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
+// Discard padded columns while concatenating rows inside UB.
+__aicore__ inline void StoreCompactMask(
+    TPipe& pipe, GM_ADDR c, __gm__ float* scratch, const GemmBatchedExArch22Tiling& t, uint32_t block)
 {
-    gemm_batched_ex22_overlap<<<blocks, nullptr, stream>>>(a, b, c, t);
-}
-
-namespace {
-__aicore__ inline uint32_t ComputeOverlapDecisionOnly(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    PolicyDecisionStorage storage;
-    return storage.Read(t, pipe);
-}
-
-__aicore__ inline void CompleteDecisionOverlap(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    ComputePolicy(a, b, t, false, pipe);
-    // All40statisticswriters retire beforethe identical decisiontree.
-    CrossCoreSetFlag<0, PIPE_MTE3>(8);
-    CrossCoreWaitFlag<0>(8);
-    const uint32_t mask = ComputeOverlapDecisionOnly(a, b, c, t, pipe);
-    // Always consume eachpairedCube notification,even withoutreference.
-    CrossCoreWaitFlag<2>(10);
-    if (mask != 0) {
-        // Uniformmask:all40join onlyaftertheirpairedAICfinishedallCstores.
-        CrossCoreSetFlag<0, PIPE_MTE3>(9);
-        CrossCoreWaitFlag<0>(9);
-        ComputeReferenceOrder(a, b, c, t, pipe, true, mask);
+    constexpr uint32_t ROWS = 12;
+    TQue<QuePosition::VECIN, 2> input;
+    TQue<QuePosition::VECOUT, 2> output;
+    pipe.InitBuffer(input, 2, ROWS * t.productLd * sizeof(float));
+    pipe.InitBuffer(output, 2, ROWS * ((t.m + 7U) / 8 * 8) * sizeof(float));
+    CrossCoreWaitFlag<2>(12);
+    CrossCoreWaitFlag<2>(8);
+    uint32_t sub = GetSubBlockIdx() * (t.tileM / 2);
+    uint32_t row = block * t.tileM + sub;
+    if (row >= t.n)
+        return;
+    uint32_t rows = min(static_cast<uint32_t>(t.tileM / 2), static_cast<uint32_t>(t.n) - row);
+    GlobalTensor<float> src;
+    GlobalTensor<float> dst;
+    src.SetGlobalBuffer(scratch + sub * t.productLd);
+    src.SetL2CacheHint(CacheMode::CACHE_MODE_PERSISTENT);
+    dst.SetGlobalBuffer(
+        reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(c)[0]) + static_cast<uint64_t>(row) * t.ldc);
+    auto initial = input.AllocTensor<float>();
+    DataCopy(initial, src, min(ROWS, rows) * t.productLd);
+    input.EnQue(initial);
+    for (uint32_t first = 0; first < rows; first += ROWS) {
+        uint32_t count = min(ROWS, rows - first);
+        if (first + ROWS < rows) {
+            auto next = input.AllocTensor<float>();
+            DataCopy(next, src[(first + ROWS) * t.productLd], min(ROWS, rows - first - ROWS) * t.productLd);
+            input.EnQue(next);
+        }
+        auto data = input.DeQue<float>();
+        auto compact = output.AllocTensor<float>();
+        uint64_t selected = 0;
+        GatherMask(
+            compact, data, static_cast<uint8_t>(7), true, static_cast<uint32_t>(t.m),
+            {1, static_cast<uint16_t>(count), static_cast<uint16_t>(t.productLd / 8), 0}, selected);
+        input.FreeTensor(data);
+        output.EnQue(compact);
+        compact = output.DeQue<float>();
+        DataCopyExtParams write{1, count * t.m * 4U, 0, 0, 0};
+        DataCopyPad(dst[first * t.ldc], compact, write);
+        output.FreeTensor(compact);
     }
+}
+
+// Read compact source rows in one DMA and insert K padding in UB.
+__aicore__ inline void PackContiguousInput(
+    TPipe& pipe, const GlobalTensor<float>& src, const GlobalTensor<float>& dst, uint32_t count, uint32_t reduction)
+{
+    uint32_t elements = count * 64;
+    TBuf<TPosition::VECCALC> sourceBuffer;
+    TBuf<TPosition::VECCALC> outputBuffer;
+    TBuf<TPosition::VECCALC> indexBuffer;
+    pipe.InitBuffer(sourceBuffer, elements * 4);
+    pipe.InitBuffer(outputBuffer, elements * 4);
+    pipe.InitBuffer(indexBuffer, elements * 4);
+    auto source = sourceBuffer.Get<float>();
+    auto output = outputBuffer.Get<float>();
+    auto index = indexBuffer.Get<int32_t>();
+    DataCopyExtParams read{1, count * reduction * 4U, 0, 0, 0};
+    DataCopyPadExtParams<float> pad{true, 0, 0, 0};
+    DataCopyPad(source, src, read, pad);
+    CreateVecIndex(index, int32_t(0), 64);
+    PipeBarrier<PIPE_V>();
+    ShiftLeft(index, index, 2, 64);
+    PipeBarrier<PIPE_V>();
+    for (uint32_t row = 1; row < count; ++row) {
+        Adds(index[row * 64], index, static_cast<int32_t>(row * reduction * 4), 64);
+    }
+    SetFlag<HardEvent::MTE2_V>(EVENT_ID1);
+    WaitFlag<HardEvent::MTE2_V>(EVENT_ID1);
+    PipeBarrier<PIPE_V>();
+    Gather(
+        output, source, index.ReinterpretCast<uint32_t>(), 0U, static_cast<uint64_t>(reduction),
+        static_cast<uint8_t>(count), 8);
+    if (reduction < 64) {
+        PipeBarrier<PIPE_V>();
+        uint64_t mask[2] = {UINT64_MAX << reduction, 0};
+        Duplicate(output, 0.0f, mask, static_cast<uint8_t>(count), 1, 8);
+    }
+    SetFlag<HardEvent::V_MTE3>(EVENT_ID1);
+    WaitFlag<HardEvent::V_MTE3>(EVENT_ID1);
+    DataCopy(dst, output, elements);
+}
+
+__aicore__ inline void PackInputStream(TPipe& pipe, GM_ADDR a, GM_ADDR workspace, const GemmBatchedExArch22Tiling& t)
+{
+    uint32_t stride = t.originalK > 48 ? 64 : (t.originalK + 7U) / 8 * 8;
+    uint32_t rowsPerVector = (t.m + t.vectorBlocks - 1U) / t.vectorBlocks;
+    uint32_t first = GetBlockIdx() * rowsPerVector;
+    TBuf<TPosition::VECCALC> packed;
+    pipe.InitBuffer(packed, rowsPerVector * stride * sizeof(float));
+    if (first < t.m) {
+        uint32_t count = min(rowsPerVector, static_cast<uint32_t>(t.m) - first);
+        GlobalTensor<float> src;
+        GlobalTensor<float> dst;
+        src.SetGlobalBuffer(
+            reinterpret_cast<__gm__ float*>(reinterpret_cast<__gm__ uint64_t*>(a)[0]) +
+            static_cast<uint64_t>(first) * t.originalLda);
+        dst.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(workspace) + first * stride);
+        if (t.originalLda == t.originalK && stride == 64) {
+            PackContiguousInput(pipe, src, dst, count, t.originalK);
+        } else {
+            auto data = packed.Get<float>();
+            DataCopyExtParams read{
+                static_cast<uint16_t>(count), static_cast<uint32_t>(t.originalK) * 4U,
+                static_cast<uint32_t>(t.originalLda - t.originalK) * 4U, 0, 0};
+            DataCopyPadExtParams<float> pad{true, 0, static_cast<uint8_t>(min(8U, stride - t.originalK)), 0};
+            DataCopyPad(data, src, read, pad);
+            SetFlag<HardEvent::MTE2_MTE3>(EVENT_ID0);
+            WaitFlag<HardEvent::MTE2_MTE3>(EVENT_ID0);
+            DataCopy(dst, data, count * stride);
+        }
+    }
+}
+
+__aicore__ inline void StoreInputStream(
+    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR workspace, __gm__ float* scratch, const GemmBatchedExArch22Tiling& t,
+    uint32_t block)
+{
+    TPipe pipe;
+    PackInputStream(pipe, a, workspace, t);
+    CrossCoreSetFlag<0, PIPE_MTE3>(7);
+    CrossCoreWaitFlag<0>(7);
+    CrossCoreSetFlag<2, PIPE_MTE3>(10);
+    // Packing uses raw TBuf storage; complete DMA before reusing the UB pool.
+    PipeBarrier<PIPE_ALL>();
+    pipe.Reset();
+    if (t.ldc == t.m) {
+        StoreCompactMask(pipe, c, scratch, t, block);
+        ResetMask();
+        return;
+    }
+    OutputQueue input;
+    pipe.InitBuffer(input, 2, t.tileM / 2 * 512 * sizeof(float));
+    uint32_t rows = (t.n + t.tileM - 1U) / t.tileM;
+    uint32_t elements = ((t.tileM + 15U) / 16 * 16) * t.productLd;
+    CrossCoreWaitFlag<2>(12);
+    StoreRingPiece(input, c, scratch, t, block, 0, rows, t.tileM, t.productLd, elements, 0);
+    CrossCoreWaitFlag<2>(8);
+    StoreRingPiece(input, c, scratch, t, block, 0, rows, t.tileM, t.productLd, elements, 512);
+    ResetMask();
+}
+
+__global__ __aicore__ __schedmode__(1) void GemmBatchedExInputStream(
+    GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR workspace, GemmBatchedExArch22Tiling t)
+{
+    KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
+    SetSyncBaseAddr(t.syncAddress);
+    uint32_t block = GetBlockIdx();
+    if ASCEND_IS_AIV {
+        block /= 2;
+    }
+    auto scratch = reinterpret_cast<__gm__ float*>(workspace) + t.productOffset +
+                   static_cast<uint64_t>(block) * ((t.tileM + 15U) / 16 * 16) * t.productLd;
+    if ASCEND_IS_AIC {
+        ComputeInputStream(b, workspace, scratch, t, block);
+    }
+    if ASCEND_IS_AIV {
+        StoreInputStream(a, b, c, workspace, scratch, t, block);
+    }
+    FinishCrossCore();
 }
 
 } // namespace
 
-extern "C" __schedmode__(1) __global__ __aicore__
-    __mix__(1, 2) void gemm_batched_ex34_policy_decision(GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
+// Return the status of this launch rather than an unrelated thread-local error.
+template <typename Arguments>
+int32_t LaunchKernel(const void* symbol, uint32_t blocks, void* stream, Arguments& args)
 {
-    TPipe pipe;
-    if ASCEND_IS_AIC {
-        DispatchOverlapCube(a, b, c, t, pipe);
-    }
-    if ASCEND_IS_AIV {
-        CompleteDecisionOverlap(a, b, c, t, pipe);
-    }
-}
-void GemmBatchedEx34DecisionOverlap(
-    uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    gemm_batched_ex34_policy_decision<<<blocks, nullptr, stream>>>(a, b, c, t);
+    static_assert(offsetof(Arguments, tiling) == sizeof(args.tensors), "kernel argument ABI mismatch");
+    aclrtFuncHandle function = nullptr;
+    const aclError status = aclrtGetFuncBySymbol(symbol, &function);
+    if (status != ACL_SUCCESS)
+        return status;
+    return aclrtLaunchKernelWithHostArgs(function, blocks, stream, nullptr, &args, sizeof(args), nullptr, 0U);
 }
 
-namespace {
-constexpr auto R46_NT5 = CUBE_TILING<false, true, 5, false>;
-static_assert(R46_NT5.baseM == 128 && R46_NT5.baseN == 64 && R46_NT5.baseK == 128);
-static_assert(R46_NT5.cfg.singleCoreM == 128 && R46_NT5.cfg.singleCoreN == 64 && R46_NT5.cfg.singleCoreK == 2048);
-static_assert(R46_NT5.cfg.enUnitFlag && !R46_NT5.cfg.enableKdimReorderLoad);
-} // namespace
+template <uint32_t COUNT>
+struct GemmLaunchArguments {
+    GM_ADDR tensors[COUNT];
+    GemmBatchedExArch22Tiling tiling;
+};
 
-extern "C" __schedmode__(1) __global__ __aicore__
-    __mix__(1, 2) void gemm_batched_ex46_nt_fixed_entry(GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    TPipe pipe;
-    if ASCEND_IS_AIC {
-        auto cube = t;
-        cube.policy = 0;
-        ComputeCube<false, true, 5>(a, b, c, nullptr, cube, pipe);
-        CrossCoreSetFlag<2, PIPE_FIX>(10);
-    }
-    if ASCEND_IS_AIV {
-        CompleteDecisionOverlap(a, b, c, t, pipe);
-    }
-}
-void GemmBatchedEx46FixedNT(uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    gemm_batched_ex46_nt_fixed_entry<<<blocks, nullptr, stream>>>(a, b, c, t);
-}
+struct ScaleLaunchArguments {
+    GM_ADDR tensors[2];
+    GemmBatchedExArch22Tiling tiling;
+    bool scaleOnly;
+};
 
-namespace {
-constexpr auto R47_T = CUBE_TILING<false, true, 14, false>;
-static_assert(R47_T.baseM == 128 && R47_T.baseN == 64 && R47_T.baseK == 64);
-static_assert(R47_T.cfg.singleCoreM == 128 && R47_T.cfg.singleCoreN == 64 && R47_T.cfg.singleCoreK == 8192);
-static_assert(R47_T.cfg.enUnitFlag && !R47_T.cfg.enableKdimReorderLoad);
-static_assert(R47_T.dbL0A == 2 && R47_T.dbL0B == 2);
-static_assert(R47_T.baseM * R47_T.baseK * 4 * R47_T.dbL0A == 65536);
-static_assert(R47_T.baseN * R47_T.baseK * 4 * R47_T.dbL0B == 32768);
-static_assert(R47_T.shareL1Size <= 512 * 1024 && R47_T.shareL0CSize <= 128 * 1024 && R47_T.shareUbSize == 0);
-} // namespace
-
-extern "C" __schedmode__(1) __global__ __aicore__
-    __mix__(1, 2) void gemm_batched_ex47_nt_norm_entry(GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
+template <bool NZ>
+int32_t LaunchCube(
+    uint32_t blocks, void* stream, GM_ADDR aa, GM_ADDR bb, GM_ADDR cc, GM_ADDR ww, GemmBatchedExArch22Tiling t)
 {
-    TPipe pipe;
-    if ASCEND_IS_AIC {
-        auto cube = t;
-        cube.policy = 0;
-        ComputeCube<false, true, 14>(a, b, c, nullptr, cube, pipe);
-        CrossCoreSetFlag<2, PIPE_FIX>(10);
-    }
-    if ASCEND_IS_AIV {
-        CompleteDecisionOverlap(a, b, c, t, pipe);
-    }
-}
-void GemmBatchedEx47FixedNT(uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    gemm_batched_ex47_nt_norm_entry<<<blocks, nullptr, stream>>>(a, b, c, t);
-}
-
-// Static shape only; original safety predicate, arithmetic and fallback retained.
-template <uint32_t N>
-__aicore__ inline void ComputeStaticTiny48(GM_ADDR a, GM_ADDR b, GM_ADDR c, const GemmBatchedEx22Tiling& t, TPipe& pipe)
-{
-    static_assert(N == 8 || N == 16);
-    TinyStorage storage;
-    storage.Init<N * N, N * N * N>(pipe);
-    const auto locals = storage.Get();
-    ComputeTinyBatches<N>(a, b, c, t, locals);
-}
-
-extern "C" __global__ __aicore__ __vector__ void gemm_batched_ex48_tiny8(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    TPipe pipe;
-    ComputeStaticTiny48<8>(a, b, c, t, pipe);
-}
-extern "C" __global__ __aicore__ __vector__ void gemm_batched_ex48_tiny16(
-    GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    TPipe pipe;
-    ComputeStaticTiny48<16>(a, b, c, t, pipe);
-}
-void GemmBatchedEx48Tiny(uint32_t blocks, void* stream, GM_ADDR a, GM_ADDR b, GM_ADDR c, GemmBatchedEx22Tiling t)
-{
-    if (t.m == 8)
-        gemm_batched_ex48_tiny8<<<blocks, nullptr, stream>>>(a, b, c, t);
+    GemmLaunchArguments<4> args{{aa, bb, cc, ww}, t};
+    if (t.transA && t.transB)
+        return LaunchKernel(reinterpret_cast<const void*>(GemmBatchedExCube<true, true, NZ>), blocks, stream, args);
+    else if (t.transA)
+        return LaunchKernel(reinterpret_cast<const void*>(GemmBatchedExCube<true, false, NZ>), blocks, stream, args);
+    else if (t.transB)
+        return LaunchKernel(reinterpret_cast<const void*>(GemmBatchedExCube<false, true, NZ>), blocks, stream, args);
     else
-        gemm_batched_ex48_tiny16<<<blocks, nullptr, stream>>>(a, b, c, t);
+        return LaunchKernel(reinterpret_cast<const void*>(GemmBatchedExCube<false, false, NZ>), blocks, stream, args);
+}
+
+template <bool STRIP>
+int32_t LaunchRing(
+    uint32_t blocks, void* stream, GM_ADDR aa, GM_ADDR bb, GM_ADDR cc, GM_ADDR ww, GemmBatchedExArch22Tiling t)
+{
+    GemmLaunchArguments<4> args{{aa, bb, cc, ww}, t};
+    if constexpr (STRIP) {
+        if (t.transA && t.transB && t.batchCount == 1 && t.m > 512 && t.m <= 1024 && t.n >= 512 && t.originalK <= 64) {
+            return LaunchKernel(
+                reinterpret_cast<const void*>(GemmBatchedExMacroRing<true, true, true, true>), blocks, stream, args);
+        }
+    }
+    if (t.transA && t.transB)
+        return LaunchKernel(
+            reinterpret_cast<const void*>(GemmBatchedExMacroRing<true, true, STRIP>), blocks, stream, args);
+    else if (t.transA)
+        return LaunchKernel(
+            reinterpret_cast<const void*>(GemmBatchedExMacroRing<true, false, STRIP>), blocks, stream, args);
+    else if (t.transB)
+        return LaunchKernel(
+            reinterpret_cast<const void*>(GemmBatchedExMacroRing<false, true, STRIP>), blocks, stream, args);
+    else
+        return LaunchKernel(
+            reinterpret_cast<const void*>(GemmBatchedExMacroRing<false, false, STRIP>), blocks, stream, args);
+}
+
+bool IsSmallSquare(const GemmBatchedExArch22Tiling& t)
+{
+    return !t.transA && !t.transB && !t.alphaDevice && !t.betaDevice && t.alpha == 1.0f && t.beta == 0.0f &&
+           t.m == t.n && t.m == t.k && t.lda == t.m && t.ldb == t.k && t.ldc == t.m && (t.m == 16 || t.m == 32);
+}
+
+int32_t LaunchExact(void* stream, GM_ADDR aa, GM_ADDR bb, GM_ADDR cc, GemmBatchedExArch22Tiling t)
+{
+    GemmLaunchArguments<3> args{{aa, bb, cc}, t};
+    if (IsSmallSquare(t)) {
+        if (t.m == 16)
+            return LaunchKernel(
+                reinterpret_cast<const void*>(GemmBatchedExSmallSquare<16>), t.vectorBlocks, stream, args);
+        else
+            return LaunchKernel(
+                reinterpret_cast<const void*>(GemmBatchedExSmallSquare<32>), t.vectorBlocks, stream, args);
+    } else if (!t.transA && !t.transB && t.m <= 32 && t.n <= 32 && t.k <= 32)
+        return LaunchKernel(reinterpret_cast<const void*>(GemmBatchedExSmallNN), t.vectorBlocks, stream, args);
+    else
+        return LaunchKernel(reinterpret_cast<const void*>(GemmBatchedExExact), t.vectorBlocks, stream, args);
+}
+
+void BalanceRowStrips(uint32_t blocks, GemmBatchedExArch22Tiling& t)
+{
+    // Balance the row strips without increasing the existing aligned scratch allocation.
+    if (blocks > 0 && t.route == GemmBatchedExRoute::RowStrips && t.transA && t.transB && t.batchCount == 1 &&
+        t.m >= 512 && t.n >= 512) {
+        uint32_t height = ((t.n + blocks - 1U) / blocks + 1U) / 2 * 2;
+        if (height > 128)
+            height = 128;
+        if (height < t.tileM) {
+            t.tileM = height;
+            t.tasks = (t.n + height - 1U) / height;
+        }
+    }
+}
+
+bool UseInputStream(uint32_t blocks, const GemmBatchedExArch22Tiling& t)
+{
+    return t.route == GemmBatchedExRoute::RowStrips && t.transA && t.transB && t.batchCount == 1 && t.m > 512 &&
+           t.m <= 1024 && t.n >= 512 && t.originalK <= 64 && t.tasks <= blocks && t.tileM <= 96;
+}
+
+int32_t LaunchRegular(
+    uint32_t blocks, void* stream, GM_ADDR aa, GM_ADDR bb, GM_ADDR cc, GM_ADDR ww, GemmBatchedExArch22Tiling t,
+    bool scaleOnly)
+{
+    if (t.packed) {
+        GemmLaunchArguments<3> args{{aa, bb, ww}, t};
+        const aclError status =
+            LaunchKernel(reinterpret_cast<const void*>(GemmBatchedExPack), t.vectorBlocks, stream, args);
+        if (status != ACL_SUCCESS)
+            return status;
+    }
+    if (!scaleOnly) {
+        const aclError status = t.packed ? LaunchCube<true>(blocks, stream, aa, bb, cc, ww, t) :
+                                           LaunchCube<false>(blocks, stream, aa, bb, cc, ww, t);
+        if (status != ACL_SUCCESS)
+            return status;
+    }
+    if (scaleOnly || t.temporary) {
+        ScaleLaunchArguments args{{cc, ww}, t, scaleOnly};
+        return LaunchKernel(reinterpret_cast<const void*>(GemmBatchedExScale), t.vectorBlocks, stream, args);
+    }
+    return ACL_SUCCESS;
+}
+
+int32_t LaunchReference(void* stream, GM_ADDR aa, GM_ADDR bb, GM_ADDR cc, GemmBatchedExArch22Tiling t)
+{
+    if (t.packed) {
+        t.k = t.originalK;
+        t.lda = t.originalLda;
+        t.ldb = t.originalLdb;
+    }
+    if (t.policy != 0) {
+        GemmLaunchArguments<2> args{{aa, bb}, t};
+        const aclError status =
+            LaunchKernel(reinterpret_cast<const void*>(GemmBatchedExStatistics), t.vectorBlocks, stream, args);
+        if (status != ACL_SUCCESS)
+            return status;
+    }
+    const uint32_t tile = t.transA ? REFERENCE_CAPACITY / 8 : REFERENCE_CAPACITY;
+    const uint64_t tasks = (static_cast<uint64_t>(t.m) + tile - 1) / tile * t.n * t.batchCount;
+    // Bound each ordered launch without splitting an output element's K sequence.
+    constexpr uint64_t MAX_REFERENCE_STEPS = 65536;
+    const uint64_t orderedTasks =
+        t.k > 0 ? std::max<uint64_t>(1, MAX_REFERENCE_STEPS / static_cast<uint64_t>(t.k)) : MAX_REFERENCE_STEPS;
+    const uint64_t step = t.policy != 0 ? tasks : orderedTasks;
+    for (t.referenceFirst = 0; t.referenceFirst < tasks; t.referenceFirst += step) {
+        t.referenceLast = std::min(tasks, t.referenceFirst + step);
+        GemmLaunchArguments<3> args{{aa, bb, cc}, t};
+        const aclError status =
+            LaunchKernel(reinterpret_cast<const void*>(GemmBatchedExReference), t.vectorBlocks, stream, args);
+        if (status != ACL_SUCCESS)
+            return status;
+    }
+    return ACL_SUCCESS;
+}
+
+int32_t GemmBatchedExArch22Launch(
+    uint32_t blocks, void* stream, const void* a, const void* b, const void* c, void* workspace,
+    GemmBatchedExArch22Tiling t, bool scaleOnly)
+{
+    auto aa = const_cast<uint8_t*>(static_cast<const uint8_t*>(a));
+    auto bb = const_cast<uint8_t*>(static_cast<const uint8_t*>(b));
+    auto cc = const_cast<uint8_t*>(static_cast<const uint8_t*>(c));
+    auto ww = static_cast<uint8_t*>(workspace);
+    if (blocks == 0)
+        return ACL_ERROR_INVALID_PARAM;
+    if (t.policy != 0 || t.route == GemmBatchedExRoute::ReferenceOrder) {
+        const int32_t status = LaunchReference(stream, aa, bb, cc, t);
+        if (status != ACL_SUCCESS || t.route == GemmBatchedExRoute::ReferenceOrder)
+            return status;
+    }
+    if (t.route == GemmBatchedExRoute::ExactSmall) {
+        return LaunchExact(stream, aa, bb, cc, t);
+    }
+    if (t.route != GemmBatchedExRoute::Regular) {
+        void* syncAddress = nullptr;
+        const aclError status = aclrtGetHardwareSyncAddr(&syncAddress);
+        if (status != ACL_SUCCESS)
+            return status;
+        t.syncAddress = reinterpret_cast<uint64_t>(syncAddress);
+    }
+    BalanceRowStrips(blocks, t);
+    if (UseInputStream(blocks, t)) {
+        GemmLaunchArguments<4> args{{aa, bb, cc, ww}, t};
+        return LaunchKernel(reinterpret_cast<const void*>(GemmBatchedExInputStream), blocks, stream, args);
+    }
+    if (t.route != GemmBatchedExRoute::Regular) {
+        if (t.route == GemmBatchedExRoute::RowStrips)
+            return LaunchRing<true>(blocks, stream, aa, bb, cc, ww, t);
+        return LaunchRing<false>(blocks, stream, aa, bb, cc, ww, t);
+    }
+    return LaunchRegular(blocks, stream, aa, bb, cc, ww, t, scaleOnly);
 }
