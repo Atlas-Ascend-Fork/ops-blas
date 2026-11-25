@@ -16,7 +16,8 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "gemv_strided_batched_tiling_data.h"
 
-void gemv_strided_batched_kernel_do(
+aclError gemv_strided_batched_kernel_do(
     uint8_t* a, uint8_t* x, uint8_t* y, const GemvStridedBatchedTilingData& tiling, uint32_t numBlocks, void* stream);

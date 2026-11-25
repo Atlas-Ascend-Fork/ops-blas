@@ -53,6 +53,20 @@ aclblasStatus_t ValidateGemvSbParams(
 }
 
 template <typename TIn, typename TOut>
+aclblasStatus_t LaunchGemvSbKernel(
+    const TIn* a, const TIn* x, TOut* y, const GemvStridedBatchedTilingData& tiling, uint32_t numBlocks, void* stream)
+{
+    const aclError launchErr = gemv_strided_batched_kernel_do(
+        reinterpret_cast<uint8_t*>(const_cast<TIn*>(a)), reinterpret_cast<uint8_t*>(const_cast<TIn*>(x)),
+        reinterpret_cast<uint8_t*>(y), tiling, numBlocks, stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "gemv_strided_batched_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+template <typename TIn, typename TOut>
 aclblasStatus_t GemvStridedBatchedImpl(
     aclblasHandle_t handle, aclblasOperation_t trans, int m, int n, const float* alpha, const TIn* a, int lda,
     int64_t strideA, const TIn* x, int incx, int64_t stridex, const float* beta, TOut* y, int incy, int64_t stridey,
@@ -101,10 +115,7 @@ aclblasStatus_t GemvStridedBatchedImpl(
     tiling.stridex = stridex;
     tiling.stridey = stridey;
 
-    gemv_strided_batched_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<TIn*>(a)), reinterpret_cast<uint8_t*>(const_cast<TIn*>(x)),
-        reinterpret_cast<uint8_t*>(y), tiling, usedCoreNum, handle->stream);
-    return ACLBLAS_STATUS_SUCCESS;
+    return LaunchGemvSbKernel(a, x, y, tiling, usedCoreNum, handle->stream);
 }
 
 } // namespace

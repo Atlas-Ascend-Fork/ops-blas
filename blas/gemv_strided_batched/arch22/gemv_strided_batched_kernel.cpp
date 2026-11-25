@@ -382,8 +382,12 @@ extern "C" __global__ __aicore__ void gemv_strided_batched_kernel_impl(
     op.Process();
 }
 
-void gemv_strided_batched_kernel_do(
+aclError gemv_strided_batched_kernel_do(
     uint8_t* a, uint8_t* x, uint8_t* y, const GemvStridedBatchedTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    // Drain any stale thread-level error so the post-launch check only reports
+    // this pipeline's own launch failures (issue #1181 precedent).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     gemv_strided_batched_kernel_impl<<<numBlocks, nullptr, stream>>>(a, x, y, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
