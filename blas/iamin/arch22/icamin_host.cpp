@@ -133,8 +133,12 @@ aclblasStatus_t aclblasIcamin(aclblasHandle_t handle, int n, const aclblasComple
             return ACLBLAS_STATUS_EXECUTION_FAILED;
         }
     }
-    icamin_arch22_do(
+    const aclError launchErr = icamin_arch22_do(
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)), reinterpret_cast<uint8_t*>(result),
         reinterpret_cast<uint8_t*>(workspace), tiling, reinterpret_cast<void*>(handle->stream));
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasIcamin", "icamin_arch22_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }

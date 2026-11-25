@@ -465,11 +465,12 @@ __global__ __aicore__ void icamin_arch22_one_kernel(GM_ADDR result)
 }
 
 template <IcaminLayout LAYOUT>
-void LaunchIcamin(uint8_t* x, uint8_t* result, uint8_t* workspace, const IcaminArch22Tiling& t, void* stream)
+aclError LaunchIcamin(uint8_t* x, uint8_t* result, uint8_t* workspace, const IcaminArch22Tiling& t, void* stream)
 {
     if (t.reduction == IcaminReduction::SINGLE_CORE) {
         icamin_arch22_vector_kernel<LAYOUT, IcaminReduction::SINGLE_CORE>
             <<<1, nullptr, stream>>>(x, result, workspace, t);
+        return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     } else if (t.reduction == IcaminReduction::STAGED) {
         if (t.buffers == 1) {
             icamin_arch22_vector_kernel<LAYOUT, IcaminReduction::STAGED, true>
@@ -478,22 +479,33 @@ void LaunchIcamin(uint8_t* x, uint8_t* result, uint8_t* workspace, const IcaminA
             icamin_arch22_vector_kernel<LAYOUT, IcaminReduction::STAGED>
                 <<<t.cores, nullptr, stream>>>(x, result, workspace, t);
         }
+        const aclError vectorErr = aclrtGetLastError(ACL_RT_THREAD_LEVEL);
+        if (vectorErr != ACL_SUCCESS) {
+            return vectorErr;
+        }
         // Kernel completion on the bound stream makes every partial visible to this AIV.
         icamin_arch22_finish_kernel<<<1, nullptr, stream>>>(result, workspace, t);
+        return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     } else {
         icamin_arch22_kernel<LAYOUT><<<t.cores, nullptr, stream>>>(x, result, workspace, t);
+        return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     }
 }
 
-void icamin_arch22_do(uint8_t* x, uint8_t* result, uint8_t* workspace, const IcaminArch22Tiling& tiling, void* stream)
+aclError icamin_arch22_do(
+    uint8_t* x, uint8_t* result, uint8_t* workspace, const IcaminArch22Tiling& tiling, void* stream)
 {
+    // Drain any stale thread-level error so the post-launch checks only report
+    // this pipeline's own launch failures (issue #1181 precedent).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     if (tiling.n == 1) {
         icamin_arch22_one_kernel<<<1, nullptr, stream>>>(result);
+        return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     } else if (tiling.layout == IcaminLayout::CONTIGUOUS) {
-        LaunchIcamin<IcaminLayout::CONTIGUOUS>(x, result, workspace, tiling, stream);
+        return LaunchIcamin<IcaminLayout::CONTIGUOUS>(x, result, workspace, tiling, stream);
     } else if (tiling.layout == IcaminLayout::DENSE_STRIDED) {
-        LaunchIcamin<IcaminLayout::DENSE_STRIDED>(x, result, workspace, tiling, stream);
+        return LaunchIcamin<IcaminLayout::DENSE_STRIDED>(x, result, workspace, tiling, stream);
     } else {
-        LaunchIcamin<IcaminLayout::SPARSE_STRIDED>(x, result, workspace, tiling, stream);
+        return LaunchIcamin<IcaminLayout::SPARSE_STRIDED>(x, result, workspace, tiling, stream);
     }
 }

@@ -11,6 +11,8 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "icamin_tiling_data.h"
 
-void icamin_arch22_do(uint8_t* x, uint8_t* result, uint8_t* workspace, const IcaminArch22Tiling& tiling, void* stream);
+aclError icamin_arch22_do(
+    uint8_t* x, uint8_t* result, uint8_t* workspace, const IcaminArch22Tiling& tiling, void* stream);
