@@ -18,6 +18,7 @@
 #include "acl/acl.h"
 #include "cann_ops_blasLt.h"
 #include "blasLtMatmul_param.h"
+#include "dtype_cast.h"
 
 // ── MXFP8 dequantize ──
 
@@ -144,9 +145,7 @@ inline float bf16ToFP32(uint16_t bf16Val)
 
 inline uint16_t fp32ToBF16(float fp32Val)
 {
-    uint32_t fp32Bits;
-    memcpy(&fp32Bits, &fp32Val, sizeof(float));
-    return static_cast<uint16_t>(fp32Bits >> 16);
+    return blas_common::FloatToBf16(fp32Val);
 }
 
 // ── CPU Golden ──
