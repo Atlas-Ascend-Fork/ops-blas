@@ -43,23 +43,23 @@ cmake --build lapack-build --target install
 export NETLIB="$PWD/netlib"     # 提供 libcblas.so / libblas.so / cblas.h
 ```
 
-构建测试工程（`TEST_DEVICE_ID` 是编译期宏，换卡必须重新构建）：
+进入 ops-blas 仓库根目录后构建测试工程（`TEST_DEVICE_ID` 是编译期宏，换卡必须重新构建）：
 
 ```bash
 export ASCEND_HOME_PATH=/path/to/cann-9.1.0
 source "${ASCEND_HOME_PATH}/set_env.sh"
 export CGEMV_DEVICE=0           # 必须是 Health OK 且空闲的卡
 
-cmake -S <ops-blas> -B <ops-blas>/build \
+cmake -S . -B build \
   -DSOC_VERSION=ascend950 -DBUILD_TEST=ON -DTEST_NAMES=cgemv \
   -DTEST_DEVICE_ID="${CGEMV_DEVICE}" \
   -DASCEND_CANN_PACKAGE_PATH="${ASCEND_HOME_PATH}" \
   -DREFBLAS_LIB="${NETLIB}/lib/libcblas.so" \
   -DREFBLAS_INCLUDE_DIR="${NETLIB}/include"
-cmake --build <ops-blas>/build -j 2 --target cgemv_test
+cmake --build build -j 2 --target cgemv_test
 
 # 确认链接到 Netlib 而不是 OpenBLAS
-ldd <ops-blas>/build/test/gemv/cgemv/cgemv_test | grep -i blas
+ldd ./build/test/gemv/cgemv/cgemv_test | grep -i blas
 ```
 
 仓库原有的 `bash build.sh --ops=cgemv --soc=ascend950 --run --device=...` 同样可用，
@@ -68,15 +68,18 @@ ldd <ops-blas>/build/test/gemv/cgemv/cgemv_test | grep -i blas
 
 ### 正式验收（推荐直接用任务自带脚本）
 
+使用任务附件中的 `task_cases` 目录。在 ops-blas 仓库根目录执行以下命令，将 `CGEMV_TASK_CASES` 设为该目录的实际路径：
+
 ```bash
-python3 task_cases/verify_accuracy.py    --repo <ops-blas> --soc ascend950 --skip-build --device "${CGEMV_DEVICE}"
-python3 task_cases/verify_performance.py --repo <ops-blas> --soc ascend950 --skip-build --device "${CGEMV_DEVICE}"
+CGEMV_TASK_CASES=/path/to/task_cases
+python3 "${CGEMV_TASK_CASES}/verify_accuracy.py"    --repo "$PWD" --soc ascend950 --skip-build --device "${CGEMV_DEVICE}"
+python3 "${CGEMV_TASK_CASES}/verify_performance.py" --repo "$PWD" --soc ascend950 --skip-build --device "${CGEMV_DEVICE}"
 ```
 
 两个脚本都会自行核对清单、返回码、设备号与基线，任一项不符即非零退出。
 `--skip-build` 要求产物位于 `<ops-blas>/build`，脚本会校验二进制编译期的 `TEST_DEVICE_ID`。
 
-手工执行等价于：
+也可在仓库根目录直接运行已构建的测试二进制，分别选择精度和性能用例：
 
 ```bash
 # 精度：1042 条
