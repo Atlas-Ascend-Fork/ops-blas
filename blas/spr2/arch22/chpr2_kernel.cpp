@@ -83,8 +83,7 @@ __aicore__ inline uint64_t Chpr2ColBase(bool upper, uint32_t j, uint32_t n)
 
 __aicore__ inline void BuildChpr2IndexTables(
     const LocalTensor<int32_t>& shiftIdx, const LocalTensor<int32_t>& splitIdx,
-    const LocalTensor<int32_t>& sprimePackIdx, const LocalTensor<int32_t>& tmpHalf,
-    const LocalTensor<int32_t>& tmpOdd)
+    const LocalTensor<int32_t>& sprimePackIdx, const LocalTensor<int32_t>& tmpHalf, const LocalTensor<int32_t>& tmpOdd)
 {
     CreateVecIndex(shiftIdx, 0, CHPR2_BUF_FLOATS);
     PipeBarrier<PIPE_V>();
@@ -168,8 +167,8 @@ public:
 
 private:
     __aicore__ inline void LoadVectorTile(
-        GlobalTensor<float>& vecGm, int64_t inc, uint32_t tileStart, uint32_t curLen,
-        const LocalTensor<float>& ubRaw, const LocalTensor<float>& ubSprime)
+        GlobalTensor<float>& vecGm, int64_t inc, uint32_t tileStart, uint32_t curLen, const LocalTensor<float>& ubRaw,
+        const LocalTensor<float>& ubSprime)
     {
         DataCopyPadExtParams<float> noPad{false, 0U, 0U, 0.0F};
         if (inc == 1) {
@@ -340,8 +339,7 @@ private:
             float yjIm = 0.0f;
             ReadVecScalar(xGm_, tiling_.incx, ubXraw, j, tileStart, tileEnd, xjRe, xjIm);
             ReadVecScalar(yGm_, tiling_.incy, ubYraw, j, tileStart, tileEnd, yjRe, yjIm);
-            UpdatePackedColumnSegment(
-                upper, j, tileStart, colLo, rowLo, rowHi - rowLo, xjRe, xjIm, yjRe, yjIm);
+            UpdatePackedColumnSegment(upper, j, tileStart, colLo, rowLo, rowHi - rowLo, xjRe, xjIm, yjRe, yjIm);
         }
     }
 
@@ -379,9 +377,12 @@ extern "C" __global__ __aicore__ void chpr2_arch22_kernel(
     op.Process();
 }
 
-void chpr2_kernel_do(
+aclError chpr2_kernel_do(
     const uint8_t* x, const uint8_t* y, uint8_t* ap, const Chpr2TilingData& tiling, uint32_t numBlocks, void* stream)
 {
-    chpr2_arch22_kernel<<<numBlocks, nullptr, stream>>>(
-        const_cast<uint8_t*>(x), const_cast<uint8_t*>(y), ap, tiling);
+    // Drain any stale thread-level error so the post-launch check only reports
+    // this pipeline's own launch failures (issue #1181 precedent).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
+    chpr2_arch22_kernel<<<numBlocks, nullptr, stream>>>(const_cast<uint8_t*>(x), const_cast<uint8_t*>(y), ap, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

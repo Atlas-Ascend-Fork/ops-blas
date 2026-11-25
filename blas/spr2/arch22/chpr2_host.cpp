@@ -34,27 +34,25 @@ aclblasStatus_t ValidateChpr2Body(
     const aclblasComplex* y, int incy, const aclblasComplex* ap)
 {
     CHECK_RET(alpha != nullptr, OP_LOGE(OP_TAG, "alpha is nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE(OP_TAG, "uplo must be UPPER or LOWER"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        incx != 0 && incx != INT_MIN && incy != 0 && incy != INT_MIN,
-        OP_LOGE(OP_TAG, "incx/incy must be nonzero and not INT_MIN"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        x != nullptr && y != nullptr && ap != nullptr,
-        OP_LOGE(OP_TAG, "x, y and ap must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER, OP_LOGE(OP_TAG, "uplo must be UPPER or LOWER");
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(incx != 0 && incx != INT_MIN && incy != 0 && incy != INT_MIN,
+              OP_LOGE(OP_TAG, "incx/incy must be nonzero and not INT_MIN");
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(x != nullptr && y != nullptr && ap != nullptr, OP_LOGE(OP_TAG, "x, y and ap must not be nullptr");
+              return ACLBLAS_STATUS_INVALID_VALUE);
 
     const uint64_t maxElements = std::numeric_limits<size_t>::max() / sizeof(aclblasComplex);
-    const uint64_t absIncx = (incx < 0) ? static_cast<uint64_t>(-static_cast<int64_t>(incx))
-                                        : static_cast<uint64_t>(incx);
-    const uint64_t absIncy = (incy < 0) ? static_cast<uint64_t>(-static_cast<int64_t>(incy))
-                                        : static_cast<uint64_t>(incy);
+    const uint64_t absIncx =
+        (incx < 0) ? static_cast<uint64_t>(-static_cast<int64_t>(incx)) : static_cast<uint64_t>(incx);
+    const uint64_t absIncy =
+        (incy < 0) ? static_cast<uint64_t>(-static_cast<int64_t>(incy)) : static_cast<uint64_t>(incy);
     const uint64_t lenX = static_cast<uint64_t>(n - 1) * absIncx + 1ULL;
     const uint64_t lenY = static_cast<uint64_t>(n - 1) * absIncy + 1ULL;
     const uint64_t lenAP = static_cast<uint64_t>(n) * (static_cast<uint64_t>(n) + 1ULL) / 2ULL;
-    CHECK_RET(
-        lenX <= maxElements && lenY <= maxElements && lenAP <= maxElements,
-        OP_LOGE(OP_TAG, "buffer byte length overflows size_t"); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(lenX <= maxElements && lenY <= maxElements && lenAP <= maxElements,
+              OP_LOGE(OP_TAG, "buffer byte length overflows size_t");
+              return ACLBLAS_STATUS_INVALID_VALUE);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -63,8 +61,7 @@ aclblasStatus_t LaunchChpr2Kernel(
     int incx, const aclblasComplex* y, int incy, aclblasComplex* ap)
 {
     const uint32_t aivCoreNum = GetAivCoreCount();
-    CHECK_RET(
-        aivCoreNum != 0U, OP_LOGE(OP_TAG, "GetAivCoreCount failed"); return ACLBLAS_STATUS_EXECUTION_FAILED);
+    CHECK_RET(aivCoreNum != 0U, OP_LOGE(OP_TAG, "GetAivCoreCount failed"); return ACLBLAS_STATUS_EXECUTION_FAILED);
     const uint32_t numBlocks = std::min(static_cast<uint32_t>(n), aivCoreNum);
     Chpr2TilingData tiling{};
     tiling.n = static_cast<uint32_t>(n);
@@ -79,9 +76,13 @@ aclblasStatus_t LaunchChpr2Kernel(
         OP_TAG, "tiling: n=%u uplo=%u incx=%ld incy=%ld numBlocks=%u", tiling.n, tiling.uplo, tiling.incx, tiling.incy,
         numBlocks);
     OP_LOGI(OP_TAG, "launching kernel: numBlocks=%u, aivCoreNum=%u", numBlocks, aivCoreNum);
-    chpr2_kernel_do(
+    const aclError launchErr = chpr2_kernel_do(
         reinterpret_cast<const uint8_t*>(x), reinterpret_cast<const uint8_t*>(y), reinterpret_cast<uint8_t*>(ap),
         tiling, numBlocks, handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "chpr2_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
