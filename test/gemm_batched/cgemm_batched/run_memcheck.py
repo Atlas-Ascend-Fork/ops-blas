@@ -60,12 +60,17 @@ def check_xml(xml, expected):
     if not xml.exists():
         return False
     try:
-        tests = ET.parse(xml).getroot().findall(".//testcase")
-    except ET.ParseError:
+        root = ET.parse(xml).getroot()
+        if any(int(root.attrib.get(key, 0)) != 0 for key in ("failures", "errors", "disabled", "skipped")):
+            return False
+    except (ET.ParseError, ValueError):
         return False
+    tests = root.findall(".//testcase")
     return len(tests) == expected and all(
-        test.attrib.get("result") == "completed"
+        test.attrib.get("status") == "run"
+        and test.attrib.get("result") == "completed"
         and test.find("failure") is None
+        and test.find("error") is None
         and test.find("skipped") is None
         for test in tests
     )
