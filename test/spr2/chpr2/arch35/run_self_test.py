@@ -8,6 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 """Run Chpr2 accuracy cases and verify the complete recorded case set."""
 import argparse
+from collections import Counter
 import csv
 import json
 import logging
@@ -21,6 +22,31 @@ import xml.etree.ElementTree as ET
 def read_rows(path):
     with path.open(encoding="utf-8-sig", newline="") as stream:
         return list(csv.DictReader(stream))
+
+
+def verify_gtest_xml(xml, expected):
+    if not xml.is_file():
+        return False
+    root = ET.parse(xml).getroot()
+    tests = root.findall(".//testcase")
+    expected_tests = {("Chpr2/Chpr2Arch35Test", f"CsvDriven/{name}") for name in expected}
+    expected_tests.update({
+        ("Chpr2Validation", "NullHandlePrecedesAll"),
+        ("Chpr2BoundaryTest", "ByteSpanAndLargeStride"),
+    })
+    actual_tests = Counter((test.get("classname"), test.get("name")) for test in tests)
+    completed = all(
+        test.get("result") == "completed"
+        and test.find("failure") is None
+        and test.find("skipped") is None
+        for test in tests
+    )
+    return (
+        actual_tests == Counter(expected_tests)
+        and int(root.get("failures", "0")) == 0
+        and int(root.get("errors", "0")) == 0
+        and completed
+    )
 
 
 def main():
@@ -52,13 +78,7 @@ def main():
         result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT, check=False)
     records = read_rows(output / "accuracy.csv") if (output / "accuracy.csv").exists() else []
     actual = [row["case_name"] for row in records]
-    xml_ok = False
-    if xml.is_file():
-        root = ET.parse(xml).getroot()
-        tests = root.findall(".//testcase")
-        xml_ok = (len(tests) == len(expected) + 2 and int(root.get("failures", "0")) == 0
-                  and int(root.get("errors", "0")) == 0
-                  and all(test.find("failure") is None and test.find("skipped") is None for test in tests))
+    xml_ok = verify_gtest_xml(xml, expected)
     passed = (result.returncode == 0 and xml_ok and len(actual) == len(expected)
               and len(set(actual)) == len(actual) and set(actual) == expected
               and all(row.get("passed") == "PASS" for row in records))
