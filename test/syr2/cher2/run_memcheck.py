@@ -49,17 +49,22 @@ def check_xml(xml, expected, selected):
     if not xml.exists():
         return False
     try:
-        tests = ET.parse(xml).getroot().findall(".//testcase")
-    except ET.ParseError:
+        root = ET.parse(xml).getroot()
+        if any(int(root.attrib.get(key, 0)) != 0 for key in ("failures", "errors", "disabled", "skipped")):
+            return False
+    except (ET.ParseError, ValueError):
         return False
+    tests = root.findall(".//testcase")
     names = [test.get("classname", "") + "." + test.get("name", "") for test in tests]
     if len(names) != expected or len(set(names)) != expected:
         return False
     if not all(any(fnmatchcase(name, selector) for selector in selected) for name in names):
         return False
     return all(
-        test.attrib.get("result") == "completed"
+        test.attrib.get("status") == "run"
+        and test.attrib.get("result") == "completed"
         and test.find("failure") is None
+        and test.find("error") is None
         and test.find("skipped") is None
         for test in tests
     )
@@ -118,8 +123,10 @@ def main():
     args.output.chmod(0o750)
     # Each process contains only one ACL fixture, avoiding tool state reuse
     # across the framework's aclFinalize/aclInit lifecycle.
-    env = os.environ.copy()
-    for key in ("CHER2_PROFILE", "CHER2_PROFILE_RANGE", "CHER2_PROFILE_SAMPLES", "BLAS_TEST_CASES", "GTEST_FILTER"):
+    env = dict(os.environ)
+    for key in ("CHER2_PROFILE", "CHER2_PROFILE_RANGE", "CHER2_PROFILE_SAMPLES", "BLAS_TEST_CASES"):
+        env.pop(key, None)
+    for key in [key for key in env if key.startswith("GTEST_")]:
         env.pop(key, None)
     checks = [run_group(args, *group, env) for group in test_groups()]
     clean = all(check["passed"] for check in checks)
