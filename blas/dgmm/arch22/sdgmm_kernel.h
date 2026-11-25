@@ -16,8 +16,8 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "sdgmm_tiling_data.h"
 
-void sdgmm_kernel_do(
+aclError sdgmm_kernel_do(
     const uint8_t* x, const uint8_t* A, uint8_t* C, const SdgmmTilingData& tiling, uint32_t numBlocks, void* stream);
-

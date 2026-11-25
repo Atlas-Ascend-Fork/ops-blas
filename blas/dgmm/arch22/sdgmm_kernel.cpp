@@ -238,8 +238,12 @@ extern "C" __global__ __aicore__ void sdgmm_arch22_kernel(GM_ADDR x, GM_ADDR A, 
     op.Process();
 }
 
-void sdgmm_kernel_do(
+aclError sdgmm_kernel_do(
     const uint8_t* x, const uint8_t* A, uint8_t* C, const SdgmmTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    // Drain any stale thread-level error so the post-launch check only reports
+    // this pipeline's own launch failures (issue #1181 precedent).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     sdgmm_arch22_kernel<<<numBlocks, nullptr, stream>>>(const_cast<uint8_t*>(x), const_cast<uint8_t*>(A), C, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

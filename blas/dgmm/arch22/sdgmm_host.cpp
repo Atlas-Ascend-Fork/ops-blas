@@ -124,9 +124,13 @@ aclblasStatus_t LaunchSdgmmKernel(
         OP_TAG, "tiling: mode=%u m=%u n=%u colBlocks=%u mBlocks=%u tileM=%u", tiling.mode, tiling.m, tiling.n,
         tiling.colBlocks, tiling.mBlocks, tiling.tileM);
     OP_LOGI(OP_TAG, "launching kernel: numBlocks=%u, aivCoreNum=%u", numBlocks, aivCoreNum);
-    sdgmm_kernel_do(
+    const aclError launchErr = sdgmm_kernel_do(
         reinterpret_cast<const uint8_t*>(x), reinterpret_cast<const uint8_t*>(A), reinterpret_cast<uint8_t*>(C), tiling,
         numBlocks, handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "sdgmm_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
