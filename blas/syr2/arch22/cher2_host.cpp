@@ -71,9 +71,13 @@ aclblasStatus_t LaunchCher2Kernel(
         OP_TAG, "tiling: n=%u lda=%u uplo=%u incx=%ld incy=%ld numBlocks=%u", tiling.n, tiling.lda, tiling.uplo,
         tiling.incx, tiling.incy, numBlocks);
     OP_LOGI(OP_TAG, "launching kernel: numBlocks=%u, aivCoreNum=%u", numBlocks, aivCoreNum);
-    cher2_kernel_do(
+    const aclError launchErr = cher2_kernel_do(
         reinterpret_cast<const uint8_t*>(x), reinterpret_cast<const uint8_t*>(y), reinterpret_cast<uint8_t*>(a), tiling,
         numBlocks, handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "cher2_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 

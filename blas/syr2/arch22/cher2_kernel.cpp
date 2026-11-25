@@ -369,9 +369,13 @@ extern "C" __global__ __aicore__ void cher2_arch22_kernel(
     op.Process();
 }
 
-void cher2_kernel_do(
+aclError cher2_kernel_do(
     const uint8_t* x, const uint8_t* y, uint8_t* A, const Cher2Arch22TilingData& tiling, uint32_t numBlocks,
     void* stream)
 {
+    // Drain any stale thread-level error so the post-launch check only reports
+    // this pipeline's own launch failures (issue #1181 precedent).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     cher2_arch22_kernel<<<numBlocks, nullptr, stream>>>(const_cast<uint8_t*>(x), const_cast<uint8_t*>(y), A, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

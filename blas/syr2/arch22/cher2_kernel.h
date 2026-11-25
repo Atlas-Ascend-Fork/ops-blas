@@ -16,8 +16,9 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "cher2_arch22_tiling_data.h"
 
-void cher2_kernel_do(
+aclError cher2_kernel_do(
     const uint8_t* x, const uint8_t* y, uint8_t* A, const Cher2Arch22TilingData& tiling, uint32_t numBlocks,
     void* stream);
