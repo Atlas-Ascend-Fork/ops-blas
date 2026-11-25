@@ -116,6 +116,29 @@ int main(int argc, char** argv) {
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.splitlines(), NAMES)
 
+    def write_status_cases(self, representations, error_rows):
+        path = self.root / "test/sample/arch35/sample_test.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["case_name", "expect_result"])
+            writer.writerows((f"positive_{i:03d}", representations[i % len(representations)])
+                             for i in range(16))
+            writer.writerows(error_rows)
+
+    def test_smoke_cli_success_statuses(self):
+        statuses = ("SUCCESS", "ACLBLAS_STATUS_SUCCESS", "0", " 0 ")
+        error_rows = [(f"{prefix}_{i:03d}", value)
+                      for prefix, value in (("numeric_error", "3"), ("symbolic_error", "ACLBLAS_STATUS_INVALID_VALUE"))
+                      for i in range(16)]
+        expected = sorted([name for name, _ in error_rows] + [f"positive_{i:03d}" for i in (0, 5, 10, 15)])
+        for representations in [(status,) for status in statuses] + [statuses]:
+            with self.subTest(statuses=representations):
+                self.write_status_cases(representations, error_rows)
+                result = self.run_sampler()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "sample:" + ",".join(expected) + ";")
+
     def test_native_csv_failures_are_nonfatal_but_fail_the_reader(self):
         cases = (
             ("broken", "malformed csv row (fields=1, header=2)", ["after"]),

@@ -41,14 +41,18 @@ SMALL_GROUP_KEEP = 12
 LARGE_GROUP_KEEP = 24
 LARGE_GROUP_STEP_DIVISOR = 8
 
-SUCCESS_MARKERS = ("SUCCESS",)
+SUCCESS_MARKERS = ("SUCCESS", "ACLBLAS_STATUS_SUCCESS")
 
 
 def is_negative(row):
-    expect = (row.get("expect_result") or row.get("ExpectResult") or "").upper()
-    if not expect:
+    expect = (row.get("expect_result") or row.get("ExpectResult") or "").strip().upper()
+    if not expect or expect in SUCCESS_MARKERS:
         return False
-    return not any(marker in expect for marker in SUCCESS_MARKERS)
+    try:
+        # parseStatus in csv_loader.h also accepts decimal integer status codes.
+        return int(expect, 10) != 0
+    except ValueError:
+        return True
 
 
 def group_prefix(case_name):
