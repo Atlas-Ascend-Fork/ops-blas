@@ -86,15 +86,27 @@ def check_mapping(names, csv_path):
         raise RuntimeError("Mandatory TN96 golden tests missing")
 
 
+def has_summary_failures(tests_root):
+    for suite in tests_root.iter():
+        if suite.tag not in ("testsuites", "testsuite"):
+            continue
+        for key in ("failures", "errors", "disabled", "skipped"):
+            if int(suite.get(key, "0")) != 0:
+                return True
+    return False
+
+
 def check_xml(path, expected):
-    tests = list(ET.parse(path).getroot().iter("testcase"))
+    tests_root = ET.parse(path).getroot()
+    tests = list(tests_root.iter("testcase"))
     actual = [node.get("classname", "") + "." + node.get("name", "") for node in tests]
     failures = []
     for name, node in zip(actual, tests):
         has_issue = any(node.find(tag) is not None for tag in ("failure", "error", "skipped"))
         if has_issue or node.get("status") == "notrun" or node.get("result") in ("skipped", "suppressed"):
             failures.append(name)
-    if len(actual) != len(expected) or set(actual) != set(expected) or failures:
+    summary_failures = has_summary_failures(tests_root)
+    if Counter(actual) != Counter(expected) or failures or summary_failures:
         raise RuntimeError(f"GTest execution incomplete/failed: expected={len(expected)}, "
                            f"actual={len(actual)}, failures/skips={failures}")
     return {"discovered": len(expected), "executed": len(actual), "failed_or_skipped": 0}
