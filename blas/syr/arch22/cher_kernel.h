@@ -16,9 +16,9 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "cher_tiling_data.h"
 
-void cher_kernel_do(
+aclError cher_kernel_do(
     const uint8_t* alphaPtr, const uint8_t* x, uint8_t* A, const CherTilingData& tiling, uint32_t numBlocks,
     void* stream);
-

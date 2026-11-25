@@ -29,13 +29,11 @@ constexpr const char* OP_TAG = "aclblasCher";
 
 aclblasStatus_t ValidateCherParams(aclblasFillMode_t uplo, int n, int lda, int incx, const float* alpha)
 {
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE(OP_TAG, "uplo must be UPPER(121) or LOWER(122), got %d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_ENUM);
-    CHECK_RET(
-        lda >= std::max(1, n), OP_LOGE(OP_TAG, "lda must be >= max(1, n), got lda=%d, n=%d", lda, n);
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE(OP_TAG, "uplo must be UPPER(121) or LOWER(122), got %d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_ENUM);
+    CHECK_RET(lda >= std::max(1, n), OP_LOGE(OP_TAG, "lda must be >= max(1, n), got lda=%d, n=%d", lda, n);
+              return ACLBLAS_STATUS_INVALID_VALUE);
     const int64_t elemSpan = static_cast<int64_t>(lda) * static_cast<int64_t>(n);
     if (elemSpan > (INT64_MAX / static_cast<int64_t>(sizeof(aclblasComplex))) ||
         elemSpan > static_cast<int64_t>(UINT32_MAX)) {
@@ -104,9 +102,13 @@ aclblasStatus_t LaunchCherKernel(
         tiling.incx, tiling.numBlocks, tiling.alphaIsDevice);
     OP_LOGI(OP_TAG, "launching kernel: numBlocks=%u, aivCoreNum=%u", numBlocks, aivCoreNum);
     const uint8_t* alphaPtr = alphaIsDevice ? reinterpret_cast<const uint8_t*>(alpha) : nullptr;
-    cher_kernel_do(
+    const aclError launchErr = cher_kernel_do(
         alphaPtr, reinterpret_cast<const uint8_t*>(x), reinterpret_cast<uint8_t*>(A), tiling, numBlocks,
         handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "cher_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
