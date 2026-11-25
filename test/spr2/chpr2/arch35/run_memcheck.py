@@ -28,6 +28,8 @@ SUCCESS_CASES = {
     "lower_negative": ("TC_INC_124", "ACLBLAS_LOWER", -1, -1),
 }
 NEGATIVE_CASES = ("TC_ED_188", "TC_ED_189", "TC_ED_192", "TC_ED_193")
+TIMEOUT_EXIT_CODE = 124
+LAUNCH_ERROR_EXIT_CODE = 127
 
 
 def check_cases(csv_path):
@@ -53,39 +55,87 @@ def check_cases(csv_path):
             raise ValueError("Expected a negative case: " + name)
 
 
-def run_group(args, group, selected, require_kernel):
-    output = args.output
-    xml, log, detail = (output / (group + suffix) for suffix in (".xml", ".log", "_detail.log"))
-    env = os.environ.copy()
-    for key in ("CHPR2_PROFILE", "CHPR2_PROFILE_CALLS", "CHPR2_RESULTS", "BLAS_TEST_CASES", "GTEST_FILTER",
-                "GTEST_OUTPUT"):
-        env.pop(key, None)
-    env.update(CHPR2_CSV=str(args.csv), BLAS_DEVICE_ID=str(args.device),
-               GTEST_FILTER=":".join(selected), GTEST_OUTPUT="xml:" + str(xml))
-    command = [args.tool, "--tool=memcheck", "--leak-check=yes", "--log-file=" + str(detail), str(args.binary)]
-    with log.open("w", encoding="utf-8") as stream:
-        result = subprocess.run(command, env=env, stdout=stream, stderr=subprocess.STDOUT,
-                                timeout=args.timeout, check=False)
-    text = log.read_text(encoding="utf-8", errors="replace")
+def execute_sanitizer(command, env, log, timeout):
+    try:
+        with log.open("w", encoding="utf-8") as stream:
+            result = subprocess.run(
+                command, env=env, stdout=stream, stderr=subprocess.STDOUT,
+                timeout=timeout, check=False,
+            )
+        return result.returncode, False, None
+    except subprocess.TimeoutExpired:
+        return TIMEOUT_EXIT_CODE, True, f"Timed out after {timeout}s"
+    except OSError as exc:
+        return LAUNCH_ERROR_EXIT_CODE, False, str(exc)
+
+
+def parse_xml_testcases(xml, selected):
+    if not xml.is_file():
+        return False, None
+    try:
+        tests = ET.parse(xml).getroot().findall(".//testcase")
+    except ET.ParseError as exc:
+        return False, f"Failed to parse XML {xml.name}: {exc}"
+    actual = [test.get("name", "").rsplit("/", 1)[-1] for test in tests]
+    expected = [name.rsplit("/", 1)[-1].rsplit(".", 1)[-1] for name in selected]
+    completed = all(
+        test.get("result") == "completed"
+        and test.find("failure") is None
+        and test.find("skipped") is None
+        for test in tests
+    )
+    return Counter(actual) == Counter(expected) and completed, None
+
+
+def collect_sanitizer_stats(log, detail):
+    text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
     if detail.exists():
         text += "\n" + detail.read_text(encoding="utf-8", errors="replace")
     pattern = r'"?([^"\n]+?)(?:\([^"\n]*\))?"?'
-    starts = Counter(re.findall(r"Start memcheck sanitizer on kernel " + pattern + r"\s*$", text, re.MULTILINE))
-    finished = Counter(re.findall(r"Sanitizer finished on kernel " + pattern + r"\. No error detected\.", text))
+    starts = Counter(
+        re.findall(r"Start memcheck sanitizer on kernel " + pattern + r"\s*$", text, re.MULTILINE)
+    )
+    finished = Counter(
+        re.findall(r"Sanitizer finished on kernel " + pattern + r"\. No error detected\.", text)
+    )
     diagnostics = []
     for line in text.splitlines():
         if re.search(r"\b(?:ERROR|WARNING)\b", line) and "No error detected." not in line:
             diagnostics.append(line)
-    tests = ET.parse(xml).getroot().findall(".//testcase") if xml.is_file() else []
-    actual = [test.get("name", "").rsplit("/", 1)[-1] for test in tests]
-    expected = [name.rsplit("/", 1)[-1].rsplit(".", 1)[-1] for name in selected]
-    xml_ok = (Counter(actual) == Counter(expected) and all(test.get("result") == "completed"
-              and test.find("failure") is None and test.find("skipped") is None for test in tests))
+    return starts, finished, diagnostics
+
+
+def run_group(args, group, selected, require_kernel):
+    output = args.output
+    xml, log, detail = (output / (group + suffix) for suffix in (".xml", ".log", "_detail.log"))
+    env = os.environ.copy()
+    for key in ("CHPR2_PROFILE", "CHPR2_PROFILE_CALLS", "CHPR2_RESULTS", "BLAS_TEST_CASES",
+                "GTEST_FILTER", "GTEST_OUTPUT"):
+        env.pop(key, None)
+    env.update(CHPR2_CSV=str(args.csv), BLAS_DEVICE_ID=str(args.device),
+               GTEST_FILTER=":".join(selected), GTEST_OUTPUT="xml:" + str(xml))
+    command = [
+        args.tool, "--tool=memcheck", "--leak-check=yes",
+        "--log-file=" + str(detail), str(args.binary),
+    ]
+    returncode, timed_out, error = execute_sanitizer(command, env, log, args.timeout)
+    starts, finished, diagnostics = collect_sanitizer_stats(log, detail)
+    xml_ok, xml_error = parse_xml_testcases(xml, selected)
+    if error is None:
+        error = xml_error
     chpr2_starts = sum(count for name, count in starts.items() if "chpr2_kernel" in name)
     kernel_ok = starts == finished and (chpr2_starts == 1 if require_kernel else chpr2_starts == 0)
-    passed = result.returncode == 0 and xml_ok and kernel_ok and not diagnostics
-    return dict(group=group, passed=passed, returncode=result.returncode, expected_tests=len(selected),
-                kernel_starts=dict(starts), kernel_finished=dict(finished), diagnostics=diagnostics)
+    passed = all((
+        returncode == 0, not timed_out, error is None, xml_ok, kernel_ok, not diagnostics,
+    ))
+    record = {
+        "group": group, "passed": passed, "returncode": returncode, "timed_out": timed_out,
+        "expected_tests": len(selected), "kernel_starts": dict(starts),
+        "kernel_finished": dict(finished), "diagnostics": diagnostics,
+    }
+    if error is not None:
+        record["error"] = error
+    return record
 
 
 def main():
