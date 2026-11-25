@@ -2,7 +2,7 @@
 
 ## 算子概述
 
-aclblasSgemm / aclblasCgemm / aclblasCgemmEx 算子实现了通用矩阵乘法，核心运算为 C = alpha * op(A) * op(B) + beta * C。aclblasSgemm 支持单精度（FP32）数据类型，aclblasCgemm 支持复数单精度（COMPLEX64，每个复数由两个 FP32 分量组成）数据类型，aclblasCgemmEx 在此基础上允许 A/B/C 独立选择 FP32 / COMPLEX64 / FP16 / COMPLEX32 元素类型。均采用 BLAS 标准列主序存储。
+aclblasSgemm / aclblasCgemm / aclblasCgemmEx / aclblasHgemm 算子实现了通用矩阵乘法，核心运算为 C = alpha * op(A) * op(B) + beta * C。aclblasSgemm 支持单精度（FP32）数据类型，aclblasCgemm 支持复数单精度（COMPLEX64，每个复数由两个 FP32 分量组成）数据类型，aclblasCgemmEx 在此基础上允许 A/B/C 独立选择 FP32 / COMPLEX64 / FP16 / COMPLEX32 元素类型，aclblasHgemm 支持半精度（FLOAT16）数据类型（FLOAT32 累加）。均采用 BLAS 标准列主序存储。
 
 数学表达式：
 
@@ -25,6 +25,7 @@ C = alpha * op(A) * op(B) + beta * C
 | aclblasCgemm3mStridedBatched | COMPLEX64 固定步长批量 GEMM，使用三次实数乘积 |
 | aclblasCgemmEx | 扩展复数通用矩阵乘法，A/B/C 可独立指定元素类型（Ascend 950） |
 | aclblasCgemm3m | 复数单精度三乘法通用矩阵乘法（950PR） |
+| aclblasHgemm | 半精度（FLOAT16）通用矩阵乘法，支持矩阵转置和 alpha/beta 缩放，FLOAT32 累加 |
 
 ## 算子执行接口
 
@@ -986,3 +987,139 @@ m,n>0 时 C 必须非空。beta=0 不读取旧 C，输出 padding 不被修改�
 `matched_ratio≥99%`，且 `max_abs_error≤max(0.01,32 ULP)`。非有限值按任务书规则独立判定。
 历史通过报告不代表当前版本已经通过。
 测试、Netlib 3.10.0 复现及性能采样见 [测试说明](../../test/gemm/cgemm3m/README.md)。
+
+### aclblasHgemm
+
+#### 产品支持情况
+
+- Ascend 950PR / Ascend 950DT：支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+
+#### Ascend 950PR 实现说明
+
+- 实现目录：`blas/gemm/arch35/`
+- 调用方式：通过 `aclblasHandle_t` 绑定 stream，直接下发 Ascend C Kernel
+- 数据类型：`aclblasHalf`（FLOAT16，IEEE 754 binary16 位模式），Cube 侧以 FLOAT32 累加，输出按就近舍入转回 FLOAT16
+- 存储格式：BLAS 列主序，支持 `N`、`T`、`C` 全部转置组合（实数下 `C` 等价于 `T`）
+- Kernel 设计：
+    - Cube kernel `hgemm_kernel_fp16`：`(GROUP_M x GROUP_N) = (2 x 2)` 个 `128 x 128` tile 组共享 L0A/L0B 操作数，L0C 以 FLOAT32 累加；L1 以 128KB K 分块（K_CHUNK=128）组织为 512KB L1 上的 4 级环形缓冲，L0A/L0B 以 64-K 子块（单条 `(128 x 128 x 64)` Mmad）2 级乒乓装载；Fixpipe 经 `L0C -> GM` 完成 FLOAT32 -> FLOAT16 转换，并与下一 tile 组的装载流水重叠
+    - 多核切分按组级代价模型（MAC 与带宽代价取大）选取最优矩形分块，偏好每核保持完整 `2 x 2` tile 组
+    - `alpha/beta` 量纲通过 AIV 向量 kernel `hgemm_alpha_beta_kernel` 以 FLOAT32 精度施加（alpha != 1 或 beta != 0 时经 FLOAT32 workspace 中转）
+    - `alpha == 0` / `k == 0` 退化路径：`C = beta * C`（beta == 0 时仅对 m*n 逻辑区域置零，保留前导维填充）
+- 自测目录：`test/gemm/hgemm/arch35/`
+- 精度/性能测试：`./build/test/gemm/hgemm/hgemm_test`
+
+#### 函数原型
+
+```cpp
+aclblasStatus_t aclblasHgemm(aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k, const aclblasHalf* alpha, const aclblasHalf* A, int lda, const aclblasHalf* B, int ldb, const aclblasHalf* beta, aclblasHalf* C, int ldc)
+```
+
+#### 参数说明
+
+| 参数名 | 输入/输出 | 参数类型 | 说明 |
+|--------|----------|---------|------|
+| handle | 输入 | aclblasHandle_t | ops-blas 库上下文句柄，携带 stream，Host 内存；为 nullptr 时返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR |
+| transa | 输入 | aclblasOperation_t | 矩阵 A 的操作类型：ACLBLAS_OP_N（不转置）、ACLBLAS_OP_T（转置）、ACLBLAS_OP_C（共轭转置，实数等价于转置），Host 内存 |
+| transb | 输入 | aclblasOperation_t | 矩阵 B 的操作类型（同 transa），Host 内存 |
+| m | 输入 | int | op(A) 和 C 的行数，M >= 0，Host 内存；M = 0 或 N = 0 时不访问矩阵直接返回成功 |
+| n | 输入 | int | op(B) 和 C 的列数，N >= 0，Host 内存 |
+| k | 输入 | int | op(A) 的列数和 op(B) 的行数（内维），K >= 0，Host 内存；K = 0 时不引用 A/B，仅执行 C = beta * C |
+| alpha | 输入 | const aclblasHalf* | FLOAT16 标量 alpha 指针，不可为 nullptr，Host 内存 |
+| A | 输入 | const aclblasHalf* | 矩阵 A 的设备内存指针，FLOAT16，列主序；M > 0、N > 0、K > 0 且 alpha != 0 时不可为 nullptr |
+| lda | 输入 | int | 矩阵 A 的前导维度（列主序），transA=N 时 lda >= max(1, M)，transA=T/C 时 lda >= max(1, K) |
+| B | 输入 | const aclblasHalf* | 矩阵 B 的设备内存指针，FLOAT16，列主序；M > 0、N > 0、K > 0 且 alpha != 0 时不可为 nullptr |
+| ldb | 输入 | int | 矩阵 B 的前导维度（列主序），transB=N 时 ldb >= max(1, K)，transB=T/C 时 ldb >= max(1, N) |
+| beta | 输入 | const aclblasHalf* | FLOAT16 标量 beta 指针，不可为 nullptr，Host 内存；beta = 0 时 C 不必是有效输入（置零输出） |
+| C | 输入/输出 | aclblasHalf* | 矩阵 C 的设备内存指针，FLOAT16，列主序，原地覆写；M > 0、N > 0 且（K > 0 或 beta != 0）时不可为 nullptr |
+| ldc | 输入 | int | 矩阵 C 的前导维度（列主序），ldc >= max(1, M) |
+
+#### 约束说明
+
+- 参数校验顺序：handle / transa / transb / m,n,k / lda,ldb,ldc / alpha,beta 判空先于 m,n 短路判定（M = 0 或 N = 0 时 alpha/beta 仍不可为 nullptr）；A/B/C 判空后于短路判定
+- 非法枚举返回 `ACLBLAS_STATUS_INVALID_ENUM`；负维度、非法前导维、空指针返回 `ACLBLAS_STATUS_INVALID_VALUE`
+- 不支持非连续 Tensor（仅前导维语义）、不支持 broadcast；C 为原地覆写
+- FLOAT16 累加在 L0C 中以 FLOAT32 进行；输出按 IEEE 754 就近舍入转回 FLOAT16
+- alpha != 1 或 beta != 0 时经 FLOAT32 workspace 中转施加量纲，需 `CeilAlign(M, 16) * N * 4` 字节（见 `aclblasSetWorkspace`）；请求超过 handle workspace 上限（2 GiB）时返回 `ACLBLAS_STATUS_ALLOC_FAILED`
+
+#### 精度验证
+
+- golden 生成：输入量化为 FLOAT16 后以 FLOAT32 精度（Netlib `cblas_sgemm`）计算 `C = alpha*op(A)*op(B) + beta*C`，结果按就近舍入转回 FLOAT16，全矩阵逐元素比对
+- 判定标准（FLOAT16 档）：rtol = atol = 2^-10，matched_ratio >= 0.99，max_abs_error <= max(1e-1, 32*ULP)；Inf/NaN 特殊值按任务书规则等效判定
+
+#### 调用示例
+
+```cpp
+#include <cstdio>
+#include <memory>
+#include <vector>
+
+#include "acl/acl.h"
+#include "cann_ops_blas.h"
+
+#define CHECK_RET(cond, return_expr) \
+    do {                             \
+        if (!(cond)) {               \
+            return return_expr;      \
+        }                            \
+    } while (0)
+
+#define LOG_PRINT(message, ...)         \
+    do {                                \
+        printf(message, ##__VA_ARGS__); \
+    } while (0)
+
+struct AclContext {
+    int deviceId;
+    aclrtStream stream = nullptr;
+    aclrtContext context = nullptr;
+
+    AclContext(int id) : deviceId(id) {}
+
+    int Init()
+    {
+        aclError ret = aclInit(nullptr);
+        CHECK_RET(ret == ACL_SUCCESS || ret == ACL_ERROR_REPEAT_INITIALIZE, LOG_PRINT("aclInit failed. ERROR: %d\n", ret); return ret);
+        ret = aclrtSetDevice(deviceId);
+        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclrtSetDevice failed. ERROR: %d\n", ret); return ret);
+        ret = aclrtCreateStream(&stream);
+        CHECK_RET(ret == ACL_SUCCESS, LOG_PRINT("aclrtCreateStream failed. ERROR: %d\n", ret); return ret);
+        return ACL_SUCCESS;
+    }
+};
+```
+
+调用主流程（M=2, N=2, K=2，`aclblasHalf` 以 `blas_common::FloatToHalf` 生成位模式，亦可自行实现等价转换）：
+
+```cpp
+    // C = alpha * op(A) * op(B) + beta * C
+    int m = 2, n = 2, k = 2;
+    int lda = m, ldb = k, ldc = m;
+    aclblasHalf alpha = blas_common::FloatToHalf(1.0f);
+    aclblasHalf beta = blas_common::FloatToHalf(0.0f);
+    aclblasOperation_t transA = ACLBLAS_OP_N;
+    aclblasOperation_t transB = ACLBLAS_OP_N;
+
+    // 列主序 A (m x k)、B (k x n)、C (m x n)，元素均为 FLOAT16 位模式
+    std::vector<aclblasHalf> hA = {FloatToHalf(1.0f), FloatToHalf(3.0f),
+                                   FloatToHalf(2.0f), FloatToHalf(4.0f)};
+    std::vector<aclblasHalf> hB = {FloatToHalf(5.0f), FloatToHalf(7.0f),
+                                   FloatToHalf(6.0f), FloatToHalf(8.0f)};
+    std::vector<aclblasHalf> hC(4, FloatToHalf(0.0f));
+
+    blasRet = aclblasHgemm(handle, transA, transB, m, n, k, &alpha,
+                           aDevicePtr.get(), lda, bDevicePtr.get(), ldb,
+                           &beta, cDevicePtr.get(), ldc);
+    CHECK_RET(blasRet == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasHgemm failed. ERROR: %d\n", blasRet); return blasRet);
+```
+
+预期输出（C = A * B，A = [[1,2],[3,4]]，B = [[5,6],[7,8]]）：
+
+```
+result C (column-major):
+  C[0][0] = 19.000000
+  C[1][0] = 43.000000
+  C[0][1] = 22.000000
+  C[1][1] = 50.000000
+```

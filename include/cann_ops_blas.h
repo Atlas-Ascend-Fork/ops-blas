@@ -586,6 +586,11 @@ aclblasStatus_t aclblasCgemm3m(
     const aclblasComplex* alpha, const aclblasComplex* A, int lda, const aclblasComplex* B, int ldb,
     const aclblasComplex* beta, aclblasComplex* C, int ldc);
 
+aclblasStatus_t aclblasHgemm(
+    aclblasHandle_t handle, aclblasOperation_t transa, aclblasOperation_t transb, int m, int n, int k,
+    const aclblasHalf* alpha, const aclblasHalf* A, int lda, const aclblasHalf* B, int ldb, const aclblasHalf* beta,
+    aclblasHalf* C, int ldc);
+
 aclblasStatus_t aclblasChemm(
     aclblasHandle_t handle, aclblasSideMode_t side, aclblasFillMode_t uplo, int64_t m, int64_t n,
     const aclblasComplex* alpha, const aclblasComplex* A, int64_t lda, const aclblasComplex* B, int64_t ldb,
