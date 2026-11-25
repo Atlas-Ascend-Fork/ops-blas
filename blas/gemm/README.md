@@ -393,13 +393,13 @@ aclblasStatus_t aclblasCgemm(aclblasHandle_t handle, aclblasOperation_t transa, 
 - ldc >= max(1, m)
 - alpha 不可为 nullptr
 - beta 不可为 nullptr
-- m > 0、n > 0 且 k > 0 时 A 不可为 nullptr
-- m > 0、n > 0 且 k > 0 时 B 不可为 nullptr
+- m > 0、n > 0 且 k > 0 时 A 不可为 nullptr（alpha == 0 时同样不豁免）
+- m > 0、n > 0 且 k > 0 时 B 不可为 nullptr（alpha == 0 时同样不豁免）
 - m > 0 且 n > 0 时 C 不可为 nullptr
 
 边界情况处理：
-- m == 0 或 n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS，不执行计算
-- k == 0 或 alpha == 0 时跳过矩阵乘，执行 C = beta * C（beta == 0 时置零，beta == 1 时不变，其他值逐元素缩放）
+- m == 0 或 n == 0 时直接返回 ACLBLAS_STATUS_SUCCESS，不执行计算，且发生在 A/B/C 指针校验之前
+- k == 0 或 alpha == 0 时跳过矩阵乘，执行 C = beta * C（beta == 0 时置零，beta == 1 时不变，其他值逐元素缩放）；alpha == 0 时 A/B 仍须满足上述非空约束
 - beta == 0.0f 时 C 无需在调用前初始化
 
 依赖限制：
