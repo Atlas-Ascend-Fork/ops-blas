@@ -53,9 +53,19 @@ aclblasStatus_t ValidateDotexTypes(
 
 aclblasStatus_t ValidateDotexSpan(int n, int incx, int incy)
 {
-    (void)n;
-    (void)incx;
-    (void)incy;
+    if (n <= 1) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    const uint64_t absIncx =
+        (incx < 0) ? static_cast<uint64_t>(-static_cast<int64_t>(incx)) : static_cast<uint64_t>(incx);
+    const uint64_t absIncy =
+        (incy < 0) ? static_cast<uint64_t>(-static_cast<int64_t>(incy)) : static_cast<uint64_t>(incy);
+    const uint64_t spanX = 1ULL + static_cast<uint64_t>(n - 1) * absIncx;
+    const uint64_t spanY = 1ULL + static_cast<uint64_t>(n - 1) * absIncy;
+    if (spanX > static_cast<uint64_t>(UINT32_MAX) || spanY > static_cast<uint64_t>(UINT32_MAX)) {
+        OP_LOGE(OP_TAG, "strided vector span exceeds uint32 domain");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
