@@ -342,7 +342,7 @@ extern "C" __global__ __aicore__ void cdotu_simt_kernel(
     }
 }
 
-void cdotu_kernel_do(
+aclError cdotu_kernel_do(
     GM_ADDR inX, GM_ADDR inY, GM_ADDR result, GM_ADDR workSpace, const CdotuTilingData& tiling, uint32_t numBlocks,
     void* stream)
 {
@@ -351,5 +351,7 @@ void cdotu_kernel_do(
     // Single SIMT kernel handles both contiguous (incx=incy=1) and strided paths
     // (including negative strides) and performs the cross-core reduce internally.
     // Measured fastest on Ascend 950PR (vectorized AIV + DeInterleave is scalar-bound).
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     cdotu_simt_kernel<<<numBlocks, nullptr, aclStream>>>(inX, inY, result, workSpace, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

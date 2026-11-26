@@ -23,9 +23,9 @@
 #include "log/log.h"
 #include "cdotu_tiling_data.h"
 
-void cdotu_kernel_do(
-    uint8_t* inX, uint8_t* inY, uint8_t* result, uint8_t* workSpace,
-    const CdotuTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError cdotu_kernel_do(
+    uint8_t* inX, uint8_t* inY, uint8_t* result, uint8_t* workSpace, const CdotuTilingData& tiling, uint32_t numBlocks,
+    void* stream);
 
 namespace {
 
@@ -128,8 +128,8 @@ static aclblasStatus_t ValidateCdotuParams(
 }
 
 static aclblasStatus_t CdotuExecuteKernel(
-    _aclblas_handle* h, const aclblasComplex* x, const aclblasComplex* y, aclblasComplex* result,
-    uint32_t numBlocks, const CdotuTilingData& tiling)
+    _aclblas_handle* h, const aclblasComplex* x, const aclblasComplex* y, aclblasComplex* result, uint32_t numBlocks,
+    const CdotuTilingData& tiling)
 {
     size_t workspaceBytes = static_cast<size_t>(tiling.useCoreNum) * 2 * sizeof(float);
     CHECK_RET(workspaceBytes <= GetEffectiveWorkspaceSize(h),
@@ -137,21 +137,25 @@ static aclblasStatus_t CdotuExecuteKernel(
               return ACLBLAS_STATUS_EXECUTION_FAILED);
     uint8_t* workspaceDevice = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
 
-    OP_LOGI("aclblasCdotu", "launching kernel: blocks=%u useCoreNum=%u nthreads=%u", numBlocks, tiling.useCoreNum,
-            tiling.nthreads);
-    cdotu_kernel_do(
+    OP_LOGI(
+        "aclblasCdotu", "launching kernel: blocks=%u useCoreNum=%u nthreads=%u", numBlocks, tiling.useCoreNum,
+        tiling.nthreads);
+    const aclError launchErr = cdotu_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)),
-        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(y)),
-        reinterpret_cast<uint8_t*>(result), workspaceDevice, tiling, numBlocks, h->stream);
-
+        reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(y)), reinterpret_cast<uint8_t*>(result), workspaceDevice,
+        tiling, numBlocks, h->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasCdotu", "cdotu_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
 } // namespace
 
 extern "C" aclblasStatus_t aclblasCdotu(
-    aclblasHandle_t handle, int n, const aclblasComplex* x, int incx, const aclblasComplex* y,
-    int incy, aclblasComplex* result)
+    aclblasHandle_t handle, int n, const aclblasComplex* x, int incx, const aclblasComplex* y, int incy,
+    aclblasComplex* result)
 {
     aclblasStatus_t status = ValidateCdotuParams(handle, n, incx, incy, x, y, result);
     if (status != ACLBLAS_STATUS_SUCCESS) {
@@ -161,8 +165,8 @@ extern "C" aclblasStatus_t aclblasCdotu(
     // cuBLAS/Netlib semantics: n == 0 is a legal no-op, result = (0, 0).
     if (n == 0) {
         aclblasComplex zero = {0.0f, 0.0f};
-        aclError memRet = aclrtMemcpy(
-            result, sizeof(aclblasComplex), &zero, sizeof(aclblasComplex), ACL_MEMCPY_HOST_TO_DEVICE);
+        aclError memRet =
+            aclrtMemcpy(result, sizeof(aclblasComplex), &zero, sizeof(aclblasComplex), ACL_MEMCPY_HOST_TO_DEVICE);
         if (memRet != ACL_SUCCESS) {
             OP_LOGE("aclblasCdotu", "aclrtMemcpy for n==0 zero failed: %d", memRet);
             return ACLBLAS_STATUS_EXECUTION_FAILED;
@@ -192,11 +196,10 @@ extern "C" aclblasStatus_t aclblasCdotu(
     // n >= 3M (4M dual-acc best at 1024; 2048 slower due to register pressure
     // from the 4-FMA complex multiply).
     uint32_t perCore = CeilDiv<uint32_t>(static_cast<uint32_t>(n), numBlocks);
-    uint32_t maxThreads = (static_cast<uint32_t>(n) >= static_cast<uint32_t>(CDOTU_DUAL_ACC_THRESHOLD))
-                              ? CDOTU_LARGE_N_THREADS
-                              : CDOTU_SMALL_N_THREADS;
-    uint32_t nthreads = std::min(
-        std::max(CDOTU_SIMT_MIN_THREAD_NUM, CeilAlign<uint32_t>(perCore, 32)), maxThreads);
+    uint32_t maxThreads = (static_cast<uint32_t>(n) >= static_cast<uint32_t>(CDOTU_DUAL_ACC_THRESHOLD)) ?
+                              CDOTU_LARGE_N_THREADS :
+                              CDOTU_SMALL_N_THREADS;
+    uint32_t nthreads = std::min(std::max(CDOTU_SIMT_MIN_THREAD_NUM, CeilAlign<uint32_t>(perCore, 32)), maxThreads);
 
     CdotuTilingData tiling = CalCdotuTilingData(n, numBlocks, incx, incy, nthreads);
 
