@@ -16,7 +16,8 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "stpttr_tiling_data.h"
 
-void stpttr_kernel_do(
+aclError stpttr_kernel_do(
     uint8_t* aPacked, uint8_t* aFull, const StpttrTilingData& tiling, uint32_t numBlocks, void* stream);

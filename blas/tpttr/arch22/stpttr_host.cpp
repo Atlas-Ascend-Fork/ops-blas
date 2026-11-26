@@ -14,6 +14,7 @@
  */
 
 #include <algorithm>
+#include "acl/acl.h"
 #include <cstdint>
 #include "log/log.h"
 #include "cann_ops_blas.h"
@@ -75,8 +76,7 @@ aclblasStatus_t CalStpttrTilingData(StpttrTilingData* tiling, int n, int lda, in
 
 } // namespace
 
-aclblasStatus_t aclblasStpttr(
-    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* AP, float* A, int lda)
+aclblasStatus_t aclblasStpttr(aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* AP, float* A, int lda)
 {
     const aclblasStatus_t status = ValidateStpttrParams(handle, n, uplo, lda, AP, A);
     if (status != ACLBLAS_STATUS_SUCCESS || n == 0) {
@@ -90,8 +90,12 @@ aclblasStatus_t aclblasStpttr(
         return tilingStatus;
     }
 
-    stpttr_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<float*>(AP)), reinterpret_cast<uint8_t*>(A), tiling,
-        tiling.useCoreNum, handle->stream);
+    const aclError launchErr = stpttr_kernel_do(
+        reinterpret_cast<uint8_t*>(const_cast<float*>(AP)), reinterpret_cast<uint8_t*>(A), tiling, tiling.useCoreNum,
+        handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE(OP_TAG, "stpttr_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }

@@ -14,6 +14,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "stpttr_tiling_data.h"
 #include "stpttr_kernel.h"
@@ -106,8 +107,7 @@ private:
                 chunkSize = STPTTR_MAX_CHUNK_SIZE;
             }
             const uint32_t remainder = chunkSize % STPTTR_ELEMENTS_PER_BLOCK;
-            const uint8_t padNum =
-                (remainder != 0U) ? static_cast<uint8_t>(STPTTR_ELEMENTS_PER_BLOCK - remainder) : 0U;
+            const uint8_t padNum = (remainder != 0U) ? static_cast<uint8_t>(STPTTR_ELEMENTS_PER_BLOCK - remainder) : 0U;
             const uint32_t blockBytes = chunkSize * static_cast<uint32_t>(sizeof(float));
             DataCopyExtParams cp{1U, blockBytes, 0U, 0U, 0U};
             DataCopyPadExtParams<float> pp{true, 0U, padNum, 0.0F};
@@ -145,8 +145,10 @@ extern "C" __global__ __aicore__ void stpttr_kernel_impl(GM_ADDR aPacked, GM_ADD
     op.Process();
 }
 
-void stpttr_kernel_do(
+aclError stpttr_kernel_do(
     uint8_t* aPacked, uint8_t* aFull, const StpttrTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     stpttr_kernel_impl<<<numBlocks, nullptr, stream>>>(aPacked, aFull, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
