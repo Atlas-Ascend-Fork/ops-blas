@@ -9,6 +9,7 @@
  */
 
 #include <algorithm>
+#include "acl/acl.h"
 #include <cstdint>
 
 #include "cann_ops_blas.h"
@@ -64,9 +65,13 @@ aclblasStatus_t LaunchCaxpyKernel(
     OP_LOGD(
         "aclblasCaxpy", "launch: n=%u incx=%d incy=%d blocks=%u threads=%u", totalN, incx, incy, numBlocks,
         threadCount);
-    caxpy_kernel_do(
+    const aclError launchErr = caxpy_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)), reinterpret_cast<uint8_t*>(y), tiling, numBlocks,
         handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasCaxpy", "caxpy_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 

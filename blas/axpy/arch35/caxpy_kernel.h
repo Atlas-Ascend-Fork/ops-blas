@@ -13,9 +13,9 @@
 
 #include <cstdint>
 
+#include "acl/acl.h"
 #include "caxpy_tiling_data.h"
 
-void caxpy_kernel_do(
-    uint8_t* x, uint8_t* y, const CaxpyTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError caxpy_kernel_do(uint8_t* x, uint8_t* y, const CaxpyTilingData& tiling, uint32_t numBlocks, void* stream);
 
 #endif // CAXPY_KERNEL_H

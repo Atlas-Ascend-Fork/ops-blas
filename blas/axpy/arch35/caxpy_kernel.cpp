@@ -10,6 +10,7 @@
 
 #include <cstdint>
 
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
 #include "common/helper/kernel_constant.h"
@@ -98,8 +99,7 @@ private:
         PipeBarrier<PIPE_V>();
 
         LocalTensor<float> out0 = outAosBuf_.Get<float>();
-        LocalTensor<float> out1 = outAosBuf_.GetWithOffset<float>(
-            elementCount, elementCount * sizeof(float));
+        LocalTensor<float> out1 = outAosBuf_.GetWithOffset<float>(elementCount, elementCount * sizeof(float));
         Interleave(out0, out1, xReal, xImag, static_cast<int32_t>(elementCount));
         PipeBarrier<PIPE_ALL>();
         SetFlag<HardEvent::V_MTE3>(0);
@@ -199,7 +199,9 @@ extern "C" __global__ __aicore__ void caxpy_kernel(GM_ADDR x, GM_ADDR y, CaxpyTi
         reinterpret_cast<const __gm__ float*>(x), reinterpret_cast<__gm__ float*>(y));
 }
 
-void caxpy_kernel_do(uint8_t* x, uint8_t* y, const CaxpyTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError caxpy_kernel_do(uint8_t* x, uint8_t* y, const CaxpyTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     caxpy_kernel<<<numBlocks, nullptr, stream>>>(x, y, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
