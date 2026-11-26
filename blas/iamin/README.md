@@ -25,8 +25,8 @@ result = 1 + argmin_i |x[i]|
 #### 产品支持情况
 
 - Ascend 950PR / Ascend 950DT：支持
-- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：不支持
-- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：不支持
+- Atlas A3 训练系列产品 / Atlas A3 推理系列产品：支持（arch22 实现）
+- Atlas A2 训练系列产品 / Atlas A2 推理系列产品：支持（arch22 实现）
 
 #### 函数原型
 
@@ -50,9 +50,36 @@ aclblasStatus_t aclblasIsamin(aclblasHandle_t handle, int n, const float *x, int
 - n = 0 或 incx < 1 时 result 写 0，返回 ACLBLAS_STATUS_SUCCESS
 - 对 Ascend 950PR / 950DT 的正常计算（n > 0 且 incx >= 1），要求 `(n - 1) * incx <= INT32_MAX`；超过时返回 `ACLBLAS_STATUS_INVALID_VALUE`，不会下发 kernel
 - handle 不可为 nullptr
-- x、result 不可为 nullptr
+- result 在任意 n 下均不可为 nullptr
+- n > 0 且 incx >= 1 时 x 不可为 nullptr
+- 当 `(n-1)*incx` 超出 int32 可表示范围时返回 ACLBLAS_STATUS_INVALID_VALUE
 - 当多个元素绝对值相同时，返回索引最小的元素
 - Ascend 950PR / 950DT（Arch35）正常计算路径（n > 0 且 incx >= 1）要求 `(n - 1) * incx <= INT32_MAX`，超出该地址跨度上限时在 kernel 下发前返回 ACLBLAS_STATUS_INVALID_VALUE
+- NaN 不参与绝对值最小值更新；全部元素为 NaN 时返回 1
+
+#### Atlas A2/A3（arch22）实现说明
+
+arch22 实现位于 `blas/iamin/arch22/`，使用 CANN 9.1.0 Ascend C kernel 直调：
+
+- host 侧完成参数校验、运行时分核和 tiling，通过 handle 绑定的 stream 异步下发。
+- 连续步长路径按 AIV 核分片，使用 `Abs + ReduceMin` 完成带索引的块内归约。
+- 非单位正步长路径按 `incx` gather 后复用相同归约逻辑。
+- 核间结果以 `(value, index)` 对写入 handle workspace，单次 kernel 内通过 `SyncAll` 汇总。
+- 正式性能使用逐用例 `msprof op BasicInfo` kernel task duration；`aclrtEvent` 仅用于 200 条快速筛查。
+
+测试工程位于 `test/isamin/arch22/`，包含 1000 条精度用例与 200 条性能用例：
+
+```bash
+bash build.sh --soc=ascend910b3 --ops=isamin --run --device=0
+```
+
+正式性能采集：
+
+```bash
+python3 test/isamin/arch22/verify_performance_msprof.py \
+  --binary build/test/isamin/isamin_test \
+  --output /path/to/new/evidence
+```
 
 ### aclblasIcamin
 
