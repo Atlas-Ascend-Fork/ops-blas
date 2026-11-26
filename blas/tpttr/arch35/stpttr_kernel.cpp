@@ -12,6 +12,7 @@
 #define STPTTR_KERNEL_H
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "stpttr_tiling_data.h"
 
@@ -155,10 +156,12 @@ __global__ __aicore__ void stpttr_kernel(GM_ADDR aPacked, GM_ADDR aFull, GM_ADDR
     op.Process();
 }
 
-void stpttr_kernel_do(
+aclError stpttr_kernel_do(
     GM_ADDR aPacked, GM_ADDR aFull, GM_ADDR workSpace, const TpttrTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     stpttr_kernel<<<numBlocks, nullptr, stream>>>(aPacked, aFull, workSpace, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 
 #endif // STPTTR_KERNEL_H
