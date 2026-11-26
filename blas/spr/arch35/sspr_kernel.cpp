@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
 #include "cann_ops_blas_common.h"
@@ -33,8 +34,7 @@ __simt_callee__ inline uint64_t SsprColumnBase(uint32_t col, uint32_t n)
 // Per-column hoist: x[col] read once, multiplied by alpha, reused for all rows in the column.
 template <bool INCX_POSITIVE>
 __simt_callee__ inline void SsprGmInner(
-    uint32_t rowStart, uint32_t rowEnd, uint32_t n, int64_t incx,
-    float axCol, uint64_t colBase, uint32_t apOffset,
+    uint32_t rowStart, uint32_t rowEnd, uint32_t n, int64_t incx, float axCol, uint64_t colBase, uint32_t apOffset,
     __gm__ const float* __restrict xGm, __gm__ float* __restrict apGm)
 {
     for (uint32_t row = rowStart; row < rowEnd; ++row) {
@@ -170,7 +170,9 @@ __global__ __aicore__ void sspr_kernel(GM_ADDR x, GM_ADDR ap, const SsprTilingDa
     }
 }
 
-void sspr_kernel_do(GM_ADDR x, GM_ADDR ap, const SsprTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError sspr_kernel_do(GM_ADDR x, GM_ADDR ap, const SsprTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     sspr_kernel<<<numBlocks, nullptr, stream>>>(x, ap, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

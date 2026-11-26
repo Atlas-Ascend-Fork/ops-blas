@@ -22,7 +22,7 @@
 #include "common/helper/sspr_host_common.h"
 
 // ---- kernel entry (local declaration, replacing aclblas_kernel_do.h) ----
-void sspr_kernel_do(uint8_t* x, uint8_t* ap, const SsprTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError sspr_kernel_do(uint8_t* x, uint8_t* ap, const SsprTilingData& tiling, uint32_t numBlocks, void* stream);
 
 // !831 检视意见：与 arch22（#781）口径收敛——alpha == 0 是 BLAS no-op（x/ap 不被引用），
 // x/ap 判空仅在 alpha != 0 时执行（公共序列见 sspr_host_common.h 的 SsprPostAlphaChecks），
@@ -81,8 +81,12 @@ aclblasStatus_t aclblasSspr(
         "aclblasSspr", "launching kernel: blocks=%u, cores=%u, ubEligible=%d", useNumBlocks, aivCoreNum,
         (incx == 1 && n >= static_cast<int>(UB_THRESHOLD) && static_cast<uint32_t>(n) <= UB_X_FLOATS));
 
-    sspr_kernel_do((uint8_t*)const_cast<float*>(x), (uint8_t*)ap, tiling, useNumBlocks, stream);
-
+    const aclError launchErr =
+        sspr_kernel_do((uint8_t*)const_cast<float*>(x), (uint8_t*)ap, tiling, useNumBlocks, stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSspr", "sspr_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
