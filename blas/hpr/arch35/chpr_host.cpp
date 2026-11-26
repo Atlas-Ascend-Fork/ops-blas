@@ -74,9 +74,13 @@ static aclblasStatus_t LaunchChprKernel(
     tiling.alpha = alpha;
     tiling.incx = static_cast<int64_t>(incx);
 
-    chpr_kernel_do(
+    const aclError launchErr = chpr_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)), reinterpret_cast<uint8_t*>(ap), tiling,
         tiling.useCoreNum, handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasChpr", "chpr_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 

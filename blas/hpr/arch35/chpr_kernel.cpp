@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
 #include "chpr_kernel.h"
@@ -140,7 +141,9 @@ __global__ __aicore__ void chpr_kernel(GM_ADDR x, GM_ADDR ap, const ChprTilingDa
     }
 }
 
-void chpr_kernel_do(GM_ADDR x, GM_ADDR ap, const ChprTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError chpr_kernel_do(GM_ADDR x, GM_ADDR ap, const ChprTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chpr_kernel<<<numBlocks, nullptr, stream>>>(x, ap, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

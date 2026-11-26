@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "chpr_tiling_data.h"
 
-void chpr_kernel_do(uint8_t* x, uint8_t* ap, const ChprTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError chpr_kernel_do(uint8_t* x, uint8_t* ap, const ChprTilingData& tiling, uint32_t numBlocks, void* stream);
