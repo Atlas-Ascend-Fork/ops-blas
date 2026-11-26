@@ -79,9 +79,12 @@ inline aclblasStatus_t aclblasSgbmv_npu(
         static_cast<const float*>(dX), incx,
         beta, static_cast<float*>(dY), incy);
 
-    aclrtSynchronizeDevice();
-    if (y != nullptr) {
-        aclrtMemcpy(y, yBytes, dY, yBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclrtSynchronizeDevice() != ACL_SUCCESS) {
+        ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+    } else if (ret == ACLBLAS_STATUS_SUCCESS && y != nullptr) {
+        if (aclrtMemcpy(y, yBytes, dY, yBytes, ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
     }
 
     if (dA) aclrtFree(dA);
