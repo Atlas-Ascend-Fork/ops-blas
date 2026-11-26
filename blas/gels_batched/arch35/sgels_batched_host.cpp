@@ -29,7 +29,7 @@
 
 struct SgelsBatchedTilingData;
 
-void sgels_decompose_kernel_do(
+aclError sgels_decompose_kernel_do(
     uint8_t* aArray, uint8_t* cArray, uint8_t* workspace, uint8_t* devInfo, const SgelsBatchedTilingData& tiling,
     uint32_t numBlocks, void* stream);
 
@@ -145,11 +145,14 @@ static aclblasStatus_t LaunchGelsKernel(
         TAG, "launching SIMT kernel: cores=%u, batches=%u, threads=%u", tiling.usedCoreNum, tiling.batchSize,
         tiling.numThreads);
 
-    sgels_decompose_kernel_do(
+    const aclError launchErr = sgels_decompose_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float**>(aArray)),
         reinterpret_cast<uint8_t*>(const_cast<float**>(cArray)), workspace, reinterpret_cast<uint8_t*>(devInfo), tiling,
         tiling.usedCoreNum, h->stream);
-
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSgels_batched", "sgels_decompose_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 

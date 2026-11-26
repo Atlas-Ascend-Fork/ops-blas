@@ -25,6 +25,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
@@ -419,9 +420,11 @@ __global__ __aicore__ void sgels_batched_simt_kernel(
     }
 }
 
-void sgels_decompose_kernel_do(
+aclError sgels_decompose_kernel_do(
     GM_ADDR aArray, GM_ADDR cArray, GM_ADDR workspace, GM_ADDR devInfo, const SgelsBatchedTilingData& tiling,
     uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     sgels_batched_simt_kernel<<<numBlocks, nullptr, stream>>>(aArray, cArray, workspace, devInfo, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
