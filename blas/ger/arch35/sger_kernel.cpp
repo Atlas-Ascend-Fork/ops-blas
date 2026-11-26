@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
 #include "sger_tiling_data.h"
@@ -97,8 +98,10 @@ __global__ __aicore__ void sger_kernel(GM_ADDR x, GM_ADDR y, GM_ADDR A, const Sg
         aGm);
 }
 
-void sger_arch35_kernel_do(
+aclError sger_arch35_kernel_do(
     GM_ADDR x, GM_ADDR y, GM_ADDR A, const SgerTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     sger_kernel<<<numBlocks, nullptr, stream>>>(x, y, A, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

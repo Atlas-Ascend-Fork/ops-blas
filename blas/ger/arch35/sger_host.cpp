@@ -20,22 +20,21 @@
 #include "common/helper/kernel_constant.h"
 #include "common/helper/host_utils.h"
 
-void sger_arch35_kernel_do(
-    uint8_t* x, uint8_t* y, uint8_t* A, const SgerTilingData &tiling, uint32_t numBlocks, void *stream);
+aclError sger_arch35_kernel_do(
+    uint8_t* x, uint8_t* y, uint8_t* A, const SgerTilingData& tiling, uint32_t numBlocks, void* stream);
 
 static aclblasStatus_t ValidateSgerParams(
     int m, int n, int lda, int incx, int incy, const float* alpha, const float* x, const float* y, const float* A)
 {
-    CHECK_RET(
-        alpha != nullptr, OP_LOGE("aclblasSger", "alpha must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(alpha != nullptr, OP_LOGE("aclblasSger", "alpha must not be nullptr");
+              return ACLBLAS_STATUS_INVALID_VALUE);
     if (m > 0 && n > 0) {
         CHECK_RET(x != nullptr, OP_LOGE("aclblasSger", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
         CHECK_RET(y != nullptr, OP_LOGE("aclblasSger", "y must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
         CHECK_RET(A != nullptr, OP_LOGE("aclblasSger", "A must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     }
-    CHECK_RET(
-        lda >= std::max(1, m), OP_LOGE("aclblasSger", "lda must be >= max(1,m), got lda=%d, m=%d", lda, m);
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(lda >= std::max(1, m), OP_LOGE("aclblasSger", "lda must be >= max(1,m), got lda=%d, m=%d", lda, m);
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasSger", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incy != 0, OP_LOGE("aclblasSger", "incy must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != INT_MIN, OP_LOGE("aclblasSger", "incx must not be INT_MIN"); return ACLBLAS_STATUS_INVALID_VALUE);
@@ -80,10 +79,13 @@ static aclblasStatus_t LaunchSgerKernel(
     OP_LOGI(
         "aclblasSger", "launching kernel: blocks=%u, cores=%u, path=%s", useNumBlocks, aivCoreNum,
         (incx == 1 && static_cast<uint64_t>(m) <= UB_X_FLOATS) ? "UB-x" : "GM");
-    sger_arch35_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
-        reinterpret_cast<uint8_t*>(const_cast<float*>(y)),
+    const aclError launchErr = sger_arch35_kernel_do(
+        reinterpret_cast<uint8_t*>(const_cast<float*>(x)), reinterpret_cast<uint8_t*>(const_cast<float*>(y)),
         reinterpret_cast<uint8_t*>(A), tiling, useNumBlocks, h->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSger", "sger_arch35_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
