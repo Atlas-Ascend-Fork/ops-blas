@@ -25,6 +25,7 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "cherkx_tiling_data.h"
 
 #ifndef GM_ADDR
@@ -34,10 +35,9 @@
 // Phase 0: Deinterleave complex matrix → real, imag (AIV-only)
 // Reads complex matrix from GM, splits into real/imag float matrices in GM.
 // Called twice by host: once for A → Ar, Ai; once for B → Br, Bi.
-void cherkx_deinterleave_kernel_do(
-    GM_ADDR a, GM_ADDR ar, GM_ADDR ai,
-    const CherkxDeinterleaveTilingData& tiling,
-    uint32_t numBlocks, void* stream);
+// issue #1257: 返回发射状态，失败不再静默假成功。
+aclError cherkx_deinterleave_kernel_do(
+    GM_ADDR a, GM_ADDR ar, GM_ADDR ai, const CherkxDeinterleaveTilingData& tiling, uint32_t numBlocks, void* stream);
 
 // Phase 2: Combine/Scale/Hermitian kernel (AIV-only)
 // Merges 4 real GEMM results (t1..t4) into complex C with alpha/beta scaling
@@ -48,8 +48,6 @@ void cherkx_deinterleave_kernel_do(
 //   C = (Cr + i·Ci) + beta * C_old
 //   Only writes uplo triangle; diagonal imaginary part is forced to zero.
 //   (cherkx: diagonal imag is theoretically non-zero since A != B, must force to 0.)
-void cherkx_combine_kernel_do(
-    GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4,
-    GM_ADDR c,
-    const CherkxCombineTilingData& tiling,
+aclError cherkx_combine_kernel_do(
+    GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, GM_ADDR c, const CherkxCombineTilingData& tiling,
     uint32_t numBlocks, void* stream);

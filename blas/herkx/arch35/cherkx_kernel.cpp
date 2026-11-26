@@ -45,13 +45,12 @@ constexpr uint32_t SCALE_BLOCK = CHERKX_ARCH35_SCALE_BLOCK;
 constexpr uint32_t SCALE_UB_FLOATS = SCALE_BLOCK * SCALE_BLOCK;
 constexpr uint32_t SCALE_UB_CPLX_FLOATS = SCALE_BLOCK * SCALE_BLOCK * 2;
 
-template<typename T>
-__aicore__ inline auto MakeUbTensor1D(const LocalTensor<T>& lt, uint32_t offset, uint32_t count) {
+template <typename T>
+__aicore__ inline auto MakeUbTensor1D(const LocalTensor<T>& lt, uint32_t offset, uint32_t count)
+{
     return te::MakeTensor(
-        te::MakeMemPtr<te::Location::UB, T>(
-            lt.GetPhyAddr() + static_cast<uint64_t>(offset) * sizeof(T)),
-        te::MakeFrameLayout<te::NDLayoutPtn>(
-            static_cast<uint64_t>(1), static_cast<uint64_t>(count)));
+        te::MakeMemPtr<te::Location::UB, T>(lt.GetPhyAddr() + static_cast<uint64_t>(offset) * sizeof(T)),
+        te::MakeFrameLayout<te::NDLayoutPtn>(static_cast<uint64_t>(1), static_cast<uint64_t>(count)));
 }
 
 // ==========================================================================
@@ -73,23 +72,20 @@ struct DeintCtx {
 };
 
 // GM→UB: load complex block via te::Copy (2D strided NDExtLayoutPtn)
-__aicore__ inline void LoadComplexABlock(DeintCtx& ctx,
-    uint32_t iBase, uint32_t jBase, uint32_t blockRows, uint32_t blockCols,
-    uint32_t ubCplxStride)
+__aicore__ inline void LoadComplexABlock(
+    DeintCtx& ctx, uint32_t iBase, uint32_t jBase, uint32_t blockRows, uint32_t blockCols, uint32_t ubCplxStride)
 {
     auto copyGM2UB = te::MakeCopy(te::CopyGM2UB{});
     auto aGm = te::MakeTensor(
         te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.aGM.GetPhyAddr())),
-        te::MakeFrameLayout<te::NDExtLayoutPtn>(
-            static_cast<uint64_t>(ctx.cols), static_cast<uint64_t>(ctx.lda * 2)));
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(ctx.cols), static_cast<uint64_t>(ctx.lda * 2)));
     auto aBlock = aGm.Slice(
         te::MakeCoord(static_cast<uint64_t>(jBase), static_cast<uint64_t>(iBase * 2)),
         te::MakeShape(static_cast<uint64_t>(blockCols), static_cast<uint64_t>(blockRows * 2)));
     LocalTensor<float> aInUb = ctx.aInBuf.Get<float>();
     auto aUb = te::MakeTensor(
         te::MakeMemPtr<te::Location::UB, float>(aInUb.GetPhyAddr()),
-        te::MakeFrameLayout<te::NDExtLayoutPtn>(
-            static_cast<uint64_t>(blockCols), static_cast<uint64_t>(ubCplxStride)));
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(blockCols), static_cast<uint64_t>(ubCplxStride)));
     te::Copy(copyGM2UB, aUb, aBlock);
 }
 
@@ -106,37 +102,34 @@ __aicore__ inline void DeinterleaveBlock(DeintCtx& ctx, uint32_t cplxCnt)
 }
 
 // UB→GM: store real and imag blocks via te::Copy (2D strided NDExtLayoutPtn)
-__aicore__ inline void StoreRealBlocks(DeintCtx& ctx,
-    uint32_t iBase, uint32_t jBase, uint32_t blockRows, uint32_t blockCols,
-    uint32_t ubTempStride)
+__aicore__ inline void StoreRealBlocks(
+    DeintCtx& ctx, uint32_t iBase, uint32_t jBase, uint32_t blockRows, uint32_t blockCols, uint32_t ubTempStride)
 {
     auto copyUB2GM = te::MakeCopy(te::CopyUB2GM{});
     LocalTensor<float> arUb = ctx.arOutBuf.Get<float>();
     LocalTensor<float> aiUb = ctx.aiOutBuf.Get<float>();
 
-    auto gmLayout = te::MakeFrameLayout<te::NDExtLayoutPtn>(
-        static_cast<uint64_t>(ctx.cols), static_cast<uint64_t>(ctx.rows));
-    auto ubLayout = te::MakeFrameLayout<te::NDExtLayoutPtn>(
-        static_cast<uint64_t>(blockCols), static_cast<uint64_t>(ubTempStride));
+    auto gmLayout =
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(ctx.cols), static_cast<uint64_t>(ctx.rows));
+    auto ubLayout =
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(blockCols), static_cast<uint64_t>(ubTempStride));
     auto coord = te::MakeCoord(static_cast<uint64_t>(jBase), static_cast<uint64_t>(iBase));
     auto shape = te::MakeShape(static_cast<uint64_t>(blockCols), static_cast<uint64_t>(blockRows));
 
-    auto arGm = te::MakeTensor(
-        te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.arGM.GetPhyAddr())), gmLayout);
-    auto arUbT = te::MakeTensor(
-        te::MakeMemPtr<te::Location::UB, float>(arUb.GetPhyAddr()), ubLayout);
+    auto arGm =
+        te::MakeTensor(te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.arGM.GetPhyAddr())), gmLayout);
+    auto arUbT = te::MakeTensor(te::MakeMemPtr<te::Location::UB, float>(arUb.GetPhyAddr()), ubLayout);
     te::Copy(copyUB2GM, arGm.Slice(coord, shape), arUbT);
 
-    auto aiGm = te::MakeTensor(
-        te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.aiGM.GetPhyAddr())), gmLayout);
-    auto aiUbT = te::MakeTensor(
-        te::MakeMemPtr<te::Location::UB, float>(aiUb.GetPhyAddr()), ubLayout);
+    auto aiGm =
+        te::MakeTensor(te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.aiGM.GetPhyAddr())), gmLayout);
+    auto aiUbT = te::MakeTensor(te::MakeMemPtr<te::Location::UB, float>(aiUb.GetPhyAddr()), ubLayout);
     te::Copy(copyUB2GM, aiGm.Slice(coord, shape), aiUbT);
 }
 
 // Process one 2D tile: load → deinterleave → store
-__aicore__ inline void ProcessDeinterleaveTile(DeintCtx& ctx,
-    uint32_t iBase, uint32_t jBase, uint32_t blockRows, uint32_t blockCols)
+__aicore__ inline void ProcessDeinterleaveTile(
+    DeintCtx& ctx, uint32_t iBase, uint32_t jBase, uint32_t blockRows, uint32_t blockCols)
 {
     uint32_t ubTempStride = RoundUp<uint32_t>(blockRows, CHERKX_ARCH35_ELEMENTS_PER_BLOCK);
     uint32_t ubCplxStride = 2 * ubTempStride;
@@ -186,8 +179,7 @@ __aicore__ inline void ProcessDeinterleaveLoop(DeintCtx& ctx)
 }
 
 extern "C" __global__ __aicore__ void cherkx_deinterleave_kernel(
-    GM_ADDR a, GM_ADDR ar, GM_ADDR ai,
-    const CherkxDeinterleaveTilingData tiling)
+    GM_ADDR a, GM_ADDR ar, GM_ADDR ai, const CherkxDeinterleaveTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     TPipe pipe;
@@ -206,13 +198,13 @@ extern "C" __global__ __aicore__ void cherkx_deinterleave_kernel(
     ProcessDeinterleaveLoop(ctx);
 }
 
-void cherkx_deinterleave_kernel_do(
-    GM_ADDR a, GM_ADDR ar, GM_ADDR ai,
-    const CherkxDeinterleaveTilingData& tiling,
-    uint32_t numBlocks, void* stream)
+aclError cherkx_deinterleave_kernel_do(
+    GM_ADDR a, GM_ADDR ar, GM_ADDR ai, const CherkxDeinterleaveTilingData& tiling, uint32_t numBlocks, void* stream)
 {
-    cherkx_deinterleave_kernel<<<numBlocks, nullptr, stream>>>(
-        a, ar, ai, tiling);
+    // issue #1257: 发射前清掉线程级陈旧错误，发射后返回运行时状态。
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
+    cherkx_deinterleave_kernel<<<numBlocks, nullptr, stream>>>(a, ar, ai, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 
 // ==========================================================================
@@ -233,7 +225,8 @@ struct CherkxCtx {
     uint32_t rowEnd = 0;
 };
 
-static __aicore__ inline uint32_t UploCount(bool uploUpper, uint32_t iBase, uint32_t absJ, uint32_t rows) {
+static __aicore__ inline uint32_t UploCount(bool uploUpper, uint32_t iBase, uint32_t absJ, uint32_t rows)
+{
     if (uploUpper) {
         return (absJ >= iBase) ? Min(absJ - iBase + 1, rows) : 0;
     }
@@ -241,8 +234,7 @@ static __aicore__ inline uint32_t UploCount(bool uploUpper, uint32_t iBase, uint
 }
 
 // GM→UB: load t1..t4 (real GEMM results) via Te::Copy (2D strided NDExtLayoutPtn)
-__aicore__ inline void LoadGemmResults(CherkxCtx& ctx,
-    uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
+__aicore__ inline void LoadGemmResults(CherkxCtx& ctx, uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
 {
     uint32_t tempLdc = ctx.tiling.tempLdc;
     uint32_t ubStride = RoundUp<uint32_t>(rows, CHERKX_ARCH35_ELEMENTS_PER_BLOCK);
@@ -253,28 +245,39 @@ __aicore__ inline void LoadGemmResults(CherkxCtx& ctx,
     LocalTensor<float> t4Ub = ctx.t4Buf.Get<float>();
 
     auto copyGM2UB = te::MakeCopy(te::CopyGM2UB{});
-    auto gmLayout = te::MakeFrameLayout<te::NDExtLayoutPtn>(
-        static_cast<uint64_t>(ctx.tiling.n), static_cast<uint64_t>(tempLdc));
-    auto ubLayout = te::MakeFrameLayout<te::NDExtLayoutPtn>(
-        static_cast<uint64_t>(cols), static_cast<uint64_t>(ubStride));
+    auto gmLayout =
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(ctx.tiling.n), static_cast<uint64_t>(tempLdc));
+    auto ubLayout =
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(cols), static_cast<uint64_t>(ubStride));
     auto coord = te::MakeCoord(static_cast<uint64_t>(jBase), static_cast<uint64_t>(iBase));
     auto shape = te::MakeShape(static_cast<uint64_t>(cols), static_cast<uint64_t>(rows));
 
-    auto t1Gm = te::MakeTensor(te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.t1GM.GetPhyAddr())), gmLayout);
-    auto t2Gm = te::MakeTensor(te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.t2GM.GetPhyAddr())), gmLayout);
-    auto t3Gm = te::MakeTensor(te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.t3GM.GetPhyAddr())), gmLayout);
-    auto t4Gm = te::MakeTensor(te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.t4GM.GetPhyAddr())), gmLayout);
+    auto t1Gm =
+        te::MakeTensor(te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.t1GM.GetPhyAddr())), gmLayout);
+    auto t2Gm =
+        te::MakeTensor(te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.t2GM.GetPhyAddr())), gmLayout);
+    auto t3Gm =
+        te::MakeTensor(te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.t3GM.GetPhyAddr())), gmLayout);
+    auto t4Gm =
+        te::MakeTensor(te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.t4GM.GetPhyAddr())), gmLayout);
 
-    te::Copy(copyGM2UB, te::MakeTensor(te::MakeMemPtr<te::Location::UB, float>(t1Ub.GetPhyAddr()), ubLayout), t1Gm.Slice(coord, shape));
-    te::Copy(copyGM2UB, te::MakeTensor(te::MakeMemPtr<te::Location::UB, float>(t2Ub.GetPhyAddr()), ubLayout), t2Gm.Slice(coord, shape));
-    te::Copy(copyGM2UB, te::MakeTensor(te::MakeMemPtr<te::Location::UB, float>(t3Ub.GetPhyAddr()), ubLayout), t3Gm.Slice(coord, shape));
-    te::Copy(copyGM2UB, te::MakeTensor(te::MakeMemPtr<te::Location::UB, float>(t4Ub.GetPhyAddr()), ubLayout), t4Gm.Slice(coord, shape));
+    te::Copy(
+        copyGM2UB, te::MakeTensor(te::MakeMemPtr<te::Location::UB, float>(t1Ub.GetPhyAddr()), ubLayout),
+        t1Gm.Slice(coord, shape));
+    te::Copy(
+        copyGM2UB, te::MakeTensor(te::MakeMemPtr<te::Location::UB, float>(t2Ub.GetPhyAddr()), ubLayout),
+        t2Gm.Slice(coord, shape));
+    te::Copy(
+        copyGM2UB, te::MakeTensor(te::MakeMemPtr<te::Location::UB, float>(t3Ub.GetPhyAddr()), ubLayout),
+        t3Gm.Slice(coord, shape));
+    te::Copy(
+        copyGM2UB, te::MakeTensor(te::MakeMemPtr<te::Location::UB, float>(t4Ub.GetPhyAddr()), ubLayout),
+        t4Gm.Slice(coord, shape));
 }
 
 // GM→UB: load C_old (interleaved complex) via Te::Copy (2D strided)
 // ubCplxStride = 2 * ubTempStride ensures DeInterleave output matches t1Buf/t3Buf layout
-__aicore__ inline void LoadCOld(CherkxCtx& ctx,
-    uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
+__aicore__ inline void LoadCOld(CherkxCtx& ctx, uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
 {
     uint32_t ldc = ctx.tiling.ldc;
     uint32_t ubTempStride = RoundUp<uint32_t>(rows, CHERKX_ARCH35_ELEMENTS_PER_BLOCK);
@@ -284,15 +287,13 @@ __aicore__ inline void LoadCOld(CherkxCtx& ctx,
     auto copyGM2UB = te::MakeCopy(te::CopyGM2UB{});
     auto gmT = te::MakeTensor(
         te::MakeMemPtr<te::Location::GM>(const_cast<__gm__ float*>(ctx.cGM.GetPhyAddr())),
-        te::MakeFrameLayout<te::NDExtLayoutPtn>(
-            static_cast<uint64_t>(ctx.tiling.n), static_cast<uint64_t>(ldc * 2)));
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(ctx.tiling.n), static_cast<uint64_t>(ldc * 2)));
     auto gmBlock = gmT.Slice(
         te::MakeCoord(static_cast<uint64_t>(jBase), static_cast<uint64_t>(iBase * 2)),
         te::MakeShape(static_cast<uint64_t>(cols), static_cast<uint64_t>(rows * 2)));
     auto ubT = te::MakeTensor(
         te::MakeMemPtr<te::Location::UB, float>(cInUb.GetPhyAddr()),
-        te::MakeFrameLayout<te::NDExtLayoutPtn>(
-            static_cast<uint64_t>(cols), static_cast<uint64_t>(ubCplxStride)));
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(cols), static_cast<uint64_t>(ubCplxStride)));
     te::Copy(copyGM2UB, ubT, gmBlock);
 }
 
@@ -307,8 +308,7 @@ __aicore__ inline void LoadCOld(CherkxCtx& ctx,
 // t2/t4 are fully consumed by the P_r/P_i synthesis above and are reused as
 // scratch for the αi terms — zero extra UB allocation, same scratch-takeover
 // pattern as the cher2k complex-alpha combine.
-__aicore__ inline void ComputeCrCi(CherkxCtx& ctx, uint32_t rows, uint32_t cols,
-    float alphaReal, float alphaImag)
+__aicore__ inline void ComputeCrCi(CherkxCtx& ctx, uint32_t rows, uint32_t cols, float alphaReal, float alphaImag)
 {
     uint32_t ubTempStride = RoundUp<uint32_t>(rows, CHERKX_ARCH35_ELEMENTS_PER_BLOCK);
     uint32_t cnt = ubTempStride * cols;
@@ -323,20 +323,20 @@ __aicore__ inline void ComputeCrCi(CherkxCtx& ctx, uint32_t rows, uint32_t cols,
     auto t3T = MakeUbTensor1D(t3Ub, 0U, cnt);
     auto t4T = MakeUbTensor1D(t4Ub, 0U, cnt);
 
-    Transform<te::Inst::Add>(t1T, t1T, t2T);   // t1 = P_r = t1+t2
-    Transform<te::Inst::Sub>(t3T, t3T, t4T);   // t3 = P_i = t3−t4
+    Transform<te::Inst::Add>(t1T, t1T, t2T); // t1 = P_r = t1+t2
+    Transform<te::Inst::Sub>(t3T, t3T, t4T); // t3 = P_i = t3−t4
     if (alphaImag == 0.0f) {
         // Real alpha: legacy instruction sequence (bit-identical results).
         Transform<te::Inst::MulScalar>(t1T, t1T, alphaReal);
         Transform<te::Inst::MulScalar>(t3T, t3T, alphaReal);
     } else {
         // Complex alpha cross-scaling; t2/t4 take over the scratch role.
-        Transform<te::Inst::MulScalar>(t2T, t3T, alphaImag);   // t2 = αi·P_i
-        Transform<te::Inst::MulScalar>(t4T, t1T, alphaImag);   // t4 = αi·P_r
-        Transform<te::Inst::MulScalar>(t1T, t1T, alphaReal);   // t1 = αr·P_r
-        Transform<te::Inst::MulScalar>(t3T, t3T, alphaReal);   // t3 = αr·P_i
-        Transform<te::Inst::Sub>(t1T, t1T, t2T);               // Cr = αr·P_r − αi·P_i
-        Transform<te::Inst::Add>(t3T, t3T, t4T);               // Ci = αr·P_i + αi·P_r
+        Transform<te::Inst::MulScalar>(t2T, t3T, alphaImag); // t2 = αi·P_i
+        Transform<te::Inst::MulScalar>(t4T, t1T, alphaImag); // t4 = αi·P_r
+        Transform<te::Inst::MulScalar>(t1T, t1T, alphaReal); // t1 = αr·P_r
+        Transform<te::Inst::MulScalar>(t3T, t3T, alphaReal); // t3 = αr·P_i
+        Transform<te::Inst::Sub>(t1T, t1T, t2T);             // Cr = αr·P_r − αi·P_i
+        Transform<te::Inst::Add>(t3T, t3T, t4T);             // Ci = αr·P_i + αi·P_r
     }
     PipeBarrier<PIPE_ALL>();
 }
@@ -379,8 +379,7 @@ __aicore__ inline void ApplyBeta(CherkxCtx& ctx, uint32_t rows, uint32_t cols, f
 // cherkx: always execute. When GEMM ran, diagonal imag is theoretically non-zero
 // (A != B). When skipTemp, diagonal imag = beta * C_old_imag, which must also be
 // zeroed to enforce the Hermitian property regardless of C_old's input state.
-__aicore__ inline void ZeroDiagonal(CherkxCtx& ctx,
-    uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
+__aicore__ inline void ZeroDiagonal(CherkxCtx& ctx, uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
 {
     uint32_t ubTempStride = RoundUp<uint32_t>(rows, CHERKX_ARCH35_ELEMENTS_PER_BLOCK);
     LocalTensor<float> t3Ub = ctx.t3Buf.Get<float>();
@@ -398,8 +397,7 @@ __aicore__ inline void ZeroDiagonal(CherkxCtx& ctx,
 
 template <typename CopyOp>
 __aicore__ inline void StoreUploColumn(
-    LocalTensor<float>& cOutDst0, CopyOp& copyUB2GM,
-    __gm__ float* cGmBase, uint64_t gmOff, uint64_t ubOff,
+    LocalTensor<float>& cOutDst0, CopyOp& copyUB2GM, __gm__ float* cGmBase, uint64_t gmOff, uint64_t ubOff,
     uint32_t uploCnt)
 {
     if (uploCnt == 0) {
@@ -408,12 +406,10 @@ __aicore__ inline void StoreUploColumn(
     uint32_t copyCount = uploCnt * 2;
     auto gmCol = te::MakeTensor(
         te::MakeMemPtr<te::Location::GM>(cGmBase + gmOff),
-        te::MakeFrameLayout<te::NDExtLayoutPtn>(
-            static_cast<uint64_t>(1), static_cast<uint64_t>(copyCount)));
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(1), static_cast<uint64_t>(copyCount)));
     auto ubCol = te::MakeTensor(
         te::MakeMemPtr<te::Location::UB, float>(cOutDst0.GetPhyAddr() + ubOff * sizeof(float)),
-        te::MakeFrameLayout<te::NDExtLayoutPtn>(
-            static_cast<uint64_t>(1), static_cast<uint64_t>(copyCount)));
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(1), static_cast<uint64_t>(copyCount)));
     te::Copy(copyUB2GM, gmCol, ubCol);
 }
 
@@ -440,18 +436,15 @@ __aicore__ inline void RestoreLowerDiagSegment(
 // barrier, so the UB image is complete and settled.
 template <typename CopyOp>
 __aicore__ inline void StoreLowerDiagColumn(
-    LocalTensor<float>& cOutUb, CopyOp& copyUB2GM, __gm__ float* cGmBase,
-    uint64_t gmOff, uint64_t ubOff, uint32_t rows)
+    LocalTensor<float>& cOutUb, CopyOp& copyUB2GM, __gm__ float* cGmBase, uint64_t gmOff, uint64_t ubOff, uint32_t rows)
 {
     const uint32_t fullCount = rows * 2;
     auto gmFull = te::MakeTensor(
         te::MakeMemPtr<te::Location::GM>(cGmBase + gmOff),
-        te::MakeFrameLayout<te::NDExtLayoutPtn>(
-            static_cast<uint64_t>(1), static_cast<uint64_t>(fullCount)));
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(1), static_cast<uint64_t>(fullCount)));
     auto ubFull = te::MakeTensor(
         te::MakeMemPtr<te::Location::UB, float>(cOutUb.GetPhyAddr() + ubOff * sizeof(float)),
-        te::MakeFrameLayout<te::NDExtLayoutPtn>(
-            static_cast<uint64_t>(1), static_cast<uint64_t>(fullCount)));
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(1), static_cast<uint64_t>(fullCount)));
     te::Copy(copyUB2GM, gmFull, ubFull);
 }
 
@@ -459,22 +452,18 @@ __aicore__ inline void StoreLowerDiagColumn(
 // Symmetric to LoadCOld's 2D GM→UB copy but reversed direction.
 template <typename CopyOp>
 __aicore__ inline void StoreNonDiagBlock(
-    LocalTensor<float>& cOutDst0, CopyOp& copyUB2GM,
-    __gm__ float* cGmBase, uint32_t n, uint32_t ldc,
-    uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols,
-    uint32_t ubCplxStride)
+    LocalTensor<float>& cOutDst0, CopyOp& copyUB2GM, __gm__ float* cGmBase, uint32_t n, uint32_t ldc, uint32_t iBase,
+    uint32_t jBase, uint32_t rows, uint32_t cols, uint32_t ubCplxStride)
 {
     auto gmT = te::MakeTensor(
         te::MakeMemPtr<te::Location::GM>(cGmBase),
-        te::MakeFrameLayout<te::NDExtLayoutPtn>(
-            static_cast<uint64_t>(n), static_cast<uint64_t>(ldc * 2)));
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(n), static_cast<uint64_t>(ldc * 2)));
     auto gmBlock = gmT.Slice(
         te::MakeCoord(static_cast<uint64_t>(jBase), static_cast<uint64_t>(iBase * 2)),
         te::MakeShape(static_cast<uint64_t>(cols), static_cast<uint64_t>(rows * 2)));
     auto ubT = te::MakeTensor(
         te::MakeMemPtr<te::Location::UB, float>(cOutDst0.GetPhyAddr()),
-        te::MakeFrameLayout<te::NDExtLayoutPtn>(
-            static_cast<uint64_t>(cols), static_cast<uint64_t>(ubCplxStride)));
+        te::MakeFrameLayout<te::NDExtLayoutPtn>(static_cast<uint64_t>(cols), static_cast<uint64_t>(ubCplxStride)));
     te::Copy(copyUB2GM, gmBlock, ubT);
 }
 
@@ -491,10 +480,8 @@ __aicore__ inline void StoreNonDiagBlock(
 // the one-pass inline shape (mirrors the cherk/cher2k arch35 K3 fix).
 template <typename CopyOp>
 __aicore__ inline void StoreDiagonalBlock(
-    LocalTensor<float>& cOutDst0, LocalTensor<float>& cInUb,
-    CopyOp& copyUB2GM, __gm__ float* cGmBase,
-    bool uploUpper, uint32_t ldc, uint32_t ubCplxStride,
-    uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
+    LocalTensor<float>& cOutDst0, LocalTensor<float>& cInUb, CopyOp& copyUB2GM, __gm__ float* cGmBase, bool uploUpper,
+    uint32_t ldc, uint32_t ubCplxStride, uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
 {
     for (uint32_t c = 0; c < cols; c++) {
         uint32_t absJ = jBase + c;
@@ -519,15 +506,13 @@ __aicore__ inline void StoreDiagonalBlock(
             uint32_t uploCnt = UploCount(uploUpper, iBase, absJ, rows);
             StoreUploColumn(cOutDst0, copyUB2GM, cGmBase, gmOff, ubOff, uploCnt);
         } else {
-            StoreLowerDiagColumn(cOutDst0, copyUB2GM, cGmBase,
-                gmOff, ubOff, rows);
+            StoreLowerDiagColumn(cOutDst0, copyUB2GM, cGmBase, gmOff, ubOff, rows);
         }
     }
 }
 
 // V→MTE3: Interleave Cr,Ci → cOutBuf; store uplo to GM
-__aicore__ inline void InterleaveAndStore(CherkxCtx& ctx,
-    uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
+__aicore__ inline void InterleaveAndStore(CherkxCtx& ctx, uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
 {
     bool uploUpper = (ctx.tiling.uploMode == ACLBLAS_UPPER);
     uint32_t ldc = ctx.tiling.ldc;
@@ -552,16 +537,12 @@ __aicore__ inline void InterleaveAndStore(CherkxCtx& ctx,
 
     // Non-diagonal block: every column is fully in the uplo triangle (uploCnt = rows),
     // so a single 2D strided te::Copy replaces cols per-column DMAs.
-    bool fullyUplo = uploUpper
-        ? (jBase >= iBase + rows)
-        : (jBase + cols <= iBase);
+    bool fullyUplo = uploUpper ? (jBase >= iBase + rows) : (jBase + cols <= iBase);
 
     if (fullyUplo) {
-        StoreNonDiagBlock(cOutDst0, copyUB2GM, cGmBase,
-            ctx.tiling.n, ldc, iBase, jBase, rows, cols, ubCplxStride);
+        StoreNonDiagBlock(cOutDst0, copyUB2GM, cGmBase, ctx.tiling.n, ldc, iBase, jBase, rows, cols, ubCplxStride);
     } else {
-        StoreDiagonalBlock(cOutDst0, cInUb, copyUB2GM, cGmBase,
-            uploUpper, ldc, ubCplxStride, iBase, jBase, rows, cols);
+        StoreDiagonalBlock(cOutDst0, cInUb, copyUB2GM, cGmBase, uploUpper, ldc, ubCplxStride, iBase, jBase, rows, cols);
     }
 
     // Cross-block sync: ensure this block's MTE3 store finishes before the next
@@ -574,8 +555,7 @@ __aicore__ inline void InterleaveAndStore(CherkxCtx& ctx,
     WaitFlag<HardEvent::MTE3_MTE2>(0);
 }
 
-__aicore__ inline void ProcessBlock(CherkxCtx& ctx,
-    uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
+__aicore__ inline void ProcessBlock(CherkxCtx& ctx, uint32_t iBase, uint32_t jBase, uint32_t rows, uint32_t cols)
 {
     float alphaReal = ctx.tiling.alphaReal;
     float alphaImag = ctx.tiling.alphaImag;
@@ -639,8 +619,7 @@ __aicore__ inline void ProcessLoop(CherkxCtx& ctx)
 }
 
 extern "C" __global__ __aicore__ void cherkx_combine_kernel(
-    GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4,
-    GM_ADDR c, const CherkxCombineTilingData tiling)
+    GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, GM_ADDR c, const CherkxCombineTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     TPipe pipe;
@@ -663,11 +642,11 @@ extern "C" __global__ __aicore__ void cherkx_combine_kernel(
     ProcessLoop(ctx);
 }
 
-void cherkx_combine_kernel_do(
-    GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4,
-    GM_ADDR c, const CherkxCombineTilingData& tiling,
+aclError cherkx_combine_kernel_do(
+    GM_ADDR t1, GM_ADDR t2, GM_ADDR t3, GM_ADDR t4, GM_ADDR c, const CherkxCombineTilingData& tiling,
     uint32_t numBlocks, void* stream)
 {
-    cherkx_combine_kernel<<<numBlocks, nullptr, stream>>>(
-        t1, t2, t3, t4, c, tiling);
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
+    cherkx_combine_kernel<<<numBlocks, nullptr, stream>>>(t1, t2, t3, t4, c, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
