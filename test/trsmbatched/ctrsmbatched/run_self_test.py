@@ -38,7 +38,7 @@ def argument_parser(description):
 
 def device_environment(device):
     env = os.environ.copy()
-    for key in ("GTEST_FILTER", "GTEST_OUTPUT", "GTEST_REPEAT", "GTEST_TOTAL_SHARDS", "GTEST_SHARD_INDEX"):
+    for key in [key for key in env if key.startswith("GTEST_")]:
         env.pop(key, None)
     env.update(ASCEND_RT_VISIBLE_DEVICES=str(device), BLAS_DEVICE_ID="0", GTEST_COLOR="no")
     return env
@@ -104,7 +104,8 @@ def read_test_result(path, expected):
     names = [node.attrib["classname"] + "." + node.attrib["name"] for node in nodes]
     failures = max(int(root.get("failures", "0")) + int(root.get("errors", "0")),
                    sum(node.find("failure") is not None or node.find("error") is not None for node in nodes))
-    skipped = max(int(root.get("disabled", "0")), sum(node.find("skipped") is not None
+    skipped = max(int(root.get("disabled", "0")) + int(root.get("skipped", "0")),
+                  sum(node.find("skipped") is not None
                   or node.get("status") != "run" or node.get("result") != "completed" for node in nodes))
     passed = (int(root.attrib["tests"]) == len(expected) == len(names) == len(set(names))
               and set(names) == set(expected) and failures == 0 and skipped == 0)
@@ -116,6 +117,8 @@ def read_test_result(path, expected):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = argument_parser(__doc__).parse_args()
+    if args.timeout <= 0:
+        raise ValueError("--timeout must be positive")
     output = args.output_dir.resolve()
     output.mkdir(parents=True, mode=0o750)
     summary = dict(status="FAIL", scope="selected" if args.cases else "all_official", expected_csv_cases=1200)
