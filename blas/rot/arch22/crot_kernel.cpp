@@ -481,9 +481,11 @@ extern "C" __global__ __aicore__ __vector__ void crot_kernel(
 // ==========================================================================
 // Host-side kernel launcher
 // ==========================================================================
-void crot_kernel_do(
+aclError crot_kernel_do(
     GM_ADDR x, GM_ADDR y, int32_t elementCount, int32_t incx, int32_t incy, float cosValue, float sinRe, float sinIm,
     uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     crot_kernel<<<numBlocks, nullptr, stream>>>(x, y, elementCount, incx, incy, cosValue, sinRe, sinIm);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

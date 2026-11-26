@@ -36,7 +36,7 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
-void crot_kernel_do(
+aclError crot_kernel_do(
     uint8_t* x, uint8_t* y, int32_t elementCount, int32_t incx, int32_t incy, float cosValue, float sinRe, float sinIm,
     uint32_t numBlocks, void* stream);
 
@@ -137,8 +137,12 @@ extern "C" aclblasStatus_t aclblasCrot(
 
     // Asynchronous, like the other BLAS level-1 entry points: the kernel is enqueued on the
     // handle stream and the caller synchronizes before reading results. No stream sync here.
-    crot_kernel_do(
+    const aclError launchErr = crot_kernel_do(
         reinterpret_cast<uint8_t*>(x), reinterpret_cast<uint8_t*>(y), elementCount, incx, incy, cHost, sHost.real,
         sHost.imag, numBlocks, useStream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasCrot", "crot_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
