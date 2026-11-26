@@ -9,13 +9,14 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "log/log.h"
 #include "cann_ops_blas.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 #include "sswap_tiling_data.h"
 
-void sswap_kernel_do(
+aclError sswap_kernel_do(
     uint8_t* x, uint8_t* y, uint8_t* workSpace, const SswapTilingData& tiling, uint32_t numBlocks, void* stream);
 
 static aclblasStatus_t ValidateSswapParams(const float* x, const float* y, int incx, int incy)
@@ -98,8 +99,11 @@ aclblasStatus_t aclblasSswap(aclblasHandle_t handle, int n, float* x, int incx, 
         tiling.perCoreN, tiling.remainder, tiling.tileSize, numBlocks);
     OP_LOGI("aclblasSswap", "launching kernel");
 
-    sswap_kernel_do(
+    const aclError launchErr = sswap_kernel_do(
         reinterpret_cast<uint8_t*>(x), reinterpret_cast<uint8_t*>(y), nullptr, tiling, numBlocks, useStream);
-
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSswap", "sswap_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }

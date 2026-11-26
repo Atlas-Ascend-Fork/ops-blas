@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "sswap_tiling_data.h"
 
@@ -137,8 +138,10 @@ extern "C" __global__ __aicore__ void sswap_kernel(GM_ADDR x, GM_ADDR y, GM_ADDR
     op.Process();
 }
 
-void sswap_kernel_do(
+aclError sswap_kernel_do(
     GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, const SswapTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     sswap_kernel<<<numBlocks, nullptr, stream>>>(x, y, nullptr, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
