@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "common/helper/kernel_constant.h"
 #include "sdot_tiling_data.h"
@@ -246,9 +247,11 @@ __global__ __aicore__ void sdot_kernel(GM_ADDR x, GM_ADDR y, GM_ADDR result, GM_
     op.Process();
 }
 
-void sdot_kernel_do(
+aclError sdot_kernel_do(
     GM_ADDR x, GM_ADDR y, GM_ADDR result, GM_ADDR workSpace, uint32_t numBlocks, const SdotTilingData& tiling,
     void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     sdot_kernel<<<numBlocks, nullptr, stream>>>(x, y, result, workSpace, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

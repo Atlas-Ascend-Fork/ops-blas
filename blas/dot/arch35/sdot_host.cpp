@@ -26,8 +26,9 @@
 #include "common/helper/host_utils.h"
 #include "sdot_tiling_data.h"
 
-void sdot_kernel_do(uint8_t* x, uint8_t* y, uint8_t* result, uint8_t* workSpace,
-                    uint32_t numBlocks, const SdotTilingData& tiling, void *stream);
+aclError sdot_kernel_do(
+    uint8_t* x, uint8_t* y, uint8_t* result, uint8_t* workSpace, uint32_t numBlocks, const SdotTilingData& tiling,
+    void* stream);
 
 // ---------------------------------------------------------------------------
 // Parameter validation
@@ -39,8 +40,8 @@ static aclblasStatus_t ValidateSdotParams(
     CHECK_RET(incy != 0, OP_LOGE("aclblasSdot", "incy must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(x != nullptr, OP_LOGE("aclblasSdot", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(y != nullptr, OP_LOGE("aclblasSdot", "y must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        result != nullptr, OP_LOGE("aclblasSdot", "result must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(result != nullptr, OP_LOGE("aclblasSdot", "result must not be nullptr");
+              return ACLBLAS_STATUS_INVALID_VALUE);
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -67,18 +68,20 @@ static aclblasStatus_t LaunchSdotKernel(
     _aclblas_handle* h, const SdotTilingData& tiling, const float* x, const float* y, float* result)
 {
     size_t workspaceNeed = tiling.useCoreNum * sizeof(float);
-    CHECK_RET(
-        workspaceNeed <= GetEffectiveWorkspaceSize(h),
-        OP_LOGE("aclblasSdot", "workspace %zu > handle %zu", workspaceNeed, GetEffectiveWorkspaceSize(h));
-        return ACLBLAS_STATUS_EXECUTION_FAILED);
+    CHECK_RET(workspaceNeed <= GetEffectiveWorkspaceSize(h),
+              OP_LOGE("aclblasSdot", "workspace %zu > handle %zu", workspaceNeed, GetEffectiveWorkspaceSize(h));
+              return ACLBLAS_STATUS_EXECUTION_FAILED);
     uint8_t* workspaceDevice = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
 
     OP_LOGI("aclblasSdot", "launching kernel with %u cores", tiling.useCoreNum);
 
-    sdot_kernel_do(
+    const aclError launchErr = sdot_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float*>(x)), reinterpret_cast<uint8_t*>(const_cast<float*>(y)),
         reinterpret_cast<uint8_t*>(result), workspaceDevice, tiling.useCoreNum, tiling, h->stream);
-
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSdot", "sdot_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
