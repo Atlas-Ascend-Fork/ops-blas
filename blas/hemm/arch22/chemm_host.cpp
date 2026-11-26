@@ -257,9 +257,8 @@ aclblasStatus_t ConfigureMixedSchedule(const MixedRoute& route, int ldb, ChemmMi
 
 aclblasStatus_t AddMixedInputWorkspace(const MixedRoute& route, ChemmMixedTilingData* tiling, uint64_t* workspace)
 {
-    tiling->inputSlotStride = route.panel ?
-                                  2ULL * tiling->rowTile * CHEMM_EXP_K :
-                                  static_cast<uint64_t>(route.reuse ? 1U : 3U) * CHEMM_INPUT_MATRIX_ELEMENTS;
+    tiling->inputSlotStride = route.panel ? 2ULL * tiling->rowTile * CHEMM_EXP_K :
+                                            static_cast<uint64_t>(route.reuse ? 1U : 3U) * CHEMM_INPUT_MATRIX_ELEMENTS;
     tiling->inputCoreStride = static_cast<uint64_t>(CHEMM_INPUT_RING) * tiling->inputSlotStride;
     uint64_t inputFloats = 0U;
     if (!MulFitsUint64(tiling->workspaceCores, tiling->inputCoreStride, &inputFloats) ||
@@ -422,10 +421,16 @@ aclblasStatus_t LaunchOrderedAiv(
     for (uint64_t base = 0U; base < work; base += cores) {
         tiling.tileBase = static_cast<uint32_t>(base);
         tiling.blockDim = static_cast<uint32_t>(std::min<uint64_t>(cores, work - base));
-        chemm_ordered_aiv_kernel_do(
+        const aclError launchErr = chemm_ordered_aiv_kernel_do(
             reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(a)),
             reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(b)), reinterpret_cast<uint8_t*>(c), tiling,
             side == ACLBLAS_SIDE_RIGHT, uplo == ACLBLAS_LOWER, handle->stream);
+        if (launchErr != ACL_SUCCESS) {
+            OP_LOGE(
+                "aclblasChemm", "chemm_ordered_aiv_kernel_do launch failed: %d (base=%llu)",
+                static_cast<int>(launchErr), static_cast<unsigned long long>(base));
+            return ACLBLAS_STATUS_EXECUTION_FAILED;
+        }
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
@@ -433,17 +438,22 @@ aclblasStatus_t LaunchOrderedAiv(
 bool TryLaunchSimpleAiv(
     aclblasSideMode_t side, aclblasFillMode_t uplo, int64_t m, int64_t n, int64_t lda, int64_t ldb, int64_t ldc,
     aclblasComplex alpha, const aclblasComplex* a, const aclblasComplex* b, aclblasComplex beta, aclblasComplex* c,
-    _aclblas_handle* handle)
+    _aclblas_handle* handle, aclblasStatus_t& launchStatus)
 {
     ChemmAivTilingData tiling{};
+    launchStatus = ACLBLAS_STATUS_SUCCESS;
     if (MakeAivTiling(side, m, n, lda, ldb, ldc, alpha, beta, &tiling) != ACLBLAS_STATUS_SUCCESS ||
         !UseAivPath(side, tiling)) {
         return false;
     }
-    chemm_aiv_kernel_do(
+    const aclError launchErr = chemm_aiv_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(a)),
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(b)), reinterpret_cast<uint8_t*>(c), tiling,
         side == ACLBLAS_SIDE_RIGHT, uplo == ACLBLAS_LOWER, handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasChemm", "chemm_aiv_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        launchStatus = ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return true;
 }
 
@@ -475,10 +485,14 @@ aclblasStatus_t LaunchMixedChemm(
             static_cast<size_t>(workspaceFloats) * sizeof(float), static_cast<int>(status));
         return status;
     }
-    chemm_mixed_kernel_do(
+    const aclError launchErr = chemm_mixed_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(a)),
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(b)), reinterpret_cast<uint8_t*>(c), workspace, tiling,
         side == ACLBLAS_SIDE_RIGHT, uplo == ACLBLAS_LOWER, handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasChemm", "chemm_mixed_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -508,8 +522,11 @@ extern "C" aclblasStatus_t aclblasChemm(
     if (!simple && dimA > CHEMM_MICRO_TILE) {
         return LaunchOrderedAiv(side, uplo, m, n, lda, ldb, ldc, alphaHost, a, b, betaHost, c, internalHandle);
     }
-    if (simple && TryLaunchSimpleAiv(side, uplo, m, n, lda, ldb, ldc, alphaHost, a, b, betaHost, c, internalHandle)) {
-        return ACLBLAS_STATUS_SUCCESS;
+    aclblasStatus_t simpleLaunchStatus = ACLBLAS_STATUS_SUCCESS;
+    if (simple &&
+        TryLaunchSimpleAiv(
+            side, uplo, m, n, lda, ldb, ldc, alphaHost, a, b, betaHost, c, internalHandle, simpleLaunchStatus)) {
+        return simpleLaunchStatus;
     }
     return LaunchMixedChemm(side, uplo, m, n, lda, ldb, ldc, alphaHost, a, b, betaHost, c, internalHandle);
 }

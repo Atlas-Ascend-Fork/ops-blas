@@ -15,6 +15,7 @@
 #include "chemm_kernel_mix_aiv.h"
 #include "chemm_kernel_aiv.h"
 #include "chemm_kernel_ordered.h"
+#include "acl/acl.h"
 
 template <bool kRight, bool kLower>
 __aicore__ inline void RunAivTinyMode(
@@ -149,14 +150,16 @@ __global__ __aicore__ __vector__ void chemm_aiv_grid_kernel(
     }
 }
 
-void chemm_aiv_kernel_do(
+aclError chemm_aiv_kernel_do(
     uint8_t* a, uint8_t* b, uint8_t* c, const ChemmAivTilingData& base, bool right, bool lower, void* stream)
 {
     ChemmAivTilingData tiling = base;
     tiling.kernelFlags = (right ? CHEMM_FLAG_RIGHT : 0U) | (lower ? CHEMM_FLAG_LOWER : 0U);
+    // issue #1255: 发射前清掉线程级陈旧错误，发射后返回运行时状态。
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     if (tiling.m == 1 && tiling.n == 1 && tiling.dimA == 1) {
         chemm_aiv_unit_kernel<<<1U, nullptr, stream>>>(a, b, c);
-        return;
+        return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     }
     const bool small = tiling.m <= static_cast<int32_t>(kMicro) && tiling.n <= static_cast<int32_t>(kMicro) &&
                        tiling.dimA <= static_cast<int32_t>(kMicro);
@@ -165,4 +168,5 @@ void chemm_aiv_kernel_do(
     } else {
         chemm_aiv_grid_kernel<<<tiling.blockDim, nullptr, stream>>>(a, b, c, tiling);
     }
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

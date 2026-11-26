@@ -14,16 +14,17 @@
 
 #include <cstdint>
 
+#include "acl/acl.h"
 #include "chemm_tiling_data.h"
 
 #ifndef GM_ADDR
 #define GM_ADDR uint8_t*
 #endif
 
-void chemm_mixed_kernel_do(
+aclError chemm_mixed_kernel_do(
     GM_ADDR a, GM_ADDR b, GM_ADDR c, GM_ADDR workspace, const ChemmMixedTilingData& tiling, bool right, bool lower,
     void* stream);
-void chemm_aiv_kernel_do(
+aclError chemm_aiv_kernel_do(
     GM_ADDR a, GM_ADDR b, GM_ADDR c, const ChemmAivTilingData& tiling, bool right, bool lower, void* stream);
-void chemm_ordered_aiv_kernel_do(
+aclError chemm_ordered_aiv_kernel_do(
     GM_ADDR a, GM_ADDR b, GM_ADDR c, const ChemmAivTilingData& tiling, bool right, bool lower, void* stream);

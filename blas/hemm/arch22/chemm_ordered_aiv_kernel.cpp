@@ -15,6 +15,7 @@
 #include "chemm_kernel_mix_aiv.h"
 #include "chemm_kernel_aiv.h"
 #include "chemm_kernel_ordered.h"
+#include "acl/acl.h"
 
 __global__ __aicore__ __vector__ void chemm_ordered_aiv_kernel(
     __gm__ uint8_t* gmA, __gm__ uint8_t* gmB, __gm__ uint8_t* gmC, ChemmAivTilingData tiling)
@@ -40,10 +41,13 @@ __global__ __aicore__ __vector__ void chemm_ordered_aiv_kernel(
     }
 }
 
-void chemm_ordered_aiv_kernel_do(
+aclError chemm_ordered_aiv_kernel_do(
     uint8_t* a, uint8_t* b, uint8_t* c, const ChemmAivTilingData& base, bool right, bool lower, void* stream)
 {
     ChemmAivTilingData tiling = base;
     tiling.kernelFlags = (right ? CHEMM_FLAG_RIGHT : 0U) | (lower ? CHEMM_FLAG_LOWER : 0U);
+    // issue #1255: 发射前清掉线程级陈旧错误，发射后返回运行时状态。
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chemm_ordered_aiv_kernel<<<tiling.blockDim, nullptr, stream>>>(a, b, c, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

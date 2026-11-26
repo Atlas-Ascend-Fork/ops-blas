@@ -17,8 +17,8 @@
 #include "chemm_kernel_mix_aiv.h"
 #include "chemm_kernel_aiv.h"
 #include "chemm_kernel_ordered.h"
-
 #include "chemm_kernel_entries.h"
+#include "acl/acl.h"
 
 __schedmode__(1) __global__ __mix__(1, 2) void chemm_mixed_kernel(
     __gm__ uint8_t* gmA, __gm__ uint8_t* gmB, __gm__ uint8_t* gmC, __gm__ uint8_t* gmWorkspace,
@@ -296,10 +296,13 @@ void DispatchMixed(
     DispatchRegions(a, b, c, workspace, tiling, stream, flags, simple, aligned);
 }
 
-void chemm_mixed_kernel_do(
+aclError chemm_mixed_kernel_do(
     uint8_t* a, uint8_t* b, uint8_t* c, uint8_t* workspace, const ChemmMixedTilingData& tiling, bool right, bool lower,
     void* stream)
 {
     const uint32_t flags = (right ? CHEMM_FLAG_RIGHT : 0U) | (lower ? CHEMM_FLAG_LOWER : 0U);
+    // issue #1255: 发射前清掉线程级陈旧错误，发射后返回运行时状态。
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     DispatchMixed(a, b, c, workspace, tiling, stream, flags);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
