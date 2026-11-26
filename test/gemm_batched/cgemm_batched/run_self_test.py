@@ -61,7 +61,10 @@ def cases(full):
 
 
 def check_xml(path, expected):
-    tests = ET.parse(path).getroot().findall(".//testcase")
+    root = ET.parse(path).getroot()
+    if any(int(root.attrib.get(key, 0)) != 0 for key in ("failures", "errors", "disabled", "skipped")):
+        raise ValueError("GTest XML reports failures, errors, disabled or skipped tests")
+    tests = root.findall(".//testcase")
     actual = [t.attrib["classname"] + "." + t.attrib["name"] for t in tests]
     if len(actual) != len(expected) or set(actual) != set(expected):
         raise ValueError("Executed tests do not match expected names/count")
