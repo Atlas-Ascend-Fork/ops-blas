@@ -142,8 +142,11 @@ aclblasStatus_t aclblasSaxpy(aclblasHandle_t handle, int n, const float* alpha, 
         "aclblasSaxpy", "launching kernel: blocks=%u, cores=%u, alpha=%.6f", tiling.activeBlocks, coreNum,
         static_cast<double>(alphaHost));
 
-    saxpy_kernel_do(
+    const aclError launchErr = saxpy_kernel_do(
         reinterpret_cast<uint8_t*>(x), reinterpret_cast<uint8_t*>(y), tiling, tiling.activeBlocks, h->stream);
-
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSaxpy", "saxpy_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }

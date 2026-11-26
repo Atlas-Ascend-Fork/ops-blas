@@ -10,6 +10,7 @@
 
 #include <cstdint>
 
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "c_api/asc_simd.h"
 #include "saxpy_kernel.h"
@@ -175,8 +176,8 @@ private:
             wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);
 
             for (uint32_t begin = 0U; begin < todo; begin += SAXPY_STRIDED_COMPUTE_CHUNK) {
-                const uint32_t count = (todo - begin > SAXPY_STRIDED_COMPUTE_CHUNK) ? SAXPY_STRIDED_COMPUTE_CHUNK
-                                                                                   : (todo - begin);
+                const uint32_t count =
+                    (todo - begin > SAXPY_STRIDED_COMPUTE_CHUNK) ? SAXPY_STRIDED_COMPUTE_CHUNK : (todo - begin);
                 const uint32_t repeat = (count + SAXPY_STRIDED_REPEAT_ELEMS - 1U) / SAXPY_STRIDED_REPEAT_ELEMS;
                 const uint32_t offset = begin * SAXPY_STRIDED_BLOCK_FLOATS;
                 vaxpy(ubY_ + offset, ubX_ + offset, alpha_, static_cast<uint8_t>(repeat), 1, 1, 8, 8);
@@ -301,7 +302,9 @@ __global__ __aicore__ __vector__ void saxpy_kernel(GM_ADDR x, GM_ADDR y, SaxpyTi
     }
 }
 
-void saxpy_kernel_do(uint8_t* x, uint8_t* y, const SaxpyTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError saxpy_kernel_do(uint8_t* x, uint8_t* y, const SaxpyTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     saxpy_kernel<<<numBlocks, nullptr, stream>>>((GM_ADDR)(uintptr_t)x, (GM_ADDR)(uintptr_t)y, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

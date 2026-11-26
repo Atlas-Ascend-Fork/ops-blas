@@ -12,6 +12,7 @@
 
 #include <cstdint>
 
+#include "acl/acl.h"
 #include "saxpy_tiling_data.h"
 
-void saxpy_kernel_do(uint8_t* x, uint8_t* y, const SaxpyTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError saxpy_kernel_do(uint8_t* x, uint8_t* y, const SaxpyTilingData& tiling, uint32_t numBlocks, void* stream);
