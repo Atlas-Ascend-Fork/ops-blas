@@ -38,10 +38,12 @@ aclblasStatus_t Compute(
         }
         SgemmExDirectLayout t{m,      n,    k, lda, ldb, ldc, ta == ACLBLAS_OP_N ? 0 : 1, tb == ACLBLAS_OP_N ? 0 : 1,
                               *alpha, *beta};
-        sgemm_ex_direct_do(
-            cores, handle->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
-            reinterpret_cast<uint8_t*>(const_cast<float*>(b)), reinterpret_cast<uint8_t*>(c), t);
-        return ACLBLAS_STATUS_SUCCESS;
+        const char* api = sgemm ? "aclblasSgemmEx" : "aclblasGemmEx";
+        return GuardedGemmExLaunch(api, "sgemm_ex_direct_do", [&] {
+            sgemm_ex_direct_do(
+                cores, handle->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
+                reinterpret_cast<uint8_t*>(const_cast<float*>(b)), reinterpret_cast<uint8_t*>(c), t);
+        });
     }
     if (sgemm) {
         return SgemmExDispatchBackend(handle, ta, tb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);

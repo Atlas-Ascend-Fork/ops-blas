@@ -177,24 +177,37 @@ bool TryWholeGridWorkspace(GemmExTiling* tiling, bool packInputs, bool product, 
     return true;
 }
 
-void LaunchWholeGridSquare(
+aclblasStatus_t LaunchWholeGridSquare(
     _aclblas_handle* h, const GemmExTiling& tiling, const float* a, const float* b, float* c, uint8_t* workspace,
     bool packInputs, bool productOutput, uint32_t packBlocks, uint32_t epilogueBlocks, uint32_t cubeBlocks)
 {
     auto* matmulA = reinterpret_cast<uint8_t*>(const_cast<float*>(a));
     auto* matmulB = reinterpret_cast<uint8_t*>(const_cast<float*>(b));
     if (packInputs) {
-        gemmex_fallback_wholegrid_pack_do(packBlocks, h->stream, matmulA, matmulB, workspace, tiling);
+        auto packRet = GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_wholegrid_pack_do", [&] {
+            gemmex_fallback_wholegrid_pack_do(packBlocks, h->stream, matmulA, matmulB, workspace, tiling);
+        });
+        if (packRet != ACLBLAS_STATUS_SUCCESS) {
+            return packRet;
+        }
         matmulA = workspace + tiling.packAOffset * sizeof(float);
         matmulB = workspace + tiling.packBOffset * sizeof(float);
     }
     auto* matmulOutput =
         productOutput ? workspace + tiling.productOffset * sizeof(float) : reinterpret_cast<uint8_t*>(c);
-    gemmex_fallback_wholegrid_nosplit_do(cubeBlocks, h->stream, matmulA, matmulB, matmulOutput, tiling);
-    if (productOutput) {
-        gemmex_fallback_wholegrid_epilogue_do(
-            epilogueBlocks, h->stream, workspace, reinterpret_cast<uint8_t*>(c), tiling);
+    auto cubeRet = GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_wholegrid_nosplit_do", [&] {
+        gemmex_fallback_wholegrid_nosplit_do(cubeBlocks, h->stream, matmulA, matmulB, matmulOutput, tiling);
+    });
+    if (cubeRet != ACLBLAS_STATUS_SUCCESS) {
+        return cubeRet;
     }
+    if (productOutput) {
+        return GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_wholegrid_epilogue_do", [&] {
+            gemmex_fallback_wholegrid_epilogue_do(
+                epilogueBlocks, h->stream, workspace, reinterpret_cast<uint8_t*>(c), tiling);
+        });
+    }
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
 void ConfigureWholeGrid(GemmExTiling& tiling)
@@ -312,9 +325,8 @@ aclblasStatus_t RunWholeGridSquare(_aclblas_handle* h, GemmExTiling tiling, cons
         }
     }
     auto* workspace = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
-    LaunchWholeGridSquare(
+    return LaunchWholeGridSquare(
         h, tiling, a, b, c, workspace, packInputs, productOutput, packBlocks, epilogueBlocks, cubeBlocks);
-    return ACLBLAS_STATUS_SUCCESS;
 }
 
 bool TryWorkspaceLayout(GemmExTiling* tiling, size_t* bytes, uint64_t minProductFloats = 0)
@@ -364,8 +376,9 @@ aclblasStatus_t ZeroLogicalC(_aclblas_handle* h, int m, int n, int ldc, float* c
         OP_LOGE("GemmExRealBackend", "GemmExRealBackend: %s failed with ACLBLAS_STATUS_INTERNAL_ERROR", __func__);
         return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
-    gemmex_fallback_zero_do(blocks, h->stream, reinterpret_cast<uint8_t*>(c), tiling);
-    return ACLBLAS_STATUS_SUCCESS;
+    return GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_zero_do", [&] {
+        gemmex_fallback_zero_do(blocks, h->stream, reinterpret_cast<uint8_t*>(c), tiling);
+    });
 }
 
 aclblasStatus_t ValidateSgemm(
@@ -397,26 +410,33 @@ aclblasStatus_t ValidateSgemm(
 
 // Selects the row-owner matmul kernel from the raw transpose combination of
 // the public operands, so the dispatch does not re-express this table inline.
-void RunRowsMatmul(
+aclblasStatus_t RunRowsMatmul(
     void* stream, int32_t transA, int32_t transB, GM_ADDR a, GM_ADDR b, GM_ADDR output, const GemmExTiling& tiling)
 {
     if (transB == 0) {
         if (transA == 0) {
-            gemmex_fallback_matmul_rows_do(stream, a, b, output, tiling);
-        } else {
-            gemmex_fallback_matmul_rows_right_trans_do(stream, a, b, output, tiling);
+            return GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_matmul_rows_do", [&] {
+                gemmex_fallback_matmul_rows_do(stream, a, b, output, tiling);
+            });
         }
-    } else if (transA == 0) {
-        gemmex_fallback_matmul_rows_left_trans_do(stream, a, b, output, tiling);
-    } else {
-        gemmex_fallback_matmul_rows_both_trans_do(stream, a, b, output, tiling);
+        return GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_matmul_rows_right_trans_do", [&] {
+            gemmex_fallback_matmul_rows_right_trans_do(stream, a, b, output, tiling);
+        });
     }
+    if (transA == 0) {
+        return GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_matmul_rows_left_trans_do", [&] {
+            gemmex_fallback_matmul_rows_left_trans_do(stream, a, b, output, tiling);
+        });
+    }
+    return GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_matmul_rows_both_trans_do", [&] {
+        gemmex_fallback_matmul_rows_both_trans_do(stream, a, b, output, tiling);
+    });
 }
 
 // Runs one K contribution of a single host tile. The caller supplies the
 // already-bounded (m/n/k) tiling descriptor; this fills the local pack contract
 // and dispatches to the direct, raw-orientation, or generic packed path.
-void RunDirectKContribution(
+aclblasStatus_t RunDirectKContribution(
     _aclblas_handle* h, const GemmExTiling& tiling, const GemmExTiling& kTiling, bool directOutputToC, bool tiled2dNn,
     const float* a, const float* b, uint8_t* workspace, float* c)
 {
@@ -428,21 +448,48 @@ void RunDirectKContribution(
     }
     auto* matmulOutput = workspace;
     if (tiled2dNn) {
-        gemmex_fallback_matmul_tiles_do(
-            h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
-            reinterpret_cast<uint8_t*>(const_cast<float*>(b)), workspace, matmulTiling);
-    } else {
-        if (directOutputToC) {
-            matmulOutput = reinterpret_cast<uint8_t*>(c);
-            matmulTiling.productOffset = 0;
-        }
-        RunRowsMatmul(
-            h->stream, tiling.transA, tiling.transB, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
-            reinterpret_cast<uint8_t*>(const_cast<float*>(b)), matmulOutput, matmulTiling);
+        return GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_matmul_tiles_do", [&] {
+            gemmex_fallback_matmul_tiles_do(
+                h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
+                reinterpret_cast<uint8_t*>(const_cast<float*>(b)), workspace, matmulTiling);
+        });
     }
+    if (directOutputToC) {
+        matmulOutput = reinterpret_cast<uint8_t*>(c);
+        matmulTiling.productOffset = 0;
+    }
+    return RunRowsMatmul(
+        h->stream, tiling.transA, tiling.transB, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
+        reinterpret_cast<uint8_t*>(const_cast<float*>(b)), matmulOutput, matmulTiling);
 }
 
-void RunKTileContribution(
+// issue #1254: 打包路径单轮 K 贡献——pack 发射 + 状态检查后按 raw/packed 口径
+// 发送行主序 matmul kernel（raw 保留原始转置组合，packed 走 N/N 重排）。
+aclblasStatus_t RunPackedRowsContribution(
+    _aclblas_handle* h, GemmExTiling& tiling, const GemmExTiling& kTiling, const float* a, const float* b,
+    uint8_t* workspace)
+{
+    auto packRet = GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_pack_do", [&] {
+        gemmex_fallback_pack_do(
+            ClampBlocks(static_cast<uint64_t>(tiling.pm) * tiling.pk, GetAivCoreCount()), h->stream,
+            reinterpret_cast<uint8_t*>(const_cast<float*>(a)), reinterpret_cast<uint8_t*>(const_cast<float*>(b)),
+            workspace, tiling);
+    });
+    if (packRet != ACLBLAS_STATUS_SUCCESS) {
+        return packRet;
+    }
+    auto* packedA = workspace + tiling.packAOffset * sizeof(float);
+    auto* packedB = workspace + tiling.packBOffset * sizeof(float);
+    if (tiling.rawPack != 0) {
+        return RunRowsMatmul(h->stream, tiling.transA, tiling.transB, packedA, packedB, workspace, kTiling);
+    }
+    GemmExTiling packedTiling = kTiling;
+    packedTiling.transA = 0;
+    packedTiling.transB = 0;
+    return RunRowsMatmul(h->stream, 0, 0, packedA, packedB, workspace, packedTiling);
+}
+
+aclblasStatus_t RunKTileContribution(
     _aclblas_handle* h, GemmExTiling& tiling, const GemmExTiling& wsLayout, bool directWholeProblem,
     bool directOutputToC, bool tiled2dNn, bool oneKContribution, const float* a, const float* b, uint8_t* workspace,
     float* c)
@@ -453,35 +500,24 @@ void RunKTileContribution(
         kTiling.productOffset = wsLayout.accumOffset;
     }
     if (directWholeProblem) {
-        RunDirectKContribution(h, tiling, kTiling, directOutputToC, tiled2dNn, a, b, workspace, c);
-    } else if (tiling.rawPack != 0) {
-        gemmex_fallback_pack_do(
-            ClampBlocks(static_cast<uint64_t>(tiling.pm) * tiling.pk, GetAivCoreCount()), h->stream,
-            reinterpret_cast<uint8_t*>(const_cast<float*>(a)), reinterpret_cast<uint8_t*>(const_cast<float*>(b)),
-            workspace, tiling);
-        auto* packedA = workspace + tiling.packAOffset * sizeof(float);
-        auto* packedB = workspace + tiling.packBOffset * sizeof(float);
-        RunRowsMatmul(h->stream, tiling.transA, tiling.transB, packedA, packedB, workspace, kTiling);
-    } else {
-        gemmex_fallback_pack_do(
-            ClampBlocks(static_cast<uint64_t>(tiling.pm) * tiling.pk, GetAivCoreCount()), h->stream,
-            reinterpret_cast<uint8_t*>(const_cast<float*>(a)), reinterpret_cast<uint8_t*>(const_cast<float*>(b)),
-            workspace, tiling);
-        GemmExTiling packedTiling = kTiling;
-        packedTiling.transA = 0;
-        packedTiling.transB = 0;
-        RunRowsMatmul(
-            h->stream, 0, 0, workspace + tiling.packAOffset * sizeof(float),
-            workspace + tiling.packBOffset * sizeof(float), workspace, packedTiling);
+        return RunDirectKContribution(h, tiling, kTiling, directOutputToC, tiled2dNn, a, b, workspace, c);
+    }
+    auto contributionRet = RunPackedRowsContribution(h, tiling, kTiling, a, b, workspace);
+    if (contributionRet != ACLBLAS_STATUS_SUCCESS) {
+        return contributionRet;
     }
     if (!oneKContribution && tiling.firstK == 0) {
-        gemmex_fallback_accumulate_do(
-            ClampBlocks(static_cast<uint64_t>(tiling.pm) * tiling.pn, GetAivCoreCount()), h->stream, workspace, tiling);
+        return GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_accumulate_do", [&] {
+            gemmex_fallback_accumulate_do(
+                ClampBlocks(static_cast<uint64_t>(tiling.pm) * tiling.pn, GetAivCoreCount()), h->stream, workspace,
+                tiling);
+        });
     }
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
 // Runs the full K-loop for one (m,n) host tile and applies the epilogue.
-void RunHostTile(
+aclblasStatus_t RunHostTile(
     _aclblas_handle* h, GemmExTiling& tiling, int32_t hostTileK, int64_t kTotal, const GemmExTiling& wsLayout,
     bool directWholeProblem, bool directOutputToC, bool tiled2dNn, bool oneKContribution, const float* a,
     const float* b, uint8_t* workspace, float* c)
@@ -491,18 +527,27 @@ void RunHostTile(
         tiling.k = static_cast<int32_t>(std::min<int64_t>(hostTileK, kTotal - kBase));
         tiling.pk = AlignDim(tiling.k, 8);
         tiling.firstK = (kBase == 0) ? 1 : 0;
-        RunKTileContribution(
+        auto kRet = RunKTileContribution(
             h, tiling, wsLayout, directWholeProblem, directOutputToC, tiled2dNn, oneKContribution, a, b, workspace, c);
+        if (kRet != ACLBLAS_STATUS_SUCCESS) {
+            return kRet;
+        }
     }
     if (tiled2dNn) {
-        gemmex_fallback_scatter_tiles_do(
-            ClampBlocks(static_cast<uint64_t>(tiling.pm) * tiling.pn, GetAivCoreCount()), h->stream, workspace,
-            reinterpret_cast<uint8_t*>(c), tiling);
-    } else if (!directOutputToC) {
-        gemmex_fallback_epilogue_do(
-            ClampBlocks(static_cast<uint64_t>(tiling.pm) * tiling.pn, GetAivCoreCount()), h->stream, workspace,
-            reinterpret_cast<uint8_t*>(c), tiling);
+        return GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_scatter_tiles_do", [&] {
+            gemmex_fallback_scatter_tiles_do(
+                ClampBlocks(static_cast<uint64_t>(tiling.pm) * tiling.pn, GetAivCoreCount()), h->stream, workspace,
+                reinterpret_cast<uint8_t*>(c), tiling);
+        });
     }
+    if (!directOutputToC) {
+        return GuardedGemmExLaunch("GemmExRealBackend", "gemmex_fallback_epilogue_do", [&] {
+            gemmex_fallback_epilogue_do(
+                ClampBlocks(static_cast<uint64_t>(tiling.pm) * tiling.pn, GetAivCoreCount()), h->stream, workspace,
+                reinterpret_cast<uint8_t*>(c), tiling);
+        });
+    }
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
 // Loop-invariant decisions that select the gemm execution path.
@@ -568,7 +613,7 @@ aclblasStatus_t PrepareSgemmWorkspace(
     workspace = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
     return workspace == nullptr ? ACLBLAS_STATUS_ALLOC_FAILED : ACLBLAS_STATUS_SUCCESS;
 }
-void RunHostTiles(
+aclblasStatus_t RunHostTiles(
     _aclblas_handle* h, GemmExTiling tiling, const SgemmDispatchFlags& flags, const GemmExTiling& workspaceLayout,
     int m, int n, int k, const float* a, const float* b, uint8_t* workspace, float* c)
 {
@@ -580,11 +625,15 @@ void RunHostTiles(
             tiling.m = static_cast<int32_t>(std::min<int64_t>(flags.hostTileM, static_cast<int64_t>(m) - mBase));
             tiling.pn = AlignDim(tiling.n, 16);
             tiling.pm = AlignDim(tiling.m, 16);
-            RunHostTile(
+            auto tileRet = RunHostTile(
                 h, tiling, flags.hostTileK, k, workspaceLayout, flags.directWholeProblem, flags.directOutputToC,
                 flags.tiled2dNn, flags.oneKContribution, a, b, workspace, c);
+            if (tileRet != ACLBLAS_STATUS_SUCCESS) {
+                return tileRet;
+            }
         }
     }
+    return ACLBLAS_STATUS_SUCCESS;
 }
 class PrivateRealGemmRun {
 public:
@@ -671,11 +720,17 @@ private:
                 return status;
             }
             auto* product = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
-            kernels.shortNzNative(
-                residentGrid, h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
-                reinterpret_cast<uint8_t*>(const_cast<float*>(b)), product, tiling, 0);
-            kernels.nzBitcopy(vectors, h->stream, product, reinterpret_cast<uint8_t*>(c), tiling);
-            return ACLBLAS_STATUS_SUCCESS;
+            auto nzRet = GuardedGemmExLaunch("GemmExRealBackend", "short_nz_native kernel", [&] {
+                kernels.shortNzNative(
+                    residentGrid, h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
+                    reinterpret_cast<uint8_t*>(const_cast<float*>(b)), product, tiling, 0);
+            });
+            if (nzRet != ACLBLAS_STATUS_SUCCESS) {
+                return nzRet;
+            }
+            return GuardedGemmExLaunch("GemmExRealBackend", "nz_bitcopy kernel", [&] {
+                kernels.nzBitcopy(vectors, h->stream, product, reinterpret_cast<uint8_t*>(c), tiling);
+            });
         }
         const uint32_t outputLd = AlignDim(tiling.m, 128);
         auto status = EnsureDefaultWorkspace(h, static_cast<size_t>(outputLd) * tiling.n * sizeof(float));
@@ -683,11 +738,17 @@ private:
             return status;
         }
         auto* product = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
-        kernels.shortNative(
-            residentGrid, h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
-            reinterpret_cast<uint8_t*>(const_cast<float*>(b)), product, tiling, outputLd);
-        kernels.catlassCopy(vectors, h->stream, product, reinterpret_cast<uint8_t*>(c), tiling, outputLd);
-        return ACLBLAS_STATUS_SUCCESS;
+        auto shortRet = GuardedGemmExLaunch("GemmExRealBackend", "short_native kernel", [&] {
+            kernels.shortNative(
+                residentGrid, h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
+                reinterpret_cast<uint8_t*>(const_cast<float*>(b)), product, tiling, outputLd);
+        });
+        if (shortRet != ACLBLAS_STATUS_SUCCESS) {
+            return shortRet;
+        }
+        return GuardedGemmExLaunch("GemmExRealBackend", "catlass_copy kernel", [&] {
+            kernels.catlassCopy(vectors, h->stream, product, reinterpret_cast<uint8_t*>(c), tiling, outputLd);
+        });
     }
 
     aclblasStatus_t RunModerate(uint32_t moderateGrid)
@@ -698,11 +759,17 @@ private:
             return status;
         }
         auto* product = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
-        kernels.moderateNz(
-            moderateGrid, h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
-            reinterpret_cast<uint8_t*>(const_cast<float*>(b)), product, tiling);
-        kernels.nzFourrowCopy(vectors, h->stream, product, reinterpret_cast<uint8_t*>(c), tiling);
-        return ACLBLAS_STATUS_SUCCESS;
+        auto moderateRet = GuardedGemmExLaunch("GemmExRealBackend", "moderate_nz kernel", [&] {
+            kernels.moderateNz(
+                moderateGrid, h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
+                reinterpret_cast<uint8_t*>(const_cast<float*>(b)), product, tiling);
+        });
+        if (moderateRet != ACLBLAS_STATUS_SUCCESS) {
+            return moderateRet;
+        }
+        return GuardedGemmExLaunch("GemmExRealBackend", "nz_fourrow_copy kernel", [&] {
+            kernels.nzFourrowCopy(vectors, h->stream, product, reinterpret_cast<uint8_t*>(c), tiling);
+        });
     }
 
     aclblasStatus_t RunSplitNt()
@@ -722,12 +789,45 @@ private:
         auto* pa = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
         auto* pb = pa + ae * sizeof(float);
         auto* partial = pb + be * sizeof(float);
-        kernels.catlassPack(
-            vectors, h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
-            reinterpret_cast<uint8_t*>(const_cast<float*>(b)), pa, pb, tiling, padded);
-        kernels.splitNt(tiling.cubeBlocks, h->stream, pa, pb, partial, padded);
-        kernels.splitSum(vectors, h->stream, partial, reinterpret_cast<uint8_t*>(c), tiling, padded.ldc, splits);
-        return ACLBLAS_STATUS_SUCCESS;
+        auto packRet = GuardedGemmExLaunch("GemmExRealBackend", "catlass_pack kernel", [&] {
+            kernels.catlassPack(
+                vectors, h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
+                reinterpret_cast<uint8_t*>(const_cast<float*>(b)), pa, pb, tiling, padded);
+        });
+        if (packRet != ACLBLAS_STATUS_SUCCESS) {
+            return packRet;
+        }
+        auto ntRet = GuardedGemmExLaunch("GemmExRealBackend", "split_nt kernel", [&] {
+            kernels.splitNt(tiling.cubeBlocks, h->stream, pa, pb, partial, padded);
+        });
+        if (ntRet != ACLBLAS_STATUS_SUCCESS) {
+            return ntRet;
+        }
+        return GuardedGemmExLaunch("GemmExRealBackend", "split_sum kernel", [&] {
+            kernels.splitSum(vectors, h->stream, partial, reinterpret_cast<uint8_t*>(c), tiling, padded.ldc, splits);
+        });
+    }
+
+    // issue #1254: 深宽 K 填充布局下的 TT 短归约三连发（dma_pack→tt_short→nz_loop_copy）。
+    aclblasStatus_t RunPackedTtShort(GemmExTiling& padded, uint8_t* pa, uint8_t* pb, uint8_t* product)
+    {
+        auto dmaRet = GuardedGemmExLaunch("GemmExRealBackend", "dma_pack kernel", [&] {
+            kernels.dmaPack(
+                vectors, h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
+                reinterpret_cast<uint8_t*>(const_cast<float*>(b)), pa, pb, tiling, padded);
+        });
+        if (dmaRet != ACLBLAS_STATUS_SUCCESS) {
+            return dmaRet;
+        }
+        auto ttRet = GuardedGemmExLaunch("GemmExRealBackend", "tt_short kernel", [&] {
+            kernels.ttShort(tiling.cubeBlocks, h->stream, pa, pb, product, padded);
+        });
+        if (ttRet != ACLBLAS_STATUS_SUCCESS) {
+            return ttRet;
+        }
+        return GuardedGemmExLaunch("GemmExRealBackend", "nz_loop_copy kernel", [&] {
+            kernels.nzLoopCopy(vectors, h->stream, product, reinterpret_cast<uint8_t*>(c), tiling);
+        });
     }
 
     aclblasStatus_t RunPacked()
@@ -749,24 +849,31 @@ private:
         auto* pb = pa + aElements * sizeof(float);
         auto* product = pb + bElements * sizeof(float);
         if (tiling.transA != 0 && tiling.transB != 0 && tiling.k <= 32 && AlignDim(tiling.m, 16) <= 1536) {
-            kernels.dmaPack(
+            return RunPackedTtShort(padded, pa, pb, product);
+        }
+        auto packRet = GuardedGemmExLaunch("GemmExRealBackend", "catlass_pack kernel", [&] {
+            kernels.catlassPack(
                 vectors, h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
                 reinterpret_cast<uint8_t*>(const_cast<float*>(b)), pa, pb, tiling, padded);
-            kernels.ttShort(tiling.cubeBlocks, h->stream, pa, pb, product, padded);
-            kernels.nzLoopCopy(vectors, h->stream, product, reinterpret_cast<uint8_t*>(c), tiling);
-            return ACLBLAS_STATUS_SUCCESS;
+        });
+        if (packRet != ACLBLAS_STATUS_SUCCESS) {
+            return packRet;
         }
-        kernels.catlassPack(
-            vectors, h->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(a)),
-            reinterpret_cast<uint8_t*>(const_cast<float*>(b)), pa, pb, tiling, padded);
         if (tiling.m <= 32 && tiling.k > 256) {
             padded.ldc = tiling.ldc;
-            kernels.columnOwner(tiling.cubeBlocks, h->stream, pa, pb, reinterpret_cast<uint8_t*>(c), padded);
-            return ACLBLAS_STATUS_SUCCESS;
+            return GuardedGemmExLaunch("GemmExRealBackend", "column_owner kernel", [&] {
+                kernels.columnOwner(tiling.cubeBlocks, h->stream, pa, pb, reinterpret_cast<uint8_t*>(c), padded);
+            });
         }
-        kernels.catlass(tiling.cubeBlocks, h->stream, pa, pb, product, padded);
-        kernels.catlassCopy(vectors, h->stream, product, reinterpret_cast<uint8_t*>(c), tiling, padded.ldc);
-        return ACLBLAS_STATUS_SUCCESS;
+        auto catlassRet = GuardedGemmExLaunch("GemmExRealBackend", "catlass kernel", [&] {
+            kernels.catlass(tiling.cubeBlocks, h->stream, pa, pb, product, padded);
+        });
+        if (catlassRet != ACLBLAS_STATUS_SUCCESS) {
+            return catlassRet;
+        }
+        return GuardedGemmExLaunch("GemmExRealBackend", "catlass_copy kernel", [&] {
+            kernels.catlassCopy(vectors, h->stream, product, reinterpret_cast<uint8_t*>(c), tiling, padded.ldc);
+        });
     }
 
 #endif
@@ -787,8 +894,7 @@ private:
             return status;
         }
 
-        RunHostTiles(h, tiling, flags, workspaceLayout, tiling.m, tiling.n, tiling.k, a, b, workspace, c);
-        return ACLBLAS_STATUS_SUCCESS;
+        return RunHostTiles(h, tiling, flags, workspaceLayout, tiling.m, tiling.n, tiling.k, a, b, workspace, c);
     }
 };
 

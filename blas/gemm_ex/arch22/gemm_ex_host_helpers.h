@@ -8,11 +8,29 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 #pragma once
+#include "acl/acl.h"
 #include "gemm_ex_tiling.h"
 #include "cann_ops_blas.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
+#include "log/log.h"
 #include <algorithm>
+
+// issue #1254: 各后端 kernel_do 启动函数保持 void 签名（被 sgemm/gemm 多后端以
+// 函数指针共享），发射状态在 host 调用点统一检查：发射前清掉线程级陈旧错误，
+// 发射后读回线程级运行时状态，失败显式上报 EXECUTION_FAILED，不再静默假成功。
+template <typename Launch>
+inline aclblasStatus_t GuardedGemmExLaunch(const char* api, const char* what, Launch&& launch)
+{
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
+    launch();
+    const aclError err = aclrtGetLastError(ACL_RT_THREAD_LEVEL);
+    if (err != ACL_SUCCESS) {
+        OP_LOGE(api, "%s launch failed: %d", what, static_cast<int>(err));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
 
 // Host-only launch selection. Compute kernels and their translation units stay
 // separate for GemmEx and SgemmEx; workspace/shape planning is shared.
@@ -125,10 +143,16 @@ inline aclblasStatus_t RunShortNn(
         return status;
     }
     auto* work = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(p.handle));
-    multiply(
-        grid, p.handle->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(p.a)),
-        reinterpret_cast<uint8_t*>(const_cast<float*>(p.b)), work, t, 0);
-    finish(vectors, p.handle->stream, work, reinterpret_cast<uint8_t*>(p.c), t);
-    return ACLBLAS_STATUS_SUCCESS;
+    auto multiplyRet = GuardedGemmExLaunch("aclblasGemmEx", "short-nn multiply kernel", [&] {
+        multiply(
+            grid, p.handle->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(p.a)),
+            reinterpret_cast<uint8_t*>(const_cast<float*>(p.b)), work, t, 0);
+    });
+    if (multiplyRet != ACLBLAS_STATUS_SUCCESS) {
+        return multiplyRet;
+    }
+    return GuardedGemmExLaunch("aclblasGemmEx", "short-nn output kernel", [&] {
+        finish(vectors, p.handle->stream, work, reinterpret_cast<uint8_t*>(p.c), t);
+    });
 }
 } // namespace gemm_ex

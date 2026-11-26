@@ -35,12 +35,18 @@ aclblasStatus_t RunSmallTt(const gemm_ex::RealDispatchParams& p)
     auto* pa = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(p.handle));
     auto* pb = pa + ae * sizeof(float);
     auto* product = pb + be * sizeof(float);
-    sgemm_ex_arch22_catlass_pack_do(
-        vectors, p.handle->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(p.a)),
-        reinterpret_cast<uint8_t*>(const_cast<float*>(p.b)), pa, pb, t, padded);
+    auto packRet = GuardedGemmExLaunch("aclblasSgemmEx", "sgemm_ex_arch22_catlass_pack_do", [&] {
+        sgemm_ex_arch22_catlass_pack_do(
+            vectors, p.handle->stream, reinterpret_cast<uint8_t*>(const_cast<float*>(p.a)),
+            reinterpret_cast<uint8_t*>(const_cast<float*>(p.b)), pa, pb, t, padded);
+    });
+    if (packRet != ACLBLAS_STATUS_SUCCESS) {
+        return packRet;
+    }
     padded.ldc = p.ldc;
-    SgemmExSmallTt259Do(cubes, p.handle->stream, pa, pb, reinterpret_cast<uint8_t*>(p.c), padded);
-    return ACLBLAS_STATUS_SUCCESS;
+    return GuardedGemmExLaunch("aclblasSgemmEx", "SgemmExSmallTt259Do", [&] {
+        SgemmExSmallTt259Do(cubes, p.handle->stream, pa, pb, reinterpret_cast<uint8_t*>(p.c), padded);
+    });
 }
 } // namespace
 extern "C" aclblasStatus_t SgemmExDispatchBackend(
