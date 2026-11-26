@@ -26,7 +26,7 @@
 #include "snrm2_ex_tiling_data.h"
 
 // tiling 按值传递
-void snrm2_ex_kernel_do(
+aclError snrm2_ex_kernel_do(
     uint8_t* x, uint8_t* result, uint8_t* workSpace, const Snrm2ExTilingData& tiling, uint32_t numBlocks, void* stream);
 
 static aclblasStatus_t ValidateSnrm2ExParams(
@@ -117,10 +117,9 @@ static aclblasStatus_t LaunchSnrm2ExKernel(
 
     // 复用 handle workspace，每个 core 2 个 FP32（scale_local, ssq_local）。
     size_t workspaceBytes = static_cast<size_t>(tiling.useCoreNum) * 2 * sizeof(float);
-    CHECK_RET(
-        workspaceBytes <= GetEffectiveWorkspaceSize(h),
-        OP_LOGE("aclblasSnrm2Ex", "workspace %zu > handle %zu", workspaceBytes, GetEffectiveWorkspaceSize(h));
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(workspaceBytes <= GetEffectiveWorkspaceSize(h),
+              OP_LOGE("aclblasSnrm2Ex", "workspace %zu > handle %zu", workspaceBytes, GetEffectiveWorkspaceSize(h));
+              return ACLBLAS_STATUS_ALLOC_FAILED);
     auto* workspaceDevice = reinterpret_cast<uint8_t*>(GetEffectiveWorkspace(h));
 
     aclError aclRet = aclrtMemsetAsync(workspaceDevice, workspaceBytes, 0, workspaceBytes, h->stream);
@@ -136,10 +135,13 @@ static aclblasStatus_t LaunchSnrm2ExKernel(
         tiling.maxDataCount, tiling.batchPerCore, tiling.remain, tiling.nthreads);
     OP_LOGI("aclblasSnrm2Ex", "launching kernel: blocks=%u, cores=%u", tiling.useCoreNum, aivCoreNum);
 
-    snrm2_ex_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<void*>(x)), reinterpret_cast<uint8_t*>(result),
-        workspaceDevice, tiling, tiling.useCoreNum, h->stream);
-
+    const aclError launchErr = snrm2_ex_kernel_do(
+        reinterpret_cast<uint8_t*>(const_cast<void*>(x)), reinterpret_cast<uint8_t*>(result), workspaceDevice, tiling,
+        tiling.useCoreNum, h->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSnrm2Ex", "snrm2_ex_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -155,9 +157,8 @@ aclblasStatus_t aclblasSnrm2Ex(
     if (n == 0) {
         float zero = 0.0f;
         aclError aclRet = aclrtMemcpy(result, sizeof(float), &zero, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
-        CHECK_RET(
-            aclRet == ACL_SUCCESS, OP_LOGE("aclblasSnrm2Ex", "aclrtMemcpy zero result failed, ret=%d", aclRet);
-            return ACLBLAS_STATUS_INTERNAL_ERROR);
+        CHECK_RET(aclRet == ACL_SUCCESS, OP_LOGE("aclblasSnrm2Ex", "aclrtMemcpy zero result failed, ret=%d", aclRet);
+                  return ACLBLAS_STATUS_INTERNAL_ERROR);
         return ACLBLAS_STATUS_SUCCESS;
     }
 

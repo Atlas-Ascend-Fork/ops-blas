@@ -552,9 +552,11 @@ __global__ __aicore__ void snrm2_ex_kernel(GM_ADDR x, GM_ADDR result, GM_ADDR wo
     }
 }
 
-void snrm2_ex_kernel_do(
+aclError snrm2_ex_kernel_do(
     GM_ADDR x, GM_ADDR result, GM_ADDR workSpace, const Snrm2ExTilingData& tiling, uint32_t numBlocks, void* stream)
 {
     auto aclStream = static_cast<aclrtStream>(stream);
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     snrm2_ex_kernel<<<numBlocks, nullptr, aclStream>>>(x, result, workSpace, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
