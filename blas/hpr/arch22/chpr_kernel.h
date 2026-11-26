@@ -11,10 +11,11 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "chpr_tiling_data.h"
 
 #ifndef GM_ADDR
 #define GM_ADDR uint8_t*
 #endif
 
-void chpr_kernel_do(GM_ADDR x, GM_ADDR ap, const ChprTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError chpr_kernel_do(GM_ADDR x, GM_ADDR ap, const ChprTilingData& tiling, uint32_t numBlocks, void* stream);
