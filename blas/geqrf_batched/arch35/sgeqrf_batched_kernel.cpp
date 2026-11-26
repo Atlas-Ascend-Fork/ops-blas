@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
 #include "sgeqrf_batched_tiling_data.h"
@@ -214,8 +215,10 @@ __global__ __aicore__ void sgeqrf_batched(GM_ADDR aarrayPtr, GM_ADDR tauarrayPtr
         g_smem);
 }
 
-void sgeqrf_batched_kernel_do(
+aclError sgeqrf_batched_kernel_do(
     GM_ADDR aarrayPtr, GM_ADDR tauarrayPtr, const GeqrfBatchedTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     sgeqrf_batched<<<numBlocks, 0, stream>>>(aarrayPtr, tauarrayPtr, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

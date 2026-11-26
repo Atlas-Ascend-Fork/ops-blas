@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include <algorithm>
 #include "log/log.h"
 #include "cann_ops_blas.h"
@@ -16,7 +17,7 @@
 #include "common/helper/host_utils.h"
 #include "sgeqrf_batched_tiling_data.h"
 
-void sgeqrf_batched_kernel_do(
+aclError sgeqrf_batched_kernel_do(
     uint8_t* aarray, uint8_t* tauArray, const GeqrfBatchedTilingData& tiling, uint32_t numBlocks, void* stream);
 
 static const char* const TAG = "aclblasSgeqrfBatched";
@@ -84,10 +85,13 @@ static GeqrfBatchedTilingData CalGeqrfBatchedTilingData(
 static aclblasStatus_t LaunchGeqrfBatchedKernel(
     float* const Aarray[], float* const TauArray[], const GeqrfBatchedTilingData& tiling, aclrtStream stream)
 {
-    sgeqrf_batched_kernel_do(
+    const aclError launchErr = sgeqrf_batched_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float**>(Aarray)),
         reinterpret_cast<uint8_t*>(const_cast<float**>(TauArray)), tiling, tiling.usedCoreNum, stream);
-
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSgeqrf_batched", "sgeqrf_batched_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
