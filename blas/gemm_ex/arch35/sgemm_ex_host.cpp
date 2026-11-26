@@ -115,8 +115,37 @@ static SgemmExTilingData CalcSgemmExTiling(
 // Edge case handling (k==0 or alpha==0: result = beta * C)
 // ============================================================================
 
+// issue #1258: beta=0 只清 C 的逻辑 m 行。行区间 [m, ldc) 是调用方 C 缓冲的
+// padding 数据，按 blas/gemm_ex/README.md 契约保持原值；ldc==m 无 padding 时
+// 保持整块 memset 快路。口径对齐同族 gemm_ex_host.cpp ZeroColumnRegion（#1154）。
+static aclblasStatus_t ZeroSgemmExCRegion(float* C, int m, int ldc, int n)
+{
+    const size_t elemSize = sizeof(float);
+    auto* cBase = reinterpret_cast<uint8_t*>(C);
+    const size_t colStrideBytes = static_cast<size_t>(ldc) * elemSize;
+    if (ldc == m) {
+        size_t cBytes = colStrideBytes * static_cast<size_t>(n);
+        aclError ret = aclrtMemset(C, cBytes, 0, cBytes);
+        if (ret != ACL_SUCCESS) {
+            OP_LOGE("aclblasSgemmEx", "aclrtMemset failed, ret=%d", ret);
+            return ACLBLAS_STATUS_EXECUTION_FAILED;
+        }
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    const size_t rowBytes = static_cast<size_t>(m) * elemSize;
+    for (int col = 0; col < n; col++) {
+        uint8_t* colPtr = cBase + static_cast<size_t>(col) * colStrideBytes;
+        aclError ret = aclrtMemset(colPtr, rowBytes, 0, rowBytes);
+        if (ret != ACL_SUCCESS) {
+            OP_LOGE("aclblasSgemmEx", "aclrtMemset failed, col=%d, ret=%d", col, ret);
+            return ACLBLAS_STATUS_EXECUTION_FAILED;
+        }
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 static bool HandleSgemmExEdgeCases(
-    int k, float alphaVal, float betaVal, float* C, int ldc, int n, aclblasStatus_t& outStatus)
+    int k, float alphaVal, float betaVal, float* C, int m, int ldc, int n, aclblasStatus_t& outStatus)
 {
     if (k == 0 || alphaVal == 0.0f) {
         OP_LOGD("aclblasSgemmEx", "edge case: k=%d, alpha=%.4f, beta=%.4f", k, alphaVal, betaVal);
@@ -126,14 +155,7 @@ static bool HandleSgemmExEdgeCases(
             return true;
         }
         if (betaVal == 0.0f) {
-            size_t cBytes = static_cast<size_t>(ldc) * static_cast<size_t>(n) * sizeof(float);
-            aclError ret = aclrtMemset(C, cBytes, 0, cBytes);
-            if (ret != ACL_SUCCESS) {
-                OP_LOGE("aclblasSgemmEx", "aclrtMemset failed, ret=%d", ret);
-                outStatus = ACLBLAS_STATUS_EXECUTION_FAILED;
-            } else {
-                outStatus = ACLBLAS_STATUS_SUCCESS;
-            }
+            outStatus = ZeroSgemmExCRegion(C, m, ldc, n);
             return true;
         }
         if (betaVal == 1.0f) {
@@ -213,7 +235,7 @@ static aclblasStatus_t LaunchSgemmExKernel(
     float betaVal = *beta;
 
     aclblasStatus_t edgeStatus;
-    if (HandleSgemmExEdgeCases(k, alphaVal, betaVal, C, ldc, n, edgeStatus)) {
+    if (HandleSgemmExEdgeCases(k, alphaVal, betaVal, C, m, ldc, n, edgeStatus)) {
         return edgeStatus;
     }
 
