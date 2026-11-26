@@ -20,7 +20,7 @@
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 
-void cgeru_kernel_do(const CgeruTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError cgeru_kernel_do(const CgeruTilingData& tiling, uint32_t numBlocks, void* stream);
 
 static uint32_t CalCgeruBlockNum(int m, int n)
 {
@@ -111,8 +111,7 @@ static aclblasStatus_t ValidateCgeruScalars(int m, int n, const aclblasComplex* 
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static aclblasStatus_t ValidateCgeruPointers(const aclblasComplex* x, const aclblasComplex* y,
-                                             const aclblasComplex* A)
+static aclblasStatus_t ValidateCgeruPointers(const aclblasComplex* x, const aclblasComplex* y, const aclblasComplex* A)
 {
     if (x == nullptr) {
         OP_LOGE("aclblasCgeru", "x must not be nullptr");
@@ -129,9 +128,9 @@ static aclblasStatus_t ValidateCgeruPointers(const aclblasComplex* x, const aclb
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static aclblasStatus_t LaunchCgeruKernel(aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha,
-                                         const aclblasComplex* x, int incx, const aclblasComplex* y, int incy,
-                                         aclblasComplex* A, int lda)
+static aclblasStatus_t LaunchCgeruKernel(
+    aclblasHandle_t handle, int m, int n, const aclblasComplex* alpha, const aclblasComplex* x, int incx,
+    const aclblasComplex* y, int incy, aclblasComplex* A, int lda)
 {
     auto* h = handle;
     aclrtStream useStream = h->stream;
@@ -146,7 +145,11 @@ static aclblasStatus_t LaunchCgeruKernel(aclblasHandle_t handle, int m, int n, c
     tiling.x = reinterpret_cast<uint64_t>(x);
     tiling.y = reinterpret_cast<uint64_t>(y);
 
-    cgeru_kernel_do(tiling, tiling.useCoreNum, useStream);
+    const aclError launchErr = cgeru_kernel_do(tiling, tiling.useCoreNum, useStream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasCgeru", "cgeru_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
