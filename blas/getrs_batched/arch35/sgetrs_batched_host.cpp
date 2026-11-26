@@ -47,12 +47,12 @@ static void SetInfo(int* info, int val)
 }
 
 static aclblasStatus_t ValidateSgetrsBatchedParams(
-    aclblasOperation_t trans, int n, int nrhs, int lda, int ldb, int batchCount,
-    const float* const Aarray[], float* const Barray[], int* info)
+    aclblasOperation_t trans, int n, int nrhs, int lda, int ldb, int batchCount, const float* const Aarray[],
+    float* const Barray[], int* info)
 {
     if (trans != ACLBLAS_OP_N && trans != ACLBLAS_OP_T && trans != ACLBLAS_OP_C) {
-        OP_LOGE("aclblasSgetrsBatched", "trans must be OP_N(111), OP_T(112) or OP_C(113), got %d",
-                static_cast<int>(trans));
+        OP_LOGE(
+            "aclblasSgetrsBatched", "trans must be OP_N(111), OP_T(112) or OP_C(113), got %d", static_cast<int>(trans));
         SetInfo(info, -GETRS_PARAM_TRANS);
         return ACLBLAS_STATUS_INVALID_ENUM;
     }
@@ -95,8 +95,7 @@ static aclblasStatus_t ValidateSgetrsBatchedParams(
 }
 
 static SgetrsBatchedTilingData ComputeTiling(
-    aclblasOperation_t trans, int n, int nrhs, int lda, int ldb,
-    const int* devIpiv, int batchCount, uint32_t coreNum)
+    aclblasOperation_t trans, int n, int nrhs, int lda, int ldb, const int* devIpiv, int batchCount, uint32_t coreNum)
 {
     SgetrsBatchedTilingData tiling = {};
     if (coreNum == 0) {
@@ -115,17 +114,25 @@ static SgetrsBatchedTilingData ComputeTiling(
     tiling.batchTail = uBatchCount - (usedCoreNum - 1) * batchPerCore;
     tiling.usePivot = (devIpiv != nullptr) ? 1u : 0u;
     switch (trans) {
-        case ACLBLAS_OP_N: tiling.trans = GETRS_TRANS_N; break;
-        case ACLBLAS_OP_T: tiling.trans = GETRS_TRANS_T; break;
-        case ACLBLAS_OP_C: tiling.trans = GETRS_TRANS_C; break;
-        default: tiling.trans = GETRS_TRANS_N; break;
+        case ACLBLAS_OP_N:
+            tiling.trans = GETRS_TRANS_N;
+            break;
+        case ACLBLAS_OP_T:
+            tiling.trans = GETRS_TRANS_T;
+            break;
+        case ACLBLAS_OP_C:
+            tiling.trans = GETRS_TRANS_C;
+            break;
+        default:
+            tiling.trans = GETRS_TRANS_N;
+            break;
     }
     return tiling;
 }
 
 static aclblasStatus_t LaunchSgetrsBatchedKernel(
-    aclblasHandle_t handle, aclblasOperation_t trans, int n, int nrhs, int lda, int ldb,
-    const float* const Aarray[], const int* devIpiv, float* const Barray[], int batchCount)
+    aclblasHandle_t handle, aclblasOperation_t trans, int n, int nrhs, int lda, int ldb, const float* const Aarray[],
+    const int* devIpiv, float* const Barray[], int batchCount)
 {
     uint32_t coreNum = GetAivCoreCount();
     if (coreNum == 0) {
@@ -135,35 +142,38 @@ static aclblasStatus_t LaunchSgetrsBatchedKernel(
 
     SgetrsBatchedTilingData tiling = ComputeTiling(trans, n, nrhs, lda, ldb, devIpiv, batchCount, coreNum);
 
-    OP_LOGD("aclblasSgetrsBatched",
-            "tiling: n=%u nrhs=%u lda=%u ldb=%u usedCoreNum=%u batchPerCore=%u batchTail=%u usePivot=%u trans=%u",
-            tiling.n, tiling.nrhs, tiling.lda, tiling.ldb,
-            tiling.usedCoreNum, tiling.batchPerCore, tiling.batchTail, tiling.usePivot, tiling.trans);
-    OP_LOGI("aclblasSgetrsBatched",
-            "launching kernel: blocks=%u, cores=%u, n=%u, nrhs=%u, trans=%u, usePivot=%u, batchCount=%d",
-            tiling.usedCoreNum, coreNum, tiling.n, tiling.nrhs, tiling.trans, tiling.usePivot, batchCount);
+    OP_LOGD(
+        "aclblasSgetrsBatched",
+        "tiling: n=%u nrhs=%u lda=%u ldb=%u usedCoreNum=%u batchPerCore=%u batchTail=%u usePivot=%u trans=%u", tiling.n,
+        tiling.nrhs, tiling.lda, tiling.ldb, tiling.usedCoreNum, tiling.batchPerCore, tiling.batchTail, tiling.usePivot,
+        tiling.trans);
+    OP_LOGI(
+        "aclblasSgetrsBatched",
+        "launching kernel: blocks=%u, cores=%u, n=%u, nrhs=%u, trans=%u, usePivot=%u, batchCount=%d",
+        tiling.usedCoreNum, coreNum, tiling.n, tiling.nrhs, tiling.trans, tiling.usePivot, batchCount);
 
     auto* h = handle;
     // Pointer arrays are read-only on device side; casts match kernel_do's uint8_t* signature
-    sgetrs_batched_kernel_do(
+    const aclError launchErr = sgetrs_batched_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<const float**>(Aarray)),
-        reinterpret_cast<uint8_t*>(const_cast<float**>(Barray)),
-        reinterpret_cast<uint8_t*>(const_cast<int*>(devIpiv)),
+        reinterpret_cast<uint8_t*>(const_cast<float**>(Barray)), reinterpret_cast<uint8_t*>(const_cast<int*>(devIpiv)),
         tiling, tiling.usedCoreNum, h->stream);
-
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSgetrsBatched", "sgetrs_batched_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
 aclblasStatus_t aclblasSgetrsBatched(
-    aclblasHandle_t handle, aclblasOperation_t trans, int n, int nrhs,
-    const float* const Aarray[], int lda, const int* devIpiv,
-    float* const Barray[], int ldb, int* info, int batchCount)
+    aclblasHandle_t handle, aclblasOperation_t trans, int n, int nrhs, const float* const Aarray[], int lda,
+    const int* devIpiv, float* const Barray[], int ldb, int* info, int batchCount)
 {
-    OP_LOGD("aclblasSgetrsBatched",
-            "entry: trans=%d, n=%d, nrhs=%d, lda=%d, ldb=%d, batchCount=%d, "
-            "Aarray=%p, devIpiv=%p, Barray=%p, info=%p",
-            static_cast<int>(trans), n, nrhs, lda, ldb, batchCount,
-            Aarray, devIpiv, Barray, info);
+    OP_LOGD(
+        "aclblasSgetrsBatched",
+        "entry: trans=%d, n=%d, nrhs=%d, lda=%d, ldb=%d, batchCount=%d, "
+        "Aarray=%p, devIpiv=%p, Barray=%p, info=%p",
+        static_cast<int>(trans), n, nrhs, lda, ldb, batchCount, Aarray, devIpiv, Barray, info);
 
     if (handle == nullptr) {
         OP_LOGE("aclblasSgetrsBatched", "handle is nullptr");

@@ -14,6 +14,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
 #include "sgetrs_batched_tiling_data.h"
@@ -65,15 +66,13 @@ __simt_callee__ __aicore__ inline void StoreRegsToB(
 
 // Helper: read A, B pointers and pivot offset for one batch (shared by all VF functions).
 __simt_callee__ __aicore__ inline void ReadBatchPtrs(
-    GM_ADDR aarrayBase, GM_ADDR barrayBase, uint32_t batchIdx,
-    __gm__ float*& A, __gm__ float*& B)
+    GM_ADDR aarrayBase, GM_ADDR barrayBase, uint32_t batchIdx, __gm__ float*& A, __gm__ float*& B)
 {
     A = ReadPtrFromArray(aarrayBase, batchIdx);
     B = ReadPtrFromArray(barrayBase, batchIdx);
 }
 
-__simt_callee__ __aicore__ inline __gm__ int* ReadPivotPtr(
-    __gm__ int* pivotArray, uint32_t batchIdx, uint32_t n)
+__simt_callee__ __aicore__ inline __gm__ int* ReadPivotPtr(__gm__ int* pivotArray, uint32_t batchIdx, uint32_t n)
 {
     return pivotArray + static_cast<int64_t>(batchIdx) * n;
 }
@@ -203,8 +202,7 @@ __simt_callee__ __aicore__ inline void ForwardSolveNrhs(
 
 // Backward solve U * X = Y in-place (register-based, n <= GETRS_REG_TILE_N).
 __simt_callee__ __aicore__ inline void BackwardSolveNrhsReg(
-    __gm__ float* A, uint32_t lda, __gm__ float* B, uint32_t ldb,
-    uint32_t n, uint32_t nrhs)
+    __gm__ float* A, uint32_t lda, __gm__ float* B, uint32_t ldb, uint32_t n, uint32_t nrhs)
 {
     float regs[GETRS_REG_TILE_N] = {};
     LoadBToRegs(B, ldb, n, nrhs, regs);
@@ -225,8 +223,7 @@ __simt_callee__ __aicore__ inline void BackwardSolveNrhsReg(
 
 // Backward solve U * X = Y in-place (GM-based, n > GETRS_REG_TILE_N).
 __simt_callee__ __aicore__ inline void BackwardSolveNrhsGeneral(
-    __gm__ float* A, uint32_t lda, __gm__ float* B, uint32_t ldb,
-    uint32_t n, uint32_t nrhs)
+    __gm__ float* A, uint32_t lda, __gm__ float* B, uint32_t ldb, uint32_t n, uint32_t nrhs)
 {
     for (int32_t j = static_cast<int32_t>(n) - 1; j >= 0; j--) {
         uint32_t uj = static_cast<uint32_t>(j);
@@ -248,8 +245,7 @@ __simt_callee__ __aicore__ inline void BackwardSolveNrhsGeneral(
 
 // Backward solve U * X = Y wrapper (dispatches by n).
 __simt_callee__ __aicore__ inline void BackwardSolveNrhs(
-    __gm__ float* A, uint32_t lda, __gm__ float* B, uint32_t ldb,
-    uint32_t n, uint32_t nrhs)
+    __gm__ float* A, uint32_t lda, __gm__ float* B, uint32_t ldb, uint32_t n, uint32_t nrhs)
 {
     if (n <= GETRS_REG_TILE_N) {
         BackwardSolveNrhsReg(A, lda, B, ldb, n, nrhs);
@@ -261,8 +257,7 @@ __simt_callee__ __aicore__ inline void BackwardSolveNrhs(
 // Solve U^T * Y = B in-place (register-based, n <= GETRS_REG_TILE_N).
 // U^T is lower triangular; forward solve.
 __simt_callee__ __aicore__ inline void BackwardSolveTNrhsReg(
-    __gm__ float* A, uint32_t lda, __gm__ float* B, uint32_t ldb,
-    uint32_t n, uint32_t nrhs)
+    __gm__ float* A, uint32_t lda, __gm__ float* B, uint32_t ldb, uint32_t n, uint32_t nrhs)
 {
     float regs[GETRS_REG_TILE_N] = {};
     LoadBToRegs(B, ldb, n, nrhs, regs);
@@ -282,8 +277,7 @@ __simt_callee__ __aicore__ inline void BackwardSolveTNrhsReg(
 
 // Solve U^T * Y = B in-place (GM-based, n > GETRS_REG_TILE_N).
 __simt_callee__ __aicore__ inline void BackwardSolveTNrhsGeneral(
-    __gm__ float* A, uint32_t lda, __gm__ float* B, uint32_t ldb,
-    uint32_t n, uint32_t nrhs)
+    __gm__ float* A, uint32_t lda, __gm__ float* B, uint32_t ldb, uint32_t n, uint32_t nrhs)
 {
     for (uint32_t j = 0; j < n; j++) {
         float ujj = A[j + j * lda];
@@ -304,8 +298,7 @@ __simt_callee__ __aicore__ inline void BackwardSolveTNrhsGeneral(
 
 // Solve U^T * Y = B wrapper (dispatches by n).
 __simt_callee__ __aicore__ inline void BackwardSolveTNrhs(
-    __gm__ float* A, uint32_t lda, __gm__ float* B, uint32_t ldb,
-    uint32_t n, uint32_t nrhs)
+    __gm__ float* A, uint32_t lda, __gm__ float* B, uint32_t ldb, uint32_t n, uint32_t nrhs)
 {
     if (n <= GETRS_REG_TILE_N) {
         BackwardSolveTNrhsReg(A, lda, B, ldb, n, nrhs);
@@ -363,10 +356,8 @@ __simt_callee__ __aicore__ inline void ForwardSolveTNrhs(
 
 // SIMT VF: with pivot (dispatches N vs T/C inside batch loop).
 __simt_vf__ __aicore__ LAUNCH_BOUND(GETRS_SIMT_MAX_THREADS) inline void GetrsSimtPivot(
-    uint32_t n, uint32_t nrhs, uint32_t lda, uint32_t ldb,
-    uint32_t numBatch, uint32_t startBatch,
-    GM_ADDR aarrayBase, GM_ADDR barrayBase,
-    __gm__ int* pivotArray, uint32_t trans)
+    uint32_t n, uint32_t nrhs, uint32_t lda, uint32_t ldb, uint32_t numBatch, uint32_t startBatch, GM_ADDR aarrayBase,
+    GM_ADDR barrayBase, __gm__ int* pivotArray, uint32_t trans)
 {
     for (uint32_t b = 0; b < numBatch; b++) {
         uint32_t batchIdx = startBatch + b;
@@ -389,9 +380,8 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(GETRS_SIMT_MAX_THREADS) inline void GetrsSim
 
 // SIMT VF: without pivot (dispatches N vs T/C inside batch loop).
 __simt_vf__ __aicore__ LAUNCH_BOUND(GETRS_SIMT_MAX_THREADS) inline void GetrsSimtNoPivot(
-    uint32_t n, uint32_t nrhs, uint32_t lda, uint32_t ldb,
-    uint32_t numBatch, uint32_t startBatch,
-    GM_ADDR aarrayBase, GM_ADDR barrayBase, uint32_t trans)
+    uint32_t n, uint32_t nrhs, uint32_t lda, uint32_t ldb, uint32_t numBatch, uint32_t startBatch, GM_ADDR aarrayBase,
+    GM_ADDR barrayBase, uint32_t trans)
 {
     for (uint32_t b = 0; b < numBatch; b++) {
         uint32_t batchIdx = startBatch + b;
@@ -410,8 +400,7 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(GETRS_SIMT_MAX_THREADS) inline void GetrsSim
 }
 
 extern "C" __global__ __aicore__ void sgetrs_batched_kernel(
-    GM_ADDR aarray, GM_ADDR barray, GM_ADDR ipiv,
-    const SgetrsBatchedTilingData tiling)
+    GM_ADDR aarray, GM_ADDR barray, GM_ADDR ipiv, const SgetrsBatchedTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
 
@@ -434,20 +423,20 @@ extern "C" __global__ __aicore__ void sgetrs_batched_kernel(
 
     if (tiling.usePivot) {
         asc_vf_call<GetrsSimtPivot>(
-            dim3{GETRS_SIMT_MAX_THREADS, 1, 1},
-            tiling.n, tiling.nrhs, tiling.lda, tiling.ldb,
-            numBatch, startBatch, aarray, barray, pivots, tiling.trans);
+            dim3{GETRS_SIMT_MAX_THREADS, 1, 1}, tiling.n, tiling.nrhs, tiling.lda, tiling.ldb, numBatch, startBatch,
+            aarray, barray, pivots, tiling.trans);
     } else {
         asc_vf_call<GetrsSimtNoPivot>(
-            dim3{GETRS_SIMT_MAX_THREADS, 1, 1},
-            tiling.n, tiling.nrhs, tiling.lda, tiling.ldb,
-            numBatch, startBatch, aarray, barray, tiling.trans);
+            dim3{GETRS_SIMT_MAX_THREADS, 1, 1}, tiling.n, tiling.nrhs, tiling.lda, tiling.ldb, numBatch, startBatch,
+            aarray, barray, tiling.trans);
     }
 }
 
-void sgetrs_batched_kernel_do(
-    GM_ADDR aarray, GM_ADDR barray, GM_ADDR ipiv,
-    const SgetrsBatchedTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError sgetrs_batched_kernel_do(
+    GM_ADDR aarray, GM_ADDR barray, GM_ADDR ipiv, const SgetrsBatchedTilingData& tiling, uint32_t numBlocks,
+    void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     sgetrs_batched_kernel<<<numBlocks, nullptr, stream>>>(aarray, barray, ipiv, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
