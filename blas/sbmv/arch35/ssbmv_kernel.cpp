@@ -14,6 +14,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
@@ -119,8 +120,8 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void SsbmvUb(
 // ==========================================================================
 //  Kernel dispatcher — choose GM or UB path per launch
 // ==========================================================================
-__global__ __aicore__ void ssbmv_kernel(GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace,
-                                        const SsbmvTilingData tiling)
+__global__ __aicore__ void ssbmv_kernel(
+    GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, const SsbmvTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
 
@@ -177,9 +178,10 @@ __global__ __aicore__ void ssbmv_kernel(GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR
     }
 }
 
-void ssbmv_kernel_do(
-    GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace,
-    uint32_t numBlocks, const SsbmvTilingData& tiling, void* stream)
+aclError ssbmv_kernel_do(
+    GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, uint32_t numBlocks, const SsbmvTilingData& tiling, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     ssbmv_kernel<<<numBlocks, nullptr, stream>>>(a, x, y, workSpace, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

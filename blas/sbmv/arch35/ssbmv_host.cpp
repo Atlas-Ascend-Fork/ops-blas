@@ -19,7 +19,7 @@
 #include "common/helper/kernel_constant.h"
 #include "common/helper/host_utils.h"
 
-void ssbmv_kernel_do(
+aclError ssbmv_kernel_do(
     uint8_t* a, uint8_t* x, uint8_t* y, uint8_t* workSpace, uint32_t numBlocks, const SsbmvTilingData& tiling,
     void* stream);
 
@@ -98,9 +98,12 @@ aclblasStatus_t aclblasSsbmv(
         tiling.uplo, tiling.numBlocks, tiling.numThreads);
     OP_LOGI("aclblasSsbmv", "launching kernel");
 
-    ssbmv_kernel_do(
+    const aclError launchErr = ssbmv_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float*>(A)), reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
         reinterpret_cast<uint8_t*>(y), nullptr, useNumBlocks, tiling, useStream);
-
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSsbmv", "ssbmv_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
