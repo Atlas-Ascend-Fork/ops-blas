@@ -11,6 +11,7 @@
 #include "chemm_tiling_data.h"
 
 #include "chemm_combine_common.h"
+#include "acl/acl.h"
 
 template <bool FOUR, bool SPLIT1 = false>
 __simt_vf__ __aicore__ LAUNCH_BOUND(512) inline void ChemmCombineNoRisk(
@@ -116,18 +117,22 @@ __global__ __aicore__ void chemm_combine_narrow_output_simt384_kernel(
         uint32_t(t.ldc), mp, np, AscendC::GetBlockIdx(), AscendC::GetBlockNum());
 }
 
-void chemm_combine_narrow_output_do(
+aclError chemm_combine_narrow_output_do(
     const void* w, void* c, ChemmTiling t, uint32_t mp, uint32_t np, uint32_t cores, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chemm_combine_narrow_output_simt384_kernel<<<cores, nullptr, stream>>>((uint8_t*)w, (uint8_t*)c, t, mp, np);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 
-void chemm_combine_norisk_do(
+aclError chemm_combine_norisk_do(
     const void* a, const void* b, void* w, void* c, ChemmTiling t, uint32_t mp, uint32_t np, uint32_t splits,
     uint32_t products, uint32_t cores, void* stream, void* queue, uint64_t capacity, void* bounded,
     uint32_t riskProfile)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chemm_combine_norisk_kernel<<<cores, nullptr, stream>>>(
         (uint8_t*)a, (uint8_t*)b, (uint8_t*)w, (uint8_t*)c, t, mp, np, splits, products, (uint8_t*)queue, capacity,
         (uint8_t*)bounded, riskProfile);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

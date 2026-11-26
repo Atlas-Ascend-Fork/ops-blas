@@ -11,6 +11,7 @@
 // FP32 pipeline adapted from this repository's ssymm arch35 implementation.
 #include "kernel_operator.h"
 #include "cann_ops_blas_common.h"
+#include "acl/acl.h"
 #define KERNEL_UTILS_LITE
 #include "common/helper/kernel_utils.h"
 #include "chemm_tiling_data.h"
@@ -297,9 +298,11 @@ __global__ __aicore__ void chemm_cube_kernel(
     AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(FIRST_FLAG);
     AscendC::WaitFlag<AscendC::HardEvent::FIX_M>(ZERO_FLAG);
 }
-void chemm_cube_kernel_do(
+aclError chemm_cube_kernel_do(
     uint8_t* gmA, const uint8_t* gmB, uint8_t* gmTemp, const ChemmCubeGemmTilingData& tiling, uint32_t numBlocks,
     void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chemm_cube_kernel<<<numBlocks, nullptr, stream>>>(gmA, gmB, gmTemp, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

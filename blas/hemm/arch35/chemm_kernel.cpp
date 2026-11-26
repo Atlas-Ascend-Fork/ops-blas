@@ -11,6 +11,7 @@
 #include "kernel_operator.h"
 #include "chemm_tiling_data.h"
 #include "chemm_combine_common.h"
+#include "acl/acl.h"
 
 namespace {
 constexpr uint32_t kFiniteInputMagnitudeBits = 0x49800000U;
@@ -784,18 +785,21 @@ __simt_callee__ __aicore__ inline void ChemmAccurateElement(
     c[2 * pos + 1] = imag + imagComp;
 }
 
-void chemm_simt_do(const void* a, const void* b, void* c, void* w, ChemmTiling t, uint32_t cores, void* stream)
+// issue #1256: 发射前清掉线程级陈旧错误，发射后返回运行时状态（arch22 e6300016 口径）。
+aclError chemm_simt_do(const void* a, const void* b, void* c, void* w, ChemmTiling t, uint32_t cores, void* stream)
 {
     const int64_t k = t.left ? t.m : t.n;
     const bool narrow = t.lda * k <= 0x3fffffff && t.ldb * t.n <= 0x3fffffff && t.ldc * t.n <= 0x3fffffff;
     const bool smallUnit = w == nullptr && narrow && (t.left ? t.m : t.n) <= 128 && t.ar == 1.f &&
                            __builtin_bit_cast(uint32_t, t.ai) == 0 && __builtin_bit_cast(uint32_t, t.br) == 0 &&
                            __builtin_bit_cast(uint32_t, t.bi) == 0;
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     if (smallUnit)
         chemm_simt_small_unit_kernel<<<cores, nullptr, stream>>>((uint8_t*)a, (uint8_t*)b, (uint8_t*)c, (uint8_t*)w, t);
     else
         chemm_simt_general_kernel<<<cores, nullptr, stream>>>(
             (uint8_t*)a, (uint8_t*)b, (uint8_t*)c, (uint8_t*)w, t, narrow);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 
 __simt_callee__ __aicore__ inline void ChemmLoadPackedElement(
@@ -872,12 +876,14 @@ __global__ __aicore__ void chemm_pack_kernel(
         AscendC::Simt::Dim3(1024), (__gm__ const float*)a, (__gm__ const float*)b, (__gm__ float*)w, t.m, t.n, t.lda,
         t.ldb, t.left, t.upper, mp, np, kp, AscendC::GetBlockIdx(), AscendC::GetBlockNum(), (__gm__ uint32_t*)bounded);
 }
-void chemm_pack_do(
+aclError chemm_pack_do(
     const void* a, const void* b, void* w, ChemmTiling t, uint32_t mp, uint32_t np, uint32_t kp, uint32_t cores,
     void* stream, void* bounded)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chemm_pack_kernel<<<cores, nullptr, stream>>>(
         (uint8_t*)a, (uint8_t*)b, (uint8_t*)w, t, mp, np, kp, (uint8_t*)bounded);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 
 __simt_vf__ __aicore__ LAUNCH_BOUND(1024) inline void ChemmPack3Fast(
@@ -895,11 +901,13 @@ __global__ __aicore__ void chemm_pack3_fast_kernel(
         AscendC::Simt::Dim3(1024), (__gm__ const float*)a, (__gm__ const float*)b, (__gm__ float*)w, t.m, t.n, t.lda,
         t.ldb, t.left, t.upper, mp, np, kp, AscendC::GetBlockIdx(), AscendC::GetBlockNum());
 }
-void chemm_pack3_fast_do(
+aclError chemm_pack3_fast_do(
     const void* a, const void* b, void* w, ChemmTiling t, uint32_t mp, uint32_t np, uint32_t kp, uint32_t cores,
     void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chemm_pack3_fast_kernel<<<cores, nullptr, stream>>>((uint8_t*)a, (uint8_t*)b, (uint8_t*)w, t, mp, np, kp);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 __simt_vf__ __aicore__ LAUNCH_BOUND(64) inline void ChemmBoundReset(__gm__ uint32_t* bounded, uint32_t value)
 {
@@ -911,9 +919,11 @@ __global__ __aicore__ void chemm_bound_reset_kernel(GM_ADDR bounded, uint32_t va
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     AscendC::Simt::VF_CALL<ChemmBoundReset>(AscendC::Simt::Dim3(64), (__gm__ uint32_t*)bounded, value);
 }
-void chemm_bound_reset_do(void* bounded, uint32_t value, void* stream)
+aclError chemm_bound_reset_do(void* bounded, uint32_t value, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chemm_bound_reset_kernel<<<1, nullptr, stream>>>((uint8_t*)bounded, value);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 template <bool FOUR>
 __simt_callee__ __aicore__ inline void ChemmAccumulateRiskPartials(
@@ -1024,12 +1034,14 @@ __global__ __aicore__ void chemm_combine_kernel(
         }
     }
 }
-void chemm_combine_do(
+aclError chemm_combine_do(
     const void* a, const void* b, void* w, void* c, ChemmTiling t, uint32_t mp, uint32_t np, uint32_t splits,
     uint32_t products, uint32_t cores, void* stream, void* queue, uint64_t capacity)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chemm_combine_kernel<<<cores, nullptr, stream>>>(
         (uint8_t*)a, (uint8_t*)b, (uint8_t*)w, (uint8_t*)c, t, mp, np, splits, products, (uint8_t*)queue, capacity);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 
 // Each core owns a queue; fallback keeps the original C ownership to avoid cross-core cache-line writes.
@@ -1201,37 +1213,39 @@ __global__ __aicore__ void chemm_queue_fallback_kernel(
             AscendC::GetBlockIdx(), (__gm__ const uint32_t*)bounded, (__gm__ const float*)packed);
     }
 }
-void chemm_queue_reset_do(void* queue, uint64_t capacity, uint32_t cores, void* stream)
+aclError chemm_queue_reset_do(void* queue, uint64_t capacity, uint32_t cores, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chemm_queue_reset_kernel<<<cores, nullptr, stream>>>((uint8_t*)queue, capacity);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 
-void chemm_combined_reset_do(
+aclError chemm_combined_reset_do(
     void* bounded, void* queue, uint64_t capacity, uint32_t value, uint32_t cores, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chemm_combined_reset_kernel<<<cores, nullptr, stream>>>((uint8_t*)bounded, (uint8_t*)queue, capacity, value);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
-void chemm_queue_fallback_do(
+aclError chemm_queue_fallback_do(
     const void* a, const void* b, void* c, void* queue, uint64_t capacity, ChemmTiling t, uint32_t cores, void* stream,
     void* bounded, const void* packed)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     if (t.left == 1 && t.upper == 1) {
         chemm_queue_fallback_kernel<1, 1><<<cores, nullptr, stream>>>(
             (uint8_t*)a, (uint8_t*)b, (uint8_t*)c, (uint8_t*)queue, capacity, t, (uint8_t*)bounded, (uint8_t*)packed);
-        return;
-    }
-    if (t.left == 1 && t.upper == 0) {
+    } else if (t.left == 1 && t.upper == 0) {
         chemm_queue_fallback_kernel<1, 0><<<cores, nullptr, stream>>>(
             (uint8_t*)a, (uint8_t*)b, (uint8_t*)c, (uint8_t*)queue, capacity, t, (uint8_t*)bounded, (uint8_t*)packed);
-        return;
-    }
-    if (t.left == 0 && t.upper == 1) {
+    } else if (t.left == 0 && t.upper == 1) {
         chemm_queue_fallback_kernel<0, 1><<<cores, nullptr, stream>>>(
             (uint8_t*)a, (uint8_t*)b, (uint8_t*)c, (uint8_t*)queue, capacity, t, (uint8_t*)bounded, (uint8_t*)packed);
-        return;
+    } else {
+        chemm_queue_fallback_kernel<0, 0><<<cores, nullptr, stream>>>(
+            (uint8_t*)a, (uint8_t*)b, (uint8_t*)c, (uint8_t*)queue, capacity, t, (uint8_t*)bounded, (uint8_t*)packed);
     }
-    chemm_queue_fallback_kernel<0, 0><<<cores, nullptr, stream>>>(
-        (uint8_t*)a, (uint8_t*)b, (uint8_t*)c, (uint8_t*)queue, capacity, t, (uint8_t*)bounded, (uint8_t*)packed);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 
 // Materialize the selected Hermitian triangle once. The ordered SIMT loop
@@ -1285,7 +1299,9 @@ __global__ __aicore__ void chemm_ordered_pack_kernel(GM_ADDR a, GM_ADDR b, GM_AD
         AscendC::Simt::Dim3(512), (__gm__ const float*)a, (__gm__ const float*)b, (__gm__ float*)w, uint32_t(t.m),
         uint32_t(t.n), t.lda, t.ldb, t.ar, t.ai, t.left, t.upper, AscendC::GetBlockIdx(), AscendC::GetBlockNum());
 }
-void chemm_ordered_pack_do(const void* a, const void* b, void* w, ChemmTiling t, uint32_t cores, void* stream)
+aclError chemm_ordered_pack_do(const void* a, const void* b, void* w, ChemmTiling t, uint32_t cores, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     chemm_ordered_pack_kernel<<<cores, nullptr, stream>>>((uint8_t*)a, (uint8_t*)b, (uint8_t*)w, t);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

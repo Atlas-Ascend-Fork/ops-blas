@@ -10,27 +10,30 @@
 
 #include <limits>
 #include <cmath>
+#include "acl/acl.h"
 #include "cann_ops_blas.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
 #include "chemm_tiling_data.h"
-void chemm_simt_do(const void*, const void*, void*, void*, ChemmTiling, uint32_t, void*);
+aclError chemm_simt_do(const void*, const void*, void*, void*, ChemmTiling, uint32_t, void*);
 
-void chemm_ordered_pack_do(const void*, const void*, void*, ChemmTiling, uint32_t, void*);
-void chemm_pack_do(const void*, const void*, void*, ChemmTiling, uint32_t, uint32_t, uint32_t, uint32_t, void*, void*);
-void chemm_pack3_fast_do(const void*, const void*, void*, ChemmTiling, uint32_t, uint32_t, uint32_t, uint32_t, void*);
-void chemm_bound_reset_do(void*, uint32_t, void*);
-void chemm_combined_reset_do(void*, void*, uint64_t, uint32_t, uint32_t, void*);
-void chemm_combine_do(
+aclError chemm_ordered_pack_do(const void*, const void*, void*, ChemmTiling, uint32_t, void*);
+aclError chemm_pack_do(
+    const void*, const void*, void*, ChemmTiling, uint32_t, uint32_t, uint32_t, uint32_t, void*, void*);
+aclError chemm_pack3_fast_do(
+    const void*, const void*, void*, ChemmTiling, uint32_t, uint32_t, uint32_t, uint32_t, void*);
+aclError chemm_bound_reset_do(void*, uint32_t, void*);
+aclError chemm_combined_reset_do(void*, void*, uint64_t, uint32_t, uint32_t, void*);
+aclError chemm_combine_do(
     const void*, const void*, void*, void*, ChemmTiling, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void*, void*,
     uint64_t);
-void chemm_combine_norisk_do(
+aclError chemm_combine_norisk_do(
     const void*, const void*, void*, void*, ChemmTiling, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void*, void*,
     uint64_t, void*, uint32_t);
-void chemm_combine_narrow_output_do(const void*, void*, ChemmTiling, uint32_t, uint32_t, uint32_t, void*);
-void chemm_cube_kernel_do(uint8_t*, const uint8_t*, uint8_t*, const ChemmCubeGemmTilingData&, uint32_t, void*);
-void chemm_queue_reset_do(void*, uint64_t, uint32_t, void*);
-void chemm_queue_fallback_do(
+aclError chemm_combine_narrow_output_do(const void*, void*, ChemmTiling, uint32_t, uint32_t, uint32_t, void*);
+aclError chemm_cube_kernel_do(uint8_t*, const uint8_t*, uint8_t*, const ChemmCubeGemmTilingData&, uint32_t, void*);
+aclError chemm_queue_reset_do(void*, uint64_t, uint32_t, void*);
+aclError chemm_queue_fallback_do(
     const void*, const void*, void*, void*, uint64_t, ChemmTiling, uint32_t, void*, void*, const void*);
 // Workload taxonomy.  Dimensions, aspect ratios and alignment properties
 // select a policy family; launch execution remains independent of classification.
@@ -429,50 +432,89 @@ static aclblasStatus_t PrepareChemmCubeExecution(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static void ResetChemmCubeState(aclblasHandle_t h, const ChemmCubeExecution& execution, uint32_t cores)
+// issue #1256: 各级 kernel 发射状态逐级透传，失败不再静默假成功。
+static aclblasStatus_t ChemmCheckLaunch(const char* what, aclError ret)
+{
+    if (ret != ACL_SUCCESS) {
+        OP_LOGE("aclblasChemm", "%s launch failed, ret=%d", what, static_cast<int>(ret));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+static aclblasStatus_t ResetChemmCubeState(aclblasHandle_t h, const ChemmCubeExecution& execution, uint32_t cores)
 {
     if (execution.compactUnitScalarNarrowOutput)
-        return;
-    if (execution.policy.resetMode == ChemmResetMode::Combined)
-        chemm_combined_reset_do(
+        return ACLBLAS_STATUS_SUCCESS;
+    if (execution.policy.resetMode == ChemmResetMode::Combined) {
+        auto resetErr = chemm_combined_reset_do(
             execution.bounded, execution.queue, execution.capacity, execution.scalarBounded ? 1 : 0, cores, h->stream);
-    else if (execution.policy.resetMode == ChemmResetMode::Bounded)
-        chemm_bound_reset_do(execution.bounded, execution.scalarBounded ? 1 : 0, h->stream);
+        return ChemmCheckLaunch("chemm_combined_reset_do", resetErr);
+    }
+    if (execution.policy.resetMode == ChemmResetMode::Bounded) {
+        auto boundErr = chemm_bound_reset_do(execution.bounded, execution.scalarBounded ? 1 : 0, h->stream);
+        return ChemmCheckLaunch("chemm_bound_reset_do", boundErr);
+    }
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
-static void PackChemmCubeProducts(
+static aclblasStatus_t PackChemmCubeProducts(
     aclblasHandle_t h, const void* a, const void* b, const ChemmCubeExecution& execution, uint32_t cores)
 {
-    if (execution.compactUnitScalarNarrowOutput || execution.policy.packMode == ChemmPackMode::FastThreePlane)
-        chemm_pack3_fast_do(
+    if (execution.compactUnitScalarNarrowOutput || execution.policy.packMode == ChemmPackMode::FastThreePlane) {
+        auto packErr = chemm_pack3_fast_do(
             a, b, execution.w, execution.t, execution.np, execution.mp, execution.policy.paddedK, cores, h->stream);
-    else
-        chemm_pack_do(
-            a, b, execution.w, execution.t, execution.np, execution.mp, execution.policy.paddedK, cores, h->stream,
-            execution.bounded);
+        return ChemmCheckLaunch("chemm_pack3_fast_do", packErr);
+    }
+    auto packDoErr = chemm_pack_do(
+        a, b, execution.w, execution.t, execution.np, execution.mp, execution.policy.paddedK, cores, h->stream,
+        execution.bounded);
+    return ChemmCheckLaunch("chemm_pack_do", packDoErr);
 }
 
-static void CombineChemmCubeProducts(
+static aclblasStatus_t CombineChemmCubeProducts(
     aclblasHandle_t h, const void* a, const void* b, void* c, const ChemmCubeExecution& execution)
 {
     if (execution.compactUnitScalarNarrowOutput) {
-        chemm_combine_narrow_output_do(
+        auto narrowErr = chemm_combine_narrow_output_do(
             execution.out, c, execution.t, execution.mp, execution.np, execution.outputCores, h->stream);
+        return ChemmCheckLaunch("chemm_combine_narrow_output_do", narrowErr);
     } else if (execution.policy.combineMode == ChemmCombineMode::BoundedNoRisk) {
-        chemm_combine_norisk_do(
+        auto noriskErr = chemm_combine_norisk_do(
             a, b, execution.out, c, execution.t, execution.mp, execution.np, execution.splits,
             execution.policy.products, execution.outputCores, h->stream, execution.queue,
             execution.policy.queueFallback ? execution.capacity : 0, execution.bounded,
             static_cast<uint32_t>(execution.policy.riskProfile));
+        return ChemmCheckLaunch("chemm_combine_norisk_do", noriskErr);
     } else if (execution.policy.combineMode == ChemmCombineMode::RiskCheckedInline) {
-        chemm_combine_do(
+        auto inlineErr = chemm_combine_do(
             a, b, execution.out, c, execution.t, execution.mp, execution.np, execution.splits,
             execution.policy.products, execution.outputCores, h->stream, nullptr, 0);
+        return ChemmCheckLaunch("chemm_combine_do", inlineErr);
     } else {
-        chemm_combine_do(
+        auto combineErr = chemm_combine_do(
             a, b, execution.out, c, execution.t, execution.mp, execution.np, execution.splits,
             execution.policy.products, execution.outputCores, h->stream, execution.queue, execution.capacity);
+        return ChemmCheckLaunch("chemm_combine_do", combineErr);
     }
+}
+
+static ChemmCubeGemmTilingData MakeChemmCubeGemmTiling(const ChemmCubeExecution& execution)
+{
+    return ChemmCubeGemmTilingData{execution.np,
+                                   execution.mp,
+                                   execution.policy.paddedK,
+                                   execution.policy.paddedK,
+                                   execution.mp,
+                                   execution.mp,
+                                   execution.mp,
+                                   execution.policy.tileM,
+                                   execution.policy.tileN,
+                                   execution.policy.tileM,
+                                   execution.policy.tileN,
+                                   256,
+                                   execution.splits,
+                                   execution.policy.products};
 }
 
 static aclblasStatus_t ChemmCubeLaunch(
@@ -482,43 +524,46 @@ static aclblasStatus_t ChemmCubeLaunch(
     auto ret = PrepareChemmCubeExecution(h, a, b, c, t, cores, execution);
     if (ret != ACLBLAS_STATUS_SUCCESS)
         return ret;
-    ChemmCubeGemmTilingData g{execution.np,
-                              execution.mp,
-                              execution.policy.paddedK,
-                              execution.policy.paddedK,
-                              execution.mp,
-                              execution.mp,
-                              execution.mp,
-                              execution.policy.tileM,
-                              execution.policy.tileN,
-                              execution.policy.tileM,
-                              execution.policy.tileN,
-                              256,
-                              execution.splits,
-                              execution.policy.products};
+    ChemmCubeGemmTilingData g = MakeChemmCubeGemmTiling(execution);
 
-    ResetChemmCubeState(h, execution, cores);
-    PackChemmCubeProducts(h, a, b, execution, cores);
-    chemm_cube_kernel_do(execution.w, execution.right, execution.out, g, execution.cubeCores, h->stream);
-    if (execution.capacity && execution.policy.resetQueue)
-        chemm_queue_reset_do(execution.queue, execution.capacity, execution.outputCores, h->stream);
-    CombineChemmCubeProducts(h, a, b, c, execution);
-    if (execution.capacity && execution.policy.queueFallback)
-        chemm_queue_fallback_do(
+    auto resetRet = ResetChemmCubeState(h, execution, cores);
+    if (resetRet != ACLBLAS_STATUS_SUCCESS)
+        return resetRet;
+    auto packRet = PackChemmCubeProducts(h, a, b, execution, cores);
+    if (packRet != ACLBLAS_STATUS_SUCCESS)
+        return packRet;
+    auto cubeErr = chemm_cube_kernel_do(execution.w, execution.right, execution.out, g, execution.cubeCores, h->stream);
+    if (cubeErr != ACL_SUCCESS)
+        return ChemmCheckLaunch("chemm_cube_kernel_do", cubeErr);
+    if (execution.capacity && execution.policy.resetQueue) {
+        auto queueErr = chemm_queue_reset_do(execution.queue, execution.capacity, execution.outputCores, h->stream);
+        if (queueErr != ACL_SUCCESS)
+            return ChemmCheckLaunch("chemm_queue_reset_do", queueErr);
+    }
+    auto combineRet = CombineChemmCubeProducts(h, a, b, c, execution);
+    if (combineRet != ACLBLAS_STATUS_SUCCESS)
+        return combineRet;
+    if (execution.capacity && execution.policy.queueFallback) {
+        auto fallbackErr = chemm_queue_fallback_do(
             a, b, c, execution.queue, execution.capacity, execution.t, execution.outputCores, h->stream,
             execution.bounded, execution.w);
+        if (fallbackErr != ACL_SUCCESS)
+            return ChemmCheckLaunch("chemm_queue_fallback_do", fallbackErr);
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
 static aclblasStatus_t ValidateChemmMode(aclblasSideMode_t side, aclblasFillMode_t uplo)
 {
+    // issue #1253: 对齐 blas/hemm/README.md 与 arch22 口径，side/uplo 非法枚举
+    // 返回 ACLBLAS_STATUS_INVALID_ENUM，不再与取值域校验的 INVALID_VALUE 混用。
     if (side != ACLBLAS_SIDE_LEFT && side != ACLBLAS_SIDE_RIGHT) {
         OP_LOGE("aclblasChemm", "side must be LEFT or RIGHT, got %d", static_cast<int>(side));
-        return ACLBLAS_STATUS_INVALID_VALUE;
+        return ACLBLAS_STATUS_INVALID_ENUM;
     }
     if (uplo != ACLBLAS_UPPER && uplo != ACLBLAS_LOWER) {
         OP_LOGE("aclblasChemm", "uplo must be UPPER or LOWER, got %d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_VALUE;
+        return ACLBLAS_STATUS_INVALID_ENUM;
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
@@ -682,10 +727,11 @@ static aclblasStatus_t RunOrderedChemmFallback(
         if (ret != ACLBLAS_STATUS_SUCCESS)
             return ret;
         orderedWorkspace = GetEffectiveWorkspace(handle);
-        chemm_ordered_pack_do(A, B, orderedWorkspace, t, cores, handle->stream);
+        auto packErr = chemm_ordered_pack_do(A, B, orderedWorkspace, t, cores, handle->stream);
+        if (packErr != ACL_SUCCESS)
+            return ChemmCheckLaunch("chemm_ordered_pack_do", packErr);
     }
-    chemm_simt_do(A, B, C, orderedWorkspace, t, outputCores, handle->stream);
-    return ACLBLAS_STATUS_SUCCESS;
+    return ChemmCheckLaunch("chemm_simt_do", chemm_simt_do(A, B, C, orderedWorkspace, t, outputCores, handle->stream));
 }
 
 aclblasStatus_t aclblasChemm(
