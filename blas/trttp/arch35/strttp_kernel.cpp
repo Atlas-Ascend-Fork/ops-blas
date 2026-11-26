@@ -12,6 +12,7 @@
 #define STRTTP_KERNEL_H
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "strttp_tiling_data.h"
 
@@ -150,9 +151,12 @@ __global__ __aicore__ void strttp_kernel(GM_ADDR aFull, GM_ADDR aPacked, TrttpTi
     op.Process();
 }
 
-void strttp_kernel_do(GM_ADDR aFull, GM_ADDR aPacked, const TrttpTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError strttp_kernel_do(
+    GM_ADDR aFull, GM_ADDR aPacked, const TrttpTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     strttp_kernel<<<numBlocks, nullptr, stream>>>(aFull, aPacked, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
 
 #endif // STRTTP_KERNEL_H

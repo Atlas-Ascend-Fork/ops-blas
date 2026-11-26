@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include <cstdio>
 #include <algorithm>
 #include "log/log.h"
@@ -17,7 +18,7 @@
 #include "common/helper/host_utils.h"
 #include "strttp_tiling_data.h"
 
-void strttp_kernel_do(uint8_t* a, uint8_t* ap, const TrttpTilingData& tiling, uint32_t numBlocks, void* stream);
+aclError strttp_kernel_do(uint8_t* a, uint8_t* ap, const TrttpTilingData& tiling, uint32_t numBlocks, void* stream);
 
 // ---------------------------------------------------------------------------
 // Parameter validation — returns non-success if invalid
@@ -87,10 +88,13 @@ static aclblasStatus_t CalTilingData(TrttpTilingData* tiling, uint32_t n, uint32
 // ---------------------------------------------------------------------------
 static aclblasStatus_t ExecuteKernel(const float* A, float* AP, const TrttpTilingData& tiling, aclrtStream stream)
 {
-    strttp_kernel_do(
+    const aclError launchErr = strttp_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float*>(A)), reinterpret_cast<uint8_t*>(AP), tiling, tiling.useCoreNum,
         stream);
-
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasStrttp", "strttp_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
