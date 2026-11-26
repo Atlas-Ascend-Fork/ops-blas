@@ -91,7 +91,10 @@ def parse_cases(out, merge_error):
         return observed, failed, skipped, merge_error
     parse_error = None
     try:
-        for case in ET.parse(out / "gtest.xml").iter("testcase"):
+        root = ET.parse(out / "gtest.xml").getroot()
+        if any(int(root.attrib.get(key, 0)) != 0 for key in ("failures", "errors", "disabled", "skipped")):
+            raise ValueError("GTest XML reports failures, errors, disabled or skipped tests")
+        for case in root.iter("testcase"):
             name = case.attrib["name"].split("/")[-1]
             observed.append(name)
             if case.find("failure") is not None or case.find("error") is not None:
@@ -100,13 +103,21 @@ def parse_cases(out, merge_error):
             not_completed = case.attrib.get("result", "completed") != "completed"
             if case.find("skipped") is not None or not_run or not_completed:
                 skipped.append(name)
-    except (OSError, ET.ParseError) as exc:
+    except (OSError, ET.ParseError, ValueError) as exc:
         parse_error = str(exc)
     return observed, failed, skipped, parse_error
 
 
+def build_environment():
+    env = dict(os.environ)
+    for key in [key for key in env if key.startswith("GTEST_")]:
+        env.pop(key, None)
+    env.pop("BLAS_TEST_CASES", None)
+    return env
+
+
 def run_tests(args, csv_path, out, selected, rows, binary, repo):
-    env = os.environ.copy()
+    env = build_environment()
     env.update(
         HGEMM_CSV=str(csv_path),
         HGEMM_RESULTS=str(out / "batches.jsonl"),
@@ -114,9 +125,6 @@ def run_tests(args, csv_path, out, selected, rows, binary, repo):
         HGEMM_DEVICE_MEMORY=args.device_memory,
     )
     env.pop("HGEMM_PROFILE_REPEATS", None)
-    env.pop("BLAS_TEST_CASES", None)
-    env.pop("GTEST_SHARD_INDEX", None)
-    env.pop("GTEST_TOTAL_SHARDS", None)
     env.pop("HGEMM_DUMP_DIR", None)
     env.pop("HGEMM_INPUT_DIR", None)
     if args.input_attachments:
