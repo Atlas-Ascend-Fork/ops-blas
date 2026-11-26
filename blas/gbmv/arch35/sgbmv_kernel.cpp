@@ -14,6 +14,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
@@ -41,8 +42,7 @@ __simt_vf__ __aicore__ LAUNCH_BOUND(SIMT_MAX_THREAD_NUM) inline void SgbmvGm(
     uint32_t outDim = TRANS_T ? n : m;
     uint32_t xDim = TRANS_T ? m : n;
 
-    for (uint32_t outIdx = blockIdx.x * blockDim.x + threadIdx.x; outIdx < outDim;
-         outIdx += gridDim.x * blockDim.x) {
+    for (uint32_t outIdx = blockIdx.x * blockDim.x + threadIdx.x; outIdx < outDim; outIdx += gridDim.x * blockDim.x) {
         float acc = 0.0f;
 
         if constexpr (!TRANS_T) {
@@ -154,12 +154,12 @@ __aicore__ inline void SgbmvDispatch(
     }
 
     asc_vf_call<SgbmvUb<TRANS_T>>(
-        dim3{tiling.numThreads, 1, 1}, tiling.m, tiling.n, tiling.kl, tiling.ku, tiling.lda, tiling.alpha,
-        tiling.beta, tiling.incy, aGm, xGm, yGm, outStart, outEnd, xBase, xLen);
+        dim3{tiling.numThreads, 1, 1}, tiling.m, tiling.n, tiling.kl, tiling.ku, tiling.lda, tiling.alpha, tiling.beta,
+        tiling.incy, aGm, xGm, yGm, outStart, outEnd, xBase, xLen);
 }
 
-__global__ __aicore__ void sgbmv_kernel(GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace,
-                                         const SgbmvTilingData tiling)
+__global__ __aicore__ void sgbmv_kernel(
+    GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, const SgbmvTilingData tiling)
 {
     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_AIV_ONLY);
     (void)workSpace;
@@ -175,8 +175,10 @@ __global__ __aicore__ void sgbmv_kernel(GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR
     }
 }
 
-void sgbmv_kernel_do(
+aclError sgbmv_kernel_do(
     GM_ADDR a, GM_ADDR x, GM_ADDR y, GM_ADDR workSpace, const SgbmvTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     sgbmv_kernel<<<numBlocks, nullptr, stream>>>(a, x, y, workSpace, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

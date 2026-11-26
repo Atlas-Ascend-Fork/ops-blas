@@ -24,7 +24,7 @@
 #include "common/helper/kernel_constant.h"
 #include "common/helper/host_utils.h"
 
-void sgbmv_kernel_do(
+aclError sgbmv_kernel_do(
     uint8_t* a, uint8_t* x, uint8_t* y, uint8_t* workSpace, const SgbmvTilingData& tiling, uint32_t numBlocks,
     void* stream);
 
@@ -116,9 +116,12 @@ aclblasStatus_t aclblasSgbmv(
         tiling.kl, tiling.ku, tiling.lda, tiling.trans, useNumBlocks, tiling.numThreads);
     OP_LOGI("aclblasSgbmv", "launching kernel");
 
-    sgbmv_kernel_do(
+    const aclError launchErr = sgbmv_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float*>(A)), reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
         reinterpret_cast<uint8_t*>(y), nullptr, tiling, useNumBlocks, h->stream);
-
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSgbmv", "sgbmv_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
