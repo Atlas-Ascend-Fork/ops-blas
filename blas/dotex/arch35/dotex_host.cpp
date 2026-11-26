@@ -45,6 +45,27 @@ static uint32_t MapXType(aclDataType xType)
     }
 }
 
+// 对齐 arch22 e676ddc3 口径：步长 span 超出 uint32 域时显式拒绝，两架构
+// 对同一入参返回码一致（arch35 kernel 使用 int64 索引无内存安全问题，
+// 但跨架构口径不一致会让移植调用方踩到返回码差异）。
+static aclblasStatus_t ValidateDotexSpan(int n, int incx, int incy)
+{
+    if (n <= 1) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    const uint64_t absIncx =
+        (incx < 0) ? static_cast<uint64_t>(-static_cast<int64_t>(incx)) : static_cast<uint64_t>(incx);
+    const uint64_t absIncy =
+        (incy < 0) ? static_cast<uint64_t>(-static_cast<int64_t>(incy)) : static_cast<uint64_t>(incy);
+    const uint64_t spanX = 1ULL + static_cast<uint64_t>(n - 1) * absIncx;
+    const uint64_t spanY = 1ULL + static_cast<uint64_t>(n - 1) * absIncy;
+    if (spanX > static_cast<uint64_t>(UINT32_MAX) || spanY > static_cast<uint64_t>(UINT32_MAX)) {
+        OP_LOGE("aclblasDotEx", "strided vector span exceeds uint32 domain");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
 static aclblasStatus_t ValidateDotexParams(
     int n, const void* x, aclDataType xType, int incx, const void* y, aclDataType yType, int incy, void* result,
     aclDataType resultType, aclDataType executionType)
@@ -87,7 +108,7 @@ static aclblasStatus_t ValidateDotexParams(
         return ACLBLAS_STATUS_NOT_SUPPORTED;
     }
 
-    return ACLBLAS_STATUS_SUCCESS;
+    return ValidateDotexSpan(n, incx, incy);
 }
 
 static DotexTilingData CalDotexTilingData(int n, aclDataType xType, int incx, int incy, uint32_t vectorCoreNum)
