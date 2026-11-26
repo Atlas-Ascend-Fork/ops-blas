@@ -498,7 +498,9 @@ static void DumpCtrmmPhaseAPlanes(
     if (dumpDir == nullptr) {
         return;
     }
-    aclrtSynchronizeStream(stream);
+    if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+        return;
+    }
     auto dumpPlane = [&](const char* name, const void* devPtr, size_t bytes) {
         const std::string path = std::string(dumpDir) + "/" + name + ".bin";
         FILE* fp = std::fopen(path.c_str(), "wb");
@@ -525,7 +527,9 @@ static void ReportCtrmmPhaseTiming(
     aclblasSideMode_t side)
 {
     aclrtRecordEvent(t3, stream);
-    aclrtSynchronizeStream(stream);
+    if (aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+        return;
+    }
     float msA = 0.0f;
     float msB = 0.0f;
     float msC = 0.0f;
