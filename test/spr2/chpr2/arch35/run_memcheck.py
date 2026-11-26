@@ -73,18 +73,26 @@ def parse_xml_testcases(xml, selected):
     if not xml.is_file():
         return False, None
     try:
-        tests = ET.parse(xml).getroot().findall(".//testcase")
-    except ET.ParseError as exc:
-        return False, f"Failed to parse XML {xml.name}: {exc}"
+        root = ET.parse(xml).getroot()
+        if any(int(root.attrib.get(key, 0)) != 0 for key in ("failures", "errors", "disabled", "skipped")):
+            return False, None
+    except (ET.ParseError, ValueError):
+        return False, None
+    tests = root.findall(".//testcase")
     actual = [test.get("name", "").rsplit("/", 1)[-1] for test in tests]
     expected = [name.rsplit("/", 1)[-1].rsplit(".", 1)[-1] for name in selected]
-    completed = all(
-        test.get("result") == "completed"
+    if Counter(actual) != Counter(expected):
+        return False, None
+    if not all(
+        test.get("status") == "run"
+        and test.get("result") == "completed"
         and test.find("failure") is None
+        and test.find("error") is None
         and test.find("skipped") is None
         for test in tests
-    )
-    return Counter(actual) == Counter(expected) and completed, None
+    ):
+        return False, None
+    return True, None
 
 
 def collect_sanitizer_stats(log, detail):
@@ -105,13 +113,19 @@ def collect_sanitizer_stats(log, detail):
     return starts, finished, diagnostics
 
 
+def build_environment():
+    env = os.environ.copy()
+    for key in [key for key in env if key.startswith("GTEST_")]:
+        env.pop(key, None)
+    for key in ("CHPR2_PROFILE", "CHPR2_PROFILE_CALLS", "CHPR2_RESULTS", "BLAS_TEST_CASES"):
+        env.pop(key, None)
+    return env
+
+
 def run_group(args, group, selected, require_kernel):
     output = args.output
     xml, log, detail = (output / (group + suffix) for suffix in (".xml", ".log", "_detail.log"))
-    env = os.environ.copy()
-    for key in ("CHPR2_PROFILE", "CHPR2_PROFILE_CALLS", "CHPR2_RESULTS", "BLAS_TEST_CASES",
-                "GTEST_FILTER", "GTEST_OUTPUT"):
-        env.pop(key, None)
+    env = build_environment()
     env.update(CHPR2_CSV=str(args.csv), BLAS_DEVICE_ID=str(args.device),
                GTEST_FILTER=":".join(selected), GTEST_OUTPUT="xml:" + str(xml))
     command = [
@@ -148,6 +162,8 @@ def main():
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--timeout", type=int, default=3600)
     args = parser.parse_args()
+    if args.timeout <= 0:
+        parser.error("--timeout must be a positive integer")
     args.binary, args.csv, args.output = args.binary.resolve(), args.csv.resolve(), args.output.resolve()
     tool = shutil.which(args.tool)
     if not tool:
