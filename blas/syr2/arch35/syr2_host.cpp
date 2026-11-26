@@ -21,24 +21,22 @@
 
 struct Syr2TilingData;
 
-void syr2_kernel_do(uint8_t* x, uint8_t* y, uint8_t* A, const Syr2TilingData &tiling,
-                     uint32_t numBlocks, void *stream);
+aclError syr2_kernel_do(
+    uint8_t* x, uint8_t* y, uint8_t* A, const Syr2TilingData& tiling, uint32_t numBlocks, void* stream);
 
 static aclblasStatus_t ValidateSyr2Params(
     aclblasFillMode_t uplo, int n, int lda, int incx, int incy, const float* alpha, const float* x, const float* y,
     const float* A)
 {
-    CHECK_RET(
-        uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
-        OP_LOGE("aclblasSsyr2", "invalid uplo=%d", static_cast<int>(uplo));
-        return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        lda >= std::max(1, n), OP_LOGE("aclblasSsyr2", "invalid lda=%d, n=%d", lda, n);
-        return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER,
+              OP_LOGE("aclblasSsyr2", "invalid uplo=%d", static_cast<int>(uplo));
+              return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(lda >= std::max(1, n), OP_LOGE("aclblasSsyr2", "invalid lda=%d, n=%d", lda, n);
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incx != 0, OP_LOGE("aclblasSsyr2", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(incy != 0, OP_LOGE("aclblasSsyr2", "incy must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(
-        alpha != nullptr, OP_LOGE("aclblasSsyr2", "alpha must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
+    CHECK_RET(alpha != nullptr, OP_LOGE("aclblasSsyr2", "alpha must not be nullptr");
+              return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(x != nullptr, OP_LOGE("aclblasSsyr2", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(y != nullptr, OP_LOGE("aclblasSsyr2", "y must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
     CHECK_RET(A != nullptr, OP_LOGE("aclblasSsyr2", "A must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
@@ -94,10 +92,12 @@ aclblasStatus_t aclblasSsyr2(
         useNumBlocks);
     OP_LOGI("aclblasSsyr2", "launching kernel: blocks=%u, cores=%u", useNumBlocks, aivCoreNum);
 
-    syr2_kernel_do(
-        reinterpret_cast<uint8_t*>(const_cast<float*>(x)),
-        reinterpret_cast<uint8_t*>(const_cast<float*>(y)),
+    const aclError launchErr = syr2_kernel_do(
+        reinterpret_cast<uint8_t*>(const_cast<float*>(x)), reinterpret_cast<uint8_t*>(const_cast<float*>(y)),
         reinterpret_cast<uint8_t*>(A), tiling, useNumBlocks, h->stream);
-
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSsyr2", "syr2_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
