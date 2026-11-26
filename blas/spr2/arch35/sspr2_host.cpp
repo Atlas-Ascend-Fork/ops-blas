@@ -20,7 +20,7 @@
 #include "common/helper/kernel_constant.h"
 #include "common/helper/host_utils.h"
 
-void sspr2_kernel_do(
+aclError sspr2_kernel_do(
     uint8_t* x, uint8_t* y, uint8_t* ap, const Sspr2TilingData& tiling, uint32_t numBlocks, void* stream);
 
 static aclblasStatus_t ValidateSspr2Params(aclblasFillMode_t uplo, int incx, int incy, const float* alpha)
@@ -98,9 +98,12 @@ aclblasStatus_t aclblasSspr2(
 
     Sspr2TilingData tiling = CalSspr2TilingData(n, uplo, alphaVal, incx, incy);
 
-    sspr2_kernel_do(
+    const aclError launchErr = sspr2_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<float*>(x)), reinterpret_cast<uint8_t*>(const_cast<float*>(y)),
         reinterpret_cast<uint8_t*>(ap), tiling, useNumBlocks, stream);
-
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasSspr2", "sspr2_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }

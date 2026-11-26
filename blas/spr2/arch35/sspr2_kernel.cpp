@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
 #include "cann_ops_blas_common.h"
@@ -196,7 +197,10 @@ __global__ __aicore__ void sspr2_kernel(GM_ADDR x, GM_ADDR y, GM_ADDR ap, const 
     }
 }
 
-void sspr2_kernel_do(GM_ADDR x, GM_ADDR y, GM_ADDR ap, const Sspr2TilingData& tiling, uint32_t numBlocks, void* stream)
+aclError sspr2_kernel_do(
+    GM_ADDR x, GM_ADDR y, GM_ADDR ap, const Sspr2TilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     sspr2_kernel<<<numBlocks, nullptr, stream>>>(x, y, ap, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
