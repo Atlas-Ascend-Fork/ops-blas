@@ -58,6 +58,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
 #include "stpsv_tiling_data.h"
@@ -557,4 +558,9 @@ __global__ __aicore__ void stpsv_kernel(StpsvTilingData tiling)
     op.Process();
 }
 
-void stpsv_kernel_do(const StpsvTilingData& tiling, void* stream) { stpsv_kernel<<<1, nullptr, stream>>>(tiling); }
+aclError stpsv_kernel_do(const StpsvTilingData& tiling, void* stream)
+{
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
+    stpsv_kernel<<<1, nullptr, stream>>>(tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
+}

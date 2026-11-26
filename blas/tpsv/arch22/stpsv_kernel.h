@@ -17,4 +17,5 @@
 
 #include "stpsv_tiling_data.h"
 
-void stpsv_kernel_do(const StpsvTilingData& tiling, void* stream);
+#include "acl/acl.h"
+aclError stpsv_kernel_do(const StpsvTilingData& tiling, void* stream);

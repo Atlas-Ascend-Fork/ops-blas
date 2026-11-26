@@ -21,7 +21,7 @@
 #include "stpsv_tiling_data.h"
 #include "common/helper/aclblas_handle_internal.h"
 
-void stpsv_kernel_do(const StpsvTilingData& tiling, void* stream);
+aclError stpsv_kernel_do(const StpsvTilingData& tiling, void* stream);
 
 static bool IsValidFillMode(aclblasFillMode_t uplo) { return uplo == ACLBLAS_UPPER || uplo == ACLBLAS_LOWER; }
 
@@ -126,7 +126,10 @@ aclblasStatus_t aclblasStpsv(
         "aclblasStpsv", "tiling: n=%u uplo=%u trans=%u diag=%u incx=%ld", tiling.n, tiling.uplo, tiling.trans,
         tiling.diag, tiling.incx);
 
-    stpsv_kernel_do(tiling, h->stream);
-
+    const aclError launchErr = stpsv_kernel_do(tiling, h->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasStpsv", "stpsv_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
