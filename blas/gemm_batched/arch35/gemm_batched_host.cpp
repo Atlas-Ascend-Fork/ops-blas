@@ -1635,7 +1635,8 @@ static void ConfigureRealifiedBalancedSplit(const CgemmRealifiedParams& p, Cgemm
                                                         1)))));
 }
 
-static void LaunchMixedRealifiedGemm(const CgemmRealifiedParams& p, const CgemmRealifiedPlan& plan)
+static aclblasStatus_t LaunchMixedRealifiedGemm(
+    const CgemmRealifiedParams& p, const CgemmRealifiedPlan& plan)
 {
     const uint32_t maxMixedBatch = 11 * p.cubeCoreNum;
     const uint32_t mixedLaunches =
@@ -1660,9 +1661,10 @@ static void LaunchMixedRealifiedGemm(const CgemmRealifiedParams& p, const CgemmR
             plan.bPtr + static_cast<uint64_t>(batchBegin) * sizeof(void*),
             plan.cPtr + static_cast<uint64_t>(batchBegin) * sizeof(void*), plan.workspace, packTiling, gemmTiling);
     }
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
-static void LaunchSplitWideKRealifiedGemm(
+static aclblasStatus_t LaunchSplitWideKRealifiedGemm(
     const CgemmRealifiedParams& p, const CgemmRealifiedPlan& plan, const uint8_t* kernelA, const uint8_t* kernelB)
 {
     auto halfTiling = plan.gemmTiling;
@@ -1672,8 +1674,19 @@ static void LaunchSplitWideKRealifiedGemm(
     uint8_t* tempSlots = plan.workspace + 3 * plan.alignedPtrBytes;
     uint8_t* tempData =
         plan.workspace + 4 * plan.alignedPtrBytes + plan.perBatchABytes * static_cast<uint64_t>(p.batchCount);
-    gemm_batched_gemm_kernel_do(halfTiling.usedAicCoreNum, p.handle->stream, kernelA, kernelB, plan.cPtr, halfTiling);
-    gemm_batched_gemm_kernel_do(halfTiling.usedAicCoreNum, p.handle->stream, secondA, secondB, tempSlots, halfTiling);
+    // issue #1096: 主 GEMM kernel 的 launch 返回值不得丢弃，失败须显式上报
+    aclError launchRet = gemm_batched_gemm_kernel_do(
+        halfTiling.usedAicCoreNum, p.handle->stream, kernelA, kernelB, plan.cPtr, halfTiling);
+    if (launchRet != ACL_SUCCESS) {
+        OP_LOGE("aclblasCgemmBatched", "gemm kernel launch failed, ret=%d", static_cast<int>(launchRet));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
+    launchRet = gemm_batched_gemm_kernel_do(
+        halfTiling.usedAicCoreNum, p.handle->stream, secondA, secondB, tempSlots, halfTiling);
+    if (launchRet != ACL_SUCCESS) {
+        OP_LOGE("aclblasCgemmBatched", "gemm kernel launch failed, ret=%d", static_cast<int>(launchRet));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     GemmBatchedAlphaBetaTilingData addTiling{};
     addTiling.m = 2 * p.m;
     addTiling.n = p.n;
@@ -1688,21 +1701,28 @@ static void LaunchSplitWideKRealifiedGemm(
     addTiling.usedAivCoreNum = CalcAivCoreNum(p.aivCoreNum, static_cast<int64_t>(p.batchCount) * 2 * p.m * p.n);
     gemm_batched_alpha_beta_kernel_do(
         static_cast<uint32_t>(addTiling.usedAivCoreNum), p.handle->stream, tempData, plan.cPtr, addTiling);
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
-static void DispatchRealifiedGemm(const CgemmRealifiedParams& p, const CgemmRealifiedPlan& plan)
+static aclblasStatus_t DispatchRealifiedGemm(
+    const CgemmRealifiedParams& p, const CgemmRealifiedPlan& plan)
 {
     const uint8_t* kernelA =
         plan.packB ? plan.workspace + plan.alignedPtrBytes : reinterpret_cast<const uint8_t*>(p.bArray);
     const uint8_t* kernelB = plan.workspace;
     if (plan.useMixedTranspose) {
-        LaunchMixedRealifiedGemm(p, plan);
+        return LaunchMixedRealifiedGemm(p, plan);
     } else if (plan.splitWideK) {
-        LaunchSplitWideKRealifiedGemm(p, plan, kernelA, kernelB);
-    } else {
-        gemm_batched_gemm_kernel_do(
-            plan.gemmTiling.usedAicCoreNum, p.handle->stream, kernelA, kernelB, plan.cPtr, plan.gemmTiling);
+        return LaunchSplitWideKRealifiedGemm(p, plan, kernelA, kernelB);
     }
+    // issue #1096: 主 GEMM kernel 的 launch 返回值不得丢弃，失败须显式上报
+    aclError launchRet = gemm_batched_gemm_kernel_do(
+        plan.gemmTiling.usedAicCoreNum, p.handle->stream, kernelA, kernelB, plan.cPtr, plan.gemmTiling);
+    if (launchRet != ACL_SUCCESS) {
+        OP_LOGE("aclblasCgemmBatched", "gemm kernel launch failed, ret=%d", static_cast<int>(launchRet));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
 }
 
 static aclblasStatus_t LaunchCgemmRealified(
@@ -1743,7 +1763,10 @@ static aclblasStatus_t LaunchCgemmRealified(
     TuneTransposedAndChunkedGrid(params, plan);
     TuneLegacyRealifiedGrid(params, plan);
     ConfigureRealifiedBalancedSplit(params, plan);
-    DispatchRealifiedGemm(params, plan);
+    aclblasStatus_t dispatchRet = DispatchRealifiedGemm(params, plan);
+    if (dispatchRet != ACLBLAS_STATUS_SUCCESS) {
+        return dispatchRet;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 // issue #1028: 路径派发段（early-exit、核数校验与 direct/realified/main 三路下发）
