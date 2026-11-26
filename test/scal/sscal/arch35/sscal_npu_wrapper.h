@@ -41,9 +41,13 @@ inline aclblasStatus_t aclblasSscal_npu(
 
     aclblasStatus_t ret = aclblasSscal(handle, n, alpha, static_cast<float*>(dX), incx);
 
-    aclrtSynchronizeDevice();
-
-    aclrtMemcpy(x, xBytes, dX, xBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclrtSynchronizeDevice() != ACL_SUCCESS) {
+        ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+    } else if (ret == ACLBLAS_STATUS_SUCCESS) {
+        if (aclrtMemcpy(x, xBytes, dX, xBytes, ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+    }
     aclrtFree(dX);
 
     return ret;
