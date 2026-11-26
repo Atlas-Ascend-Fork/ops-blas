@@ -75,20 +75,48 @@ def read_records(output, expected):
     return params, metrics
 
 
-def summarize(output, cases_csv=HERE / "arch35/cher2_test.csv"):
-    expected = expected_cases(cases_csv)
-    tests = ET.parse(output / "accuracy.xml").getroot().findall(".//testcase")
-    names = [t.attrib["name"].split("/")[-1] for t in tests]
+def validate_accuracy_xml(xml, expected):
+    if not xml.is_file():
+        raise RuntimeError("accuracy.xml is missing")
+    try:
+        root = ET.parse(xml).getroot()
+        if any(int(root.attrib.get(key, 0)) != 0 for key in ("failures", "errors", "disabled", "skipped")):
+            raise RuntimeError("GTest XML reports failures, errors, disabled or skipped tests")
+    except ET.ParseError as exc:
+        raise RuntimeError(f"Failed to parse accuracy.xml: {exc}") from exc
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid GTest XML root counts: {exc}") from exc
+    tests = root.findall(".//testcase")
+    names = [t.attrib.get("name", "").split("/")[-1] for t in tests]
     if set(names) != expected or len(names) != len(expected):
         raise RuntimeError(
             f"Case set mismatch: expected {len(expected)}, got {len(names)}; "
             f"missing {sorted(expected - set(names))[:8]}"
         )
     if any(
-        t.find("failure") is not None or t.find("skipped") is not None or t.attrib.get("result") != "completed"
+        t.attrib.get("status") != "run"
+        or t.attrib.get("result") != "completed"
+        or t.find("failure") is not None
+        or t.find("error") is not None
+        or t.find("skipped") is not None
         for t in tests
     ):
-        raise RuntimeError("GTest contains failure, skip, or incomplete case")
+        raise RuntimeError("GTest contains failure, error, skip, or incomplete case")
+    return names
+
+
+def build_environment():
+    env = dict(os.environ)
+    for key in [key for key in env if key.startswith("GTEST_")]:
+        env.pop(key, None)
+    for key in ("CHER2_PROFILE", "CHER2_PROFILE_RANGE", "CHER2_PROFILE_SAMPLES", "BLAS_TEST_CASES"):
+        env.pop(key, None)
+    return env
+
+
+def summarize(output, cases_csv=HERE / "arch35/cher2_test.csv"):
+    expected = expected_cases(cases_csv)
+    names = validate_accuracy_xml(output / "accuracy.xml", expected)
     params, metrics = read_records(output, expected)
     rows = []
     for name in names:
@@ -132,16 +160,15 @@ def main():
     p.add_argument("--timeout", type=int, default=3600)
     p.add_argument("--summarize-only", action="store_true")
     a = p.parse_args()
+    if a.timeout <= 0:
+        p.error("--timeout must be a positive integer")
     a.output = a.output.resolve()
     a.output.mkdir(parents=True, exist_ok=True)
     expected_cases(HERE / "arch35/cher2_test.csv")
     if not a.summarize_only:
         xml = a.output / "accuracy.xml"
         xml.unlink(missing_ok=True)
-        env = dict(os.environ)
-        env.pop("CHER2_PROFILE", None)
-        env.pop("CHER2_PROFILE_RANGE", None)
-        env.pop("BLAS_TEST_CASES", None)
+        env = build_environment()
         with (a.output / "accuracy.log").open("w", encoding="utf-8") as f:
             subprocess.run(
                 [str(a.binary.resolve()), "--gtest_filter=-*Cher2RegressionTest*", "--gtest_output=xml:" + str(xml)],
