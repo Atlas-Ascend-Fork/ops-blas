@@ -88,8 +88,8 @@ def check_xml(path, expected):
                      or case.find("skipped") is not None for case in cases)
     record = {"expected_tests": len(expected), "executed_tests": len(cases),
               "failures": failures, "incomplete_tests": incomplete}
-    record["passed"] = not (failures or incomplete or any(int(root.get(key, -1)) != 0
-                                                          for key in ("failures", "errors", "disabled")))
+    record["passed"] = not (failures or incomplete or any(int(root.get(key, 0)) != 0
+                                                          for key in ("failures", "errors", "disabled", "skipped")))
     return record
 
 
