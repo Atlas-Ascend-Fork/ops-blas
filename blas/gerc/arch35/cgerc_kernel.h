@@ -12,7 +12,8 @@
 
 #include <cstdint>
 
+#include "acl/acl.h"
 #include "cgerc_tiling_data.h"
 
-void cgerc_arch35_kernel_do(
+aclError cgerc_arch35_kernel_do(
     uint8_t* x, uint8_t* y, uint8_t* a, const CgercTilingData& tiling, uint32_t numBlocks, void* stream);

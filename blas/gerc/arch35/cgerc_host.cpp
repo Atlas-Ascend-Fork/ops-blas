@@ -149,10 +149,14 @@ aclblasStatus_t LaunchCgercKernel(
         numBlocks, tiling.contiguous ? "contiguous" : "strided");
     OP_LOGI(OP_NAME, "launching kernel: blocks=%u cores=%u", numBlocks, aivCoreCount);
 
-    cgerc_arch35_kernel_do(
+    const aclError launchErr = cgerc_arch35_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)),
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(y)), reinterpret_cast<uint8_t*>(a), tiling, numBlocks,
         handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasCgerc", "cgerc_arch35_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
