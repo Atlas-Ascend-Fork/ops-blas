@@ -17,6 +17,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
 #include "cgbmv_kernel.h"
@@ -530,9 +531,11 @@ extern "C" __global__ __aicore__ void cgbmv_kernel(
     }
 }
 
-void cgbmv_kernel_do(
+aclError cgbmv_kernel_do(
     uint8_t* a, uint8_t* x, uint8_t* y, uint8_t* alphaGm, uint8_t* betaGm, uint32_t numBlocks,
     const CgbmvTilingData& tiling, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     cgbmv_kernel<<<numBlocks, nullptr, stream>>>(a, x, y, alphaGm, betaGm, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }

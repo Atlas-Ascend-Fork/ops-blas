@@ -16,9 +16,10 @@
 #pragma once
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "cgbmv_tiling_data.h"
 
 // alphaGm/betaGm: device pointers of alpha/beta when tiling.alphaIsDevice/betaIsDevice is set, otherwise nullptr.
-void cgbmv_kernel_do(
+aclError cgbmv_kernel_do(
     uint8_t* a, uint8_t* x, uint8_t* y, uint8_t* alphaGm, uint8_t* betaGm, uint32_t numBlocks,
     const CgbmvTilingData& tiling, void* stream);

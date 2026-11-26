@@ -32,15 +32,9 @@ static_assert(SIMT_MAX_THREAD_NUM % CGBMV_WARP_SIZE == 0, "block size must be a 
 static_assert(CGBMV_N_MAX_THREADS <= SIMT_MAX_THREAD_NUM, "trans-N block exceeds the SIMT block size limit");
 static_assert(CGBMV_N_MAX_THREADS % CGBMV_WARP_SIZE == 0, "trans-N block must hold whole warps");
 
-bool IsComplexZero(const aclblasComplex& c)
-{
-    return c.real == 0.0f && c.imag == 0.0f;
-}
+bool IsComplexZero(const aclblasComplex& c) { return c.real == 0.0f && c.imag == 0.0f; }
 
-bool IsComplexOne(const aclblasComplex& c)
-{
-    return c.real == 1.0f && c.imag == 0.0f;
-}
+bool IsComplexOne(const aclblasComplex& c) { return c.real == 1.0f && c.imag == 0.0f; }
 
 // Where a scalar argument lives. Host scalars are read once here; device scalars are forwarded to the kernel
 // untouched (no dereference, no D2H copy, no stream sync), which keeps the call asynchronous.
@@ -248,11 +242,15 @@ aclblasStatus_t LaunchCgbmvKernel(
         static_cast<long>(tiling.incx), static_cast<long>(tiling.incy));
     OP_LOGI("aclblasCgbmv", "launching kernel: numBlocks=%u aivCoreNum=%u", numBlocks, aivCoreNum);
 
-    cgbmv_kernel_do(
+    const aclError launchErr = cgbmv_kernel_do(
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(A)),
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(x)), reinterpret_cast<uint8_t*>(y),
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(alpha.devPtr)),
         reinterpret_cast<uint8_t*>(const_cast<aclblasComplex*>(beta.devPtr)), numBlocks, tiling, handle->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE("aclblasCgbmv", "cgbmv_kernel_do launch failed: %d", static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
