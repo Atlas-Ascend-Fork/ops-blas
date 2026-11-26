@@ -21,7 +21,7 @@
 #include "common/helper/host_utils.h"
 
 // ---- kernel entry (local declaration, replacing aclblas_kernel_do.h) ----
-void gemm_grouped_batched_kernel_do(
+aclError gemm_grouped_batched_kernel_do(
     uint8_t* tilingGm, uint8_t* groupParamsGm, uint8_t* aPtrArrayGm, uint8_t* bPtrArrayGm, uint8_t* cPtrArrayGm,
     uint32_t numBlocks, void* stream);
 
@@ -611,9 +611,15 @@ static aclblasStatus_t UploadScratchAndLaunchKernel(
         return ret;
     }
 
-    gemm_grouped_batched_kernel_do(
+    const aclError launchErr = gemm_grouped_batched_kernel_do(
         devPtrs.devTiling, devPtrs.devGroupParams, devPtrs.devAPtrArray, devPtrs.devBPtrArray, devPtrs.devCPtrArray,
         usedCoreNum, h->stream);
+    if (launchErr != ACL_SUCCESS) {
+        OP_LOGE(
+            "aclblasGemmGroupedBatched", "gemm_grouped_batched_kernel_do launch failed: %d",
+            static_cast<int>(launchErr));
+        return ACLBLAS_STATUS_EXECUTION_FAILED;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
