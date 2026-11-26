@@ -99,10 +99,12 @@ inline aclblasStatus_t aclblasSger_npu(
         handle, m, n, alpha, static_cast<const float*>(dX), incx, static_cast<float*>(dY), incy,
         static_cast<float*>(dA), lda);
 
-    aclrtSynchronizeDevice();
-
-    if (ret == ACLBLAS_STATUS_SUCCESS && A != nullptr && dA != nullptr) {
-        aclrtMemcpy(A, aBytes, dA, aBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclrtSynchronizeDevice() != ACL_SUCCESS) {
+        ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+    } else if (ret == ACLBLAS_STATUS_SUCCESS && A != nullptr && dA != nullptr) {
+        if (aclrtMemcpy(A, aBytes, dA, aBytes, ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
     }
 
     if (dA)
