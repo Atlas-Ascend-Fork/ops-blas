@@ -9,6 +9,7 @@
  */
 
 #include <cstdint>
+#include "acl/acl.h"
 #include "cann_ops_blas_common.h"
 #include "kernel_operator.h"
 #include "simt_api/asc_simt.h"
@@ -124,7 +125,9 @@ __global__ __aicore__ void syr_kernel(GM_ADDR x, GM_ADDR A, const SyrTilingData 
     }
 }
 
-void syr_kernel_do(GM_ADDR x, GM_ADDR A, const SyrTilingData& tiling, uint32_t numBlocks, void* stream)
+aclError syr_kernel_do(GM_ADDR x, GM_ADDR A, const SyrTilingData& tiling, uint32_t numBlocks, void* stream)
 {
+    (void)aclrtGetLastError(ACL_RT_THREAD_LEVEL);
     syr_kernel<<<numBlocks, nullptr, stream>>>(x, A, tiling);
+    return aclrtGetLastError(ACL_RT_THREAD_LEVEL);
 }
