@@ -36,12 +36,17 @@ def read_cases():
     return rows
 
 
-def clean_environment():
-    env = os.environ.copy()
-    for key in ("BLAS_TEST_CASES", "GTEST_FILTER", "GTEST_TOTAL_SHARDS", "GTEST_SHARD_INDEX",
-                "GTEST_REPEAT", "GTEST_ALSO_RUN_DISABLED_TESTS", "CHPMV_PROFILE_REPEAT"):
+def build_environment():
+    env = dict(os.environ)
+    for key in [key for key in env if key.startswith("GTEST_")]:
+        env.pop(key, None)
+    for key in ("BLAS_TEST_CASES", "CHPMV_PROFILE_REPEAT"):
         env.pop(key, None)
     return env
+
+
+def clean_environment():
+    return build_environment()
 
 
 def run_logged(command, log, env, timeout):
@@ -118,6 +123,8 @@ def executed_records(path, expected):
     names = [item.get("classname", "") + "." + item.get("name", "") for item in cases]
     if int(root.get("tests", "-1")) != len(cases) or Counter(names) != Counter(expected):
         raise ValueError("Executed test names do not exactly match the expected list")
+    if any(int(root.get(key, 0)) != 0 for key in ("failures", "errors", "disabled", "skipped")):
+        raise ValueError("GTest XML reports failures, errors, disabled or skipped tests")
     records = []
     for name, item in zip(names, cases):
         if item.get("status") != "run" or item.get("result") != "completed":
