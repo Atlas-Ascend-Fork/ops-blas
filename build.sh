@@ -12,6 +12,7 @@
 set -e
 
 BUILD_OPS=""
+OPS_EXPLICIT=FALSE
 RUN_TEST=OFF
 ENABLE_PACKAGE=FALSE
 SOC_EXPLICIT=FALSE
@@ -77,15 +78,18 @@ for arg in "$@"; do
     case $arg in
         --ops=*)
             BUILD_OPS="${arg#*=}"
+            OPS_EXPLICIT=TRUE
             ;;
         --run)
             RUN_TEST=ON
             ;;
         --soc=*)
             SOC_VERSION="${arg#*=}"
-            if [ -n "${SOC_VERSION}" ]; then
-                SOC_EXPLICIT=TRUE
+            if [ -z "${SOC_VERSION}" ]; then
+                print_error "--soc requires a non-empty SoC version"
+                exit 1
             fi
+            SOC_EXPLICIT=TRUE
             ;;
         --pkg)
             ENABLE_PACKAGE=TRUE
@@ -125,6 +129,20 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+if [ "${OPS_EXPLICIT}" == "TRUE" ]; then
+    IFS=',' read -ra _raw_ops <<< "${BUILD_OPS}"
+    _filtered_ops=""
+    for _op in "${_raw_ops[@]}"; do
+        [ -n "${_op}" ] || continue
+        _filtered_ops="${_filtered_ops:+${_filtered_ops},}${_op}"
+    done
+    if [ -z "${_filtered_ops}" ]; then
+        print_error "--ops requires at least one non-empty operator name"
+        exit 1
+    fi
+    BUILD_OPS="${_filtered_ops}"
+fi
 
 normalize_nonneg_int() {
     local raw="$1"
