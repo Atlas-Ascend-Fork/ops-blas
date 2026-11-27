@@ -524,12 +524,26 @@ aclblasStatus_t aclblasCrot(
 
 **Atlas A2 / Atlas A3 系列产品（arch22）：**
 
-- 支持（随本任务新增实现）：n == 0 快速返回 `ACLBLAS_STATUS_SUCCESS`；n < 0 返回 `ACLBLAS_STATUS_INVALID_VALUE`；n > 0 时 x、y、c、s 不能为 nullptr，否则返回 `ACLBLAS_STATUS_INVALID_VALUE`
-- 步长语义：非零正/负步长生效（负步长自向量尾端起算，见 stride 回归用例）；incx/incy 为 0 或 INT32_MIN 时返回 `ACLBLAS_STATUS_INVALID_VALUE`（与 arch35 的放行口径不同，属已声明的 per-arch 差异，issue #827）
-- 当 (n-1)*|stride| 的乘积超出 int32 表示范围时返回 `ACLBLAS_STATUS_INVALID_VALUE`（host 侧 int64 计算守卫，issue #866）
-- 语义与 aclblasCsrot 的差异同 arch35：s 为复数且 y 的更新使用 s 的共轭 `conj(s)`
-- 精度标准：COMPLEX64（实部/虚部分别按 FP32 判定，`atol = rtol = 2^-13`，`required_matched_ratio = 0.99`）
-- 性能标准（A2/A3，kernel 平均单次耗时，对标 A100 基线 / 0.8 倍率）：n=1048576 ≤ 24us，n=2097152 ≤ 57us，n=4194304 ≤ 109us
+- 按以下顺序校验：handle 为空返回 `ACLBLAS_STATUS_HANDLE_IS_NULLPTR`；n < 0 返回
+  `ACLBLAS_STATUS_INVALID_VALUE`；n == 0 返回成功，不访问其他指针或检查步长。
+- n > 0 时 x、y、c、s 均须非空；incx/incy 为 0 或 INT32_MIN 时返回
+  `ACLBLAS_STATUS_INVALID_VALUE`。Host 用 int64 计算 `(n-1)*abs(inc)`，
+  超出 INT32_MAX 同样返回该错误码。这些限制与 arch35 的负 n、零步长语义有区别。
+- 支持非零正负步长，负步长从对应物理跨度尾部起算。x/y 分别原地更新，
+  两个结果均使用旋转前的输入；步长间隙保持原值。调用方提供互不重叠的 x/y 存储区域。
+- c/s 的位置分别通过 `aclrtPointerGetAttributes` 判断，支持 Host、Device 及两种混合组合。
+  Host 标量按值下发，Device 标量由 kernel 在 handle 绑定的 stream 上读取。
+  API 不分配 workspace、不进行 stream 同步；读取输出和释放 Device 参数前由调用方同步。
+- 连续路径以 2048 个复数为 tile，双缓冲搬运，使用向量指令计算；核间按完整 tile 分配。
+  每个 tile 以 16×8 FLOAT32 块转置整理实部/虚部，掩码计算后逆转置，UB 共 160 KiB；
+  保留独立乘法和加减的 FLOAT32 舍入顺序。
+  跨步路径按逻辑索引读取原值并逐元素写回；非对齐基址及跨步场景使用单核避免 DMA 写入粒度重叠。
+- 实部、虚部分别使用 FLOAT32 混合容差：atol = rtol = 2^-13、匹配比例至少 0.99，
+  且逐元素误差不超过 max(1e-2, 32×ULP)。非有限值单独统计：NaN/NaN、同号 Inf/Inf、
+  NaN/Inf 等效；有限/非有限或异号 Inf 不等效。
+- 性能验收在 910B3 上使用 msprof op 的 Task Duration(us)，5 次预热后取至少 10 次有效采样均值，
+  每条不超过对应 GPU 标杆的 1.25 倍。实现和测试步骤见
+  [A2/A3 自验证说明](../../test/rot/crot/arch22/README.md)。910B3 自验证结果为 200/200 条性能用例通过。
 
 #### 调用示例
 

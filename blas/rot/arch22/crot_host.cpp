@@ -8,138 +8,124 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-/*!
- * \file crot_host.cpp
- * \brief Host-side API for BLAS Level-1 complex Givens plane rotation: aclblasCrot.
- *        Arch22 (Atlas A2/A3) implementation.
- *
- *        Applies the rotation to complex64 vectors x and y in place:
- *            x[k] = c*x[k] + s*y[j]
- *            y[j] = c*y[j] - conj(s)*x[k]   (pre-rotation x[k])
- *
- *        incx==incy==1 dispatches to the contiguous SIMD kernel; every other
- *        stride combination (|inc|>1 or negative) goes to the strided scalar kernel.
- *
- *        Boundary contract follows the task book (sections 2.4 and 2.5) for the
- *        arch22 family: handle==nullptr returns HANDLE_IS_NULLPTR, n<0 returns
- *        INVALID_VALUE, n==0 short-circuits to SUCCESS without touching x/y, and
- *        zero / INT32_MIN strides are rejected (INVALID_VALUE). This is the declared
- *        per-arch difference from the arch35 (950PR) implementation, which accepts
- *        n<=0 and zero strides (issue #827).
- */
-
+#include <algorithm>
 #include <climits>
 #include <cstdint>
 #include "acl/acl.h"
 #include "cann_ops_blas.h"
-#include "crot_tiling_data.h"
 #include "common/helper/aclblas_handle_internal.h"
 #include "common/helper/host_utils.h"
+#include "crot_tiling_data.h"
 
 aclError crot_kernel_do(
-    uint8_t* x, uint8_t* y, int32_t elementCount, int32_t incx, int32_t incy, float cosValue, float sinRe, float sinIm,
-    uint32_t numBlocks, void* stream);
+    uint8_t* x, uint8_t* y, const uint8_t* c, const uint8_t* s, CrotTilingData tiling, uint32_t blocks, void* stream);
 
-// Validation order is part of the observable contract (task book section 2.5):
-//   handle -> n<0 -> n==0 (quick return) -> x/y/c/s null -> incx/incy -> span overflow.
-// The handle check must precede the n==0 quick return (issue #765/#861).
-static aclblasStatus_t ValidateCrotInputs(
-    aclblasHandle_t handle, int n, const aclblasComplex* x, const aclblasComplex* y, const float* c,
-    const aclblasComplex* s, int incx, int incy)
+static bool CrotValidStride(int n, int inc, const char* name)
 {
-    if (handle == nullptr) {
-        OP_LOGE("aclblasCrot", "handle is nullptr");
-        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    if (inc == 0) {
+        OP_LOGE("aclblasCrot", "%s=%d must be non-zero when n > 0", name, inc);
+        return false;
     }
-    if (n < 0) {
-        OP_LOGE("aclblasCrot", "n must be non-negative, got n=%d", n);
-        return ACLBLAS_STATUS_INVALID_VALUE;
+    if (inc == INT32_MIN) {
+        OP_LOGE("aclblasCrot", "%s=%d must not be INT32_MIN when n > 0", name, inc);
+        return false;
     }
-    if (n == 0) {
-        return ACLBLAS_STATUS_SUCCESS;
-    }
-    if (x == nullptr || y == nullptr) {
-        OP_LOGE("aclblasCrot", "x/y must not be nullptr");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    if (c == nullptr || s == nullptr) {
-        OP_LOGE("aclblasCrot", "c/s must not be nullptr");
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    // issue #827: zero / INT32_MIN strides are rejected on arch22 (declared per-arch
-    // difference from arch35, which accepts them).
-    if (incx == 0 || incx == INT_MIN || incy == 0 || incy == INT_MIN) {
-        OP_LOGE("aclblasCrot", "incx/incy must be non-zero and not INT_MIN, got incx=%d incy=%d", incx, incy);
-        return ACLBLAS_STATUS_INVALID_VALUE;
-    }
-    // issue #866: (n-1)*|inc| must fit in int32, checked in int64 on the host so the
-    // kernel-side address offset cannot overflow.
-    const int64_t absIncX = (incx < 0) ? -static_cast<int64_t>(incx) : static_cast<int64_t>(incx);
-    const int64_t absIncY = (incy < 0) ? -static_cast<int64_t>(incy) : static_cast<int64_t>(incy);
-    const int64_t lastX = static_cast<int64_t>(n - 1) * absIncX;
-    const int64_t lastY = static_cast<int64_t>(n - 1) * absIncY;
-    if (lastX > INT32_MAX || lastY > INT32_MAX) {
+    const int64_t magnitude = inc < 0 ? -static_cast<int64_t>(inc) : inc;
+    const int64_t span = static_cast<int64_t>(n - 1) * magnitude;
+    if (span > INT32_MAX) {
         OP_LOGE(
-            "aclblasCrot", "strided offset overflow: n=%d incx=%d incy=%d lastX=%lld lastY=%lld", n, incx, incy,
-            static_cast<long long>(lastX), static_cast<long long>(lastY));
-        return ACLBLAS_STATUS_INVALID_VALUE;
+            "aclblasCrot", "n=%d, %s=%d: (n-1)*abs(%s)=%lld exceeds INT32_MAX=%d", n, name, inc, name,
+            static_cast<long long>(span), INT32_MAX);
+        return false;
     }
-    // The kernel works in float units: the element count is 2*n (complex64 = 2 floats) and the
-    // largest float index is 2*n-1. Reject n > INT32_MAX/2 here so 2*n cannot overflow the
-    // int32 elementCount handed to the kernel; without this the kernel would see a negative
-    // count, take the "nothing to do" early return and report SUCCESS while leaving x/y
-    // unrotated.
-    if (n > INT32_MAX / 2) {
-        OP_LOGE("aclblasCrot", "n too large: n=%d exceeds INT32_MAX/2", n);
-        return ACLBLAS_STATUS_INVALID_VALUE;
+    return true;
+}
+
+static bool CrotValidPointer(const void* pointer, const char* name)
+{
+    if (pointer == nullptr) {
+        OP_LOGE("aclblasCrot", "%s is nullptr; must be non-null when n > 0", name);
+        return false;
+    }
+    return true;
+}
+
+static CrotTilingData CrotMakeTiling(
+    int n, int incx, int incy, const float* c, const aclblasComplex* s, bool cDevice, bool sDevice)
+{
+    CrotTilingData tiling{};
+    tiling.n = static_cast<uint32_t>(n);
+    tiling.incx = incx;
+    tiling.incy = incy;
+    tiling.c = cDevice ? 0.0f : *c;
+    tiling.sr = sDevice ? 0.0f : s->real;
+    tiling.si = sDevice ? 0.0f : s->imag;
+    return tiling;
+}
+
+static aclblasStatus_t CrotGetBlockCount(
+    const aclblasComplex* x, const aclblasComplex* y, const CrotTilingData& tiling, uint32_t& blocks)
+{
+    blocks = 1;
+    // Whole tiles make all inter-core boundaries 32B aligned. Unaligned views
+    // and strided writes use one core to avoid overlapping DMA write units.
+    const bool aligned = ((reinterpret_cast<uintptr_t>(x) | reinterpret_cast<uintptr_t>(y)) & 31U) == 0;
+    if (tiling.incx == 1 && tiling.incy == 1 && aligned) {
+        const uint32_t cores = GetAivCoreCount();
+        if (cores == 0) {
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+        blocks = std::min(cores, (tiling.n + CROT_TILE_COMPLEX - 1) / CROT_TILE_COMPLEX);
     }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-extern "C" aclblasStatus_t aclblasCrot(
+aclblasStatus_t aclblasCrot(
     aclblasHandle_t handle, int n, aclblasComplex* x, int incx, aclblasComplex* y, int incy, const float* c,
     const aclblasComplex* s)
 {
-    const aclblasStatus_t inputStatus = ValidateCrotInputs(handle, n, x, y, c, s, incx, incy);
-    if (inputStatus != ACLBLAS_STATUS_SUCCESS) {
-        return inputStatus;
+    // arch22 task contract: handle -> negative n -> quick return -> remaining arguments.
+    if (handle == nullptr) {
+        OP_LOGE("aclblasCrot", "handle is nullptr; a valid handle is required");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    if (n < 0) {
+        OP_LOGE("aclblasCrot", "n=%d must be non-negative", n);
+        return ACLBLAS_STATUS_INVALID_VALUE;
     }
     if (n == 0) {
-        // Quick return: no allocation or launch.
         return ACLBLAS_STATUS_SUCCESS;
     }
-
-    auto* h = handle;
-    aclrtStream useStream = h->stream;
-
-    // Resolve c and s. c is a float scalar; s is complex64. Both may be host or device
-    // pointers, queried via aclrtPointerGetAttributes (host dereference / async D2H).
-    float cHost = 0.0f;
-    aclblasStatus_t readSt = ReadScalarFromHostOrDevice(c, useStream, cHost);
-    if (readSt != ACLBLAS_STATUS_SUCCESS) {
-        return readSt;
-    }
-    aclblasComplex sHost{0.0f, 0.0f};
-    readSt = ReadScalarFromHostOrDevice(s, useStream, sHost);
-    if (readSt != ACLBLAS_STATUS_SUCCESS) {
-        return readSt;
+    if (!CrotValidStride(n, incx, "incx") || !CrotValidStride(n, incy, "incy") || !CrotValidPointer(x, "x") ||
+        !CrotValidPointer(y, "y") || !CrotValidPointer(c, "c") || !CrotValidPointer(s, "s")) {
+        return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
-    // The kernel addresses interleaved floats, so the element count is 2*n (the same
-    // convention as the sibling arch22 csrot). The scalars travel as kernel parameters,
-    // so no tiling GM buffer (and no per-call malloc / memcpy / free) is needed.
-    const int32_t elementCount = static_cast<int32_t>(n) * 2;
-
-    uint32_t numBlocks = GetAivCoreCount();
-    if (numBlocks == 0) {
-        numBlocks = 8;
+    bool cDevice = false;
+    bool sDevice = false;
+    auto status = CheckPtrLocation(c, &cDevice);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    status = CheckPtrLocation(s, &sDevice);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
     }
 
-    // Asynchronous, like the other BLAS level-1 entry points: the kernel is enqueued on the
-    // handle stream and the caller synchronizes before reading results. No stream sync here.
+    const CrotTilingData tiling = CrotMakeTiling(n, incx, incy, c, s, cDevice, sDevice);
+
+    uint32_t blocks = 1;
+    status = CrotGetBlockCount(x, y, tiling, blocks);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+
+    // Host values travel by value in the launch arguments. Device values are
+    // read by the kernel after earlier work in handle->stream, with no D2H sync.
     const aclError launchErr = crot_kernel_do(
-        reinterpret_cast<uint8_t*>(x), reinterpret_cast<uint8_t*>(y), elementCount, incx, incy, cHost, sHost.real,
-        sHost.imag, numBlocks, useStream);
+        reinterpret_cast<uint8_t*>(x), reinterpret_cast<uint8_t*>(y),
+        cDevice ? reinterpret_cast<const uint8_t*>(c) : nullptr,
+        sDevice ? reinterpret_cast<const uint8_t*>(s) : nullptr, tiling, blocks, handle->stream);
     if (launchErr != ACL_SUCCESS) {
         OP_LOGE("aclblasCrot", "crot_kernel_do launch failed: %d", static_cast<int>(launchErr));
         return ACLBLAS_STATUS_EXECUTION_FAILED;
