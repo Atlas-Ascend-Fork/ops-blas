@@ -29,12 +29,20 @@ constexpr uint32_t K_TILE_MAX = 256;
 constexpr uint32_t FP32_ALIGN = GEMM_GROUPED_FP32_ALIGN;
 constexpr uint32_t UB_BYTES = GEMM_GROUPED_UB_SIZE;
 constexpr uint32_t BUF_ALIGN = 256u;
+// issue #1312: 维度预饱和界（元素数）——任一对齐维度超过该界时，对应 tile buffer
+// 尺寸必然超出 UB_BYTES，候选必然不拟合；乘法前先饱和，杜绝超大维度乘法回绕
+// （uint32 乘法回绕使拟合判定误通过、tile 被定为全维巨值而 buffer 尺寸记录为 0）
+constexpr uint64_t UB_DIM_SAT = static_cast<uint64_t>(UB_BYTES) / sizeof(float) + 1ULL;
+
+static uint64_t SatTileDim(uint32_t dim) { return std::min<uint64_t>(dim, UB_DIM_SAT); }
+
+static uint64_t AlignedSatTileDim(uint32_t dim) { return CeilAlign<uint64_t>(SatTileDim(dim), FP32_ALIGN); }
 
 static uint32_t MinGemmTileBufSize() { return CeilAlign<uint32_t>(FP32_ALIGN * FP32_ALIGN * sizeof(float), BUF_ALIGN); }
 
-static uint32_t CeilAlignTileMNBuf(uint32_t tM_a, uint32_t tN_a)
+static uint64_t CeilAlignTileMNBuf(uint64_t tM_a, uint64_t tN_a)
 {
-    return CeilAlign<uint32_t>(tM_a * tN_a * sizeof(float), BUF_ALIGN);
+    return CeilAlign<uint64_t>(tM_a * tN_a * sizeof(float), BUF_ALIGN);
 }
 
 static void AssignGroupParamBufSizes(
@@ -272,20 +280,38 @@ static aclblasStatus_t ValidateGroupParams(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
+// issue #1312: A/B/C tile buffer 尺寸改按 uint64 计算（维度乘法前按 UB_DIM_SAT
+// 预饱和），消除 tM*tK / tM*tN 乘积 ≥ 2^32 时的 uint32 回绕；总尺寸超 uint32 域
+// 时各尺寸与返回值均饱和为 UINT32_MAX（必然大于 UB_BYTES，被拟合搜索拒绝），
+// 拟合通过的候选（总尺寸 ≤ UB_BYTES）输出精确值
 static uint32_t ComputeBufSizes(
     uint32_t tM, uint32_t tK, uint32_t tN, uint32_t& szA, uint32_t& szB, uint32_t& szC, uint32_t& szCIn,
     uint32_t& szMul, uint32_t& szVec)
 {
-    uint32_t tM_a = CeilAlign<uint32_t>(tM, FP32_ALIGN);
-    uint32_t tK_a = CeilAlign<uint32_t>(tK, FP32_ALIGN);
-    uint32_t tN_a = CeilAlign<uint32_t>(tN, FP32_ALIGN);
-    szA = CeilAlign<uint32_t>(tM_a * tK_a * sizeof(float), BUF_ALIGN);
-    szB = CeilAlign<uint32_t>(tK_a * tN_a * sizeof(float), BUF_ALIGN);
-    szC = CeilAlignTileMNBuf(tM_a, tN_a);
-    szCIn = CeilAlignTileMNBuf(tM_a, tN_a);
-    szMul = CeilAlignTileMNBuf(tM_a, tN_a);
-    szVec = CeilAlign<uint32_t>(std::max(tM_a, tK_a) * sizeof(float), BUF_ALIGN);
-    return szA + szB + szC + szCIn + szMul + szVec;
+    const uint64_t tM_a = AlignedSatTileDim(tM);
+    const uint64_t tK_a = AlignedSatTileDim(tK);
+    const uint64_t tN_a = AlignedSatTileDim(tN);
+    const uint64_t szA64 = CeilAlign<uint64_t>(tM_a * tK_a * sizeof(float), BUF_ALIGN);
+    const uint64_t szB64 = CeilAlign<uint64_t>(tK_a * tN_a * sizeof(float), BUF_ALIGN);
+    const uint64_t szMn64 = CeilAlignTileMNBuf(tM_a, tN_a);
+    const uint64_t szVec64 = CeilAlign<uint64_t>(std::max(tM_a, tK_a) * sizeof(float), BUF_ALIGN);
+    const uint64_t total64 = szA64 + szB64 + szMn64 * 3ULL + szVec64;
+    if (total64 > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
+        szA = std::numeric_limits<uint32_t>::max();
+        szB = std::numeric_limits<uint32_t>::max();
+        szC = std::numeric_limits<uint32_t>::max();
+        szCIn = std::numeric_limits<uint32_t>::max();
+        szMul = std::numeric_limits<uint32_t>::max();
+        szVec = std::numeric_limits<uint32_t>::max();
+        return std::numeric_limits<uint32_t>::max();
+    }
+    szA = static_cast<uint32_t>(szA64);
+    szB = static_cast<uint32_t>(szB64);
+    szC = static_cast<uint32_t>(szMn64);
+    szCIn = static_cast<uint32_t>(szMn64);
+    szMul = static_cast<uint32_t>(szMn64);
+    szVec = static_cast<uint32_t>(szVec64);
+    return static_cast<uint32_t>(total64);
 }
 
 static GroupParam InitGroupParamCommonFields(
@@ -313,15 +339,15 @@ static GroupParam InitGroupParamCommonFields(
 
 static void SearchBetaOnlyTileSizes(uint32_t mVal, uint32_t nVal, uint32_t& bestTM, uint32_t& bestTN)
 {
-    const uint32_t minBuf = MinGemmTileBufSize();
+    const uint64_t minBuf = MinGemmTileBufSize();
     SearchTileSizesInUb(
         mVal, nVal,
         [&](uint32_t tM, uint32_t tN) {
-            uint32_t tM_a = CeilAlign<uint32_t>(tM, FP32_ALIGN);
-            uint32_t tN_a = CeilAlign<uint32_t>(tN, FP32_ALIGN);
-            uint32_t mnBuf = CeilAlignTileMNBuf(tM_a, tN_a);
-            uint32_t szVec = CeilAlign<uint32_t>(tM_a * sizeof(float), BUF_ALIGN);
-            return minBuf + minBuf + mnBuf + mnBuf + mnBuf + szVec <= UB_BYTES;
+            const uint64_t tM_a = AlignedSatTileDim(tM);
+            const uint64_t tN_a = AlignedSatTileDim(tN);
+            const uint64_t mnBuf = CeilAlignTileMNBuf(tM_a, tN_a);
+            const uint64_t szVec = CeilAlign<uint64_t>(tM_a * sizeof(float), BUF_ALIGN);
+            return minBuf + minBuf + mnBuf * 3ULL + szVec <= UB_BYTES;
         },
         bestTM, bestTN);
 }
