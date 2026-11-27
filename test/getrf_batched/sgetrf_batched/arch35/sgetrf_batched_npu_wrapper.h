@@ -127,19 +127,21 @@ static aclblasStatus_t AllocatePivotAndInfo(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-static void CopyResultsD2H(
+static bool CopyResultsD2H(
     float* const Aarray[], int* PivotArray, int* infoArray, const GetrfDeviceBuffers& bufs, int batchSize,
     size_t matBytes, size_t pivotBytes, size_t infoBytes)
 {
     for (int b = 0; b < batchSize; b++) {
-        if (Aarray[b] != nullptr) {
-            aclrtMemcpy(Aarray[b], matBytes, bufs.dMatrices[b], matBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+        if (Aarray[b] != nullptr &&
+            aclrtMemcpy(Aarray[b], matBytes, bufs.dMatrices[b], matBytes, ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+            return false;
         }
     }
-    if (PivotArray != nullptr && bufs.dPivot != nullptr) {
-        aclrtMemcpy(PivotArray, pivotBytes, bufs.dPivot, pivotBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (PivotArray != nullptr && bufs.dPivot != nullptr &&
+        aclrtMemcpy(PivotArray, pivotBytes, bufs.dPivot, pivotBytes, ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+        return false;
     }
-    aclrtMemcpy(infoArray, infoBytes, bufs.dInfo, infoBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    return aclrtMemcpy(infoArray, infoBytes, bufs.dInfo, infoBytes, ACL_MEMCPY_DEVICE_TO_HOST) == ACL_SUCCESS;
 }
 
 inline aclblasStatus_t aclblasSgetrfBatched_npu(
@@ -173,10 +175,11 @@ inline aclblasStatus_t aclblasSgetrfBatched_npu(
         static_cast<int*>(bufs.dInfo), batchSize);
 
     auto* h = handle;
-    aclrtSynchronizeStream(h->stream);
-
-    if (ret == ACLBLAS_STATUS_SUCCESS) {
-        CopyResultsD2H(Aarray, PivotArray, infoArray, bufs, batchSize, matBytes, pivotBytes, infoBytes);
+    if (aclrtSynchronizeStream(h->stream) != ACL_SUCCESS) {
+        ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+    } else if (ret == ACLBLAS_STATUS_SUCCESS &&
+               !CopyResultsD2H(Aarray, PivotArray, infoArray, bufs, batchSize, matBytes, pivotBytes, infoBytes)) {
+        ret = ACLBLAS_STATUS_INTERNAL_ERROR;
     }
 
     bufs.Cleanup();
