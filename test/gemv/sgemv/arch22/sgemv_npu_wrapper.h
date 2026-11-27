@@ -151,8 +151,8 @@ inline aclblasStatus_t aclblasSgemv_npu(
             handle, trans, m, n, alpha, dA ? static_cast<const float*>(dA->ptr()) : nullptr, lda,
             dX ? static_cast<const float*>(dX->ptr()) : nullptr, incx, beta,
             dY ? static_cast<float*>(dY->ptr()) : nullptr, incy);
-        if (status == ACLBLAS_STATUS_SUCCESS && dY) {
-            aclrtSynchronizeDevice();
+        if (status == ACLBLAS_STATUS_SUCCESS && dY && aclrtSynchronizeDevice() != ACL_SUCCESS) {
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
         }
         return status;
     }
