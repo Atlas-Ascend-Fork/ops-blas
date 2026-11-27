@@ -58,8 +58,9 @@ static inline void CopySsymmResultD2H(aclblasHandle handle, float* C, void* dC, 
     }
     aclrtStream stream = nullptr;
     aclblasGetStream(handle, &stream);
-    if (stream != nullptr) {
-        aclrtSynchronizeStream(stream);
+    if (stream != nullptr && aclrtSynchronizeStream(stream) != ACL_SUCCESS) {
+        ret = ACLBLAS_STATUS_EXECUTION_FAILED;
+        return;
     }
     aclError memcpyRet = aclrtMemcpy(C, cBytes, dC, cBytes, ACL_MEMCPY_DEVICE_TO_HOST);
     if (memcpyRet != ACL_SUCCESS) {
