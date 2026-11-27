@@ -128,6 +128,8 @@ def sanitizer_result(text):
 
 def check_xml(xml, case):
     root = ET.parse(xml).getroot()
+    if any(int(root.get(key, 0)) != 0 for key in ("failures", "errors", "disabled", "skipped")):
+        raise ValueError("GTest XML reports failures, errors, disabled or skipped tests")
     tests = root.findall(".//testcase")
     actual = [test.get("classname", "") + "." + test.get("name", "") for test in tests]
     expected = f"{SUITE}/{SUITE}Test.CsvDriven/{case}"
