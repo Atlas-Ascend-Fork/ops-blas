@@ -266,7 +266,10 @@ inline aclblasStatus_t aclblasLtMatmul_npu(
         size_t dBytes = static_cast<size_t>(M) * ldd * dElemSize;
         aclError aclRet = aclrtMalloc(&ctx.dD, dBytes, ACL_MEM_MALLOC_HUGE_FIRST);
         if (aclRet != ACL_SUCCESS) { destroyNpuContext(ctx); return ACLBLAS_STATUS_ALLOC_FAILED; }
-        aclrtMemset(ctx.dD, dBytes, 0, dBytes);
+        if (aclrtMemset(ctx.dD, dBytes, 0, dBytes) != ACL_SUCCESS) {
+            destroyNpuContext(ctx);
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
     }
 
     // Algorithm selection
@@ -312,13 +315,15 @@ inline aclblasStatus_t aclblasLtMatmul_npu(
         ctx.dWorkspace, ctx.workspaceSize, stream);
 
     // Sync and copy result
-    if (stream != nullptr) { aclrtSynchronizeStream(stream); }
-    else { aclrtSynchronizeDevice(); }
-
-    if (D_host != nullptr && ctx.dD != nullptr && M > 0 && N > 0 && ret == ACLBLAS_STATUS_SUCCESS) {
+    aclError syncRet = (stream != nullptr) ? aclrtSynchronizeStream(stream) : aclrtSynchronizeDevice();
+    if (syncRet != ACL_SUCCESS) {
+        ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+    } else if (D_host != nullptr && ctx.dD != nullptr && M > 0 && N > 0 && ret == ACLBLAS_STATUS_SUCCESS) {
         size_t dElemSize = dtypeElementSize(dtypeD);
         size_t dBytes = static_cast<size_t>(M) * ldd * dElemSize;
-        aclrtMemcpy(D_host, dBytes, ctx.dD, dBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+        if (aclrtMemcpy(D_host, dBytes, ctx.dD, dBytes, ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
     }
 
     destroyNpuContext(ctx);
