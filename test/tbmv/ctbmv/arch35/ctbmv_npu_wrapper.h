@@ -61,8 +61,13 @@ inline aclblasStatus_t aclblasCtbmv_npu(
         handle, uplo, trans, diag, n, k,
         static_cast<const aclblasComplex*>(dA), lda, static_cast<aclblasComplex*>(dX), incx);
 
-    aclrtSynchronizeDevice();
-    aclrtMemcpy(x, xBytes, dX, xBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclrtSynchronizeDevice() != ACL_SUCCESS) {
+        ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+    } else if (ret == ACLBLAS_STATUS_SUCCESS) {
+        if (aclrtMemcpy(x, xBytes, dX, xBytes, ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+    }
 
     aclrtFree(dA);
     aclrtFree(dX);
