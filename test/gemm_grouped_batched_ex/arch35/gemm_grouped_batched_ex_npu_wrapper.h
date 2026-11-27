@@ -237,7 +237,9 @@ inline aclblasStatus_t aclblasGemmGroupedBatchedEx_npu(
         mArray, nArray, kArray, scales, Atype, ldaArray, Btype, ldbArray,
         Ctype, ldcArray, groupCount, groupSize, computeType, dA, dB, dC);
 
-    aclrtSynchronizeDevice();
+    if (aclrtSynchronizeDevice() != ACL_SUCCESS) {
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
 
     for (int g = 0; g < groupCount; g++) {
         CopyDeviceResultsForGroup(g, mArray, nArray, cHostRaw, Ctype, ldcArray, groupSize, dC);
