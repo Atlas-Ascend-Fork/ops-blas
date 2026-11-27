@@ -538,6 +538,39 @@ aclblasStatus_t aclblasCtpttr(
 aclblasStatus_t aclblasStrttp(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* A, int lda, float* AP);
 
+/**
+ * @brief 将三角矩阵转换为紧凑向量（Triangular matrix to packed format，复数单精度）。
+ *
+ * 将上三角或下三角矩阵 A 按列主序（column-major）打包到一维数组 AP 中。
+ * 该函数为 BLAS 标准例程 CTRTTP 的 CANN 封装。
+ *
+ * @param[in]  handle   aclBLAS 句柄。
+ * @param[in]  uplo     指定使用 A 的上三角（ACLBLAS_UPPER）或下三角（ACLBLAS_LOWER）。
+ *                      仅访问对应的三角部分，另一三角部分不被读取。
+ * @param[in]  n        矩阵 A 的阶数，n >= 0。
+ * @param[in]  A        输入三角矩阵，维度为 lda x n（列主序）。
+ *                      当 uplo == ACLBLAS_UPPER 时仅访问 A[i + j*lda] (i <= j)；
+ *                      当 uplo == ACLBLAS_LOWER 时仅访问 A[i + j*lda] (i >= j)。
+ * @param[in]  lda      矩阵 A 的主维度，lda >= max(1, n)。
+ * @param[out] AP       输出打包后的向量，长度为 n*(n+1)/2。
+ *                      当 uplo == ACLBLAS_UPPER 时按列依次存放上三角元素；
+ *                      当 uplo == ACLBLAS_LOWER 时按列存放下三角元素。
+ *
+ * @return aclblasStatus_t 状态码：
+ *         - ACLBLAS_STATUS_SUCCESS            成功；
+ *         - ACLBLAS_STATUS_NOT_INITIALIZED    handle 未初始化；
+ *         - ACLBLAS_STATUS_INVALID_VALUE      参数非法（如 n < 0 或 lda < max(1, n)）；
+ *         - ACLBLAS_STATUS_INVALID_HANDLE     handle 无效；
+ *         - ACLBLAS_STATUS_EXECUTION_FAILED   设备端执行失败。
+ *
+ * @note 复数类型为 aclblasComplex（与库内其他复数例程保持一致，例如 aclblasCgemm）。
+ * @note 本函数为同步接口；异步版本（如后续提供 aclblasCtrttpAsync）需单独声明。
+ * @see aclblasStrttp
+ */
+
+aclblasStatus_t aclblasCtrttp(
+    aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* A, int lda, aclblasComplex* AP);
+
 aclblasStatus_t aclblasSrotm(aclblasHandle_t handle, int n, float* x, int incx, float* y, int incy, const float* param);
 
 aclblasStatus_t aclblasSrot(
