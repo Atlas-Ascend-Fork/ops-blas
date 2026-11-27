@@ -89,7 +89,9 @@ inline aclblasStatus_t aclblasSger_npu(
     }
 
     if (ret == ACLBLAS_STATUS_SUCCESS && A != nullptr) {
-        aclrtMemcpy(A, aBytes, dA, aBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+        if (aclrtMemcpy(A, aBytes, dA, aBytes, ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
     }
 
     if (dX) aclrtFree(dX);
