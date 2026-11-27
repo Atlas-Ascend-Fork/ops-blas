@@ -81,6 +81,65 @@ inline aclblasStatus_t dotexCopyToDevice(
 // target dtype, transfers to device, calls aclblasDotEx, reads back result
 // and converts back to float for comparison.
 // ─────────────────────────────────────────────────────────────────────────────
+inline aclblasStatus_t dotexPrepareVector(
+    void*& devicePtr,
+    const float* source,
+    int n,
+    int inc,
+    aclDataType dtype)
+{
+    const std::vector<uint8_t> packed = dotexPackVector(source, n, inc, dtype);
+    return dotexCopyToDevice(devicePtr, packed, packed.size());
+}
+
+inline aclblasStatus_t dotexCopyResultFromDevice(
+    float* result,
+    aclDataType resultType,
+    const void* deviceResult)
+{
+    if (result == nullptr) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+
+    aclError aclRet = ACL_SUCCESS;
+    if (resultType == ACL_FLOAT) {
+        aclRet = aclrtMemcpy(
+            result,
+            sizeof(float),
+            deviceResult,
+            sizeof(float),
+            ACL_MEMCPY_DEVICE_TO_HOST);
+    } else if (resultType == ACL_FLOAT16) {
+        uint16_t halfResult = 0;
+        aclRet = aclrtMemcpy(
+            &halfResult,
+            sizeof(uint16_t),
+            deviceResult,
+            sizeof(uint16_t),
+            ACL_MEMCPY_DEVICE_TO_HOST);
+        if (aclRet != ACL_SUCCESS) {
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+        *result = fp16ToFloat(halfResult);
+    } else if (resultType == ACL_BF16) {
+        uint16_t bf16Result = 0;
+        aclRet = aclrtMemcpy(
+            &bf16Result,
+            sizeof(uint16_t),
+            deviceResult,
+            sizeof(uint16_t),
+            ACL_MEMCPY_DEVICE_TO_HOST);
+        if (aclRet != ACL_SUCCESS) {
+            return ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
+        *result = bf16ToFloat(bf16Result);
+    }
+
+    return aclRet == ACL_SUCCESS
+        ? ACLBLAS_STATUS_SUCCESS
+        : ACLBLAS_STATUS_INTERNAL_ERROR;
+}
+
 inline aclblasStatus_t aclblasDotEx_npu(
     aclblasHandle_t handle, int n,
     const float* x, aclDataType xType, int incx,
@@ -96,45 +155,42 @@ inline aclblasStatus_t aclblasDotEx_npu(
 
     DotexNpuMem mem;
 
-    // Pack and copy x to device
-    std::vector<uint8_t> packedX = dotexPackVector(x, n, incx, xType);
-    size_t xBytes = packedX.size();
-    aclblasStatus_t st = dotexCopyToDevice(mem.dX, packedX, xBytes);
-    if (st != ACLBLAS_STATUS_SUCCESS) return st;
+    aclblasStatus_t ret = dotexPrepareVector(mem.dX, x, n, incx, xType);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        return ret;
+    }
 
-    // Pack and copy y to device
-    std::vector<uint8_t> packedY = dotexPackVector(y, n, incy, yType);
-    size_t yBytes = packedY.size();
-    st = dotexCopyToDevice(mem.dY, packedY, yBytes);
-    if (st != ACLBLAS_STATUS_SUCCESS) return st;
+    ret = dotexPrepareVector(mem.dY, y, n, incy, yType);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        return ret;
+    }
 
-    // Allocate device result buffer
-    size_t resultBytes = dtypeByteSize(resultType);
-    aclError aclRet = aclrtMalloc(&mem.dResult, resultBytes, ACL_MEM_MALLOC_HUGE_FIRST);
-    if (aclRet != ACL_SUCCESS) return ACLBLAS_STATUS_ALLOC_FAILED;
+    const size_t resultBytes = dtypeByteSize(resultType);
+    const aclError allocRet =
+        aclrtMalloc(&mem.dResult, resultBytes, ACL_MEM_MALLOC_HUGE_FIRST);
+    if (allocRet != ACL_SUCCESS) {
+        return ACLBLAS_STATUS_ALLOC_FAILED;
+    }
 
-    // Launch kernel
-    aclblasStatus_t ret = aclblasDotEx(
-        handle, n,
-        static_cast<const void*>(mem.dX), xType, incx,
-        static_cast<const void*>(mem.dY), yType, incy,
-        static_cast<void*>(mem.dResult), resultType, executionType);
+    ret = aclblasDotEx(
+        handle,
+        n,
+        static_cast<const void*>(mem.dX),
+        xType,
+        incx,
+        static_cast<const void*>(mem.dY),
+        yType,
+        incy,
+        static_cast<void*>(mem.dResult),
+        resultType,
+        executionType);
 
-    aclrtSynchronizeDevice();
-
-    // Read back result
-    if (ret == ACLBLAS_STATUS_SUCCESS && result != nullptr) {
-        if (resultType == ACL_FLOAT) {
-            aclrtMemcpy(result, sizeof(float), mem.dResult, sizeof(float), ACL_MEMCPY_DEVICE_TO_HOST);
-        } else if (resultType == ACL_FLOAT16) {
-            uint16_t halfResult = 0;
-            aclrtMemcpy(&halfResult, sizeof(uint16_t), mem.dResult, sizeof(uint16_t), ACL_MEMCPY_DEVICE_TO_HOST);
-            *result = fp16ToFloat(halfResult);
-        } else if (resultType == ACL_BF16) {
-            uint16_t bf16Result = 0;
-            aclrtMemcpy(&bf16Result, sizeof(uint16_t), mem.dResult, sizeof(uint16_t), ACL_MEMCPY_DEVICE_TO_HOST);
-            *result = bf16ToFloat(bf16Result);
-        }
+    const aclError syncRet = aclrtSynchronizeDevice();
+    if (ret == ACLBLAS_STATUS_SUCCESS && syncRet != ACL_SUCCESS) {
+        ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
+    if (ret == ACLBLAS_STATUS_SUCCESS) {
+        ret = dotexCopyResultFromDevice(result, resultType, mem.dResult);
     }
 
     return ret;
