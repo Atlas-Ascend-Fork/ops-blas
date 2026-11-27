@@ -63,7 +63,9 @@ inline aclblasStatus_t GemvBatchedPtrArrayImpl(
         reinterpret_cast<const T_IN *const *>(dXPtrArr.ptr()), incx,
         beta,
         reinterpret_cast<T_OUT *const *>(dYPtrArr.ptr()), incy, batchCount);
-    aclrtSynchronizeDevice();
+    if (aclrtSynchronizeDevice() != ACL_SUCCESS) {
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
     for (int b = 0; b < batchCount; b++)
         dYBufs[b].copyToHost(y + b * yStride, perBatchYBytes);
     return ret;
