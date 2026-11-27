@@ -42,8 +42,8 @@ private:
     uint32_t colCount_;
 
     __aicore__ inline uint32_t CalcColLen(uint32_t col) const;
-    __aicore__ inline uint32_t CalcSrcOffset(uint32_t col) const;
-    __aicore__ inline uint32_t CalcDstOffset(uint32_t col) const;
+    __aicore__ inline uint64_t CalcSrcOffset(uint32_t col) const;
+    __aicore__ inline uint64_t CalcDstOffset(uint32_t col) const;
     __aicore__ inline void CopyColumn(uint32_t col, int32_t eventIdM2M3, int32_t eventIdM3M2);
 };
 
@@ -74,28 +74,33 @@ __aicore__ inline uint32_t TrttpAIV<T>::CalcColLen(uint32_t col) const
     return (tiling_.uplo == 0) ? (tiling_.n - col) : (col + 1);
 }
 
+// issue #1313: 源/目标偏移按 uint64 计算（镜像 arch22 strttp_kernel 口径），
+// 消除 n ≥ 65537 时 col*lda 超 2^32 的 uint32 回绕（结果静默错乱）
 template <typename T>
-__aicore__ inline uint32_t TrttpAIV<T>::CalcSrcOffset(uint32_t col) const
+__aicore__ inline uint64_t TrttpAIV<T>::CalcSrcOffset(uint32_t col) const
 {
-    return (tiling_.uplo == 0) ? (col * tiling_.lda + col) : (col * tiling_.lda);
+    const uint64_t uCol = static_cast<uint64_t>(col);
+    const uint64_t uLda = static_cast<uint64_t>(tiling_.lda);
+    return (tiling_.uplo == 0) ? (uCol * uLda + uCol) : (uCol * uLda);
 }
 
 template <typename T>
-__aicore__ inline uint32_t TrttpAIV<T>::CalcDstOffset(uint32_t col) const
+__aicore__ inline uint64_t TrttpAIV<T>::CalcDstOffset(uint32_t col) const
 {
+    const uint64_t uCol = static_cast<uint64_t>(col);
     if (tiling_.uplo == 0) {
-        return static_cast<uint32_t>((static_cast<uint64_t>(col) * (2ULL * tiling_.n - col + 1)) / 2);
-    } else {
-        return static_cast<uint32_t>((static_cast<uint64_t>(col) * (col + 1)) / 2);
+        const uint64_t uN = static_cast<uint64_t>(tiling_.n);
+        return (uCol * (2ULL * uN - uCol + 1ULL)) / 2ULL;
     }
+    return (uCol * (uCol + 1ULL)) / 2ULL;
 }
 
 template <typename T>
 __aicore__ inline void TrttpAIV<T>::CopyColumn(uint32_t col, int32_t eventIdM2M3, int32_t eventIdM3M2)
 {
     uint32_t colLen = CalcColLen(col);
-    uint32_t srcOff = CalcSrcOffset(col);
-    uint32_t dstOff = CalcDstOffset(col);
+    const uint64_t srcOff = CalcSrcOffset(col);
+    const uint64_t dstOff = CalcDstOffset(col);
 
     uint32_t processed = 0;
     while (processed < colLen) {
