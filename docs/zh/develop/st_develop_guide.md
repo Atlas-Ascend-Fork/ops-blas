@@ -221,6 +221,92 @@ CMake：`ops_blas_add_gtest_tests` 自动发现 `arch35/<op>_test.cpp`，链接 
 
 ## 2 参考实现对照
 
+跨环境精度复验双方应显式使用 `OPS_BLAS_REFBLAS_MODE=source`：固定源码构建并静态链接参考 BLAS。
+推荐直接共享同一 CPU 架构的参考构建产物。
+此模式找不到该产物时停止配置，**不会回退到系统 OpenBLAS/BLAS**。
+为兼容现有工程，未选择 `source` 时保留 `system` 模式；该模式只用于诊断，不能声称参考构建已经统一。
+
+固定构建方案为 `netlib-3.10.0-flang18.1.8-gcc9.4.0-strict-v1`：
+
+- 源码：未修改的 Netlib LAPACK/BLAS `v3.10.0` 官方发布归档；包含全部标准 BLAS 和 CBLAS 接口。
+- Fortran 编译器：LLVM Flang **18.1.8**；C 编译器：GCC **9.4.0**。
+- 两种语言均使用 `-O2 -fPIC -fno-fast-math -ffp-contract=off`。
+- 将 BLAS、CBLAS 和 Flang 运行时静态库链接进测试程序，避免运行时被系统库搜索路径替换。
+  这是参考实现的构建约定，不修改参考源码或测试结果。
+
+生成参考库（不安装或替换系统库）：
+
+```bash
+curl -L https://github.com/Reference-LAPACK/lapack/archive/refs/tags/v3.10.0.tar.gz -o lapack-v3.10.0.tar.gz
+python3 scripts/build_reference_blas.py --archive lapack-v3.10.0.tar.gz
+# 配合原有 SOC、CANN 等配置参数使用同一初始化文件：
+cmake -C third_party/reference-blas/reference-cache.cmake -S . -B build -DBUILD_TEST=ON
+```
+
+脚本默认输出到 `third_party/reference-blas`，记录编译器、参数和全部构建命令。
+随后按原有设备参数配置工程，并同时设置 `-DOPS_BLAS_REFBLAS_MODE=source`
+与 `-DOPS_BLAS_REFERENCE_ROOT=/absolute/path/to/third_party/reference-blas`。
+`build.sh` 等包装入口也可通过同名环境变量选择模式和目录。
+若复验机与构建机 CPU 架构相同，可复制目录中的 `include/`、`lib/`、`reference.cmake`、
+`reference-cache.cmake`、`reference.json` 和许可证文件后直接使用；复验机无需再次构建 Fortran 参考库。
+初始化文件同时设置既有 `REFBLAS_LIB` / `REFBLAS_INCLUDE_DIR`，已有工程也可用它绑定相同静态参考。
+`REFBLAS_LIB` 与 `REFBLAS_INCLUDE_DIR` 在此模式下由构建产物确定，不能分别切换到系统库。
+该约定覆盖公共 CMake 注册函数所链接的 CBLAS 参考；自定义 golden、单独加载的后端及 LAPACK 参考不在此范围。
+
+`source` 模式在 CMake 配置期间自动编译并执行一次独立 CPU 预检，使用与测试目标相同的
+`REFBLAS_INCLUDE_DIR` 和 `REFBLAS_LIB`。同次配置中的多个测试目标共用这次预检结果，
+重新配置会再次检查，不复用上次配置的通过状态。预检不依赖 GTest、CANN 或 NPU，
+不修改公共 `test_main.cpp`、逐算子入口或算子 kernel。
+
+预检检查 `cblas_cscal`、`cblas_caxpy` 的有限值结果和固定 Inf 输入分类。
+源码模式固定预期为 `nan`，环境变量不能改为 `recover-inf`；
+库缺失、链接失败或探针不符都会使配置失败，不回退到系统库。
+固定静态参考使这些 CBLAS 调用不随系统 BLAS、`LD_LIBRARY_PATH` 或其他 BLAS 的预加载而变化。
+
+无设备环境也可以提前独立预检：
+
+```bash
+cmake -S scripts/reference_blas -B build-reference-check \
+  -DOPS_BLAS_REFERENCE_ROOT=/absolute/path/to/reference-blas
+cat build-reference-check/reference-blas-preflight/report.txt
+```
+
+每次预检在当前构建目录的 `reference-blas-preflight/` 保存 `build.log`、`run.log` 和 `report.txt`。
+报告列出构建标识、CPU 架构、源码来源、C/Fortran 编译器、编译参数、实际链接的静态库路径，
+以及 `nonfinite=nan`、`finite=pass` 和退出状态。源码构建的完整命令另存于产物的 `reference.json`。
+
+### 跨环境复验约定
+
+只有 Netlib 版本号相同不足以确认参考行为相同。建议复验方提前公布采用的构建标识、CPU 架构和参考产物获取方式，
+让参与者在提交前即可复现该环境；复验时双方保留报告，避免环境信息只在失败后才被发现。
+自验方和复验方应在开始精度比较前：
+
+1. 约定同一个参考构建标识及 CPU 架构；优先使用同一份源码构建产物，无需各自重新编译。
+2. 双方均通过该产物的 `reference-cache.cmake` 配置实际测试工程。
+   独立预检成功后仍须这样配置测试工程，不能只运行探针再让测试自动选择系统库。
+3. 随测试日志保留双方的 `report.txt` 与产物 `reference.json`，核对构建标识、架构、编译器、
+   参数和预检结果。目录可不同；相同探针结果本身不代表所有参考接口的行为均相同。
+4. 若任一方使用 `system` 或报告不一致，先统一参考产物和配置，再比较精度结论。
+
+`system` 为兼容现有构建保留默认行为，继续使用既有 `REFBLAS_LIB` / `REFBLAS_INCLUDE_DIR`
+或自动发现逻辑，不执行预检，也不增加测试入口依赖。
+配置日志明确输出 `Reference BLAS build is NOT fixed`，不能据此认定双方参考环境已统一。
+本变更不会自动改变其他团队的复验配置，双方仍需显式采用同一参考产物。
+
+若只需诊断系统参考，可独立编译 CPU 探针（替换头文件和库路径）：
+
+```bash
+c++ -std=c++17 -fno-fast-math -ffp-contract=off -I/path/to/include \
+  scripts/reference_blas/probe.cpp /path/to/libblas.so -ldl -o reference-blas-probe
+OPS_BLAS_REFBLAS_NONFINITE=nan ./reference-blas-probe
+```
+
+未指定 `OPS_BLAS_REFBLAS_NONFINITE` 或设置为空时只记录分类；也可选择 `recover-inf`。
+输出包含本探针进程实际加载的参考库路径和 `nan`、`recover-inf` 或 `other` 分类。
+该诊断只反映独立进程，不证明任意其他测试程序运行时选用了相同参考库。
+
+小规模探针不能代替全部精度测试。本方案保持原 golden 计算、精度阈值和 NaN/Inf 分类判等规则。
+
 | 项目 | gbmv | stpttr | strttp |
 |------|------|--------|--------|
 | param | `gbmv_param.h` | `stpttr_param.h` | `strttp_param.h` |

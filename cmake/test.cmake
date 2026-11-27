@@ -248,16 +248,36 @@ function(_ops_blas_ensure_gtest_found)
     endif()
 endfunction()
 
+include("${CMAKE_CURRENT_LIST_DIR}/reference_blas.cmake")
+
 # Locate reference BLAS (CBLAS) and LAPACK once per configure.
 function(_ops_blas_ensure_refblas_found)
-    find_path(REFBLAS_INCLUDE_DIR cblas.h
-        PATHS /usr/local/include /usr/include /usr/include/x86_64-linux-gnu
-              ${HOMEBREW_PREFIX}/include
-        PATH_SUFFIXES openblas)
-    find_library(REFBLAS_LIB NAMES openblas blas
-        PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
-              ${HOMEBREW_PREFIX}/lib
-        PATH_SUFFIXES blas)
+    set(_reference_mode "$ENV{OPS_BLAS_REFBLAS_MODE}")
+    if(NOT _reference_mode)
+        set(_reference_mode "system")
+    endif()
+    set(OPS_BLAS_REFBLAS_MODE "${_reference_mode}" CACHE STRING
+        "Reference BLAS: source (fixed profile) or system (diagnostic only)")
+    set_property(CACHE OPS_BLAS_REFBLAS_MODE PROPERTY STRINGS source system)
+    if(OPS_BLAS_REFBLAS_MODE STREQUAL "source")
+        _ops_blas_load_source_reference()
+        set(REFBLAS_INCLUDE_DIR "${REFBLAS_INCLUDE_DIR}" PARENT_SCOPE)
+        set(REFBLAS_LIB "${REFBLAS_LIB}" PARENT_SCOPE)
+        set(OPS_BLAS_REFERENCE_ID "${OPS_BLAS_REFERENCE_ID}" PARENT_SCOPE)
+    elseif(OPS_BLAS_REFBLAS_MODE STREQUAL "system")
+        set(OPS_BLAS_REFERENCE_ID "")
+        set(OPS_BLAS_REFERENCE_ID "" PARENT_SCOPE)
+        find_path(REFBLAS_INCLUDE_DIR cblas.h
+            PATHS /usr/local/include /usr/include /usr/include/x86_64-linux-gnu
+                  ${HOMEBREW_PREFIX}/include
+            PATH_SUFFIXES openblas)
+        find_library(REFBLAS_LIB NAMES openblas blas
+            PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
+                  ${HOMEBREW_PREFIX}/lib
+            PATH_SUFFIXES blas)
+    else()
+        message(FATAL_ERROR "OPS_BLAS_REFBLAS_MODE must be source or system")
+    endif()
     find_library(REFLAPACK_LIB NAMES lapack
         PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
               ${HOMEBREW_PREFIX}/lib
@@ -272,6 +292,16 @@ function(_ops_blas_ensure_refblas_found)
     if(NOT REFLAPACK_LIB)
         message(WARNING "Reference LAPACK (liblapack) not found. "
             "LAPACK-based golden tests will fail to link.")
+    endif()
+    get_property(_reported_refblas GLOBAL PROPERTY OPS_BLAS_REPORTED_REFBLAS)
+    if(NOT "${_reported_refblas}" STREQUAL "${REFBLAS_LIB}")
+        message(STATUS "Reference BLAS mode=${OPS_BLAS_REFBLAS_MODE}, profile=${OPS_BLAS_REFERENCE_ID}: "
+            "${REFBLAS_LIB}; headers: ${REFBLAS_INCLUDE_DIR}")
+        if(OPS_BLAS_REFBLAS_MODE STREQUAL "system")
+            message(STATUS "Reference BLAS build is NOT fixed; use source mode and share the reference "
+                "bundle/report for cross-environment precision comparisons.")
+        endif()
+        set_property(GLOBAL PROPERTY OPS_BLAS_REPORTED_REFBLAS "${REFBLAS_LIB}")
     endif()
 endfunction()
 
