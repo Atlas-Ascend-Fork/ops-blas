@@ -25,7 +25,9 @@ inline aclblasStatus_t aclblasStrsv_npu(
     int incx)
 {
     aclblasStatus_t ret = aclblasStrsv(handle, uplo, trans, diag, n, A, lda, x, incx);
-    aclrtSynchronizeDevice();
+    if (aclrtSynchronizeDevice() != ACL_SUCCESS) {
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
     return ret;
 }
 
