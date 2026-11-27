@@ -121,17 +121,20 @@ inline aclblasStatus_t scalexNpuPrepareAlpha(
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-inline void scalexNpuCopyBackResult(
+inline bool scalexNpuCopyBackResult(
     void* dX, size_t xBytes, float* x, int n, int incx, int32_t xTypeLoc)
 {
-    if (x == nullptr || dX == nullptr) return;
+    if (x == nullptr || dX == nullptr) return true;
 
     std::vector<uint8_t> xOut(xBytes, 0);
-    aclrtMemcpy(xOut.data(), xBytes, dX, xBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclrtMemcpy(xOut.data(), xBytes, dX, xBytes, ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+        return false;
+    }
     std::vector<float> xFloatOut = scalexUnpackX(xOut.data(), n, incx, xTypeLoc);
     for (size_t i = 0; i < xFloatOut.size(); i++) {
         x[i] = xFloatOut[i];
     }
+    return true;
 }
 
 inline aclblasStatus_t aclblasScalex_npu(
@@ -164,10 +167,13 @@ inline aclblasStatus_t aclblasScalex_npu(
     aclblasStatus_t ret = aclblasScalex(
         handle, n, alphaArg, alphaType, mem.dX, xType, incx, executionType);
 
-    aclrtSynchronizeDevice();
+    if (aclrtSynchronizeDevice() != ACL_SUCCESS) {
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
 
-    if (ret == ACLBLAS_STATUS_SUCCESS) {
-        scalexNpuCopyBackResult(mem.dX, xBytes, static_cast<float*>(x), n, incx, xTypeLoc);
+    if (ret == ACLBLAS_STATUS_SUCCESS &&
+        !scalexNpuCopyBackResult(mem.dX, xBytes, static_cast<float*>(x), n, incx, xTypeLoc)) {
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
     }
     return ret;
 }
