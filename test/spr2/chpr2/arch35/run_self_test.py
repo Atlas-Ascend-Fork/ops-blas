@@ -27,7 +27,12 @@ def read_rows(path):
 def verify_gtest_xml(xml, expected):
     if not xml.is_file():
         return False
-    root = ET.parse(xml).getroot()
+    try:
+        root = ET.parse(xml).getroot()
+        if any(int(root.get(key, 0)) != 0 for key in ("failures", "errors", "disabled", "skipped")):
+            return False
+    except (ET.ParseError, ValueError):
+        return False
     tests = root.findall(".//testcase")
     expected_tests = {("Chpr2/Chpr2Arch35Test", f"CsvDriven/{name}") for name in expected}
     expected_tests.update({
@@ -35,18 +40,25 @@ def verify_gtest_xml(xml, expected):
         ("Chpr2BoundaryTest", "ByteSpanAndLargeStride"),
     })
     actual_tests = Counter((test.get("classname"), test.get("name")) for test in tests)
-    completed = all(
-        test.get("result") == "completed"
+    if actual_tests != Counter(expected_tests):
+        return False
+    return all(
+        test.get("status") == "run"
+        and test.get("result") == "completed"
         and test.find("failure") is None
+        and test.find("error") is None
         and test.find("skipped") is None
         for test in tests
     )
-    return (
-        actual_tests == Counter(expected_tests)
-        and int(root.get("failures", "0")) == 0
-        and int(root.get("errors", "0")) == 0
-        and completed
-    )
+
+
+def build_environment():
+    env = os.environ.copy()
+    for key in [key for key in env if key.startswith("GTEST_")]:
+        env.pop(key, None)
+    for key in ("BLAS_TEST_CASES", "CHPR2_PROFILE", "CHPR2_PROFILE_CALLS"):
+        env.pop(key, None)
+    return env
 
 
 def main():
@@ -68,9 +80,7 @@ def main():
     expected = {name for name in names if not name.startswith("TC_PF_")}
     expected.update(f"TC_EXTRA_{i}" for i in range(32))
     output.mkdir(parents=True, exist_ok=False)
-    env = os.environ.copy()
-    for key in ("BLAS_TEST_CASES", "GTEST_FILTER", "GTEST_OUTPUT", "CHPR2_PROFILE", "CHPR2_PROFILE_CALLS"):
-        env.pop(key, None)
+    env = build_environment()
     env.update(CHPR2_CSV=str(csv_path), CHPR2_RESULTS=str(output / "accuracy.csv"), BLAS_DEVICE_ID=str(args.device))
     xml = output / "gtest.xml"
     command = [str(binary), "--gtest_filter=-*TC_PF*", "--gtest_color=no", "--gtest_output=xml:" + str(xml)]
