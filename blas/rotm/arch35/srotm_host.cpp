@@ -31,7 +31,11 @@ static void BuildTilingData(
 {
     const float flag = param[0];
     float alpha1, beta1, alpha2, beta2;
-    if (flag == -1.0f) {
+    // issue #1309: 按 netlib srotm.f 语义，负值 flag（≠-2，入口已提前返回）一律为
+    // 全 H 形式（h11=param[1], h12=param[3], h21=param[2], h22=param[4]），
+    // 与 arch22 srotm_kernel 口径一致；原实现仅精确识别 flag==-1，
+    // 其余负值误入 flag=1 旋转形式导致 arch35 结果静默错误
+    if (flag < 0.0f) {
         alpha1 = param[1];
         beta1 = param[3];
         alpha2 = param[2];
