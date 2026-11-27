@@ -182,6 +182,18 @@ aclblasStatus_t aclblasSsymv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const float* alpha, const float* A, int lda, const float* x,
     int incx, const float* beta, float* y, int incy);
 
+/**
+ * aclblasCsymv performs a complex symmetric matrix-vector multiply on Ascend
+ * 950PR.
+ * A, x, and y are Device pointers; alpha and beta may be Host or Device
+ * pointers. Device scalars are read by the kernel on the handle stream. When
+ * the Host must inspect a Device scalar for null-data validation or a
+ * quick-return decision, the implementation copies it to Host and synchronizes
+ * that stream. For n > 0, successful return means the task was enqueued; the
+ * caller must synchronize the handle stream before reading or reusing y.
+ * For n == 0, handle and n are checked, then the call returns success without
+ * inspecting the remaining arguments.
+ */
 aclblasStatus_t aclblasCsymv(
     aclblasHandle_t handle, aclblasFillMode_t uplo, int n, const aclblasComplex* alpha, const aclblasComplex* A,
     int lda, const aclblasComplex* x, int incx, const aclblasComplex* beta, aclblasComplex* y, int incy);

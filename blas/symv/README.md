@@ -240,12 +240,12 @@ aclblasStatus_t aclblasCsymv(
 | handle | 输入 | aclblasHandle_t | ops-blas 上下文句柄，携带执行 stream，Host 内存 |
 | uplo | 输入 | aclblasFillMode_t | `ACLBLAS_UPPER` 使用 A 的上三角，`ACLBLAS_LOWER` 使用下三角，Host 内存 |
 | n | 输入 | int | A 的行列数以及 x、y 的逻辑长度，`n>=0`，Host 内存 |
-| alpha | 输入 | const aclblasComplex* | 复数乘数，Host/Device 内存 |
+| alpha | 输入 | const aclblasComplex* | 复数乘数，不可为空；Host/Device 内存均可。Host 标量由主机读取，Device 标量由 kernel 在句柄 stream 上读取 |
 | A | 输入 | const aclblasComplex* | 列主序复数对称矩阵，数组大小 `lda*n`，Device 内存 |
 | lda | 输入 | int | A 的前导维度，`lda>=max(1,n)`，Host 内存 |
 | x | 输入 | const aclblasComplex* | 逻辑长度为 n 的复数向量，Device 内存 |
 | incx | 输入 | int | x 的元素步长，支持正负值，`incx!=0`，Host 内存 |
-| beta | 输入 | const aclblasComplex* | 复数乘数，Host/Device 内存 |
+| beta | 输入 | const aclblasComplex* | 复数乘数，不可为空；Host/Device 内存均可。Host 标量由主机读取，Device 标量由 kernel 在句柄 stream 上读取；beta 为零时不读取 y 的原值 |
 | y | 输入/输出 | aclblasComplex* | 逻辑长度为 n 的复数向量，原地写回，Device 内存 |
 | incy | 输入 | int | y 的元素步长，支持正负值，`incy!=0`，Host 内存 |
 
@@ -263,13 +263,16 @@ aclblasStatus_t aclblasCsymv(
 
 #### 参数校验与标量语义
 
-- `handle` 必须有效。`n=0` 直接返回成功，不访问 alpha、beta、A、x、y。
+- `handle` 必须有效。`n=0` 时，在检查 handle 有效且 n 非负后直接返回成功，不检查或访问 uplo、lda、incx、incy、alpha、beta、A、x、y。
 - `n>0` 时校验 uplo、lda、incx、incy，alpha 和 beta 均须有效。
-- `alpha=(0,0),beta=(1,0)` 时不访问 A/x/y，三者可为空。
+- `alpha=(0,0),beta=(1,0)` 时 y 保持不变；Host 标量在主机侧可直接快速返回，Device 标量由 kernel 判定该 no-op。
 - `alpha=(0,0)` 时不读取 A/x，二者可为空；需要写结果时 y 必须有效。
 - `beta=(0,0)` 时不读取 y 的输入值；`beta=(1,0)` 时直接使用旧 y，保留含 Inf 分量的语义。
 
-Host 标量随调用参数传入，Device 标量在 kernel 中读取。数据指针齐全的调用保持异步；任一数据指针为空且标量位于 Device 时，Host 在 handle stream 上读回标量并同步，确认该空指针是否符合上述条件。异步计算完成后，调用方通过同一 stream 同步或建立后续依赖。
+#### 标量读取与返回时机
+
+- alpha 或 beta 位于 Device 内存时，正常数据指针均有效的调用把标量地址传给 kernel，由 kernel 在句柄绑定的 stream 上读取。若 A、x 或 y 为空，主机需要先判断标量值以决定 quick return 或空指针是否合法，此时会在同一 stream 上执行 Device 到 Host 的标量拷贝并同步；拷贝或同步失败返回 `ACLBLAS_STATUS_INTERNAL_ERROR`。
+- n > 0 的成功调用只表示参数检查完成且任务已提交到句柄 stream，不表示 y 已完成更新。调用方在读取或复用 y 前必须同步该 stream；n = 0 或主机侧 no-op quick return 不提交 kernel。
 
 #### 返回码
 

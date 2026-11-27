@@ -108,15 +108,33 @@ while IFS= read -r filepath || [ -n "$filepath" ]; do
         continue
     fi
     if [[ "$filepath" == include/* ]]; then
-        header_ops=""
         resolve_diff_base
+        if [ "$diff_base_invalid" = "true" ]; then
+            echo "Warning: diff base is unavailable; fallback to full run."
+            run_all=true
+            break
+        fi
+        header_diff=$(git diff "$base_branch" HEAD -- "$filepath" 2>/dev/null || true)
+        # Public-header comments document an existing contract but do not alter
+        # the compiled API. Do not turn comment-only edits into a long device
+        # smoke run; declaration, macro, and other code changes still select
+        # the affected operator below.
+        header_code_changes=$(printf '%s\n' "$header_diff" \
+            | grep -E '^[+-][^+-]' \
+            | sed -E 's/^[+-][[:space:]]*//' \
+            | grep -Ev '^$|^//|^/\*|^\*') || true
+        if [ -z "$header_code_changes" ]; then
+            echo "Info: documentation-only public-header change; no operator smoke selected."
+            continue
+        fi
+        header_ops=""
         # 从新增/修改行提取 API 函数名：aclblas<Xxx>( 形态
         # issue #1069：基线不可解析时跳过提取（resolve_diff_base 已显式报错），
         # funcs 为空 → 走下方"no API function extracted"既有回退全量路径
         if [ "$diff_base_invalid" = "true" ]; then
             funcs=""
         else
-            funcs=$(git diff "$base_branch" HEAD -- "$filepath" 2>/dev/null \
+            funcs=$(printf '%s\n' "$header_diff" \
                     | grep -E '^[+][^+]' \
                     | grep -oE 'aclblas[A-Za-z0-9_]+\(' | sort -u | tr -d '(' || true)
         fi
@@ -131,14 +149,12 @@ while IFS= read -r filepath || [ -n "$filepath" ]; do
                 header_ops="$header_ops,$snake"
             else
                 # issue #713/#419: 家族嵌套目录（test/symv/csymv、test/ger/cgeru 等
-                # 双层布局）在 test/<op> 顶层查不到；找到嵌套目录时按父家族名加入
-                # （expand_family_ops 展开为该家族下当前 SOC 有实现的具体算子，
-                # 避免直接传嵌套成员名被 build.sh 当未知算子透传给 CMake 报错），
-                # 找不到时告警并回退全量，避免嵌套式 API 签名变更让 PreSmoke 零覆盖
+                # 双层布局）在 test/<op> 顶层查不到。build.sh/CMake 支持直接传入
+                # 嵌套成员名，并且只有成员名才能命中对应的 *_test.csv smoke 样本；
+                # 传父家族名会因找不到 family CSV 而退回全量执行。
                 family_dir=$(find ./test -mindepth 2 -maxdepth 2 -type d -name "$snake" 2>/dev/null | head -1)
                 if [ -n "$family_dir" ]; then
-                    family_name=$(echo "$family_dir" | sed -E 's|^\./test/([^/]+)/.*|\1|')
-                    header_ops="$header_ops,$family_name"
+                    header_ops="$header_ops,$snake"
                 else
                     echo "Warning: no test directory matched API '$fn' ('$snake'), fallback to run all."
                     run_all=true
