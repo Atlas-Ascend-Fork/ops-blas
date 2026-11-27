@@ -46,10 +46,9 @@ aclblasStatus_t aclblasCcopy(aclblasHandle_t handle, int n, const aclblasComplex
 
 #### 约束说明
 
-- `n >= 0`；`n == 0` 为合法 no-op，此时不访问 handle、x 和 y。
-- `n > 0` 时 handle、x 和 y 不可为 nullptr。
-- `n > 0` 时要求 `incx != 0`、`incy != 0`；`n == 0` 时步长不参与校验（可为 0）。
-- `n > 0` 时 x 和 y 的物理长度分别至少为 `1 + (n - 1) * abs(incx)` 和
+- `n >= 0`；`n == 0` 为合法 no-op，此时不访问 handle、x、y、incx 和 incy。
+- `n > 0` 时 handle、x 和 y 不可为 nullptr，且 `incx`、`incy` 不能为 0；`n == 0` 时步长不参与校验（可为 0）。
+- `n > 0` 时，x 和 y 的物理长度分别至少为 `1 + (n - 1) * abs(incx)` 和
   `1 + (n - 1) * abs(incy)` 个复数元素。负步长遵循 BLAS 语义：从物理 span 的高地址逻辑首元素
   向低地址遍历，调用方传入的仍是物理 span 基址。
 

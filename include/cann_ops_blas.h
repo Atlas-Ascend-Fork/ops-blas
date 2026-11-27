@@ -333,6 +333,15 @@ aclblasStatus_t aclblasTSSgemvStridedBatched(
     int64_t strideA, const uint16_t* x, int incx, int64_t stridex, const float* beta, float* y, int incy,
     int64_t stridey, int batchCount);
 
+/**
+ * @brief aclblasCcopy(...) complex vector copy on the Ascend 950 path.
+ *
+ * For n == 0, the call is a valid no-op and returns
+ * ACLBLAS_STATUS_SUCCESS without inspecting handle, x, y, incx, or incy.
+ * For n > 0, handle, x, and y must be non-null and incx/incy must be non-zero.
+ * Successful non-empty calls enqueue the copy on the handle stream; synchronize
+ * that stream before reading or reusing y.
+ */
 aclblasStatus_t aclblasCcopy(
     aclblasHandle_t handle, int n, const aclblasComplex* x, int incx, aclblasComplex* y, int incy);
 
