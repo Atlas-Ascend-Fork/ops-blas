@@ -71,9 +71,12 @@ inline aclblasStatus_t aclblasSspr_npu(
     aclblasStatus_t ret = aclblasSspr(handle, uplo, n, alpha, static_cast<const float*>(dX), incx,
         static_cast<float*>(dAP));
 
-    aclrtSynchronizeDevice();
-    if (ret == ACLBLAS_STATUS_SUCCESS && ap != nullptr) {
-        aclrtMemcpy(ap, apBytes, dAP, apBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclrtSynchronizeDevice() != ACL_SUCCESS) {
+        ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+    } else if (ret == ACLBLAS_STATUS_SUCCESS && ap != nullptr) {
+        if (aclrtMemcpy(ap, apBytes, dAP, apBytes, ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
     }
 
     if (dX != nullptr) {
