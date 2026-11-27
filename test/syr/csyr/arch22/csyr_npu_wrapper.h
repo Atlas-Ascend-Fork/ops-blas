@@ -90,9 +90,12 @@ inline aclblasStatus_t aclblasCsyr_npu(aclblasHandle_t handle, aclblasFillMode_t
     aclblasStatus_t ret = aclblasCsyr(
         handle, uplo, n, alpha, static_cast<const aclblasComplex*>(dX), incx, static_cast<aclblasComplex*>(dA), lda);
 
-    aclrtSynchronizeDevice();
-    if (ret == ACLBLAS_STATUS_SUCCESS) {
-        aclrtMemcpy(A, aBytes, dA, aBytes, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclrtSynchronizeDevice() != ACL_SUCCESS) {
+        ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+    } else if (ret == ACLBLAS_STATUS_SUCCESS) {
+        if (aclrtMemcpy(A, aBytes, dA, aBytes, ACL_MEMCPY_DEVICE_TO_HOST) != ACL_SUCCESS) {
+            ret = ACLBLAS_STATUS_INTERNAL_ERROR;
+        }
     }
 
     if (dX) {
