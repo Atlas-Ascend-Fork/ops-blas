@@ -79,6 +79,8 @@ def test_completed_cleanly(test):
         return False
     if test.find("failure") is not None:
         return False
+    if test.find("error") is not None:
+        return False
     return test.find("skipped") is None
 
 
@@ -93,8 +95,8 @@ def validate_xml(path, expected):
             raise ValueError(f"Failed, skipped or incomplete test: {test.get('name')}")
     if int(root.get("tests", "-1")) != len(expected):
         raise ValueError("GTest total count differs from CSV plus contract tests")
-    if any(int(root.get(key, "-1")) != 0 for key in ("failures", "errors", "disabled")):
-        raise ValueError("GTest reported failures, errors or disabled tests")
+    if any(int(root.get(key, "0")) != 0 for key in ("failures", "errors", "disabled", "skipped")):
+        raise ValueError("GTest reported failures, errors, disabled or skipped tests")
     return len(tests)
 
 
