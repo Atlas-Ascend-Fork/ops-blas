@@ -103,10 +103,18 @@ aclblasStatus_t aclblasSger(
     if (st != ACLBLAS_STATUS_SUCCESS) {
         return st;
     }
-    float alphaVal = *alpha;
+    auto* h = handle;
+    // issue #1311: alpha 支持 host/device 双位置（对齐 arch22 sger 与 sscal arch35 同族口径，
+    // ReadScalarFromHostOrDevice 为 #652 既有 helper）：host 指针直接解引用，
+    // device 指针异步 D2H + stream 同步后参与 tiling，消除 host 侧对 device
+    // 指针的裸解引用（段错误/垃圾值风险）
+    float alphaVal = 0.0f;
+    const aclblasStatus_t readSt = ReadScalarFromHostOrDevice(alpha, h->stream, alphaVal);
+    if (readSt != ACLBLAS_STATUS_SUCCESS) {
+        return readSt;
+    }
     if (alphaVal == 0.0f) {
         return ACLBLAS_STATUS_SUCCESS;
     }
-    auto* h = handle;
     return LaunchSgerKernel(h, m, n, lda, alphaVal, incx, incy, x, y, A);
 }
