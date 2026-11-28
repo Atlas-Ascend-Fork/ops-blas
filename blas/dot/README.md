@@ -53,7 +53,7 @@ aclblasStatus_t aclblasSdot(aclblasHandle_t handle, int n, const float* x, int i
 #### 约束说明
 
 - n >= 0；n == 0 时直接返回成功，result 置 0
-- incx != 0，incy != 0
+- incx != 0，incy != 0；incx/incy 不能为 INT32_MIN（步长无合法使用场景，对齐 arch22 与 snrm2_ex 口径显式拒绝，issue #1325）
 - 当前实现仅支持 incx = 1 且 incy = 1，非单位步长尚未支持
 - n > 0 时，x、y、result 不能为 nullptr
 

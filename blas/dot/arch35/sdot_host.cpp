@@ -16,7 +16,6 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <limits>
 #include <algorithm>
 #include "acl/acl.h"
 #include "log/log.h"
@@ -33,15 +32,30 @@ aclError sdot_kernel_do(
 // ---------------------------------------------------------------------------
 // Parameter validation
 // ---------------------------------------------------------------------------
-static aclblasStatus_t ValidateSdotParams(
-    int64_t incx, int64_t incy, const float* x, const float* y, const float* result)
+static aclblasStatus_t ValidateSdotParams(int incx, int incy, const float* x, const float* y, const float* result)
 {
-    CHECK_RET(incx != 0, OP_LOGE("aclblasSdot", "incx must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(incy != 0, OP_LOGE("aclblasSdot", "incy must not be zero"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(x != nullptr, OP_LOGE("aclblasSdot", "x must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(y != nullptr, OP_LOGE("aclblasSdot", "y must not be nullptr"); return ACLBLAS_STATUS_INVALID_VALUE);
-    CHECK_RET(result != nullptr, OP_LOGE("aclblasSdot", "result must not be nullptr");
-              return ACLBLAS_STATUS_INVALID_VALUE);
+    // issue #1325: INT32_MIN 步长无合法使用场景，对齐 arch22（#780）与 snrm2_ex arch35
+    // 的显式拒绝口径，消除跨架构行为分裂；INT64_MIN 经公共 API（int 步长）不可表达
+    if (incx == 0 || incx == INT32_MIN) {
+        OP_LOGE("aclblasSdot", "incx must not be zero or INT32_MIN");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (incy == 0 || incy == INT32_MIN) {
+        OP_LOGE("aclblasSdot", "incy must not be zero or INT32_MIN");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (x == nullptr) {
+        OP_LOGE("aclblasSdot", "x must not be nullptr");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (y == nullptr) {
+        OP_LOGE("aclblasSdot", "y must not be nullptr");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (result == nullptr) {
+        OP_LOGE("aclblasSdot", "result must not be nullptr");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 
@@ -88,11 +102,16 @@ static aclblasStatus_t LaunchSdotKernel(
 // ---------------------------------------------------------------------------
 // Public API: aclblasSdot
 // ---------------------------------------------------------------------------
+// 签名与 include/cann_ops_blas.h:360 公共声明（int n/incx/incy）对齐。此前实现误用
+// int64_t 形参，C++ 名 mangling 下定义的是另一符号，导致头文件声明的 aclblasSdot
+// 无定义（arch35 --ops=dot 构建链接失败：undefined reference to `aclblasSdot'）。
 aclblasStatus_t aclblasSdot(
-    aclblasHandle_t handle, const int64_t n, const float* x, const int64_t incx, const float* y, const int64_t incy,
-    float* result)
+    aclblasHandle_t handle, int n, const float* x, int incx, const float* y, int incy, float* result)
 {
-    CHECK_RET(handle != nullptr, OP_LOGE("aclblasSdot", "handle is nullptr"); return ACLBLAS_STATUS_HANDLE_IS_NULLPTR);
+    if (handle == nullptr) {
+        OP_LOGE("aclblasSdot", "handle is nullptr");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
     if (n <= 0) {
         if (result != nullptr) {
             aclError ret = aclrtMemset(result, sizeof(float), 0, sizeof(float));
@@ -103,12 +122,6 @@ aclblasStatus_t aclblasSdot(
         }
         return ACLBLAS_STATUS_SUCCESS;
     }
-
-    // issue #1081: 当前实现将 n 下发为 uint32_t（sdot_kernel.cpp），超出范围时
-    // 拒绝继续执行，对齐 srotm 口径；否则 int64 n 静默截断导致 SUCCESS 下结果错误
-    CHECK_RET(n <= static_cast<int64_t>(std::numeric_limits<uint32_t>::max()),
-              OP_LOGE("aclblasSdot", "n=%ld exceeds uint32 range", static_cast<long>(n));
-              return ACLBLAS_STATUS_NOT_SUPPORTED);
 
     aclblasStatus_t status = ValidateSdotParams(incx, incy, x, y, result);
     if (status != ACLBLAS_STATUS_SUCCESS) {
@@ -123,6 +136,8 @@ aclblasStatus_t aclblasSdot(
         return ACLBLAS_STATUS_EXECUTION_FAILED;
     }
 
+    // kernel 侧 n/incx/incy 均为 int64 tiling 域，int 入参安全升宽；
+    // #1081 的 uint32 n 越界拒绝在 int 公共 API 下不可达（n<=INT_MAX），随签名对齐移除
     SdotTilingData tiling = CalSdotTilingData(n, incx, incy, vectorCoreNum);
 
     OP_LOGD(
