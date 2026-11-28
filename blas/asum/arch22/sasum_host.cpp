@@ -101,13 +101,48 @@ AsumTilingData CalAsumTilingData(uint32_t totalEleNum, int32_t incx, uint32_t ve
     return tilingData;
 }
 
-aclblasStatus_t aclblasSasum(aclblasHandle_t handle, int n, const float* x, int incx, float* result)
+namespace {
+
+// issue #1322: 对齐同目录 scasum 与 arch35 sasum 的校验口径，补齐 result/x 判空
+static aclblasStatus_t ValidateSasumParams(aclblasHandle_t handle, int n, int incx, const float* x, float* result)
 {
     if (handle == nullptr) {
         // issue #861: 对齐 arch35 sasum（#722）与 sspmv/complexmatdot 全库口径，空 handle 拒绝执行
         LOG_PRINT("aclblasSasum: handle is nullptr\n");
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
+    if (result == nullptr) {
+        LOG_PRINT("aclblasSasum: result must not be nullptr\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (n > 0 && incx > 0 && x == nullptr) {
+        LOG_PRINT("aclblasSasum: x must not be nullptr when n > 0 and incx > 0\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    return ACLBLAS_STATUS_SUCCESS;
+}
+
+} // namespace
+
+aclblasStatus_t aclblasSasum(aclblasHandle_t handle, int n, const float* x, int incx, float* result)
+{
+    aclblasStatus_t status = ValidateSasumParams(handle, n, incx, x, result);
+    if (status != ACLBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+
+    // issue #1322: README 契约口径（n <= 0 或 incx <= 0 时 result 置 0 并返回成功），
+    // 对齐同目录 scasum 与 arch35 sasum；result 为 Device 输出，直接同步拷贝写零。
+    if (n <= 0 || incx <= 0) {
+        float zero = 0.0f;
+        aclError memRet = aclrtMemcpy(result, sizeof(float), &zero, sizeof(float), ACL_MEMCPY_HOST_TO_DEVICE);
+        if (memRet != ACL_SUCCESS) {
+            LOG_PRINT("aclblasSasum: aclrtMemcpy for early-return zero failed. ERROR: %d\n", memRet);
+            return ACLBLAS_STATUS_EXECUTION_FAILED;
+        }
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+
     auto* h = handle;
     aclrtStream useStream = h->stream;
 

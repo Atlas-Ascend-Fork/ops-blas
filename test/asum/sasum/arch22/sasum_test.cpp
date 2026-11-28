@@ -74,6 +74,67 @@ int32_t RunStridedCase(
     return 0;
 }
 
+// issue #1322: 负向入参用例（n<0 与 incx<=0 写零返回成功、x/result 判空拒绝）
+// 抽独立函数控制 main 规模（超大函数门禁预检）
+static int32_t RunSasumNegativeCases(aclblasHandle_t handle, float* xDevice, float* resultDevice)
+{
+    constexpr uint32_t totalLength = 128;
+    constexpr int incx = 1;
+    constexpr size_t outputByteSize = sizeof(float);
+    aclblasStatus_t ret;
+    aclError aclRet;
+
+    // issue #861: 空 handle 必须返回 HANDLE_IS_NULLPTR，不得解引用空指针
+    ret = aclblasSasum(nullptr, totalLength, xDevice, incx, resultDevice);
+    CHECK_RET(ret == ACLBLAS_STATUS_HANDLE_IS_NULLPTR,
+              LOG_PRINT("aclblasSasum null-handle expect HANDLE_IS_NULLPTR, got %d\n", ret);
+              return 1);
+
+    // n <= 0 按 README 契约写零并返回成功，不再经 uint32 回绕越界读
+    ret = aclblasSasum(handle, -1, xDevice, incx, resultDevice);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        LOG_PRINT("aclblasSasum n<0 expect SUCCESS, got %d\n", ret);
+        return 1;
+    }
+    float negNResult = -1.0f;
+    aclRet = aclrtMemcpy(&negNResult, outputByteSize, resultDevice, outputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclRet != ACL_SUCCESS) {
+        LOG_PRINT("aclrtMemcpy n<0 result failed. ERROR: %d\n", aclRet);
+        return aclRet;
+    }
+    if (negNResult != 0.0f) {
+        LOG_PRINT("aclblasSasum n<0 expect result zero, got %f\n", negNResult);
+        return 1;
+    }
+
+    // incx <= 0 写零并返回成功，不再按连续内存静默错算
+    ret = aclblasSasum(handle, totalLength, xDevice, 0, resultDevice);
+    if (ret != ACLBLAS_STATUS_SUCCESS) {
+        LOG_PRINT("aclblasSasum incx=0 expect SUCCESS, got %d\n", ret);
+        return 1;
+    }
+    float zeroIncResult = -1.0f;
+    aclRet = aclrtMemcpy(&zeroIncResult, outputByteSize, resultDevice, outputByteSize, ACL_MEMCPY_DEVICE_TO_HOST);
+    if (aclRet != ACL_SUCCESS) {
+        LOG_PRINT("aclrtMemcpy incx=0 result failed. ERROR: %d\n", aclRet);
+        return aclRet;
+    }
+    if (zeroIncResult != 0.0f) {
+        LOG_PRINT("aclblasSasum incx=0 expect result zero, got %f\n", zeroIncResult);
+        return 1;
+    }
+
+    // n > 0 且 x/result 为 nullptr 必须返回 INVALID_VALUE
+    ret = aclblasSasum(handle, totalLength, nullptr, incx, resultDevice);
+    CHECK_RET(ret == ACLBLAS_STATUS_INVALID_VALUE, LOG_PRINT("aclblasSasum null-x expect INVALID_VALUE, got %d\n", ret);
+              return 1);
+    ret = aclblasSasum(handle, totalLength, xDevice, incx, nullptr);
+    CHECK_RET(ret == ACLBLAS_STATUS_INVALID_VALUE,
+              LOG_PRINT("aclblasSasum null-result expect INVALID_VALUE, got %d\n", ret);
+              return 1);
+    return 0;
+}
+
 int32_t main(int32_t argc, char* argv[])
 {
     int32_t deviceId = 0;
@@ -111,11 +172,9 @@ int32_t main(int32_t argc, char* argv[])
     aclRet = aclrtMemcpy(xDevice, totalByteSize, x.data(), totalByteSize, ACL_MEMCPY_HOST_TO_DEVICE);
     CHECK_RET(aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy xDevice failed. ERROR: %d\n", aclRet); return aclRet);
 
-    // issue #861: 空 handle 必须返回 HANDLE_IS_NULLPTR，不得解引用空指针
-    ret = aclblasSasum(nullptr, totalLength, xDevice, incx, resultDevice);
-    CHECK_RET(ret == ACLBLAS_STATUS_HANDLE_IS_NULLPTR,
-              LOG_PRINT("aclblasSasum null-handle expect HANDLE_IS_NULLPTR, got %d\n", ret);
-              return 1);
+    // issue #1322/#861: 负向入参校验（空 handle、n<0/incx<=0 写零、x/result 判空拒绝）
+    int32_t negStatus = RunSasumNegativeCases(handle, xDevice, resultDevice);
+    CHECK_RET(negStatus == 0, return negStatus);
 
     ret = aclblasSasum(handle, totalLength, xDevice, incx, resultDevice);
     CHECK_RET(ret == ACLBLAS_STATUS_SUCCESS, LOG_PRINT("aclblasSasum failed. ERROR: %d\n", ret); return ret);
