@@ -33,9 +33,32 @@ INSTANTIATE_TEST_SUITE_P(
     Sswap, SswapArch35Test, ::testing::ValuesIn(GetCasesFromCsv<SswapParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<SswapParam>);
 
+// issue #1327 负例特例：incx/incy = INT32_MIN 的 host 校验短路验证。绕过 npu 包装
+// （存储按 (n-1)*|inc|+1 分配，该步长下不可达），以最小哑设备缓冲直调公开接口；
+// 期望值写死 INVALID_VALUE，保证该校验被移除时用例失败
+static void RunSswapInt32MinCase(aclblasHandle_t handle, const SswapParam& p, bool incxIsMin)
+{
+    const size_t dummyBytes = 8 * sizeof(float);
+    void* dX = nullptr;
+    void* dY = nullptr;
+    ASSERT_EQ(aclrtMalloc(&dX, dummyBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dY, dummyBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    aclblasStatus_t ret = aclblasSswap(
+        handle, p.n, static_cast<float*>(dX), incxIsMin ? INT32_MIN : p.incx, static_cast<float*>(dY),
+        incxIsMin ? p.incy : INT32_MIN);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_INVALID_VALUE));
+    aclrtFree(dX);
+    aclrtFree(dY);
+}
+
 TEST_P(SswapArch35Test, CsvDriven)
 {
     const auto& p = GetParam();
+
+    if (p.incx == INT32_MIN || p.incy == INT32_MIN) {
+        RunSswapInt32MinCase(SswapArch35Test::handle_, p, p.incx == INT32_MIN);
+        return;
+    }
 
     // Step 1: Generate host data
     std::vector<float> xHost = makeBlasStrided(p.n, p.incx, p.x, p.randomSeed);

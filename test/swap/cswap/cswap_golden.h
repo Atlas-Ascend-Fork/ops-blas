@@ -8,8 +8,7 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#ifndef CSWAP_GOLDEN_H
-#define CSWAP_GOLDEN_H
+#pragma once
 
 #include "cann_ops_blas.h"
 #include "cblas_compat.h"
@@ -23,12 +22,10 @@ inline aclblasStatus_t aclblasCswap_cpu(
     if (handle == nullptr) {
         return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
     }
-    if (x == nullptr || y == nullptr || incx == 0 || incy == 0) {
+    if (x == nullptr || y == nullptr || incx == 0 || incy == 0 || incx == INT32_MIN || incy == INT32_MIN) {
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
 
     cblas_cswap(n, static_cast<void*>(x), incx, static_cast<void*>(y), incy);
     return ACLBLAS_STATUS_SUCCESS;
 }
-
-#endif // CSWAP_GOLDEN_H

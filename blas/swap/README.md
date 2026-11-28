@@ -51,7 +51,7 @@ aclblasStatus_t aclblasSswap(aclblasHandle_t handle, int n, float* x, int incx, 
 - n == 0 时直接返回成功，不执行任何操作；n < 0 返回 ACLBLAS_STATUS_INVALID_VALUE
 - handle 不可为 nullptr
 - x、y 不可为 nullptr
-- incx != 0, incy != 0
+- incx != 0, incy != 0；incx/incy 不能为 INT32_MIN（步长无合法使用场景，对齐 arch22 口径显式拒绝，issue #1327）
 
 #### 调用示例
 
@@ -229,7 +229,7 @@ aclblasStatus_t aclblasCswap(aclblasHandle_t handle, int n, aclblasComplex* x, i
 
 - n == 0 时直接返回成功，不执行任何操作；n < 0 返回 ACLBLAS_STATUS_INVALID_VALUE
 - n > 0 时 handle、x、y 均不可为 nullptr
-- incx != 0, incy != 0
+- incx != 0, incy != 0；incx/incy 不能为 INT32_MIN（步长无合法使用场景，对齐 arch22 口径显式拒绝，issue #1327）
 - 负步长按 Netlib BLAS 语义从物理向量尾部开始访问
 - 复数实部和虚部按原始位模式交换，不进行浮点计算或类型转换
 - 算子在 handle 绑定的 stream 上异步执行，读取结果前需同步该 stream

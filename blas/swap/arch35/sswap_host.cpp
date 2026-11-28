@@ -29,6 +29,12 @@ static aclblasStatus_t ValidateSswapParams(const float* x, const float* y, int i
         OP_LOGE("aclblasSswap", "incx and incy must not be zero");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    // issue #1327: 对齐 arch22 sswap 显式拒绝 INT32_MIN（步长无合法使用场景），
+    // 消除同一调用跨架构接受/拒绝行为分裂
+    if (incx == INT32_MIN || incy == INT32_MIN) {
+        OP_LOGE("aclblasSswap", "incx and incy must not be INT32_MIN");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
     return ACLBLAS_STATUS_SUCCESS;
 }
 

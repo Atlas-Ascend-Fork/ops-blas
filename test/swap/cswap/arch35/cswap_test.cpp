@@ -39,9 +39,31 @@ INSTANTIATE_TEST_SUITE_P(
     Cswap, CswapTest, ::testing::ValuesIn(GetCasesFromCsv<CswapParam>(ReplaceFileExtension2Csv(__FILE__))),
     PrintCaseInfoString<CswapParam>);
 
+// issue #1327 负例特例：incx/incy = INT32_MIN 的 host 校验短路验证。绕过 npu 包装
+// （存储按 (n-1)*|inc|+1 分配且 std::abs 对 INT32_MIN 为 UB，该步长下不可达），
+// 以最小哑设备缓冲直调公开接口；期望值写死 INVALID_VALUE，保证该校验被移除时用例失败
+static void RunCswapInt32MinCase(aclblasHandle_t handle, const CswapParam& p, bool incxIsMin)
+{
+    const size_t dummyBytes = 8 * sizeof(aclblasComplex);
+    void* dX = nullptr;
+    void* dY = nullptr;
+    ASSERT_EQ(aclrtMalloc(&dX, dummyBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    ASSERT_EQ(aclrtMalloc(&dY, dummyBytes, ACL_MEM_MALLOC_HUGE_FIRST), ACL_SUCCESS);
+    aclblasStatus_t ret = aclblasCswap(
+        handle, p.n, static_cast<aclblasComplex*>(dX), incxIsMin ? INT32_MIN : p.incx, static_cast<aclblasComplex*>(dY),
+        incxIsMin ? p.incy : INT32_MIN);
+    EXPECT_EQ(static_cast<int>(ret), static_cast<int>(ACLBLAS_STATUS_INVALID_VALUE));
+    aclrtFree(dX);
+    aclrtFree(dY);
+}
+
 TEST_P(CswapTest, CsvDriven)
 {
     const auto& p = GetParam();
+    if (p.incx == INT32_MIN || p.incy == INT32_MIN) {
+        RunCswapInt32MinCase(CswapTest::handle_, p, p.incx == INT32_MIN);
+        return;
+    }
     ASSERT_GE(p.xAlignOffset, 0);
     ASSERT_GE(p.yAlignOffset, 0);
     int64_t xSpan = p.n > 0 ? static_cast<int64_t>(std::abs(p.incx)) * (p.n - 1) + 1 : 1;
