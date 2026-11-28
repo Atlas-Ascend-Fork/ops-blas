@@ -60,6 +60,7 @@ aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, 
 - n < 0 时返回 ACLBLAS_STATUS_INVALID_VALUE；n == 0 时为 no-op（直接返回 ACLBLAS_STATUS_SUCCESS，不访问 alpha / x）
 - handle 不能为 nullptr，否则返回 ACLBLAS_STATUS_HANDLE_IS_NULLPTR
 - n > 0 时 alpha、x 不能为 nullptr，否则返回 ACLBLAS_STATUS_INVALID_VALUE
+- arch22 支持 alpha 指针 Host/Device 双位置：Host 指针直接读取，Device 指针经同步 D2H 读取（对齐 arch35 同族口径，issue #1324）
 
 
 #### 调用示例
@@ -353,3 +354,4 @@ aclblasStatus_t aclblasCsscal(
 - alpha=0.0 时为置零操作（非 no-op）
 - alpha=1.0 时允许提前返回
 - n > 0 时 alpha、x 不得为 nullptr
+- Atlas A2 / Atlas A3 系列产品（arch22）实现遵循同文件 aclblasSscal 的 arch22 约定：n < 0 返回 ACLBLAS_STATUS_INVALID_VALUE、n == 0 为 no-op；handle 不能为 nullptr；n > 0 时 alpha、x 不得为 nullptr；alpha 支持 Host/Device 双位置读取；incx 参数当前实现未启用，固定按连续向量 incx=1 处理（issue #1323/#1324）

@@ -41,6 +41,16 @@ struct SscalTilingData {
     float alpha;
 };
 
+// ACL 返回码辅助：非 ACL_SUCCESS 时打印（G.FMT.04 一行一条语句合规形态）
+static inline bool ExpectAclOk(aclError got, const char* what)
+{
+    if (got == ACL_SUCCESS) {
+        return true;
+    }
+    LOG_PRINT("aclblasSscal: %s failed. ERROR: %d\n", what, static_cast<int>(got));
+    return false;
+}
+
 SscalTilingData CalTilingData(uint32_t totalEleNum, uint32_t vecCoreNum, float alpha)
 {
     SscalTilingData tilingData{};
@@ -123,62 +133,101 @@ aclblasStatus_t aclblasSscal(aclblasHandle_t handle, int n, const float* alpha, 
 
     uint32_t numBlocks = 8;
 
-    SscalTilingData tiling = CalTilingData(n, numBlocks, *alpha);
+    // issue #1324: alpha 支持 Host/Device 双位置（对齐 arch35 #1111 同族口径，
+    // ReadScalarFromHostOrDevice 为 #652 既有 helper）：host 指针直接解引用，
+    // device 指针异步 D2H + stream 同步后参与 tiling，消除 host 侧对 device
+    // 指针的裸解引用（段错误/垃圾值风险）
+    float alphaVal = 0.0f;
+    aclblasStatus_t readSt = ReadScalarFromHostOrDevice(alpha, useStream, alphaVal);
+    if (readSt != ACLBLAS_STATUS_SUCCESS) {
+        LOG_PRINT("aclblasSscal: read alpha failed, status=%d\n", readSt);
+        return readSt;
+    }
+
+    SscalTilingData tiling = CalTilingData(n, numBlocks, alphaVal);
 
     uint8_t* tilingDevice = nullptr;
     aclError aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(SscalTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(ExpectAclOk(aclRet, "aclrtMalloc"), return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet =
         aclrtMemcpy(tilingDevice, sizeof(SscalTilingData), &tiling, sizeof(SscalTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR);
+    if (!ExpectAclOk(aclRet, "aclrtMemcpy")) {
+        aclrtFree(tilingDevice);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
 
     sscal_kernel_do(reinterpret_cast<uint8_t*>(x), nullptr, tilingDevice, numBlocks, useStream);
     aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR);
+    if (!ExpectAclOk(aclRet, "aclrtSynchronizeStream")) {
+        aclrtFree(tilingDevice);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
 
     aclrtFree(tilingDevice);
 
     return ACLBLAS_STATUS_SUCCESS;
 }
 
-aclblasStatus_t aclblasCsscal(
-    aclblasHandle_t handle, int n, const float* alpha, aclblasComplex* x, int incx)
+aclblasStatus_t aclblasCsscal(aclblasHandle_t handle, int n, const float* alpha, aclblasComplex* x, int incx)
 {
-    if (alpha == nullptr) {
+    // issue #1323: 对齐同文件 aclblasSscal 校验序列与 README arch22 契约，
+    // 空 handle 不再解引用空指针，负 n 不再经 uint32 回绕成巨量元素
+    if (handle == nullptr) {
+        LOG_PRINT("aclblasCsscal: handle is nullptr\n");
+        return ACLBLAS_STATUS_HANDLE_IS_NULLPTR;
+    }
+    if (n < 0) {
+        LOG_PRINT("aclblasCsscal: n must not be negative\n");
         return ACLBLAS_STATUS_INVALID_VALUE;
     }
+    if (n == 0) {
+        return ACLBLAS_STATUS_SUCCESS;
+    }
+    if (alpha == nullptr) {
+        LOG_PRINT("aclblasCsscal: alpha must not be nullptr\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+    if (x == nullptr) {
+        LOG_PRINT("aclblasCsscal: x must not be nullptr\n");
+        return ACLBLAS_STATUS_INVALID_VALUE;
+    }
+
     auto* h = handle;
     aclrtStream useStream = h->stream;
 
     uint32_t numBlocks = 8;
+
+    // issue #1324: alpha 支持 Host/Device 双位置（对齐 arch35 #1111 同族口径），
+    // 消除 host 侧对 device 指针的裸解引用（段错误/垃圾值风险）
+    float alphaVal = 0.0f;
+    aclblasStatus_t readSt = ReadScalarFromHostOrDevice(alpha, useStream, alphaVal);
+    if (readSt != ACLBLAS_STATUS_SUCCESS) {
+        LOG_PRINT("aclblasCsscal: read alpha failed, status=%d\n", readSt);
+        return readSt;
+    }
+
     uint32_t totalFloatNum = static_cast<uint32_t>(n) * 2;
 
-    SscalTilingData tiling = CalTilingData(totalFloatNum, numBlocks, *alpha);
+    SscalTilingData tiling = CalTilingData(totalFloatNum, numBlocks, alphaVal);
 
     uint8_t* tilingDevice = nullptr;
     aclError aclRet = aclrtMalloc((void**)&tilingDevice, sizeof(SscalTilingData), ACL_MEM_MALLOC_HUGE_FIRST);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMalloc failed. ERROR: %d\n", aclRet);
-        return ACLBLAS_STATUS_ALLOC_FAILED);
+    CHECK_RET(ExpectAclOk(aclRet, "aclrtMalloc"), return ACLBLAS_STATUS_ALLOC_FAILED);
 
     aclRet =
         aclrtMemcpy(tilingDevice, sizeof(SscalTilingData), &tiling, sizeof(SscalTilingData), ACL_MEMCPY_HOST_TO_DEVICE);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtMemcpy failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR);
+    if (!ExpectAclOk(aclRet, "aclrtMemcpy")) {
+        aclrtFree(tilingDevice);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
 
     sscal_kernel_do(reinterpret_cast<uint8_t*>(x), nullptr, tilingDevice, numBlocks, useStream);
     aclRet = aclrtSynchronizeStream(useStream);
-    CHECK_RET(
-        aclRet == ACL_SUCCESS, LOG_PRINT("aclrtSynchronizeStream failed. ERROR: %d\n", aclRet); aclrtFree(tilingDevice);
-        return ACLBLAS_STATUS_INTERNAL_ERROR);
+    if (!ExpectAclOk(aclRet, "aclrtSynchronizeStream")) {
+        aclrtFree(tilingDevice);
+        return ACLBLAS_STATUS_INTERNAL_ERROR;
+    }
 
     aclrtFree(tilingDevice);
 
